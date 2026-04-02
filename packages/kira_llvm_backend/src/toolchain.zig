@@ -32,11 +32,12 @@ pub const Toolchain = struct {
         if (try fromHome(allocator, repo_current)) |tc| return tc;
 
         if (build_options.llvm_version.len > 0 and !std.mem.eql(u8, build_options.llvm_host_key, "unsupported-host")) {
-            const repo_versioned = try std.fmt.allocPrint(
+            const versioned_dir = try std.fmt.allocPrint(
                 allocator,
-                "{s}\\.kira\\llvm\\llvm-{s}-{s}",
-                .{ build_options.repo_root, build_options.llvm_version, build_options.llvm_host_key },
+                "llvm-{s}-{s}",
+                .{ build_options.llvm_version, build_options.llvm_host_key },
             );
+            const repo_versioned = try std.fs.path.join(allocator, &.{ build_options.repo_root, ".kira", "llvm", versioned_dir });
             try checked.append(repo_versioned);
             if (try fromHome(allocator, repo_versioned)) |tc| return tc;
         }

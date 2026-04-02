@@ -31,7 +31,10 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     if (request.emit.shared_library_path) |path| try ensureParentDir(path);
 
     const lowered = try lowerProgram(allocator, &api, target_machine, request, triple);
-    _ = lowered.context;
+    if (builtin.os.tag != .windows) {
+        defer api.LLVMDisposeModule(lowered.module_ref);
+        defer api.LLVMContextDispose(lowered.context);
+    }
 
     try emitObjectFile(allocator, &api, target_machine.machine, lowered.module_ref, request.emit.object_path);
 
