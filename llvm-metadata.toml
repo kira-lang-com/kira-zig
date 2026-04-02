@@ -15,18 +15,18 @@ runner = "windows-2022"
 platform = "windows"
 archive = "zip"
 asset = "llvm-22.1.2-x86_64-windows-msvc.zip"
-sha256 = ""
+sha256 = "22bdc33ef3110ce8e041abf05eff8a6b23151b141bee7b345f02e9692e6fcb1e"
 
 [target.x86_64-linux-gnu]
 runner = "ubuntu-24.04"
 platform = "linux"
 archive = "tar.xz"
 asset = "llvm-22.1.2-x86_64-linux-gnu.tar.xz"
-sha256 = ""
+sha256 = "928e3cbe11125b4e2b13f6b5fb02734dfffa38e15d5d1787b07763ca938dc065"
 
 [target.aarch64-macos]
 runner = "macos-14"
 platform = "macos"
 archive = "tar.xz"
 asset = "llvm-22.1.2-aarch64-macos.tar.xz"
-sha256 = ""
+sha256 = "60bd10f6736791d988bfbbb6230d2b77d13c970913cdf99b191b94af20830f3d"
