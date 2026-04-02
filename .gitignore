@@ -1,0 +1,16 @@
+.zig-cache/
+zig-out/
+
+generated/*
+!generated/.gitkeep
+
+*.kbc
+*.obj
+*.o
+*.lib
+*.dll
+*.exe
+*.pdb
+
+.DS_Store
+Thumbs.db

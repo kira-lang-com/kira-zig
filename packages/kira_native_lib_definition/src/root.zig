@@ -1,0 +1,10 @@
+pub const LinkExtras = @import("link_extras.zig").LinkExtras;
+pub const NativeSymbol = @import("ffi_symbol.zig").NativeSymbol;
+pub const TargetSelector = @import("target_resolution.zig").TargetSelector;
+pub const ResolvedNativeLibrary = @import("target_resolution.zig").ResolvedNativeLibrary;
+pub const resolveLibrary = @import("target_resolution.zig").resolveLibrary;
+pub const NativeLibrarySpec = @import("native_library.zig").NativeLibrarySpec;
+pub const FfiModuleSpec = @import("native_library.zig").FfiModuleSpec;
+pub const LinkMode = @import("native_library.zig").LinkMode;
+pub const LibraryAbi = @import("native_library.zig").LibraryAbi;
+pub const TargetSpec = @import("native_library.zig").TargetSpec;

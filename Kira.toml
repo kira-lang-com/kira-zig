@@ -1,0 +1,38 @@
+[project]
+name = "kirac"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "vm"
+build_target = "host"
+
+packages = [
+  "packages/kira_core",
+  "packages/kira_source",
+  "packages/kira_diagnostics",
+  "packages/kira_log",
+  "packages/kira_runtime_abi",
+  "packages/kira_syntax_model",
+  "packages/kira_lexer",
+  "packages/kira_parser",
+  "packages/kira_semantics_model",
+  "packages/kira_semantics",
+  "packages/kira_ir",
+  "packages/kira_hybrid_definition",
+  "packages/kira_backend_api",
+  "packages/kira_native_lib_definition",
+  "packages/kira_bytecode",
+  "packages/kira_vm_runtime",
+  "packages/kira_native_bridge",
+  "packages/kira_hybrid_runtime",
+  "packages/kira_llvm_backend",
+  "packages/kira_manifest",
+  "packages/kira_project",
+  "packages/kira_build_definition",
+  "packages/kira_build",
+  "packages/kira_linter",
+  "packages/kira_doc",
+  "packages/kira_app_generation",
+  "packages/kira_cli",
+  "packages/kira_main",
+]
