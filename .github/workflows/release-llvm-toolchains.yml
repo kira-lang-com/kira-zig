@@ -68,21 +68,6 @@ jobs:
             --publish-input "${{ inputs.publish || 'false' }}" \
             --verify-input "${{ inputs.verify_checksums || 'false' }}"
 
-      - name: Require a tagged ref for manual publishing
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
-        env:
-          RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}
-        run: |
-          if [ "${{ github.ref_type }}" != "tag" ]; then
-            echo "workflow_dispatch publish=true must run from the $RELEASE_TAG tag, not from a branch." >&2
-            exit 1
-          fi
-
-          if [ "${{ github.ref_name }}" != "$RELEASE_TAG" ]; then
-            echo "workflow_dispatch publish=true must run from the $RELEASE_TAG tag." >&2
-            exit 1
-          fi
-
   build:
     name: Build ${{ matrix.target_key }}
     needs: validate
@@ -238,6 +223,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           LLVM_VERSION: ${{ needs.validate.outputs.llvm_version }}
+          RELEASE_TARGET: ${{ github.sha }}
         run: |
           cat > release-notes.txt <<EOF
           Pinned LLVM ${LLVM_VERSION} toolchain bundles for Kira contributors.
@@ -249,7 +235,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.txt
           else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.txt
+            gh release create "$RELEASE_TAG" --target "$RELEASE_TARGET" --title "$RELEASE_TAG" --notes-file release-notes.txt
           fi
 
           gh release upload "$RELEASE_TAG" dist/* --clobber
