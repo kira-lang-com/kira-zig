@@ -1,4 +1,5 @@
-func main() {
+@Main
+function main() {
     print("hello from app template");
     return;
 }

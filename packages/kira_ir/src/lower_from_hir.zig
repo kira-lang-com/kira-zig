@@ -29,6 +29,7 @@ fn lowerFunction(allocator: std.mem.Allocator, function_decl: model.Function) !i
                 const reg = try lowerer.lowerExpr(&instructions, node.value);
                 try instructions.append(.{ .print = .{ .src = reg } });
             },
+            .call_stmt => |node| try instructions.append(.{ .call = .{ .callee = node.function_id } }),
             .return_stmt => try instructions.append(.{ .ret_void = {} }),
         }
     }
@@ -38,11 +39,26 @@ fn lowerFunction(allocator: std.mem.Allocator, function_decl: model.Function) !i
     }
 
     return .{
+        .id = function_decl.id,
         .name = function_decl.name,
+        .execution = function_decl.execution,
         .register_count = lowerer.next_register,
         .local_count = @as(u32, @intCast(function_decl.locals.len)),
+        .local_types = try lowerLocalTypes(allocator, function_decl.locals),
         .instructions = try instructions.toOwnedSlice(),
     };
+}
+
+fn lowerLocalTypes(allocator: std.mem.Allocator, locals: []const model.LocalSymbol) ![]ir.ValueType {
+    const lowered = try allocator.alloc(ir.ValueType, locals.len);
+    for (locals, 0..) |local, index| {
+        lowered[index] = switch (local.ty) {
+            .integer => .integer,
+            .string => .string,
+            .void => return error.UnsupportedType,
+        };
+    }
+    return lowered;
 }
 
 const Lowerer = struct {

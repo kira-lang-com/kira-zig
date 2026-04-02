@@ -27,16 +27,32 @@ const Parser = struct {
     }
 
     fn parseFunctionDecl(self: *Parser) anyerror!syntax.ast.FunctionDecl {
-        const func_token = try self.expect(.kw_func, "expected 'func' to start a function");
+        const annotations = try self.parseAnnotations();
+        const function_token = try self.expect(.kw_function, if (annotations.len == 0) "expected 'function' to start a function" else "expected 'function' after annotations");
         const name_token = try self.expect(.identifier, "expected function name");
         _ = try self.expect(.l_paren, "expected '(' after function name");
         _ = try self.expect(.r_paren, "expected ')' after function name");
         const body = try self.parseBlock();
+        const start = if (annotations.len > 0) annotations[0].span.start else function_token.span.start;
         return .{
+            .annotations = annotations,
             .name = name_token.lexeme,
             .body = body,
-            .span = source_pkg.Span.init(func_token.span.start, body.span.end),
+            .span = source_pkg.Span.init(start, body.span.end),
         };
+    }
+
+    fn parseAnnotations(self: *Parser) anyerror![]syntax.ast.Annotation {
+        var annotations = std.array_list.Managed(syntax.ast.Annotation).init(self.allocator);
+        while (self.match(.at_sign)) {
+            const at_token = self.previous();
+            const name_token = try self.expect(.identifier, "expected annotation name after '@'");
+            try annotations.append(.{
+                .name = name_token.lexeme,
+                .span = source_pkg.Span.init(at_token.span.start, name_token.span.end),
+            });
+        }
+        return annotations.toOwnedSlice();
     }
 
     fn parseBlock(self: *Parser) anyerror!syntax.ast.Block {
@@ -195,19 +211,21 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
     };
 }
 
-test "parses main function and let statement" {
+test "parses annotated main function and let statement" {
     const lexer = @import("kira_lexer");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const source = try source_pkg.SourceFile.initOwned(allocator, "test.kira", "func main() { let x = 1 + 2; print(x); return; }");
+    const source = try source_pkg.SourceFile.initOwned(allocator, "test.kira", "@Main\nfunction main() { let x = 1 + 2; print(x); return; }");
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const tokens = try lexer.tokenize(allocator, &source, &diags);
     const program = try parse(allocator, tokens, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
+    try std.testing.expectEqual(@as(usize, 1), program.functions[0].annotations.len);
+    try std.testing.expectEqualStrings("Main", program.functions[0].annotations[0].name);
     try std.testing.expectEqualStrings("main", program.functions[0].name);
     try std.testing.expectEqual(@as(usize, 3), program.functions[0].body.statements.len);
 }

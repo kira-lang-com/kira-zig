@@ -5,7 +5,13 @@ pub const Program = struct {
     functions: []FunctionDecl,
 };
 
+pub const Annotation = struct {
+    name: []const u8,
+    span: Span,
+};
+
 pub const FunctionDecl = struct {
+    annotations: []Annotation,
     name: []const u8,
     body: Block,
     span: Span,
@@ -81,6 +87,10 @@ pub fn dumpProgram(writer: anytype, program: Program) !void {
     try writer.writeAll("Program\n");
     for (program.functions) |function_decl| {
         try writer.print("  Function {s}\n", .{function_decl.name});
+        for (function_decl.annotations) |annotation| {
+            try indent(writer, 2);
+            try writer.print("Annotation @{s}\n", .{annotation.name});
+        }
         try dumpBlock(writer, function_decl.body, 2);
     }
 }

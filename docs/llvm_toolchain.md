@@ -97,6 +97,20 @@ Each archive also has a sibling checksum asset:
 
 That naming convention is enforced by `scripts/llvm/llvm_release.py`, which validates that the metadata and workflow stay in sync.
 
+## Runtime discovery in the repo
+
+The LLVM backend uses an explicit discovery order instead of silently falling back to whatever happens to be on the system:
+
+1. `KIRA_LLVM_HOME`
+2. repo-managed install at `.kira/llvm/current`
+3. repo-managed versioned install at `.kira/llvm/llvm-<version>-<host-key>`
+
+When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout.
+
+If discovery fails, the LLVM backend reports the paths it checked and tells the caller to set `KIRA_LLVM_HOME` or install the repo-managed toolchain. The backend does not silently bind to an arbitrary machine-local LLVM install.
+
+The same discovery path is used by the pure LLVM backend and the native half of hybrid mode.
+
 ## Future Kira consumer
 
 A future `zig build fetch-llvm` command should read `llvm-metadata.toml`, pick the current host key, download the matching release asset from `[llvm].release_tag`, verify the SHA-256, and install the unpacked tree into Kira's cache. That future command should not need hard-coded LLVM versions or ad hoc asset naming logic because the repo metadata already records the contract.

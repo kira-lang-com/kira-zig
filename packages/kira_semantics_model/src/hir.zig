@@ -1,4 +1,5 @@
 const source_pkg = @import("kira_source");
+const runtime_abi = @import("kira_runtime_abi");
 const symbols = @import("symbols.zig");
 const Type = @import("types.zig").Type;
 
@@ -8,7 +9,10 @@ pub const Program = struct {
 };
 
 pub const Function = struct {
+    id: u32,
     name: []const u8,
+    is_main: bool,
+    execution: runtime_abi.FunctionExecution,
     locals: []symbols.LocalSymbol,
     body: []Statement,
     span: source_pkg.Span,
@@ -17,6 +21,7 @@ pub const Function = struct {
 pub const Statement = union(enum) {
     let_stmt: LetStatement,
     print_stmt: PrintStatement,
+    call_stmt: CallStatement,
     return_stmt: ReturnStatement,
 };
 
@@ -28,6 +33,13 @@ pub const LetStatement = struct {
 
 pub const PrintStatement = struct {
     value: *Expr,
+    span: source_pkg.Span,
+};
+
+pub const CallStatement = struct {
+    function_id: u32,
+    name: []const u8,
+    execution: runtime_abi.FunctionExecution,
     span: source_pkg.Span,
 };
 

@@ -1,6 +1,9 @@
 pub const ArtifactKind = enum {
     bytecode,
+    native_object,
+    native_library,
     executable,
+    hybrid_manifest,
     documentation,
 };
 
