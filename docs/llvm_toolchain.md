@@ -70,7 +70,7 @@ There are two publish paths:
 
 Publish runs are stricter than dry runs:
 
-- the Git tag must match `[llvm].release_tag`
+- the published release tag is always `[llvm].release_tag`
 - the generated archive name for each target must match the metadata
 - the generated SHA-256 for each target must match the committed `sha256` value in `llvm-metadata.toml`
 
@@ -80,6 +80,8 @@ When publishing succeeds, the workflow creates or updates the GitHub release for
 
 - each packaged LLVM archive
 - each archive's `.sha256` file
+
+On a tag push, the workflow validates that the pushed tag already matches `[llvm].release_tag`. On `workflow_dispatch` with `publish = true`, the workflow can create that release tag from the current commit automatically if it does not exist yet.
 
 ## Expected asset naming
 
