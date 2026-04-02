@@ -1,0 +1,32 @@
+schema_version = 1
+
+[llvm]
+version = "22.1.2"
+source_tag = "llvmorg-22.1.2"
+release_tag = "llvm-v22.1.2-kira.1"
+
+[build]
+build_type = "Release"
+cmake_generator = "Ninja"
+targets_to_build = "host"
+
+[target.x86_64-windows-msvc]
+runner = "windows-2022"
+platform = "windows"
+archive = "zip"
+asset = "llvm-22.1.2-x86_64-windows-msvc.zip"
+sha256 = ""
+
+[target.x86_64-linux-gnu]
+runner = "ubuntu-24.04"
+platform = "linux"
+archive = "tar.xz"
+asset = "llvm-22.1.2-x86_64-linux-gnu.tar.xz"
+sha256 = ""
+
+[target.aarch64-macos]
+runner = "macos-14"
+platform = "macos"
+archive = "tar.xz"
+asset = "llvm-22.1.2-aarch64-macos.tar.xz"
+sha256 = ""
