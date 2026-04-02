@@ -4,6 +4,7 @@ pub const RuntimeHandle = @import("handles.zig").RuntimeHandle;
 pub const ModuleHandle = @import("handles.zig").ModuleHandle;
 pub const RuntimeSymbol = @import("symbols.zig").RuntimeSymbol;
 pub const CallingConvention = @import("calling.zig").CallingConvention;
+pub const FunctionExecution = @import("calling.zig").FunctionExecution;
 pub const ExecutionMode = @import("calling.zig").ExecutionMode;
 pub const RuntimeModuleId = @import("module_ids.zig").RuntimeModuleId;
 pub const RuntimeSymbolId = @import("module_ids.zig").RuntimeSymbolId;

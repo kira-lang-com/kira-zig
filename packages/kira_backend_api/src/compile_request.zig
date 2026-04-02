@@ -7,8 +7,17 @@ pub const BackendMode = enum {
     hybrid,
 };
 
+pub const NativeEmitOptions = struct {
+    object_path: []const u8,
+    executable_path: ?[]const u8 = null,
+    shared_library_path: ?[]const u8 = null,
+    ir_path: ?[]const u8 = null,
+};
+
 pub const CompileRequest = struct {
     mode: BackendMode,
     program: *const ir.Program,
+    module_name: []const u8,
+    emit: NativeEmitOptions,
     resolved_native_libraries: []const native.ResolvedNativeLibrary = &.{},
 };

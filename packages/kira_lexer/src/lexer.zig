@@ -10,6 +10,10 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
         const byte = source.text[index];
         switch (byte) {
             ' ', '\t', '\r', '\n' => index += 1,
+            '@' => {
+                try tokens.append(makeToken(.at_sign, source.text[index .. index + 1], index, index + 1));
+                index += 1;
+            },
             '(' => {
                 try tokens.append(makeToken(.l_paren, source.text[index .. index + 1], index, index + 1));
                 index += 1;
@@ -87,7 +91,7 @@ fn isIdentifierContinue(byte: u8) bool {
 }
 
 fn keywordKind(lexeme: []const u8) syntax.TokenKind {
-    if (std.mem.eql(u8, lexeme, "func")) return .kw_func;
+    if (std.mem.eql(u8, lexeme, "function")) return .kw_function;
     if (std.mem.eql(u8, lexeme, "let")) return .kw_let;
     if (std.mem.eql(u8, lexeme, "return")) return .kw_return;
     return .identifier;
@@ -106,13 +110,15 @@ test "tokenizes bootstrap grammar" {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const source = try source_pkg.SourceFile.initOwned(allocator, "test.kira", "func main() { let x = 1 + 2; return; }");
+    const source = try source_pkg.SourceFile.initOwned(allocator, "test.kira", "@Main\nfunction main() { let x = 1 + 2; return; }");
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const tokens = try tokenize(allocator, &source, &diags);
 
-    try std.testing.expectEqual(@as(usize, 15), tokens.len);
-    try std.testing.expectEqual(syntax.TokenKind.kw_func, tokens[0].kind);
+    try std.testing.expectEqual(@as(usize, 18), tokens.len);
+    try std.testing.expectEqual(syntax.TokenKind.at_sign, tokens[0].kind);
     try std.testing.expectEqual(syntax.TokenKind.identifier, tokens[1].kind);
-    try std.testing.expectEqualStrings("main", tokens[1].lexeme);
-    try std.testing.expectEqual(syntax.TokenKind.plus, tokens[9].kind);
+    try std.testing.expectEqualStrings("Main", tokens[1].lexeme);
+    try std.testing.expectEqual(syntax.TokenKind.kw_function, tokens[2].kind);
+    try std.testing.expectEqualStrings("main", tokens[3].lexeme);
+    try std.testing.expectEqual(syntax.TokenKind.plus, tokens[12].kind);
 }
