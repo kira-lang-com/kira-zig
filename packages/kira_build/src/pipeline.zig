@@ -7,24 +7,41 @@ const semantics = @import("kira_semantics");
 const ir = @import("kira_ir");
 const bytecode = @import("kira_bytecode");
 
+pub const FrontendPipelineResult = struct {
+    source: source_pkg.SourceFile,
+    diagnostics: []const diagnostics.Diagnostic,
+    ir_program: ir.Program,
+};
+
 pub const VmPipelineResult = struct {
     source: source_pkg.SourceFile,
     diagnostics: []const diagnostics.Diagnostic,
+    ir_program: ir.Program,
     bytecode_module: bytecode.Module,
 };
 
-pub fn compileFileToBytecode(allocator: std.mem.Allocator, path: []const u8) !VmPipelineResult {
+pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !FrontendPipelineResult {
     const source = try source_pkg.SourceFile.fromPath(allocator, path);
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const tokens = try lexer.tokenize(allocator, &source, &diags);
     const ast = try parser.parse(allocator, tokens, &diags);
     const hir = try semantics.analyze(allocator, ast, &diags);
     const ir_program = try ir.lowerProgram(allocator, hir);
-    const module = try bytecode.compileProgram(allocator, ir_program);
 
     return .{
         .source = source,
         .diagnostics = try diags.toOwnedSlice(),
+        .ir_program = ir_program,
+    };
+}
+
+pub fn compileFileToBytecode(allocator: std.mem.Allocator, path: []const u8) !VmPipelineResult {
+    const frontend = try compileFileToIr(allocator, path);
+    const module = try bytecode.compileProgram(allocator, frontend.ir_program, .vm);
+    return .{
+        .source = frontend.source,
+        .diagnostics = frontend.diagnostics,
+        .ir_program = frontend.ir_program,
         .bytecode_module = module,
     };
 }

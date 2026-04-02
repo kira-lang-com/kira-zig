@@ -3,7 +3,7 @@ const instruction = @import("instruction.zig");
 
 pub const Module = struct {
     functions: []Function,
-    entry_index: usize,
+    entry_function_id: ?u32,
 
     pub fn writeToFile(self: Module, path: []const u8) !void {
         const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
@@ -18,9 +18,17 @@ pub const Module = struct {
         const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
         return deserialize(allocator, bytes);
     }
+
+    pub fn findFunctionById(self: Module, function_id: u32) ?Function {
+        for (self.functions) |function_decl| {
+            if (function_decl.id == function_id) return function_decl;
+        }
+        return null;
+    }
 };
 
 pub const Function = struct {
+    id: u32,
     name: []const u8,
     register_count: u32,
     local_count: u32,
@@ -30,9 +38,10 @@ pub const Function = struct {
 pub fn serialize(writer: anytype, module: Module) !void {
     try writer.writeAll("KBC0");
     try writer.writeInt(u32, @as(u32, @intCast(module.functions.len)), .little);
-    try writer.writeInt(u32, @as(u32, @intCast(module.entry_index)), .little);
+    try writer.writeInt(i32, if (module.entry_function_id) |value| @as(i32, @intCast(value)) else -1, .little);
 
     for (module.functions) |function_decl| {
+        try writer.writeInt(u32, function_decl.id, .little);
         try writeString(writer, function_decl.name);
         try writer.writeInt(u32, function_decl.register_count, .little);
         try writer.writeInt(u32, function_decl.local_count, .little);
@@ -62,6 +71,8 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.local, .little);
                 },
                 .print => |value| try writer.writeInt(u32, value.src, .little),
+                .call_runtime => |value| try writer.writeInt(u32, value.function_id, .little),
+                .call_native => |value| try writer.writeInt(u32, value.function_id, .little),
                 .ret_void => {},
             }
         }
@@ -77,10 +88,11 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     if (!std.mem.eql(u8, &magic, "KBC0")) return error.InvalidBytecode;
 
     const function_count = try reader.readInt(u32, .little);
-    const entry_index = try reader.readInt(u32, .little);
+    const raw_entry = try reader.readInt(i32, .little);
     var functions = std.array_list.Managed(Function).init(allocator);
 
     for (0..function_count) |_| {
+        const function_id = try reader.readInt(u32, .little);
         const name = try readString(allocator, reader);
         const register_count = try reader.readInt(u32, .little);
         const local_count = try reader.readInt(u32, .little);
@@ -114,10 +126,17 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .print => try instructions.append(.{ .print = .{
                     .src = try reader.readInt(u32, .little),
                 } }),
+                .call_runtime => try instructions.append(.{ .call_runtime = .{
+                    .function_id = try reader.readInt(u32, .little),
+                } }),
+                .call_native => try instructions.append(.{ .call_native = .{
+                    .function_id = try reader.readInt(u32, .little),
+                } }),
                 .ret_void => try instructions.append(.{ .ret_void = {} }),
             }
         }
         try functions.append(.{
+            .id = function_id,
             .name = name,
             .register_count = register_count,
             .local_count = local_count,
@@ -127,7 +146,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
 
     return .{
         .functions = try functions.toOwnedSlice(),
-        .entry_index = entry_index,
+        .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
     };
 }
 

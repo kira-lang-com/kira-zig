@@ -1,5 +1,9 @@
 pub const BuildSystem = @import("build_system.zig").BuildSystem;
+pub const executableExtension = @import("build_system.zig").executableExtension;
+pub const sharedLibraryExtension = @import("build_system.zig").sharedLibraryExtension;
+pub const FrontendPipelineResult = @import("pipeline.zig").FrontendPipelineResult;
 pub const VmPipelineResult = @import("pipeline.zig").VmPipelineResult;
+pub const compileFileToIr = @import("pipeline.zig").compileFileToIr;
 pub const compileFileToBytecode = @import("pipeline.zig").compileFileToBytecode;
 pub const lexFile = @import("pipeline.zig").lexFile;
 pub const parseFile = @import("pipeline.zig").parseFile;

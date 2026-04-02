@@ -1,10 +1,16 @@
 pub const ArtifactKind = enum {
     bytecode,
     native_object,
+    native_library,
+    executable,
     hybrid_bundle,
 };
 
-pub const CompileResult = struct {
+pub const Artifact = struct {
     kind: ArtifactKind,
-    artifact_bytes: []const u8,
+    path: []const u8,
+};
+
+pub const CompileResult = struct {
+    artifacts: []const Artifact,
 };

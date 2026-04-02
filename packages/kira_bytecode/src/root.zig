@@ -4,5 +4,6 @@ pub const Function = bytecode.Function;
 pub const Instruction = @import("instruction.zig").Instruction;
 pub const OpCode = @import("instruction.zig").OpCode;
 pub const compileProgram = @import("compiler.zig").compileProgram;
+pub const CompileMode = @import("compiler.zig").CompileMode;
 pub const serialize = bytecode.serialize;
 pub const deserialize = bytecode.deserialize;

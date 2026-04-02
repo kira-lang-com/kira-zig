@@ -55,12 +55,13 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         \\kira <command> [args]
-        \\  run <file.kira>
+        \\  run [--backend vm|llvm|hybrid] <file.kira>
         \\  tokens <file.kira>
         \\  ast <file.kira>
         \\  check <file.kira>
-        \\  build <file.kira>
+        \\  build [--backend vm|llvm|hybrid] <file.kira>
         \\  new <Name> <destination>
+        \\  entrypoint syntax: @Main [@Runtime|@Native] function main() { ... }
         \\
     );
 }

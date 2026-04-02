@@ -1,5 +1,6 @@
-const native = @import("kira_native_lib_definition");
+const std = @import("std");
+const trampoline = @import("trampoline.zig");
 
-pub fn resolveSymbol(_: native.ResolvedNativeLibrary, _: []const u8) !usize {
-    return error.NotImplemented;
+pub fn resolveSymbol(library: *std.DynLib, symbol_name: [:0]const u8) !trampoline.NativeTrampolineFn {
+    return library.lookup(trampoline.NativeTrampolineFn, symbol_name) orelse error.MissingNativeSymbol;
 }

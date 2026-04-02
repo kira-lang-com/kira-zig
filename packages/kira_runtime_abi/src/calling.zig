@@ -4,6 +4,12 @@ pub const CallingConvention = enum {
     kira_hybrid,
 };
 
+pub const FunctionExecution = enum {
+    inherited,
+    runtime,
+    native,
+};
+
 pub const ExecutionMode = enum {
     vm,
     llvm_native,
