@@ -1,6 +1,6 @@
 # LLVM Toolchain Releases
 
-Kira ships pinned LLVM bundles so contributors do not need to build LLVM themselves as the default path. The repo records exactly which LLVM version Kira expects, which release tag owns those bundles, and which archive name and checksum belongs to each supported host platform.
+Kira ships pinned LLVM bundles so contributors do not need to build LLVM themselves as the default path. The repo records exactly which LLVM version Kira expects, which release tag owns those bundles, and which archive name belongs to each supported host platform.
 
 ## Why Kira ships LLVM bundles
 
@@ -17,7 +17,6 @@ Kira ships pinned LLVM bundles so contributors do not need to build LLVM themsel
 - the Kira-controlled Git tag and GitHub release tag that owns the published bundles
 - the supported host targets
 - the exact archive filename per target
-- the expected SHA-256 checksum per target
 
 The workflow never invents release asset names on its own. It reads the metadata, builds that target matrix, and packages archives with names that must match the metadata exactly.
 
@@ -51,15 +50,11 @@ The main workflow lives at `.github/workflows/release-llvm-toolchains.yml`.
 
 ### Dry run
 
-Use `workflow_dispatch` with `publish = false` to build the bundles and upload workflow artifacts for inspection. This is the normal way to generate fresh checksum values when bumping LLVM or changing packaging behavior.
+Use `workflow_dispatch` with `publish = false` to build the bundles and upload workflow artifacts for inspection.
 
 Each matrix job uploads:
 
 - the packaged archive
-- the matching `.sha256` file
-- a small checksum log
-
-If `llvm-metadata.toml` still has empty checksum fields, the job prints the generated checksum values so a maintainer can update the metadata intentionally in a follow-up commit.
 
 ### Publishing
 
@@ -68,18 +63,14 @@ There are two publish paths:
 - push a tag that matches `llvm-v*-kira.*`
 - run `workflow_dispatch` with `publish = true`
 
-Publish runs are stricter than dry runs:
+Publish runs still keep the release metadata-driven:
 
 - the published release tag is always `[llvm].release_tag`
 - the generated archive name for each target must match the metadata
-- the generated SHA-256 for each target must match the committed `sha256` value in `llvm-metadata.toml`
-
-If checksums are missing or stale, publishing fails on purpose. That keeps the metadata file as the source of truth instead of letting CI silently rewrite repo state.
 
 When publishing succeeds, the workflow creates or updates the GitHub release for `[llvm].release_tag` and uploads:
 
 - each packaged LLVM archive
-- each archive's `.sha256` file
 
 On a tag push, the workflow validates that the pushed tag already matches `[llvm].release_tag`. On `workflow_dispatch` with `publish = true`, the workflow can create that release tag from the current commit automatically if it does not exist yet.
 
@@ -90,10 +81,6 @@ Asset names are deterministic and versioned:
 - `llvm-22.1.2-x86_64-windows-msvc.zip`
 - `llvm-22.1.2-x86_64-linux-gnu.tar.xz`
 - `llvm-22.1.2-aarch64-macos.tar.xz`
-
-Each archive also has a sibling checksum asset:
-
-- `llvm-22.1.2-x86_64-linux-gnu.tar.xz.sha256`
 
 That naming convention is enforced by `scripts/llvm/llvm_release.py`, which validates that the metadata and workflow stay in sync.
 
@@ -113,4 +100,4 @@ The same discovery path is used by the pure LLVM backend and the native half of 
 
 ## Future Kira consumer
 
-A future `zig build fetch-llvm` command should read `llvm-metadata.toml`, pick the current host key, download the matching release asset from `[llvm].release_tag`, verify the SHA-256, and install the unpacked tree into Kira's cache. That future command should not need hard-coded LLVM versions or ad hoc asset naming logic because the repo metadata already records the contract.
+A future `zig build fetch-llvm` command should read `llvm-metadata.toml`, pick the current host key, download the matching release asset from `[llvm].release_tag`, and install the unpacked tree into Kira's cache. That future command should not need hard-coded LLVM versions or ad hoc asset naming logic because the repo metadata already records the contract.

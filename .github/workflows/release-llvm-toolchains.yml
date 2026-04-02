@@ -8,11 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-      verify_checksums:
-        description: "Fail the build if llvm-metadata.toml checksums are missing or stale"
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "llvm-v*-kira.*"
@@ -39,7 +34,6 @@ jobs:
       cmake_generator: ${{ steps.metadata.outputs.cmake_generator }}
       targets_to_build: ${{ steps.metadata.outputs.targets_to_build }}
       publish: ${{ steps.metadata.outputs.publish }}
-      enforce_checksums: ${{ steps.metadata.outputs.enforce_checksums }}
     steps:
       - name: Check out Kira
         uses: actions/checkout@v4
@@ -65,8 +59,7 @@ jobs:
             --output "$GITHUB_OUTPUT" \
             --event-name "${{ github.event_name }}" \
             --ref-name "${{ github.ref_name }}" \
-            --publish-input "${{ inputs.publish || 'false' }}" \
-            --verify-input "${{ inputs.verify_checksums || 'false' }}"
+            --publish-input "${{ inputs.publish || 'false' }}"
 
   build:
     name: Build ${{ matrix.target_key }}
@@ -146,56 +139,12 @@ jobs:
             -ArchiveFormat "${{ matrix.archive }}"
           "ARCHIVE_PATH=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
 
-      - name: Write checksum file (Unix)
-        if: ${{ matrix.platform != 'windows' }}
-        shell: bash
-        run: |
-          verify_flag=""
-          if [[ "${{ needs.validate.outputs.enforce_checksums }}" == "true" ]]; then
-            verify_flag="--verify"
-          fi
-
-          python scripts/llvm/llvm_release.py checksum \
-            --metadata llvm-metadata.toml \
-            --target "${{ matrix.target_key }}" \
-            --artifact "$ARCHIVE_PATH" \
-            --output "$ARCHIVE_PATH.sha256" \
-            $verify_flag | tee "$RUNNER_TEMP/llvm-dist/${{ matrix.target_key }}.checksum.log"
-          printf 'CHECKSUM_LOG_PATH=%s\n' "$RUNNER_TEMP/llvm-dist/${{ matrix.target_key }}.checksum.log" >> "$GITHUB_ENV"
-
-      - name: Write checksum file (Windows)
-        if: ${{ matrix.platform == 'windows' }}
-        shell: pwsh
-        run: |
-          $verifyArgs = @()
-          if ("${{ needs.validate.outputs.enforce_checksums }}" -eq "true") {
-            $verifyArgs += "--verify"
-          }
-
-          $logPath = Join-Path $env:RUNNER_TEMP "llvm-dist\${{ matrix.target_key }}.checksum.log"
-          $command = @(
-            "scripts/llvm/llvm_release.py",
-            "checksum",
-            "--metadata", "llvm-metadata.toml",
-            "--target", "${{ matrix.target_key }}",
-            "--artifact", $env:ARCHIVE_PATH,
-            "--output", "$env:ARCHIVE_PATH.sha256"
-          ) + $verifyArgs
-
-          & python @command 2>&1 | Tee-Object -FilePath $logPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Checksum generation failed."
-          }
-          "CHECKSUM_LOG_PATH=$logPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: llvm-bundle-${{ matrix.target_key }}
           path: |
             ${{ env.ARCHIVE_PATH }}
-            ${{ env.ARCHIVE_PATH }}.sha256
-            ${{ env.CHECKSUM_LOG_PATH }}
           if-no-files-found: error
 
   publish:
@@ -229,7 +178,7 @@ jobs:
           Pinned LLVM ${LLVM_VERSION} toolchain bundles for Kira contributors.
 
           Source of truth: llvm-metadata.toml in the tagged Kira commit.
-          Each archive name matches the metadata exactly, and each archive has a sibling .sha256 asset.
+          Each archive name matches the metadata exactly.
           EOF
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

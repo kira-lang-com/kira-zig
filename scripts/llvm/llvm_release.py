@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -76,8 +75,6 @@ def load_metadata(path: Path) -> dict:
         platform = require_string(target_data, "platform", f"[target.{target_key}]")
         archive = require_string(target_data, "archive", f"[target.{target_key}]")
         asset = require_string(target_data, "asset", f"[target.{target_key}]")
-        sha256 = require_string(target_data, "sha256", f"[target.{target_key}]")
-
         if platform not in VALID_PLATFORMS:
             fail(
                 f"[target.{target_key}].platform must be one of {sorted(VALID_PLATFORMS)}"
@@ -105,7 +102,6 @@ def load_metadata(path: Path) -> dict:
             "platform": platform,
             "archive": archive,
             "asset": asset,
-            "sha256": sha256,
         }
 
     return {
@@ -216,24 +212,15 @@ def build_matrix(metadata: dict) -> dict:
     return {"include": include}
 
 
-def compute_publish_mode(event_name: str, ref_name: str, publish_input: str, verify_input: str) -> tuple[bool, bool]:
+def compute_publish_mode(event_name: str, ref_name: str, publish_input: str) -> bool:
     is_release_tag = event_name == "push" and ref_name.startswith("llvm-v")
     publish = is_release_tag or publish_input.lower() == "true"
-    enforce_checksums = publish or verify_input.lower() == "true"
-    return publish, enforce_checksums
+    return publish
 
 
 def write_github_output(path: Path, key: str, value: str) -> None:
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(f"{key}<<__KIRA_LLVM__\n{value}\n__KIRA_LLVM__\n")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -267,11 +254,10 @@ def cmd_github_outputs(args: argparse.Namespace) -> int:
                 f"Git tag {args.ref_name!r} does not match llvm-metadata.toml release tag {expected!r}"
             )
 
-    publish, enforce_checksums = compute_publish_mode(
+    publish = compute_publish_mode(
         args.event_name,
         args.ref_name,
         args.publish_input,
-        args.verify_input,
     )
 
     output_path = Path(args.output)
@@ -283,47 +269,6 @@ def cmd_github_outputs(args: argparse.Namespace) -> int:
     write_github_output(output_path, "cmake_generator", metadata["build"]["cmake_generator"])
     write_github_output(output_path, "targets_to_build", metadata["build"]["targets_to_build"])
     write_github_output(output_path, "publish", "true" if publish else "false")
-    write_github_output(
-        output_path,
-        "enforce_checksums",
-        "true" if enforce_checksums else "false",
-    )
-    return 0
-
-
-def cmd_checksum(args: argparse.Namespace) -> int:
-    metadata = load_metadata(Path(args.metadata))
-    target = metadata["targets"].get(args.target)
-    if target is None:
-        fail(f"Unknown target key {args.target!r}")
-
-    artifact_path = Path(args.artifact)
-    if not artifact_path.is_file():
-        fail(f"Artifact not found: {artifact_path}")
-
-    digest = sha256_file(artifact_path)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(f"{digest}  {artifact_path.name}\n", encoding="utf-8", newline="\n")
-
-    expected = target["sha256"].strip().lower()
-    if args.verify:
-        if not expected:
-            fail(
-                f"[target.{args.target}].sha256 is empty. Generated checksum: {digest}\n"
-                f"Update llvm-metadata.toml with sha256 = \"{digest}\" before publishing."
-            )
-        if digest != expected:
-            fail(
-                f"Checksum mismatch for {args.target}: metadata has {expected}, generated {digest}"
-            )
-
-    print(f"{artifact_path.name}: {digest}")
-    if not expected:
-        print(
-            f"llvm-metadata.toml still needs [target.{args.target}].sha256 = \"{digest}\"",
-            file=sys.stderr,
-        )
     return 0
 
 
@@ -349,19 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     outputs.add_argument("--event-name", default="")
     outputs.add_argument("--ref-name", default="")
     outputs.add_argument("--publish-input", default="false")
-    outputs.add_argument("--verify-input", default="false")
     outputs.set_defaults(func=cmd_github_outputs)
-
-    checksum = subparsers.add_parser(
-        "checksum",
-        help="Write a .sha256 file for a packaged bundle and optionally verify metadata",
-    )
-    checksum.add_argument("--metadata", required=True)
-    checksum.add_argument("--target", required=True)
-    checksum.add_argument("--artifact", required=True)
-    checksum.add_argument("--output", required=True)
-    checksum.add_argument("--verify", action="store_true")
-    checksum.set_defaults(func=cmd_checksum)
 
     return parser
 
