@@ -24,12 +24,24 @@ pub const LineMap = struct {
     }
 
     pub fn lineColumn(self: LineMap, offset: usize) LineColumn {
-        var line_index: usize = 0;
-        while (line_index + 1 < self.line_starts.len and self.line_starts[line_index + 1] <= offset) : (line_index += 1) {}
+        const line_index = self.lineIndex(offset);
         const line_start = self.line_starts[line_index];
         return .{
             .line = line_index + 1,
             .column = offset - line_start + 1,
         };
+    }
+
+    pub fn lineIndex(self: LineMap, offset: usize) usize {
+        var line_index: usize = 0;
+        while (line_index + 1 < self.line_starts.len and self.line_starts[line_index + 1] <= offset) : (line_index += 1) {}
+        return line_index;
+    }
+
+    pub fn lineBounds(self: LineMap, line_index: usize, text: []const u8) struct { start: usize, end: usize } {
+        const start = self.line_starts[line_index];
+        const raw_end = if (line_index + 1 < self.line_starts.len) self.line_starts[line_index + 1] else text.len;
+        const end = if (raw_end > start and text[raw_end - 1] == '\n') raw_end - 1 else raw_end;
+        return .{ .start = start, .end = end };
     }
 };

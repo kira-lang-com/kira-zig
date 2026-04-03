@@ -10,3 +10,19 @@ pub const Label = struct {
     span: Span,
     message: []const u8,
 };
+
+pub fn primary(span: Span, message: []const u8) Label {
+    return .{
+        .kind = .primary,
+        .span = span,
+        .message = message,
+    };
+}
+
+pub fn secondary(span: Span, message: []const u8) Label {
+    return .{
+        .kind = .secondary,
+        .span = span,
+        .message = message,
+    };
+}

@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("kira_llvm_build_options");
+const kira_toolchain = @import("kira_toolchain");
+const toolchain_layout = @import("toolchain_layout.zig");
 
 pub const InitSymbols = struct {
     target_info: [:0]const u8,
@@ -27,19 +29,40 @@ pub const Toolchain = struct {
             std.debug.print("KIRA_LLVM_HOME was set to '{s}', but no usable LLVM-C runtime was found there.\n", .{env_home});
         } else |_| {}
 
-        const repo_current = try std.fs.path.join(allocator, &.{ build_options.repo_root, ".kira", "llvm", "current" });
-        try checked.append(repo_current);
-        if (try fromHome(allocator, repo_current)) |tc| return tc;
+        if (build_options.llvm_version.len > 0 and !std.mem.eql(u8, build_options.llvm_host_key, "unsupported-host")) {
+            const managed_home = try kira_toolchain.managedLlvmHome(
+                allocator,
+                build_options.llvm_version,
+                build_options.llvm_host_key,
+            );
+            try checked.append(managed_home);
+            if (try fromHome(allocator, managed_home)) |tc| return tc;
+        }
 
         if (build_options.llvm_version.len > 0 and !std.mem.eql(u8, build_options.llvm_host_key, "unsupported-host")) {
-            const versioned_dir = try std.fmt.allocPrint(
+            const managed_home = try toolchain_layout.managedLlvmHome(
                 allocator,
-                "llvm-{s}-{s}",
-                .{ build_options.llvm_version, build_options.llvm_host_key },
+                build_options.repo_root,
+                build_options.llvm_version,
+                build_options.llvm_host_key,
             );
-            const repo_versioned = try std.fs.path.join(allocator, &.{ build_options.repo_root, ".kira", "llvm", versioned_dir });
-            try checked.append(repo_versioned);
-            if (try fromHome(allocator, repo_versioned)) |tc| return tc;
+            try checked.append(managed_home);
+            if (try fromHome(allocator, managed_home)) |tc| return tc;
+        }
+
+        const legacy_current = try toolchain_layout.legacyLlvmCurrentHome(allocator, build_options.repo_root);
+        try checked.append(legacy_current);
+        if (try fromHome(allocator, legacy_current)) |tc| return tc;
+
+        if (build_options.llvm_version.len > 0 and !std.mem.eql(u8, build_options.llvm_host_key, "unsupported-host")) {
+            const legacy_versioned = try toolchain_layout.legacyLlvmVersionedHome(
+                allocator,
+                build_options.repo_root,
+                build_options.llvm_version,
+                build_options.llvm_host_key,
+            );
+            try checked.append(legacy_versioned);
+            if (try fromHome(allocator, legacy_versioned)) |tc| return tc;
         }
 
         std.debug.print("LLVM toolchain unavailable. Checked:\n", .{});
@@ -47,8 +70,8 @@ pub const Toolchain = struct {
             std.debug.print("  - {s}\n", .{path});
         }
         std.debug.print(
-            "Set KIRA_LLVM_HOME to an LLVM install tree or install a repo-managed toolchain under {s}\\.kira\\llvm\\current.\n",
-            .{build_options.repo_root},
+            "Set KIRA_LLVM_HOME or run `kira-bootstrapper fetch-llvm` to install the pinned LLVM toolchain.\n",
+            .{},
         );
         return error.LlvmToolchainUnavailable;
     }

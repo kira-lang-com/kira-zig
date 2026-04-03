@@ -3,23 +3,29 @@ const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const hybrid_runtime = @import("kira_hybrid_runtime");
 const vm_runtime = @import("kira_vm_runtime");
-const diagnostics = @import("kira_diagnostics");
+const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
 
+    try support.logFrontendStarted(stderr, "run", parsed.source_path);
     var system = build.BuildSystem.init(allocator);
     switch (parsed.backend) {
         .vm => {
-            const result = system.compileVm(parsed.source_path) catch |err| {
-                try stderr.print("run failed: {s}\n", .{@errorName(err)});
-                return err;
-            };
-            if (result.diagnostics.len > 0) {
-                try diagnostics.renderer.renderAll(stderr, &result.source, result.diagnostics);
+            const result = try system.compileVm(parsed.source_path);
+            if (result.failed()) {
+                if (result.failure_stage == .ir) {
+                    try support.logBuildAborted(stderr, "run", .build, parsed.source_path);
+                } else {
+                    try support.logFrontendFailed(stderr, result.failure_stage, parsed.source_path, result.diagnostics.len);
+                }
+                try support.renderDiagnostics(stderr, &result.source, result.diagnostics);
+                return error.CommandFailed;
             }
+
             var vm = vm_runtime.Vm.init(allocator);
-            try vm.runMain(&result.bytecode_module, stdout);
+            const module = result.bytecode_module.?;
+            try vm.runMain(&module, stdout);
         },
         .llvm_native => {
             try std.fs.cwd().makePath("generated");
@@ -33,6 +39,14 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
                 .output_path = executable_path,
                 .target = .{ .execution = .llvm_native },
             });
+            if (result.failed()) {
+                try support.logBuildAborted(stderr, "run", result.failure_kind.?, parsed.source_path);
+                if (result.source) |source| {
+                    try support.renderDiagnostics(stderr, &source, result.diagnostics);
+                }
+                return error.CommandFailed;
+            }
+
             const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
             try runExecutable(allocator, executable.path);
         },
@@ -43,11 +57,19 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
                 "generated/{s}.run.khm",
                 .{std.fs.path.stem(parsed.source_path)},
             );
-            _ = try system.buildHybridArtifact(.{
+            const result = try system.buildHybridArtifact(.{
                 .source_path = parsed.source_path,
                 .output_path = manifest_path,
                 .target = .{ .execution = .hybrid },
             });
+            if (result.failed()) {
+                try support.logBuildAborted(stderr, "run", result.failure_kind.?, parsed.source_path);
+                if (result.source) |source| {
+                    try support.renderDiagnostics(stderr, &source, result.diagnostics);
+                }
+                return error.CommandFailed;
+            }
+
             const manifest = try hybrid_runtime.loadHybridModule(allocator, manifest_path);
             var runtime = try hybrid_runtime.HybridRuntime.init(allocator, manifest);
             defer runtime.deinit();

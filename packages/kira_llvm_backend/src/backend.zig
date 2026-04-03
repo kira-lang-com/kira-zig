@@ -76,7 +76,6 @@ fn createTargetMachine(allocator: std.mem.Allocator, api: *const llvm.Api, tripl
     var target_error: [*c]u8 = null;
     if (api.LLVMGetTargetFromTriple(triple_z.ptr, &target_ref, &target_error) != 0) {
         defer if (target_error != null) api.LLVMDisposeMessage(target_error);
-        if (target_error != null) std.debug.print("{s}\n", .{std.mem.span(target_error)});
         return error.TargetLookupFailed;
     }
 
@@ -401,7 +400,6 @@ fn verifyModule(api: *const llvm.Api, module_ref: llvm.c.LLVMModuleRef) !void {
     var error_message: [*c]u8 = null;
     if (api.LLVMVerifyModule(module_ref, llvm.c.LLVMReturnStatusAction, &error_message) != 0) {
         defer if (error_message != null) api.LLVMDisposeMessage(error_message);
-        if (error_message != null) std.debug.print("{s}\n", .{std.mem.span(error_message)});
         return error.InvalidLlvmModule;
     }
 }
@@ -417,7 +415,6 @@ fn emitObjectFile(
     var error_message: [*c]u8 = null;
     if (api.LLVMTargetMachineEmitToFile(machine, module_ref, object_path_z.ptr, llvm.c.LLVMObjectFile, &error_message) != 0) {
         defer if (error_message != null) api.LLVMDisposeMessage(error_message);
-        if (error_message != null) std.debug.print("{s}\n", .{std.mem.span(error_message)});
         return error.ObjectEmissionFailed;
     }
 }

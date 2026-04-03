@@ -1,7 +1,15 @@
 pub const BuildSystem = @import("build_system.zig").BuildSystem;
+pub const BuildArtifactOutcome = @import("build_system.zig").BuildArtifactOutcome;
+pub const BuildFailureKind = @import("build_system.zig").BuildFailureKind;
+pub const LlvmMetadata = @import("llvm_metadata.zig").Metadata;
 pub const executableExtension = @import("build_system.zig").executableExtension;
+pub const fetchLlvm = @import("fetch_llvm.zig").run;
 pub const sharedLibraryExtension = @import("build_system.zig").sharedLibraryExtension;
+pub const CheckPipelineResult = @import("pipeline.zig").CheckPipelineResult;
+pub const FrontendStage = @import("pipeline.zig").FrontendStage;
 pub const FrontendPipelineResult = @import("pipeline.zig").FrontendPipelineResult;
+pub const LexPipelineResult = @import("pipeline.zig").LexPipelineResult;
+pub const ParsePipelineResult = @import("pipeline.zig").ParsePipelineResult;
 pub const VmPipelineResult = @import("pipeline.zig").VmPipelineResult;
 pub const compileFileToIr = @import("pipeline.zig").compileFileToIr;
 pub const compileFileToBytecode = @import("pipeline.zig").compileFileToBytecode;

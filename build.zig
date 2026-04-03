@@ -1,4 +1,10 @@
 const std = @import("std");
+const kira_toolchain = @import("packages/kira_toolchain/src/root.zig");
+const llvm_metadata = @import("packages/kira_build/src/llvm_metadata.zig");
+const toolchain_layout = @import("packages/kira_llvm_backend/src/toolchain_layout.zig");
+const kirac_version = "0.1.0";
+const kira_primary_executable = "kirac";
+const kira_bootstrapper_name = "kira-bootstrapper";
 
 const Package = struct {
     name: []const u8,
@@ -8,6 +14,7 @@ const Package = struct {
 
 const packages = [_]Package{
     .{ .name = "kira_core", .path = "packages/kira_core/src/root.zig", .imports = &.{} },
+    .{ .name = "kira_toolchain", .path = "packages/kira_toolchain/src/root.zig", .imports = &.{} },
     .{ .name = "kira_source", .path = "packages/kira_source/src/root.zig", .imports = &.{"kira_core"} },
     .{ .name = "kira_diagnostics", .path = "packages/kira_diagnostics/src/root.zig", .imports = &.{ "kira_core", "kira_source" } },
     .{ .name = "kira_log", .path = "packages/kira_log/src/root.zig", .imports = &.{"kira_core"} },
@@ -16,7 +23,7 @@ const packages = [_]Package{
     .{ .name = "kira_lexer", .path = "packages/kira_lexer/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_syntax_model", "kira_diagnostics" } },
     .{ .name = "kira_parser", .path = "packages/kira_parser/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_syntax_model", "kira_lexer", "kira_diagnostics" } },
     .{ .name = "kira_semantics_model", .path = "packages/kira_semantics_model/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_syntax_model", "kira_runtime_abi" } },
-    .{ .name = "kira_semantics", .path = "packages/kira_semantics/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_syntax_model", "kira_diagnostics", "kira_semantics_model", "kira_runtime_abi" } },
+    .{ .name = "kira_semantics", .path = "packages/kira_semantics/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_syntax_model", "kira_diagnostics", "kira_semantics_model", "kira_runtime_abi", "kira_lexer", "kira_parser" } },
     .{ .name = "kira_ir", .path = "packages/kira_ir/src/root.zig", .imports = &.{ "kira_core", "kira_semantics_model", "kira_runtime_abi" } },
     .{ .name = "kira_hybrid_definition", .path = "packages/kira_hybrid_definition/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi" } },
     .{ .name = "kira_native_lib_definition", .path = "packages/kira_native_lib_definition/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi" } },
@@ -25,16 +32,16 @@ const packages = [_]Package{
     .{ .name = "kira_vm_runtime", .path = "packages/kira_vm_runtime/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_bytecode" } },
     .{ .name = "kira_native_bridge", .path = "packages/kira_native_bridge/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_native_lib_definition" } },
     .{ .name = "kira_hybrid_runtime", .path = "packages/kira_hybrid_runtime/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_native_bridge", "kira_vm_runtime", "kira_bytecode" } },
-    .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi" } },
+    .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi", "kira_toolchain" } },
     .{ .name = "kira_manifest", .path = "packages/kira_manifest/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
     .{ .name = "kira_project", .path = "packages/kira_project/src/root.zig", .imports = &.{ "kira_core", "kira_manifest" } },
     .{ .name = "kira_build_definition", .path = "packages/kira_build_definition/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
-    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_llvm_backend" } },
+    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_llvm_backend", "kira_toolchain" } },
     .{ .name = "kira_linter", .path = "packages/kira_linter/src/root.zig", .imports = &.{ "kira_core", "kira_diagnostics", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_doc", .path = "packages/kira_doc/src/root.zig", .imports = &.{ "kira_core", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_app_generation", .path = "packages/kira_app_generation/src/root.zig", .imports = &.{"kira_core"} },
     .{ .name = "kira_main", .path = "packages/kira_main/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_bytecode", "kira_vm_runtime", "kira_native_bridge", "kira_hybrid_runtime" } },
-    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_app_generation" } },
+    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_app_generation", "kira_log", "kira_toolchain" } },
 };
 
 fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMap(*std.Build.Module), names: []const []const u8) void {
@@ -46,9 +53,12 @@ fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMap(*std
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const channel = channelForOptimize(optimize);
     const repo_root = b.pathFromRoot("");
-    const llvm_version = readLlvmVersion(b.allocator, repo_root) catch "";
-    const llvm_host_key = hostLlvmBundleKey(b.graph.host.result);
+    const metadata = llvm_metadata.parseFile(b.allocator, b.pathFromRoot("llvm-metadata.toml")) catch
+        @panic("failed to parse llvm-metadata.toml");
+    const llvm_version = metadata.llvm_version;
+    const llvm_host_key = toolchain_layout.hostLlvmBundleKey(b.graph.host.result) orelse "unsupported-host";
     const llvm_probe = discoverLlvmHeaders(b.allocator, repo_root, llvm_version, llvm_host_key);
 
     var modules = std.StringArrayHashMap(*std.Build.Module).init(b.allocator);
@@ -73,8 +83,17 @@ pub fn build(b: *std.Build) void {
     llvm_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     llvm_options.addOption([]const u8, "llvm_version", llvm_version);
     llvm_options.addOption([]const u8, "llvm_host_key", llvm_host_key);
+    llvm_options.addOption([]const u8, "kira_channel", channel.dirName());
+    llvm_options.addOption([]const u8, "kira_version", kirac_version);
     modules.get("kira_llvm_backend").?.addOptions("kira_llvm_build_options", llvm_options);
     modules.get("kira_llvm_backend").?.link_libc = true;
+
+    const cli_options = b.addOptions();
+    cli_options.addOption([]const u8, "binary_name", kira_bootstrapper_name);
+    cli_options.addOption([]const u8, "version", kirac_version);
+    cli_options.addOption([]const u8, "channel", channel.dirName());
+    cli_options.addOption([]const u8, "primary_executable", kira_primary_executable);
+    modules.get("kira_cli").?.addOptions("kira_cli_build_options", cli_options);
 
     if (llvm_probe) |probe| {
         for (probe.include_dirs) |dir| {
@@ -83,10 +102,50 @@ pub fn build(b: *std.Build) void {
     }
 
     const cli = b.addExecutable(.{
-        .name = "kira",
+        .name = kira_primary_executable,
         .root_module = modules.get("kira_cli").?,
     });
-    b.installArtifact(cli);
+
+    const bootstrapper_options = b.addOptions();
+    bootstrapper_options.addOption([]const u8, "version", kirac_version);
+    const bootstrapper_module = b.createModule(.{
+        .root_source_file = b.path("packages/kira_bootstrapper/src/main.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    bootstrapper_module.addImport("kira_toolchain", modules.get("kira_toolchain").?);
+    bootstrapper_module.addOptions("kira_bootstrapper_build_options", bootstrapper_options);
+    const bootstrapper = b.addExecutable(.{
+        .name = kira_bootstrapper_name,
+        .root_module = bootstrapper_module,
+    });
+    const install_bootstrapper = b.addInstallArtifact(bootstrapper, .{});
+
+    const bootstrapper_install_path = b.getInstallPath(.bin, hostExecutableName(b.graph.host.result, kira_bootstrapper_name));
+    const bootstrapper_install_dir = std.fs.path.dirname(bootstrapper_install_path) orelse ".";
+    const install_toolchain_step = addManagedToolchainInstallStep(
+        b,
+        b.graph.host.result,
+        cli,
+        kirac_version,
+        channel.dirName(),
+        b.path("llvm-metadata.toml"),
+        b.path("templates"),
+        bootstrapper_install_dir,
+    );
+    install_toolchain_step.step.dependOn(&install_bootstrapper.step);
+
+    b.getInstallStep().dependOn(&install_bootstrapper.step);
+    b.getInstallStep().dependOn(&install_toolchain_step.step);
+
+    const kirac_step = b.step("kirac", "Build the standalone kirac executable");
+    kirac_step.dependOn(&cli.step);
+
+    const bootstrapper_step = b.step("kira-bootstrapper", "Build the kira-bootstrapper launcher");
+    bootstrapper_step.dependOn(&bootstrapper.step);
+
+    const install_kirac_step = b.step("install-kirac", "Install the active Kira toolchain and kira-bootstrapper");
+    install_kirac_step.dependOn(&install_toolchain_step.step);
 
     const kira_main = b.addLibrary(.{
         .linkage = .static,
@@ -98,12 +157,32 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(cli);
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Run the Kira CLI");
+    const run_step = b.step("run", "Run the kirac CLI");
     run_step.dependOn(&run_cmd.step);
+
+    const fetch_llvm_options = b.addOptions();
+    fetch_llvm_options.addOption([]const u8, "repo_root", repo_root);
+    const fetch_llvm_module = b.createModule(.{
+        .root_source_file = b.path("packages/kira_build/src/fetch_llvm_main.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    fetch_llvm_module.addImport("kira_llvm_backend", modules.get("kira_llvm_backend").?);
+    fetch_llvm_module.addImport("kira_toolchain", modules.get("kira_toolchain").?);
+    const fetch_llvm_tool = b.addExecutable(.{
+        .name = "fetch-llvm",
+        .root_module = fetch_llvm_module,
+    });
+    fetch_llvm_tool.root_module.addOptions("fetch_llvm_build_options", fetch_llvm_options);
+    const fetch_llvm_run = b.addRunArtifact(fetch_llvm_tool);
+    const fetch_llvm_step = b.step("fetch-llvm", "Download and install the pinned LLVM toolchain");
+    fetch_llvm_step.dependOn(&fetch_llvm_run.step);
 
     const test_step = b.step("test", "Run package tests");
     const test_roots = [_][]const u8{
+        "kira_toolchain",
         "kira_lexer",
+        "kira_diagnostics",
         "kira_parser",
         "kira_semantics",
         "kira_bytecode",
@@ -111,6 +190,7 @@ pub fn build(b: *std.Build) void {
         "kira_manifest",
         "kira_native_lib_definition",
         "kira_build",
+        "kira_cli",
         "kira_llvm_backend",
         "kira_native_bridge",
     };
@@ -123,6 +203,7 @@ pub fn build(b: *std.Build) void {
     }
 
     b.default_step.dependOn(&cli.step);
+    b.default_step.dependOn(&bootstrapper.step);
     b.default_step.dependOn(&kira_main.step);
 }
 
@@ -141,12 +222,22 @@ fn discoverLlvmHeaders(
         if (headerProbeForHome(allocator, path)) |probe| return probe;
     }
 
-    const repo_current = std.fs.path.join(allocator, &.{ repo_root, ".kira", "llvm", "current" }) catch return null;
-    if (headerProbeForHome(allocator, repo_current)) |probe| return probe;
+    if (llvm_version.len > 0 and !std.mem.eql(u8, llvm_host_key, "unsupported-host")) {
+        const shared_home = kira_toolchain.managedLlvmHome(allocator, llvm_version, llvm_host_key) catch return null;
+        if (headerProbeForHome(allocator, shared_home)) |probe| return probe;
+    }
 
-    if (llvm_version.len > 0) {
-        const versioned = std.fs.path.join(allocator, &.{ repo_root, ".kira", "llvm", bFmt(allocator, "llvm-{s}-{s}", .{ llvm_version, llvm_host_key }) catch return null }) catch return null;
-        if (headerProbeForHome(allocator, versioned)) |probe| return probe;
+    if (llvm_version.len > 0 and !std.mem.eql(u8, llvm_host_key, "unsupported-host")) {
+        const managed_home = toolchain_layout.managedLlvmHome(allocator, repo_root, llvm_version, llvm_host_key) catch return null;
+        if (headerProbeForHome(allocator, managed_home)) |probe| return probe;
+    }
+
+    const legacy_current = toolchain_layout.legacyLlvmCurrentHome(allocator, repo_root) catch return null;
+    if (headerProbeForHome(allocator, legacy_current)) |probe| return probe;
+
+    if (llvm_version.len > 0 and !std.mem.eql(u8, llvm_host_key, "unsupported-host")) {
+        const legacy_versioned = toolchain_layout.legacyLlvmVersionedHome(allocator, repo_root, llvm_version, llvm_host_key) catch return null;
+        if (headerProbeForHome(allocator, legacy_versioned)) |probe| return probe;
     }
 
     return null;
@@ -206,34 +297,107 @@ fn isFile(path: []const u8) bool {
     return true;
 }
 
-fn readLlvmVersion(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
-    const metadata_path = try std.fs.path.join(allocator, &.{ repo_root, "llvm-metadata.toml" });
-    const contents = try std.fs.cwd().readFileAlloc(allocator, metadata_path, 16 * 1024);
-    const needle = "version = \"";
-    const start = std.mem.indexOf(u8, contents, needle) orelse return "";
-    const value_start = start + needle.len;
-    const value_end = std.mem.indexOfScalarPos(u8, contents, value_start, '"') orelse return "";
-    return contents[value_start..value_end];
+fn hostExecutableName(host: std.Target, base_name: []const u8) []const u8 {
+    return if (host.os.tag == .windows)
+        std.fmt.allocPrint(std.heap.page_allocator, "{s}.exe", .{base_name}) catch @panic("out of memory")
+    else
+        base_name;
 }
 
-fn hostLlvmBundleKey(host: std.Target) []const u8 {
-    return switch (host.os.tag) {
-        .windows => switch (host.cpu.arch) {
-            .x86_64 => "x86_64-windows-msvc",
-            else => "unsupported-host",
-        },
-        .linux => switch (host.cpu.arch) {
-            .x86_64 => "x86_64-linux-gnu",
-            else => "unsupported-host",
-        },
-        .macos => switch (host.cpu.arch) {
-            .aarch64 => "aarch64-macos",
-            else => "unsupported-host",
-        },
-        else => "unsupported-host",
+fn channelForOptimize(optimize: std.builtin.OptimizeMode) kira_toolchain.Channel {
+    return switch (optimize) {
+        .Debug => .dev,
+        .ReleaseSmall, .ReleaseFast, .ReleaseSafe => .release,
     };
 }
 
-fn bFmt(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]const u8 {
-    return std.fmt.allocPrint(allocator, fmt, args);
+fn addManagedToolchainInstallStep(
+    b: *std.Build,
+    host: std.Target,
+    cli: *std.Build.Step.Compile,
+    version: []const u8,
+    channel: []const u8,
+    metadata_file: std.Build.LazyPath,
+    templates_dir: std.Build.LazyPath,
+    bootstrapper_install_dir: []const u8,
+) *std.Build.Step.Run {
+    const step = switch (host.os.tag) {
+        .windows => b.addSystemCommand(&.{
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            b.fmt(
+                "& {{ param([string]$cliSource, [string]$version, [string]$channel, [string]$metadataSource, [string]$templatesSource, [string]$bootstrapperBinDir); " ++
+                    "$ErrorActionPreference = 'Stop'; " ++
+                    "$kiraHome = Join-Path $HOME '.kira'; " ++
+                    "$toolchainRoot = Join-Path $kiraHome ('toolchains\\' + $channel + '\\' + $version); " ++
+                    "$binDir = Join-Path $toolchainRoot 'bin'; " ++
+                    "New-Item -ItemType Directory -Force -Path $binDir | Out-Null; " ++
+                    "Copy-Item $cliSource (Join-Path $binDir 'kirac.exe') -Force; " ++
+                    "$pdbSource = [System.IO.Path]::ChangeExtension($cliSource, 'pdb'); " ++
+                    "if (Test-Path $pdbSource) {{ Copy-Item $pdbSource (Join-Path $binDir 'kirac.pdb') -Force; }}; " ++
+                    "Copy-Item $metadataSource (Join-Path $toolchainRoot 'llvm-metadata.toml') -Force; " ++
+                    "$templatesDest = Join-Path $toolchainRoot 'templates'; " ++
+                    "if (Test-Path $templatesDest) {{ Remove-Item $templatesDest -Recurse -Force; }}; " ++
+                    "Copy-Item $templatesSource $templatesDest -Recurse -Force; " ++
+                    "$currentDir = Join-Path $kiraHome 'toolchains'; " ++
+                    "New-Item -ItemType Directory -Force -Path $currentDir | Out-Null; " ++
+                    "$currentPath = Join-Path $currentDir 'current.toml'; " ++
+                    "Set-Content -Path $currentPath -Value ('channel = \"' + $channel + '\"'); " ++
+                    "Add-Content -Path $currentPath -Value ('version = \"' + $version + '\"'); " ++
+                    "Add-Content -Path $currentPath -Value 'primary = \"kirac\"'; " ++
+                    "$normalize = {{ param([string]$value) if ([string]::IsNullOrWhiteSpace($value)) {{ return '' }} return $value.Trim().TrimEnd([char[]]@(92, 47)).ToLowerInvariant() }}; " ++
+                    "$target = & $normalize $bootstrapperBinDir; " ++
+                    "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); " ++
+                    "$entries = @(); " ++
+                    "$entries += $env:Path -split ';' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }}; " ++
+                    "if (-not [string]::IsNullOrWhiteSpace($userPath)) {{ $entries += $userPath -split ';' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }} }}; " ++
+                    "$exists = $false; " ++
+                    "foreach ($entry in $entries) {{ if ((& $normalize $entry) -eq $target) {{ $exists = $true; break }} }}; " ++
+                    "if (-not $exists) {{ " ++
+                    "  $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) {{ $bootstrapperBinDir }} else {{ $userPath.TrimEnd(';') + ';' + $bootstrapperBinDir }}; " ++
+                    "  [Environment]::SetEnvironmentVariable('Path', $newPath, 'User'); " ++
+                    "}}; " ++
+                    "Write-Host ('Installed Kira toolchain to ' + $toolchainRoot); " ++
+                    "Write-Host ('Activated ' + $channel + '/' + $version); " ++
+                    "if ($exists) {{ Write-Host 'kira-bootstrapper is already in your PATH. Restart your shell if needed.' }} else {{ Write-Host 'Added kira-bootstrapper to your PATH. Restart your shell to use it.' }} }}",
+                .{},
+            ),
+        }),
+        else => b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            b.fmt(
+                "set -eu; " ++
+                    "cli_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; bootstrapper_bin_dir=\"$6\"; " ++
+                    "kira_home=\"$HOME/.kira\"; toolchain_root=\"$kira_home/toolchains/$channel/$version\"; bin_dir=\"$toolchain_root/bin\"; " ++
+                    "mkdir -p \"$bin_dir\"; " ++
+                    "cp \"$cli_source\" \"$bin_dir/kirac\"; chmod +x \"$bin_dir/kirac\"; " ++
+                    "cp \"$metadata_source\" \"$toolchain_root/llvm-metadata.toml\"; " ++
+                    "rm -rf \"$toolchain_root/templates\"; cp -R \"$templates_source\" \"$toolchain_root/templates\"; " ++
+                    "mkdir -p \"$kira_home/toolchains\"; " ++
+                    "cat > \"$kira_home/toolchains/current.toml\" <<'EOF'\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
+                    "path_added=0; " ++
+                    "case \":$PATH:\" in *\":$bootstrapper_bin_dir:\"*) path_exists=1 ;; *) path_exists=0 ;; esac; " ++
+                    "if [ \"$path_exists\" -eq 0 ]; then " ++
+                    "  shell_name=$(basename \"${{SHELL:-}}\"); " ++
+                    "  case \"$shell_name\" in zsh) rc_file=\"$HOME/.zshrc\" ;; bash) rc_file=\"$HOME/.bashrc\" ;; *) if [ \"$(uname -s)\" = Darwin ]; then rc_file=\"$HOME/.zshrc\"; else rc_file=\"$HOME/.profile\"; fi ;; esac; " ++
+                    "  line=\"export PATH=\\\"$bootstrapper_bin_dir:\\$PATH\\\"\"; touch \"$rc_file\"; " ++
+                    "  if ! grep -Fqx \"$line\" \"$rc_file\"; then printf '\\n%s\\n' \"$line\" >> \"$rc_file\"; path_added=1; fi; " ++
+                    "fi; " ++
+                    "printf '%s\\n' \"Installed Kira toolchain to $toolchain_root\"; " ++
+                    "printf '%s\\n' \"Activated $channel/$version\"; " ++
+                    "if [ \"$path_exists\" -eq 1 ] || [ \"$path_added\" -eq 0 -a \"$path_exists\" -eq 0 ]; then printf '%s\\n' 'kira-bootstrapper is already in your PATH. Restart your shell if needed.'; else printf '%s\\n' 'Added kira-bootstrapper to your PATH. Restart your shell to use it.'; fi",
+                .{},
+            ),
+        }),
+    };
+    step.addArtifactArg(cli);
+    step.addArg(version);
+    step.addArg(channel);
+    step.addFileArg(metadata_file);
+    step.addFileArg(templates_dir);
+    step.addArg(bootstrapper_install_dir);
+    return step;
 }
+

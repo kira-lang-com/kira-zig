@@ -1,11 +1,12 @@
 const std = @import("std");
 const build_pkg = @import("kira_build");
 const build_def = @import("kira_build_definition");
+const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
-    _ = stderr;
     const parsed = try parseArgs(args);
 
+    try support.logFrontendStarted(stderr, "build", parsed.source_path);
     try std.fs.cwd().makePath("generated");
     const output_path = try defaultOutputPath(allocator, parsed);
 
@@ -15,6 +16,14 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         .output_path = output_path,
         .target = .{ .execution = parsed.backend },
     });
+    if (result.failed()) {
+        try support.logBuildAborted(stderr, "build", result.failure_kind.?, parsed.source_path);
+        if (result.source) |source| {
+            try support.renderDiagnostics(stderr, &source, result.diagnostics);
+        }
+        return error.CommandFailed;
+    }
+
     for (result.artifacts) |artifact| {
         try stdout.print("wrote {s}\n", .{artifact.path});
     }

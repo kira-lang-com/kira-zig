@@ -51,11 +51,17 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                 index += 1;
                 while (index < source.text.len and source.text[index] != '"') : (index += 1) {}
                 if (index >= source.text.len) {
-                    try out_diagnostics.append(diagnostics.single(.@"error", "unterminated string literal", .{
-                        .span = source_pkg.Span.init(start, source.text.len),
-                        .message = "string literal starts here",
-                    }));
-                    return error.ParseFailed;
+                    try diagnostics.appendOwned(allocator, out_diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KLEX002",
+                        .title = "unterminated string literal",
+                        .message = "Kira reached the end of the file before this string literal was closed.",
+                        .labels = &.{
+                            diagnostics.primaryLabel(source_pkg.Span.init(start, source.text.len), "string literal starts here"),
+                        },
+                        .help = "Close the string with a matching '\"'.",
+                    });
+                    return error.DiagnosticsEmitted;
                 }
                 const contents = source.text[start + 1 .. index];
                 index += 1;
@@ -74,11 +80,17 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                 try tokens.append(makeToken(kind, lexeme, start, index));
             },
             else => {
-                try out_diagnostics.append(diagnostics.single(.@"error", "unexpected character", .{
-                    .span = source_pkg.Span.init(index, index + 1),
-                    .message = "character is not part of the bootstrap grammar",
-                }));
-                return error.ParseFailed;
+                try diagnostics.appendOwned(allocator, out_diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KLEX001",
+                    .title = "unexpected character",
+                    .message = "Kira found a character that does not belong to the current grammar.",
+                    .labels = &.{
+                        diagnostics.primaryLabel(source_pkg.Span.init(index, index + 1), "this character is not valid here"),
+                    },
+                    .help = "Remove the character or replace it with valid Kira syntax.",
+                });
+                return error.DiagnosticsEmitted;
             },
         }
     }

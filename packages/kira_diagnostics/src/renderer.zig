@@ -1,21 +1,147 @@
 const std = @import("std");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const Severity = @import("diagnostic.zig").Severity;
 const SourceFile = @import("kira_source").SourceFile;
 
 pub fn render(writer: anytype, source: *const SourceFile, diagnostic: Diagnostic) !void {
-    try writer.print("{s}: {s}\n", .{ @tagName(diagnostic.severity), diagnostic.message });
-    for (diagnostic.labels) |label| {
-        const location = source.line_map.lineColumn(label.span.start);
-        const snippet = label.span.slice(source.text);
-        try writer.print(
-            "  --> {s}:{d}:{d}: {s}\n      {s}\n",
-            .{ source.path, location.line, location.column, label.message, snippet },
-        );
+    try renderHeader(writer, diagnostic);
+    try writer.print("  {s}\n", .{diagnostic.message});
+
+    if (diagnostic.primaryLabel()) |label| {
+        const clamped_start = @min(label.span.start, source.text.len);
+        const clamped_end = @min(@max(label.span.end, clamped_start), source.text.len);
+        const location = source.line_map.lineColumn(clamped_start);
+        const line_index = source.line_map.lineIndex(clamped_start);
+        const bounds = source.line_map.lineBounds(line_index, source.text);
+        const safe_end = @max(bounds.end, bounds.start);
+        const snippet = source.text[bounds.start..safe_end];
+        const line_number = line_index + 1;
+        const highlight_base = @min(@max(clamped_start, bounds.start), safe_end);
+        const highlight_start = highlight_base - bounds.start;
+        const line_end = safe_end;
+        const requested_end = if (clamped_end > clamped_start) clamped_end else @min(clamped_start + 1, source.text.len);
+        const highlight_end = @max(highlight_base, @min(requested_end, line_end));
+        const caret_width = @max(@as(usize, 1), highlight_end - highlight_base);
+
+        try writer.print("  --> {s}:{d}:{d}\n", .{ source.path, location.line, location.column });
+        try writer.print("   {d} | {s}\n", .{ line_number, snippet });
+        try writer.writeAll("     | ");
+        try writeSpaces(writer, highlight_start);
+        try writeCarets(writer, caret_width);
+        if (label.message.len > 0) {
+            try writer.print(" {s}", .{label.message});
+        }
+        try writer.writeByte('\n');
+
+        for (diagnostic.labels) |secondary| {
+            if (secondary.kind != .secondary) continue;
+            const secondary_location = source.line_map.lineColumn(secondary.span.start);
+            try writer.print(
+                "     = related: {s}:{d}:{d}: {s}\n",
+                .{ source.path, secondary_location.line, secondary_location.column, secondary.message },
+            );
+        }
+    } else {
+        try writer.print("  --> {s}\n", .{source.path});
+    }
+
+    if (diagnostic.help) |help| {
+        try writer.print("  help: {s}\n", .{help});
+    }
+    if (diagnostic.suggestion) |suggestion| {
+        try writer.print("  suggestion: {s}\n", .{suggestion.message});
+    }
+    for (diagnostic.notes) |note| {
+        try writer.print("  note: {s}\n", .{note});
     }
 }
 
 pub fn renderAll(writer: anytype, source: *const SourceFile, diagnostics: []const Diagnostic) !void {
-    for (diagnostics) |diagnostic| {
+    for (diagnostics, 0..) |diagnostic, index| {
+        if (index > 0) try writer.writeByte('\n');
         try render(writer, source, diagnostic);
     }
+}
+
+fn renderHeader(writer: anytype, diagnostic: Diagnostic) !void {
+    if (diagnostic.code) |code| {
+        try writer.print("{s}[{s}]: {s}\n", .{ severityName(diagnostic.severity), code, diagnostic.title });
+        return;
+    }
+    try writer.print("{s}: {s}\n", .{ severityName(diagnostic.severity), diagnostic.title });
+}
+
+fn severityName(severity: Severity) []const u8 {
+    return switch (severity) {
+        .@"error" => "error",
+        .warning => "warning",
+        .note => "note",
+    };
+}
+
+fn writeSpaces(writer: anytype, count: usize) !void {
+    for (0..count) |_| try writer.writeByte(' ');
+}
+
+fn writeCarets(writer: anytype, count: usize) !void {
+    for (0..count) |_| try writer.writeByte('^');
+}
+
+test "renders labeled diagnostics with notes and help" {
+    const diagnostics = @import("root.zig");
+    const source_pkg = @import("kira_source");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(allocator, "sample.kira", "function main() {\n  let x = ;\n}\n");
+    const diagnostic = diagnostics.Diagnostic{
+        .severity = .@"error",
+        .code = "KPAR001",
+        .title = "expected expression",
+        .message = "Kira expected an expression after '='.",
+        .labels = &.{
+            diagnostics.primaryLabel(source_pkg.Span.init(28, 29), "expression expected here"),
+        },
+        .help = "Insert a value after '=' or remove the assignment.",
+        .notes = &.{"Parsing stopped after this statement."},
+    };
+
+    var buffer: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    try render(stream.writer(), &source, diagnostic);
+
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "error[KPAR001]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "sample.kira:2:11") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "help: Insert a value after '=' or remove the assignment.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "note: Parsing stopped after this statement.") != null);
+}
+
+test "renders zero-length eof labels without overflowing" {
+    const diagnostics = @import("root.zig");
+    const source_pkg = @import("kira_source");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(allocator, "sample.kira", "function main() {\n}\n");
+    const eof = source.text.len;
+    const diagnostic = diagnostics.Diagnostic{
+        .severity = .@"error",
+        .code = "KSEM001",
+        .title = "missing @Main entrypoint",
+        .message = "This module cannot run because no function is marked with @Main.",
+        .labels = &.{
+            diagnostics.primaryLabel(source_pkg.Span.init(eof, eof), "file ends here"),
+        },
+    };
+
+    var buffer: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    try render(stream.writer(), &source, diagnostic);
+
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "error[KSEM001]: missing @Main entrypoint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "^ file ends here") != null);
 }

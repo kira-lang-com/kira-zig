@@ -23,9 +23,9 @@ test "reports missing @Main entrypoint" {
     const program = try parser.parse(allocator, tokens, &diags);
     const result = analyze(allocator, program, &diags);
 
-    try std.testing.expectError(error.MissingMain, result);
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
     try std.testing.expect(diags.items.len > 0);
-    try std.testing.expectEqualStrings("no @Main function found", diags.items[0].message);
+    try std.testing.expectEqualStrings("missing @Main entrypoint", diags.items[0].title);
 }
 
 test "reports multiple @Main entrypoints" {
@@ -47,7 +47,7 @@ test "reports multiple @Main entrypoints" {
     const program = try parser.parse(allocator, tokens, &diags);
     const result = analyze(allocator, program, &diags);
 
-    try std.testing.expectError(error.SemanticFailed, result);
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
     try std.testing.expect(diags.items.len > 0);
-    try std.testing.expectEqualStrings("multiple @Main functions found", diags.items[0].message);
+    try std.testing.expectEqualStrings("multiple @Main entrypoints", diags.items[0].title);
 }
