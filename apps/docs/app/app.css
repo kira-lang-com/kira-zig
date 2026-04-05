@@ -81,21 +81,17 @@ html > body[data-scroll-locked] {
 
 /* Ensure all interactive elements in sidebars remain clickable and show cursor,
    even when the parent wrapper has pointer-events-none for hover animations. */
-#nd-sidebar *,
-#nd-sidebar-mobile * {
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-/* But not for non-interactive elements like text, icons, separators */
-#nd-sidebar span,
-#nd-sidebar-mobile span,
-#nd-sidebar [role="separator"],
-#nd-sidebar-mobile [role="separator"],
-#nd-sidebar svg,
-#nd-sidebar-mobile svg {
-  cursor: inherit;
-  pointer-events: none;
+#nd-sidebar button,
+#nd-sidebar [role="button"],
+#nd-sidebar a,
+#nd-sidebar [role="menuitem"],
+#nd-sidebar [data-collapsible-trigger],
+#nd-sidebar-mobile button,
+#nd-sidebar-mobile [role="button"],
+#nd-sidebar-mobile a,
+#nd-sidebar-mobile [role="menuitem"],
+#nd-sidebar-mobile [data-collapsible-trigger] {
+  @apply pointer-events-auto;
 }
 
 body {
