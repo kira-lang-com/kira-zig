@@ -68,7 +68,7 @@ export default function Page({ loaderData }: Route.ComponentProps) {
       tree={pageTree}
       sidebar={{
         footer: (
-          <div className="flex flex-col gap-3 w-full text-xs font-semibold uppercase tracking-wider">
+          <div className="inline-flex items-center gap-3 text-xs font-semibold uppercase tracking-wider">
             <a
               href={`https://github.com/${gitConfig.user}/${gitConfig.repo}`}
               target="_blank"
