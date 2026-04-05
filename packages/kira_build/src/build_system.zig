@@ -96,9 +96,10 @@ pub const BuildSystem = struct {
             },
             .resolved_native_libraries = request.native_libraries,
         }) catch |err| {
+            const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
                 .source = compiled.source,
-                .diagnostics = &.{try backendDiagnostic(self.allocator, compiled.source.path, err)},
+                .diagnostics = backend_diagnostics,
                 .failure_kind = .toolchain,
             };
         };
@@ -135,9 +136,10 @@ pub const BuildSystem = struct {
         const library_path = try replaceExtension(self.allocator, request.output_path, sharedLibraryExtension());
 
         const bytecode_module = bytecode.compileProgram(self.allocator, ir_program, .hybrid_runtime) catch |err| {
+            const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
                 .source = compiled.source,
-                .diagnostics = &.{try backendDiagnostic(self.allocator, compiled.source.path, err)},
+                .diagnostics = backend_diagnostics,
                 .failure_kind = .build,
             };
         };
@@ -153,17 +155,19 @@ pub const BuildSystem = struct {
             },
             .resolved_native_libraries = request.native_libraries,
         }) catch |err| {
+            const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
                 .source = compiled.source,
-                .diagnostics = &.{try backendDiagnostic(self.allocator, compiled.source.path, err)},
+                .diagnostics = backend_diagnostics,
                 .failure_kind = .toolchain,
             };
         };
 
         const manifest = buildHybridManifest(self.allocator, ir_program, std.fs.path.stem(request.source_path), bytecode_path, library_path) catch |err| {
+            const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
                 .source = compiled.source,
-                .diagnostics = &.{try backendDiagnostic(self.allocator, compiled.source.path, err)},
+                .diagnostics = backend_diagnostics,
                 .failure_kind = .build,
             };
         };
@@ -312,4 +316,10 @@ fn backendDiagnostic(allocator: std.mem.Allocator, source_path: []const u8, err:
             .help = "Check the toolchain setup and try the build again.",
         },
     };
+}
+
+fn backendDiagnostics(allocator: std.mem.Allocator, source_path: []const u8, err: anyerror) ![]diagnostics.Diagnostic {
+    const items = try allocator.alloc(diagnostics.Diagnostic, 1);
+    items[0] = try backendDiagnostic(allocator, source_path, err);
+    return items;
 }
