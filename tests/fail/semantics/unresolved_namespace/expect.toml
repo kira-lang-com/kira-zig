@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM027"
+diagnostic_title = "invalid namespaced reference"
+stage = "semantics"

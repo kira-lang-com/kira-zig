@@ -1,0 +1,14 @@
+@Main
+function main() {
+    let left = 40;
+    let right = 2;
+    let total = left + right;
+    print(total);
+    helper();
+    return;
+}
+
+function helper() {
+    print("hello from kira");
+    return;
+}

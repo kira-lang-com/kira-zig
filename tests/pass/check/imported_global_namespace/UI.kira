@@ -1,0 +1,27 @@
+construct Widget {
+    annotations {
+        @State;
+        @Doc;
+    }
+
+    requires {
+        content;
+    }
+
+    lifecycle {
+        onAppear() {}
+    }
+}
+
+Widget Card(title: String) {
+    @State
+    let selected: Int = 0;
+
+    content {
+        "Card"
+    }
+
+    onAppear() {
+        return;
+    }
+}

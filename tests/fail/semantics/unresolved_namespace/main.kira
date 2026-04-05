@@ -1,0 +1,5 @@
+@Main
+function entry() {
+    Missing.value;
+    return;
+}

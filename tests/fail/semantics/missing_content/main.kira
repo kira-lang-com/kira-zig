@@ -1,0 +1,12 @@
+construct Widget {
+    annotations {
+        @State;
+    }
+
+    requires {
+        content;
+    }
+}
+
+Widget Card() {
+}

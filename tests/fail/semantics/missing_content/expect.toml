@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM022"
+diagnostic_title = "missing required content block"
+stage = "semantics"

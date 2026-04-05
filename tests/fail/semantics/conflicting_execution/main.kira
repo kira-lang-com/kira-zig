@@ -1,0 +1,6 @@
+@Main
+@Native
+@Runtime
+function entry() {
+    return;
+}

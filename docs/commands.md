@@ -55,7 +55,7 @@ CLI behavior:
 - `build` defaults to writing a `.kbc` bytecode artifact into `generated/`
 - `build --backend llvm` writes both a native object file and a native executable into `generated/`
 - `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `generated/`
-- `new` copies the app template into a new destination with `@Main function main() { ... }` in `src/main.kira`
+- `new` copies the app template into a new destination with a starter `@Main`-annotated function in `src/main.kira`
 
 LLVM backend selection is explicit and host-native. Discovery order is:
 

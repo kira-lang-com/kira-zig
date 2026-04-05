@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KPAR001"
+diagnostic_title = "expected ';' after annotation spec"
+stage = "parser"

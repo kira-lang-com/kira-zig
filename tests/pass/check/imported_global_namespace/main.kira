@@ -1,0 +1,17 @@
+import UI as Kit
+
+Widget DashboardShell() {
+    content {
+        Card("Global")
+        Kit.Card("Qualified")
+    }
+
+    onAppear() {
+        return;
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

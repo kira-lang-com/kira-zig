@@ -1,0 +1,6 @@
+@Main
+@Native
+function main() {
+    print("native main");
+    return;
+}

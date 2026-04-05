@@ -22,15 +22,17 @@ fn lowerFunction(allocator: std.mem.Allocator, function_decl: model.Function) !i
     for (function_decl.body) |statement| {
         switch (statement) {
             .let_stmt => |node| {
-                const reg = try lowerer.lowerExpr(&instructions, node.value);
-                try instructions.append(.{ .store_local = .{ .local = node.local_id, .src = reg } });
+                if (node.value) |value| {
+                    const reg = try lowerer.lowerExpr(&instructions, value);
+                    try instructions.append(.{ .store_local = .{ .local = node.local_id, .src = reg } });
+                }
             },
-            .print_stmt => |node| {
-                const reg = try lowerer.lowerExpr(&instructions, node.value);
-                try instructions.append(.{ .print = .{ .src = reg } });
+            .expr_stmt => |node| try lowerExprStatement(&lowerer, &instructions, node.expr),
+            .if_stmt, .for_stmt, .switch_stmt => return error.UnsupportedExecutableFeature,
+            .return_stmt => |node| {
+                if (node.value != null) return error.UnsupportedExecutableFeature;
+                try instructions.append(.{ .ret_void = {} });
             },
-            .call_stmt => |node| try instructions.append(.{ .call = .{ .callee = node.function_id } }),
-            .return_stmt => try instructions.append(.{ .ret_void = {} }),
         }
     }
 
@@ -55,10 +57,26 @@ fn lowerLocalTypes(allocator: std.mem.Allocator, locals: []const model.LocalSymb
         lowered[index] = switch (local.ty) {
             .integer => .integer,
             .string => .string,
-            .void => return error.UnsupportedType,
+            .void, .float, .boolean, .named, .array, .unknown => return error.UnsupportedType,
         };
     }
     return lowered;
+}
+
+fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
+    switch (expr.*) {
+        .call => |call| {
+            if (std.mem.eql(u8, call.callee_name, "print")) {
+                if (call.args.len != 1) return error.UnsupportedExecutableFeature;
+                const reg = try lowerer.lowerExpr(instructions, call.args[0]);
+                try instructions.append(.{ .print = .{ .src = reg } });
+                return;
+            }
+            if (call.function_id == null or call.args.len != 0) return error.UnsupportedExecutableFeature;
+            try instructions.append(.{ .call = .{ .callee = call.function_id.? } });
+        },
+        else => return error.UnsupportedExecutableFeature,
+    }
 }
 
 const Lowerer = struct {
@@ -77,6 +95,7 @@ const Lowerer = struct {
                 try instructions.append(.{ .const_int = .{ .dst = dst, .value = node.value } });
                 break :blk dst;
             },
+            .float, .boolean, .namespace_ref, .call, .array, .unary => error.UnsupportedExecutableFeature,
             .string => |node| blk: {
                 const dst = self.freshRegister();
                 try instructions.append(.{ .const_string = .{ .dst = dst, .value = node.value } });
@@ -88,6 +107,7 @@ const Lowerer = struct {
                 break :blk dst;
             },
             .binary => |node| blk: {
+                if (node.op != .add) return error.UnsupportedExecutableFeature;
                 const lhs = try self.lowerExpr(instructions, node.lhs);
                 const rhs = try self.lowerExpr(instructions, node.rhs);
                 const dst = self.freshRegister();
@@ -97,3 +117,59 @@ const Lowerer = struct {
         };
     }
 };
+
+test "lowers zero-argument expression-statement calls even when return type is not resolved to void" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const callee_expr = try allocator.create(model.Expr);
+    callee_expr.* = .{ .call = .{
+        .callee_name = "helper",
+        .function_id = 1,
+        .args = &.{},
+        .ty = .unknown,
+        .span = .{ .start = 0, .end = 0 },
+    } };
+
+    const program = model.Program{
+        .imports = &.{},
+        .constructs = &.{},
+        .types = &.{},
+        .forms = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "entry",
+                .is_main = true,
+                .execution = .native,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{},
+                .return_type = .void,
+                .body = &.{
+                    .{ .expr_stmt = .{ .expr = callee_expr, .span = .{ .start = 0, .end = 0 } } },
+                    .{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+                },
+                .span = .{ .start = 0, .end = 0 },
+            },
+            .{
+                .id = 1,
+                .name = "helper",
+                .is_main = false,
+                .execution = .runtime,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{},
+                .return_type = .void,
+                .body = &.{.{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } }},
+                .span = .{ .start = 0, .end = 0 },
+            },
+        },
+        .entry_index = 0,
+    };
+
+    const lowered = try lowerProgram(allocator, program);
+    try std.testing.expectEqual(@as(usize, 2), lowered.functions.len);
+    try std.testing.expect(lowered.functions[0].instructions[0] == .call);
+}

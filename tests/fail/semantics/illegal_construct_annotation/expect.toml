@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM026"
+diagnostic_title = "annotation is not allowed in this construct"
+stage = "semantics"

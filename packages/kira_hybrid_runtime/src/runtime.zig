@@ -1,10 +1,10 @@
 const std = @import("std");
 const bytecode = @import("kira_bytecode");
 const hybrid = @import("kira_hybrid_definition");
-const runtime_abi = @import("kira_runtime_abi");
-const vm_runtime = @import("kira_vm_runtime");
 const native_bridge = @import("kira_native_bridge");
+const runtime_abi = @import("kira_runtime_abi");
 const binder = @import("binder.zig");
+const vm_runtime = @import("kira_vm_runtime");
 
 pub const HybridRuntime = struct {
     allocator: std.mem.Allocator,
@@ -32,33 +32,56 @@ pub const HybridRuntime = struct {
     }
 
     pub fn run(self: *HybridRuntime) !void {
-        native_bridge.installRuntimeInvoker(self, runtimeInvoke);
+        try self.runWithWriter(DirectStdoutWriter{});
+    }
+
+    pub fn runWithWriter(self: *HybridRuntime, writer: anytype) !void {
+        const Context = RuntimeContext(@TypeOf(writer));
+        var runtime_context = Context{
+            .runtime = self,
+            .writer = writer,
+        };
+        native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
         defer native_bridge.clearRuntimeInvoker();
 
         switch (self.manifest.entry_execution) {
-            .runtime => try self.invokeRuntime(self.manifest.entry_function_id),
+            .runtime => try self.invokeRuntime(&runtime_context, self.manifest.entry_function_id),
             .native => try self.bridge.call(self.manifest.entry_function_id),
             .inherited => unreachable,
         }
     }
 
-    pub fn invokeRuntime(self: *HybridRuntime, function_id: u32) !void {
-        const writer = DirectStdoutWriter{};
-        try self.vm.runFunctionById(&self.module, function_id, writer, .{
-            .context = self,
-            .call_native = callNative,
+    fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32) !void {
+        try self.vm.runFunctionById(&self.module, function_id, context.writer, .{
+            .context = @as(?*anyopaque, @ptrCast(context)),
+            .call_native = callNative(@TypeOf(context.*)),
         });
     }
 };
 
-fn runtimeInvoke(context: ?*anyopaque, function_id: u32) !void {
-    const runtime: *HybridRuntime = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-    return runtime.invokeRuntime(function_id);
+fn RuntimeContext(comptime Writer: type) type {
+    return struct {
+        runtime: *HybridRuntime,
+        writer: Writer,
+    };
 }
 
-fn callNative(context: ?*anyopaque, function_id: u32) !void {
-    const runtime: *HybridRuntime = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-    return runtime.bridge.call(function_id);
+fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32) anyerror!void {
+    return struct {
+        fn invoke(context: ?*anyopaque, function_id: u32) !void {
+            const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
+            try runtime_context.runtime.invokeRuntime(runtime_context, function_id);
+        }
+    }.invoke;
+}
+
+fn callNative(comptime Context: type) *const fn (?*anyopaque, u32) anyerror!void {
+    return struct {
+        fn invoke(context: ?*anyopaque, function_id: u32) !void {
+            const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
+            return runtime_context.runtime.bridge.call(function_id);
+        }
+    }.invoke;
 }
 
 fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.HybridModuleManifest) ![]hybrid.BridgeDescriptor {

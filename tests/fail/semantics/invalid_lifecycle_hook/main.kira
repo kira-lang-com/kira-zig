@@ -1,0 +1,22 @@
+construct Widget {
+    annotations {
+        @State;
+    }
+
+    requires {
+        content;
+    }
+
+    lifecycle {
+        onAppear() {}
+    }
+}
+
+Widget Card() {
+    content {
+    }
+
+    onDisappear() {
+        return;
+    }
+}

@@ -1,0 +1,20 @@
+@Main
+@Native
+function main() {
+    print("native main");
+    runtime_helper();
+    return;
+}
+
+@Runtime
+function runtime_helper() {
+    print("runtime helper");
+    native_helper();
+    return;
+}
+
+@Native
+function native_helper() {
+    print("native helper");
+    return;
+}

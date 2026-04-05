@@ -1,0 +1,42 @@
+construct Widget {
+    annotations {
+        @State;
+        @Binding;
+        @Doc;
+    }
+
+    requires {
+        content;
+    }
+
+    lifecycle {
+        onAppear() {}
+        onDisappear() {}
+    }
+
+    builder {
+        content;
+    }
+}
+
+type Theme {
+    let title: String = "Operations";
+}
+
+Widget Card(title: String) {
+    @State
+    let selected: Int = 0;
+
+    content {
+        "Card"
+    }
+
+    onAppear() {
+        return;
+    }
+}
+
+@Main
+function entry() {
+    return;
+}
