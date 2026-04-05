@@ -1,6 +1,6 @@
 import { BookOpenText, Cable, Command, Cpu, FileCode2, Wrench } from "lucide-react";
 import { HomeLayout } from "fumadocs-ui/layouts/home";
-import { Link } from "react-router";
+import Link from "fumadocs-core/link";
 import type { Route } from "./+types/home";
 import { baseOptions } from "@/lib/layout.shared";
 
@@ -89,16 +89,16 @@ export default function Home() {
             implemented, not what is planned.
           </p>
           <div className="flex flex-wrap gap-3">
-            <Link className="kira-button kira-button-primary" to="/docs/getting-started">
+            <Link className="kira-button kira-button-primary" href="/docs/getting-started">
               Get Started
             </Link>
-            <Link className="kira-button" to="/docs/language">
+            <Link className="kira-button" href="/docs/language">
               Language
             </Link>
-            <Link className="kira-button" to="/docs/ffi">
+            <Link className="kira-button" href="/docs/ffi">
               FFI
             </Link>
-            <Link className="kira-button" to="/docs/cli">
+            <Link className="kira-button" href="/docs/cli">
               CLI
             </Link>
           </div>
@@ -131,7 +131,7 @@ export default function Home() {
           </h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {guideLinks.map(({ icon: Icon, title, href, description }) => (
-              <Link key={href} to={href} className="kira-link-card">
+              <Link key={href} href={href} className="kira-link-card">
                 <div className="mb-3 flex items-center gap-2.5">
                   <span className="flex size-8 items-center justify-center rounded-lg border border-fd-border bg-fd-muted text-fd-primary">
                     <Icon className="size-4" />
