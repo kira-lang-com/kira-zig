@@ -1,0 +1,6 @@
+import missing as Missing
+
+@Main
+function entry() {
+    return;
+}

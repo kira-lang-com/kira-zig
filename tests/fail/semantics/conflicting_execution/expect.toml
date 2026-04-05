@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM005"
+diagnostic_title = "conflicting execution annotations"
+stage = "semantics"

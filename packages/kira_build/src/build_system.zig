@@ -4,6 +4,7 @@ const diagnostics = @import("kira_diagnostics");
 const source_pkg = @import("kira_source");
 const bytecode = @import("kira_bytecode");
 const hybrid = @import("kira_hybrid_definition");
+const runtime_abi = @import("kira_runtime_abi");
 const llvm_backend = @import("kira_llvm_backend");
 const pipeline = @import("pipeline.zig");
 const builtin = @import("builtin");
@@ -232,12 +233,12 @@ fn buildHybridManifest(
 ) !hybrid.HybridModuleManifest {
     var functions = std.array_list.Managed(hybrid.FunctionManifest).init(allocator);
     for (program.functions) |function_decl| {
-        if (function_decl.execution == .inherited) return error.HybridBuildRequiresExplicitExecution;
+        const resolved_execution = resolveHybridExecution(function_decl.execution);
         try functions.append(.{
             .id = function_decl.id,
             .name = function_decl.name,
-            .execution = function_decl.execution,
-            .exported_name = if (function_decl.execution == .native)
+            .execution = resolved_execution,
+            .exported_name = if (resolved_execution == .native)
                 try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id})
             else
                 null,
@@ -245,14 +246,20 @@ fn buildHybridManifest(
     }
 
     const entry_function = program.functions[program.entry_index];
-    if (entry_function.execution == .inherited) return error.HybridBuildRequiresExplicitExecution;
     return .{
         .module_name = try allocator.dupe(u8, module_name),
         .bytecode_path = try allocator.dupe(u8, bytecode_path),
         .native_library_path = try allocator.dupe(u8, library_path),
         .entry_function_id = entry_function.id,
-        .entry_execution = entry_function.execution,
+        .entry_execution = resolveHybridExecution(entry_function.execution),
         .functions = try functions.toOwnedSlice(),
+    };
+}
+
+fn resolveHybridExecution(execution: runtime_abi.FunctionExecution) runtime_abi.FunctionExecution {
+    return switch (execution) {
+        .inherited => .runtime,
+        else => execution,
     };
 }
 

@@ -1,0 +1,5 @@
+@Main
+function entry() {
+    let value;
+    return;
+}

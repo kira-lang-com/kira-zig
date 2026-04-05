@@ -74,7 +74,7 @@ fn printUsage(writer: anytype) !void {
         \\  fetch-llvm
         \\  help
         \\  version
-        \\  entrypoint syntax: @Main [@Runtime|@Native] function main() {{ ... }}
+        \\  entrypoint syntax: @Main [@Runtime|@Native] function entry() {{ ... }}
         \\
         \\install:
         \\  zig build install-kirac

@@ -183,12 +183,6 @@ fn lowerProgram(
     request: backend_api.CompileRequest,
     triple: []const u8,
 ) !LoweredModule {
-    if (request.mode == .hybrid) {
-        for (request.program.functions) |function_decl| {
-            if (function_decl.execution == .inherited) return error.HybridBuildRequiresExplicitExecution;
-        }
-    }
-
     const context = api.LLVMContextCreate();
     const module_name = try allocator.dupeZ(u8, request.module_name);
     const module_ref = api.LLVMModuleCreateWithNameInContext(module_name.ptr, context);
@@ -447,7 +441,7 @@ fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: backend_api.
     return switch (execution) {
         .inherited => switch (mode) {
             .llvm_native => .native,
-            .hybrid => .inherited,
+            .hybrid => .runtime,
             .vm_bytecode => .runtime,
         },
         else => execution,

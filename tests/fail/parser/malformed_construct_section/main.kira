@@ -1,0 +1,5 @@
+construct Widget {
+    annotations {
+        @State
+    }
+}

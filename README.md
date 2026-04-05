@@ -115,11 +115,11 @@ zig build run -- build --backend llvm examples/hello.kira
 
 ## Bootstrap Syntax
 
-The working bootstrap syntax uses `function` declarations and an explicit `@Main` entrypoint annotation:
+The working bootstrap syntax uses `function` declarations and an explicit `@Main` entrypoint annotation. The entrypoint is chosen by the annotation, not by the function name:
 
 ```kira
 @Main
-function main() {
+function entry() {
     let x = 1 + 2;
     print(x);
     print("hello from kira");
@@ -139,4 +139,4 @@ function main() {
 - hybrid contracts remain layered and future-facing without forcing the repo back into VM-only assumptions
 - native library manifests live outside the root `Kira.toml`
 
-See [docs/architecture.md](docs/architecture.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), and [docs/native_libraries.md](docs/native_libraries.md).
+See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), and [docs/native_libraries.md](docs/native_libraries.md).

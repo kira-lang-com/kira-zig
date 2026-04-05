@@ -1,0 +1,44 @@
+construct Widget {
+    annotations {
+        @State;
+        @Binding;
+        @Env;
+        @Doc;
+    }
+
+    requires {
+        content;
+    }
+
+    lifecycle {
+        onAppear() {}
+        onDisappear() {}
+        onChange(of: value) {}
+    }
+
+    builder {
+        content;
+    }
+
+    representation {
+        children: [Widget];
+    }
+}
+
+Widget Card(title: String) {
+    @State
+    let selected: Int = 0;
+
+    content {
+        "Card"
+    }
+
+    onAppear() {
+        return;
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

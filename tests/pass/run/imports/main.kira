@@ -1,0 +1,15 @@
+import support as Support
+
+@Main
+function main() {
+    helper();
+    print("imports resolve");
+    return;
+}
+
+function helper() {
+    let first = 1;
+    let second = 2;
+    print(first + second);
+    return;
+}

@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM031"
+diagnostic_title = "type mismatch"
+stage = "semantics"

@@ -1,0 +1,5 @@
+mode = "fail"
+backends = ["vm"]
+diagnostic_code = "KBUILD001"
+diagnostic_title = "native code requires a native-capable backend"
+stage = "ir"

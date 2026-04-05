@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM029"
+diagnostic_title = "type inference is ambiguous"
+stage = "semantics"
