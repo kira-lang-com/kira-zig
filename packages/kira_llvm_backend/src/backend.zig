@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const ir = @import("kira_ir");
 const runtime_abi = @import("kira_runtime_abi");
 const backend_api = @import("kira_backend_api");
+const build_options = @import("kira_llvm_build_options");
 const llvm = @import("llvm_c.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
@@ -10,6 +11,13 @@ const runtime_symbols = @import("runtime_symbols.zig");
 
 pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest) !backend_api.CompileResult {
     if (request.mode != .llvm_native and request.mode != .hybrid) return error.UnsupportedBackendMode;
+
+    const triple = try hostTargetTriple(allocator);
+    defer allocator.free(triple);
+
+    if (builtin.os.tag == .macos) {
+        return compileViaTextIr(allocator, request, triple);
+    }
 
     const tc = try toolchain.Toolchain.discover(allocator);
     var api = try llvm.Api.open(tc);
@@ -21,10 +29,10 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     api.LLVMInitializeAsmPrinter();
     if (api.LLVMInitializeAsmParser) |init| init();
 
-    const triple = try hostTargetTriple(allocator);
     const target_machine = try createTargetMachine(allocator, &api, triple);
     defer api.LLVMDisposeTargetMachine(target_machine.machine);
-    defer api.LLVMDisposeTargetData(target_machine.data_layout);
+    defer api.LLVMDisposeMessage(target_machine.cpu_features);
+    defer api.LLVMDisposeMessage(target_machine.cpu_name);
 
     try ensureParentDir(request.emit.object_path);
     if (request.emit.executable_path) |path| try ensureParentDir(path);
@@ -32,8 +40,8 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
 
     const lowered = try lowerProgram(allocator, &api, target_machine, request, triple);
     if (builtin.os.tag != .windows) {
-        defer api.LLVMDisposeModule(lowered.module_ref);
         defer api.LLVMContextDispose(lowered.context);
+        defer api.LLVMDisposeModule(lowered.module_ref);
     }
 
     try emitObjectFile(allocator, &api, target_machine.machine, lowered.module_ref, request.emit.object_path);
@@ -65,9 +73,65 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     return .{ .artifacts = try artifacts.toOwnedSlice() };
 }
 
+fn compileViaTextIr(
+    allocator: std.mem.Allocator,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+) !backend_api.CompileResult {
+    try ensureParentDir(request.emit.object_path);
+    if (request.emit.executable_path) |path| try ensureParentDir(path);
+    if (request.emit.shared_library_path) |path| try ensureParentDir(path);
+
+    const ir_text = try buildTextLlvmIr(allocator, request, triple);
+    defer allocator.free(ir_text);
+
+    var owns_ir_path = false;
+    const ir_path = if (request.emit.ir_path) |path|
+        path
+    else blk: {
+        const temp_ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{request.emit.object_path});
+        owns_ir_path = true;
+        break :blk temp_ir_path;
+    };
+    defer if (owns_ir_path) {
+        std.fs.cwd().deleteFile(ir_path) catch {};
+        allocator.free(ir_path);
+    };
+
+    try writeTextFile(ir_path, ir_text);
+    try emitObjectFileFromIr(allocator, ir_path, request.emit.object_path);
+
+    var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
+    try artifacts.append(.{
+        .kind = .native_object,
+        .path = try allocator.dupe(u8, request.emit.object_path),
+    });
+
+    if (request.emit.executable_path) |executable_path| {
+        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
+        try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
+        try artifacts.append(.{
+            .kind = .executable,
+            .path = try allocator.dupe(u8, executable_path),
+        });
+    }
+
+    if (request.emit.shared_library_path) |library_path| {
+        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
+        try linker.linkSharedLibrary(allocator, library_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
+        try artifacts.append(.{
+            .kind = .native_library,
+            .path = try allocator.dupe(u8, library_path),
+        });
+    }
+
+    return .{ .artifacts = try artifacts.toOwnedSlice() };
+}
+
 const TargetMachineInfo = struct {
     machine: llvm.c.LLVMTargetMachineRef,
-    data_layout: llvm.c.LLVMTargetDataRef,
+    cpu_name: [*c]u8,
+    cpu_features: [*c]u8,
 };
 
 fn createTargetMachine(allocator: std.mem.Allocator, api: *const llvm.Api, triple: []const u8) !TargetMachineInfo {
@@ -80,9 +144,7 @@ fn createTargetMachine(allocator: std.mem.Allocator, api: *const llvm.Api, tripl
     }
 
     const cpu_name = api.LLVMGetHostCPUName();
-    defer api.LLVMDisposeMessage(cpu_name);
     const cpu_features = api.LLVMGetHostCPUFeatures();
-    defer api.LLVMDisposeMessage(cpu_features);
 
     const machine = api.LLVMCreateTargetMachine(
         target_ref,
@@ -96,7 +158,8 @@ fn createTargetMachine(allocator: std.mem.Allocator, api: *const llvm.Api, tripl
 
     return .{
         .machine = machine,
-        .data_layout = api.LLVMCreateTargetDataLayout(machine),
+        .cpu_name = cpu_name,
+        .cpu_features = cpu_features,
     };
 }
 
@@ -108,7 +171,6 @@ const LoweredModule = struct {
 const Types = struct {
     api: *const llvm.Api,
     context: llvm.c.LLVMContextRef,
-    data_layout: llvm.c.LLVMTargetDataRef,
     i8: llvm.c.LLVMTypeRef,
     i32: llvm.c.LLVMTypeRef,
     i64: llvm.c.LLVMTypeRef,
@@ -117,14 +179,13 @@ const Types = struct {
     ptr_ty: llvm.c.LLVMTypeRef,
     string_ty: llvm.c.LLVMTypeRef,
 
-    fn init(api: *const llvm.Api, context: llvm.c.LLVMContextRef, data_layout: llvm.c.LLVMTargetDataRef) Types {
+    fn init(api: *const llvm.Api, context: llvm.c.LLVMContextRef) Types {
         const ptr_ty = api.LLVMPointerTypeInContext(context, 0);
-        const usize_ty = api.LLVMIntPtrTypeInContext(context, data_layout);
+        const usize_ty = api.LLVMInt64TypeInContext(context);
         var string_fields = [_]llvm.c.LLVMTypeRef{ ptr_ty, usize_ty };
         return .{
             .api = api,
             .context = context,
-            .data_layout = data_layout,
             .i8 = api.LLVMInt8TypeInContext(context),
             .i32 = api.LLVMInt32TypeInContext(context),
             .i64 = api.LLVMInt64TypeInContext(context),
@@ -183,16 +244,16 @@ fn lowerProgram(
     request: backend_api.CompileRequest,
     triple: []const u8,
 ) !LoweredModule {
+    _ = target_machine;
     const context = api.LLVMContextCreate();
     const module_name = try allocator.dupeZ(u8, request.module_name);
     const module_ref = api.LLVMModuleCreateWithNameInContext(module_name.ptr, context);
-    api.LLVMSetModuleDataLayout(module_ref, target_machine.data_layout);
     api.LLVMSetTarget(module_ref, try allocator.dupeZ(u8, triple));
 
     const builder = api.LLVMCreateBuilderInContext(context);
     defer api.LLVMDisposeBuilder(builder);
 
-    const types = Types.init(api, context, target_machine.data_layout);
+    const types = Types.init(api, context);
     const runtime_decls = declareRuntime(api, module_ref, types, request.mode);
 
     var functions = std.AutoHashMapUnmanaged(u32, llvm.c.LLVMValueRef){};
@@ -405,10 +466,399 @@ fn emitObjectFile(
     module_ref: llvm.c.LLVMModuleRef,
     object_path: []const u8,
 ) !void {
+    if (builtin.os.tag == .macos) {
+        return emitObjectFileViaZigCc(allocator, api, module_ref, object_path);
+    }
+
     const object_path_z = try allocator.dupeZ(u8, object_path);
     var error_message: [*c]u8 = null;
     if (api.LLVMTargetMachineEmitToFile(machine, module_ref, object_path_z.ptr, llvm.c.LLVMObjectFile, &error_message) != 0) {
         defer if (error_message != null) api.LLVMDisposeMessage(error_message);
+        return error.ObjectEmissionFailed;
+    }
+}
+
+fn emitObjectFileFromIr(
+    allocator: std.mem.Allocator,
+    ir_path: []const u8,
+    object_path: []const u8,
+) !void {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ build_options.zig_exe, "cc", "-c", "-o", object_path, ir_path },
+        .max_output_bytes = 512 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.ObjectEmissionFailed;
+    }
+}
+
+fn buildTextLlvmIr(
+    allocator: std.mem.Allocator,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+) ![]u8 {
+    var globals = std.array_list.Managed([]const u8).init(allocator);
+    defer freeStringList(allocator, &globals);
+
+    var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
+    defer freeSymbolNames(allocator, &symbol_names);
+
+    for (request.program.functions) |function_decl| {
+        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+        const name = try functionSymbolName(allocator, function_decl, request.mode);
+        try symbol_names.put(allocator, function_decl.id, name);
+    }
+
+    var function_bodies = std.array_list.Managed([]const u8).init(allocator);
+    defer freeStringList(allocator, &function_bodies);
+
+    var string_counter: usize = 0;
+    for (request.program.functions) |function_decl| {
+        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+        const body = try buildTextFunctionBody(allocator, request, &symbol_names, &globals, function_decl, string_counter);
+        string_counter += countStringConstants(function_decl);
+        try function_bodies.append(body);
+    }
+
+    if (request.mode == .llvm_native) {
+        const entry_decl = request.program.functions[request.program.entry_index];
+        if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
+        const entry_function_name = symbol_names.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
+        const main_body = try buildTextMainBody(allocator, entry_function_name);
+        try function_bodies.append(main_body);
+    }
+
+    var output = std.array_list.Managed(u8).init(allocator);
+    errdefer output.deinit();
+
+    var writer = output.writer();
+    try writer.print("; ModuleID = \"{s}\"\n", .{request.module_name});
+    try writer.print("source_filename = \"{s}\"\n", .{request.module_name});
+    try writer.print("target triple = \"{s}\"\n\n", .{triple});
+    try writer.writeAll("%kira.string = type { ptr, i64 }\n\n");
+
+    try writer.writeAll("declare void @\"kira_native_print_i64\"(i64)\n");
+    try writer.writeAll("declare void @\"kira_native_print_string\"(ptr, i64)\n");
+    if (request.mode == .hybrid) {
+        try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32)\n");
+    }
+    try writer.writeByte('\n');
+
+    if (function_bodies.items.len > 0) try writer.writeByte('\n');
+
+    for (globals.items) |global_def| {
+        try writer.writeAll(global_def);
+        try writer.writeByte('\n');
+    }
+
+    if (globals.items.len > 0 and function_bodies.items.len > 0) {
+        try writer.writeByte('\n');
+    }
+
+    for (function_bodies.items) |body| {
+        try writer.writeAll(body);
+        try writer.writeByte('\n');
+    }
+
+    return output.toOwnedSlice();
+}
+
+fn buildTextFunctionBody(
+    allocator: std.mem.Allocator,
+    request: backend_api.CompileRequest,
+    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
+    globals: *std.array_list.Managed([]const u8),
+    function_decl: ir.Function,
+    string_counter: usize,
+) ![]const u8 {
+    var body = std.array_list.Managed(u8).init(allocator);
+    errdefer body.deinit();
+
+    var writer = body.writer();
+    const function_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
+    try writer.writeAll("define void ");
+    try writeLlvmSymbol(writer, function_name);
+    try writer.writeAll("() {\nentry:\n");
+
+    const register_types = try inferRegisterTypes(allocator, function_decl);
+    defer allocator.free(register_types);
+
+    const string_state = try allocator.alloc(usize, 1);
+    defer allocator.free(string_state);
+    string_state[0] = string_counter;
+    var temp_counter: usize = 0;
+
+    for (function_decl.local_types, 0..) |local_type, index| {
+        try writer.writeAll("  %local");
+        try writer.print("{d}", .{index});
+        try writer.writeAll(" = alloca ");
+        try writer.writeAll(llvmValueTypeText(local_type));
+        try writer.writeAll("\n");
+    }
+
+    for (function_decl.instructions) |instruction| {
+        switch (instruction) {
+            .const_int => |value| {
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = add i64 0, ");
+                try writer.print("{d}\n", .{value.value});
+            },
+            .const_string => |value| {
+                const string_index = string_state[0];
+                string_state[0] += 1;
+                try appendStringGlobals(allocator, globals, string_index, value.value);
+
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = load %kira.string, ptr @kira_str_");
+                try writer.print("{d}", .{string_index});
+                try writer.writeAll("\n");
+            },
+            .add => |value| {
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = add i64 %r");
+                try writer.print("{d}", .{value.lhs});
+                try writer.writeAll(", %r");
+                try writer.print("{d}\n", .{value.rhs});
+            },
+            .store_local => |value| {
+                try writer.writeAll("  store ");
+                try writer.writeAll(llvmValueTypeText(register_types[value.src]));
+                try writer.writeAll(" %r");
+                try writer.print("{d}", .{value.src});
+                try writer.writeAll(", ptr %local");
+                try writer.print("{d}\n", .{value.local});
+            },
+            .load_local => |value| {
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = load ");
+                try writer.writeAll(llvmValueTypeText(function_decl.local_types[value.local]));
+                try writer.writeAll(", ptr %local");
+                try writer.print("{d}\n", .{value.local});
+            },
+            .print => |value| {
+                try writePrintInstruction(writer, register_types[value.src], value.src, &temp_counter);
+            },
+            .call => |value| {
+                try writeCallInstruction(writer, request, symbol_names, value.callee);
+            },
+            .ret_void => {
+                try writer.writeAll("  ret void\n}\n");
+                return body.toOwnedSlice();
+            },
+        }
+    }
+
+    try writer.writeAll("  ret void\n}\n");
+    return body.toOwnedSlice();
+}
+
+fn buildTextMainBody(
+    allocator: std.mem.Allocator,
+    entry_function_name: []const u8,
+) ![]const u8 {
+    var body = std.array_list.Managed(u8).init(allocator);
+    errdefer body.deinit();
+
+    var writer = body.writer();
+    try writer.writeAll("define i32 @main() {\nentry:\n");
+    try writer.writeAll("  call void ");
+    try writeLlvmSymbol(writer, entry_function_name);
+    try writer.writeAll("()\n  ret i32 0\n}\n");
+    return body.toOwnedSlice();
+}
+
+fn writeCallInstruction(
+    writer: anytype,
+    request: backend_api.CompileRequest,
+    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
+    callee_id: u32,
+) !void {
+    const callee_execution = functionExecutionById(request.program.*, callee_id) orelse return error.UnknownFunction;
+    switch (resolveExecution(callee_execution, request.mode)) {
+        .native => {
+            const callee_name = symbol_names.get(callee_id) orelse return error.MissingFunctionDeclaration;
+            try writer.writeAll("  call void ");
+            try writeLlvmSymbol(writer, callee_name);
+            try writer.writeAll("()\n");
+        },
+        .runtime => {
+            if (request.mode != .hybrid) return error.RuntimeCallInNativeBuild;
+            try writer.writeAll("  call void @\"kira_hybrid_call_runtime\"(i32 ");
+            try writer.print("{d}", .{callee_id});
+            try writer.writeAll(")\n");
+        },
+        .inherited => unreachable,
+    }
+}
+
+fn writePrintInstruction(writer: anytype, value_type: ir.ValueType, src: u32, temp_counter: *usize) !void {
+    switch (value_type) {
+        .integer => {
+            try writer.writeAll("  call void @\"kira_native_print_i64\"(i64 %r");
+            try writer.print("{d}", .{src});
+            try writer.writeAll(")\n");
+        },
+        .string => {
+            const temp_index = temp_counter.*;
+            temp_counter.* += 1;
+
+            try writer.writeAll("  %str.ptr.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = extractvalue %kira.string %r");
+            try writer.print("{d}", .{src});
+            try writer.writeAll(", 0\n");
+            try writer.writeAll("  %str.len.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = extractvalue %kira.string %r");
+            try writer.print("{d}", .{src});
+            try writer.writeAll(", 1\n");
+            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %str.ptr.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(", i64 %str.len.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(")\n");
+        },
+    }
+}
+
+fn appendStringGlobals(
+    allocator: std.mem.Allocator,
+    globals: *std.array_list.Managed([]const u8),
+    index: usize,
+    value: []const u8,
+) !void {
+    const data_name = try std.fmt.allocPrint(allocator, "kira_str_{d}_data", .{index});
+    defer allocator.free(data_name);
+    const struct_name = try std.fmt.allocPrint(allocator, "kira_str_{d}", .{index});
+    defer allocator.free(struct_name);
+
+    var data_line = std.array_list.Managed(u8).init(allocator);
+    errdefer data_line.deinit();
+    var data_writer = data_line.writer();
+    try data_writer.print("@{s} = private unnamed_addr constant [{d} x i8] c\"", .{ data_name, value.len + 1 });
+    try writeLlvmStringLiteral(data_writer, value);
+    try data_writer.writeAll("\\00\"\n");
+    try globals.append(try data_line.toOwnedSlice());
+
+    var struct_line = std.array_list.Managed(u8).init(allocator);
+    errdefer struct_line.deinit();
+    var struct_writer = struct_line.writer();
+    try struct_writer.print("@{s} = private unnamed_addr constant %kira.string {{ ptr getelementptr inbounds ([{d} x i8], ptr @{s}, i64 0, i64 0), i64 {d} }}\n", .{
+        struct_name,
+        value.len + 1,
+        data_name,
+        value.len,
+    });
+    try globals.append(try struct_line.toOwnedSlice());
+}
+
+fn writeLlvmSymbol(writer: anytype, symbol: []const u8) !void {
+    try writer.writeAll("@\"");
+    try writeLlvmEscapedBytes(writer, symbol);
+    try writer.writeByte('"');
+}
+
+fn writeLlvmStringLiteral(writer: anytype, bytes: []const u8) !void {
+    try writeLlvmEscapedBytes(writer, bytes);
+}
+
+fn writeLlvmEscapedBytes(writer: anytype, bytes: []const u8) !void {
+    for (bytes) |byte| {
+        if (byte >= 0x20 and byte <= 0x7e and byte != '\\' and byte != '"') {
+            try writer.writeByte(byte);
+        } else {
+            try writer.writeByte('\\');
+            try writer.writeByte(hexDigit(byte >> 4));
+            try writer.writeByte(hexDigit(byte & 0x0f));
+        }
+    }
+}
+
+fn hexDigit(value: u8) u8 {
+    const index: usize = @intCast(value & 0x0f);
+    return "0123456789ABCDEF"[index];
+}
+
+fn llvmValueTypeText(value_type: ir.ValueType) []const u8 {
+    return switch (value_type) {
+        .integer => "i64",
+        .string => "%kira.string",
+    };
+}
+
+fn countStringConstants(function_decl: ir.Function) usize {
+    var count: usize = 0;
+    for (function_decl.instructions) |instruction| {
+        switch (instruction) {
+            .const_string => count += 1,
+            else => {},
+        }
+    }
+    return count;
+}
+
+fn freeStringList(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8)) void {
+    for (list.items) |item| allocator.free(item);
+    list.deinit();
+}
+
+fn freeSymbolNames(allocator: std.mem.Allocator, symbols: *std.AutoHashMapUnmanaged(u32, []const u8)) void {
+    var iterator = symbols.iterator();
+    while (iterator.next()) |entry| {
+        allocator.free(entry.value_ptr.*);
+    }
+    symbols.deinit(allocator);
+}
+
+fn writeTextFile(path: []const u8, data: []const u8) !void {
+    if (std.fs.path.isAbsolute(path)) {
+        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(data);
+        return;
+    }
+    try std.fs.cwd().writeFile(.{
+        .sub_path = path,
+        .data = data,
+    });
+}
+
+fn emitObjectFileViaZigCc(
+    allocator: std.mem.Allocator,
+    api: *const llvm.Api,
+    module_ref: llvm.c.LLVMModuleRef,
+    object_path: []const u8,
+) !void {
+    const ir_text_z = api.LLVMPrintModuleToString(module_ref);
+    defer api.LLVMDisposeMessage(ir_text_z);
+
+    const ir_text = std.mem.span(ir_text_z);
+    const ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{object_path});
+    defer allocator.free(ir_path);
+    defer std.fs.cwd().deleteFile(ir_path) catch {};
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = ir_path,
+        .data = ir_text,
+    });
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ build_options.zig_exe, "cc", "-c", "-x", "ir", "-o", object_path, ir_path },
+        .max_output_bytes = 512 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
         return error.ObjectEmissionFailed;
     }
 }
