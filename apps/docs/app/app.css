@@ -92,6 +92,7 @@ html > body[data-scroll-locked] {
 #nd-sidebar-mobile [role="menuitem"],
 #nd-sidebar-mobile [data-collapsible-trigger] {
   @apply pointer-events-auto;
+  cursor: pointer;
 }
 
 body {
