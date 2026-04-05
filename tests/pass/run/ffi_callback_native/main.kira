@@ -1,0 +1,15 @@
+import bindings.callbacks as callbacks
+
+@Main
+@Native
+function main() {
+    let result: I64 = callbacks.kira_invoke_callback(add_one, 0, 5)
+    print(result)
+    return
+}
+
+@Native
+function add_one(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 1
+    return sum
+}

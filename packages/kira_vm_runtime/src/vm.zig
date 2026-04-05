@@ -3,7 +3,7 @@ const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 const builtins = @import("builtins.zig");
 
-pub const NativeCallHook = *const fn (?*anyopaque, u32) anyerror!void;
+pub const NativeCallHook = *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value;
 
 pub const Hooks = struct {
     context: ?*anyopaque = null,
@@ -24,15 +24,22 @@ pub const Vm = struct {
             self.rememberError("bytecode module has no runtime entrypoint");
             return error.RuntimeFailure;
         };
-        try self.runFunctionById(module, entry_function_id, writer, .{});
+        _ = try self.runFunctionById(module, entry_function_id, &.{}, writer, .{});
     }
 
-    pub fn runFunctionById(self: *Vm, module: *const bytecode.Module, function_id: u32, writer: anytype, hooks: Hooks) anyerror!void {
+    pub fn runFunctionById(
+        self: *Vm,
+        module: *const bytecode.Module,
+        function_id: u32,
+        args: []const runtime_abi.Value,
+        writer: anytype,
+        hooks: Hooks,
+    ) anyerror!runtime_abi.Value {
         const function_decl = module.findFunctionById(function_id) orelse {
             self.rememberError("bytecode function id is out of range");
             return error.RuntimeFailure;
         };
-        try self.runFunction(module, function_decl, writer, hooks);
+        return self.runFunction(module, function_decl, args, writer, hooks);
     }
 
     pub fn lastError(self: *const Vm) ?[]const u8 {
@@ -40,7 +47,14 @@ pub const Vm = struct {
         return self.last_error_buffer[0..self.last_error_len];
     }
 
-    fn runFunction(self: *Vm, module: *const bytecode.Module, function_decl: bytecode.Function, writer: anytype, hooks: Hooks) anyerror!void {
+    fn runFunction(
+        self: *Vm,
+        module: *const bytecode.Module,
+        function_decl: bytecode.Function,
+        args: []const runtime_abi.Value,
+        writer: anytype,
+        hooks: Hooks,
+    ) anyerror!runtime_abi.Value {
         const registers = try self.allocator.alloc(runtime_abi.Value, function_decl.register_count);
         defer self.allocator.free(registers);
         const locals = try self.allocator.alloc(runtime_abi.Value, function_decl.local_count);
@@ -48,11 +62,20 @@ pub const Vm = struct {
 
         for (registers) |*slot| slot.* = .{ .void = {} };
         for (locals) |*slot| slot.* = .{ .void = {} };
+        if (args.len != function_decl.param_count) {
+            self.rememberError("bytecode function call used the wrong number of arguments");
+            return error.RuntimeFailure;
+        }
+        for (args, 0..) |arg, index| {
+            locals[index] = arg;
+        }
 
         for (function_decl.instructions) |inst| {
             switch (inst) {
                 .const_int => |value| registers[value.dst] = .{ .integer = value.value },
                 .const_string => |value| registers[value.dst] = .{ .string = value.value },
+                .const_bool => |value| registers[value.dst] = .{ .boolean = value.value },
+                .const_null_ptr => |value| registers[value.dst] = .{ .raw_ptr = 0 },
                 .add => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
@@ -65,17 +88,26 @@ pub const Vm = struct {
                 .store_local => |value| locals[value.local] = registers[value.src],
                 .load_local => |value| registers[value.dst] = locals[value.local],
                 .print => |value| try builtins.printValue(writer, registers[value.src]),
-                .call_runtime => |value| try self.runFunctionById(module, value.function_id, writer, hooks),
+                .call_runtime => |value| {
+                    const call_args = try collectArgs(self.allocator, registers, value.args);
+                    defer self.allocator.free(call_args);
+                    const result = try self.runFunctionById(module, value.function_id, call_args, writer, hooks);
+                    if (value.dst) |dst| registers[dst] = result;
+                },
                 .call_native => |value| {
                     const callback = hooks.call_native orelse {
                         self.rememberError("vm native bridge was not installed");
                         return error.RuntimeFailure;
                     };
-                    try callback(hooks.context, value.function_id);
+                    const call_args = try collectArgs(self.allocator, registers, value.args);
+                    defer self.allocator.free(call_args);
+                    const result = try callback(hooks.context, value.function_id, call_args);
+                    if (value.dst) |dst| registers[dst] = result;
                 },
-                .ret_void => return,
+                .ret => |value| return if (value.src) |src| registers[src] else .{ .void = {} },
             }
         }
+        return .{ .void = {} };
     }
 
     fn rememberError(self: *Vm, message: []const u8) void {
@@ -84,6 +116,14 @@ pub const Vm = struct {
         self.last_error_len = length;
     }
 };
+
+fn collectArgs(allocator: std.mem.Allocator, registers: []const runtime_abi.Value, argument_registers: []const u32) ![]runtime_abi.Value {
+    const values = try allocator.alloc(runtime_abi.Value, argument_registers.len);
+    for (argument_registers, 0..) |register_index, index| {
+        values[index] = registers[register_index];
+    }
+    return values;
+}
 
 test "executes nested runtime calls" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -1,0 +1,14 @@
+type SupportQueue {
+    let name: String
+    let openCount: Int
+    let closedCount: Int
+}
+
+type SupportDashboard {
+    let primary: SupportQueue
+    let secondary: SupportQueue
+}
+
+function stub() {
+    return
+}

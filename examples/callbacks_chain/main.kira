@@ -1,0 +1,36 @@
+import bindings.callbacks as callbacks
+
+@Main
+@Native
+function main() {
+    let start: I64 = 4
+    let raised: I64 = stage_one(start)
+    let final: I64 = stage_two(raised)
+
+    print("callbacks chain")
+    print(raised)
+    print(final)
+    return
+}
+
+@Native
+function stage_one(value: I64): I64 {
+    return callbacks.kira_invoke_callback(add_three, 0, value)
+}
+
+@Native
+function stage_two(value: I64): I64 {
+    return callbacks.kira_invoke_callback(double_value, 0, value)
+}
+
+@Native
+function add_three(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 3
+    return sum
+}
+
+@Native
+function double_value(value: I64, user_data: RawPtr): I64 {
+    let doubled: I64 = value + value
+    return doubled
+}

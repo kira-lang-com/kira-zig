@@ -1,0 +1,26 @@
+[library]
+name = "callbacks"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "callbacks.h"
+include_dirs = ["."]
+
+[autobinding]
+module = "bindings.callbacks"
+output = "../bindings/callbacks.kira"
+spec = "callbacks.bind.toml"
+headers = ["callbacks.h"]
+
+[build]
+sources = ["callbacks.c"]
+
+[target.aarch64-macos-none]
+static_lib = "../generated/native/aarch64-macos/libcallbacks.a"
+
+[target.x86_64-linux-gnu]
+static_lib = "../generated/native/x86_64-linux-gnu/libcallbacks.a"
+
+[target.x86_64-windows-msvc]
+static_lib = "../generated/native/x86_64-windows-msvc/callbacks.lib"

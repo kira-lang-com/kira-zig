@@ -2,6 +2,16 @@
 
 This monorepo now carries a real dual-backend Kira pipeline in Zig: frontend lowering, shared IR, VM bytecode execution, LLVM-native code generation, native runtime helpers, build orchestration, CLI, runtime ABI, hybrid/native contracts, and the `KiraMain` C facade.
 
+The repo also now carries a first real static-linking-first C-ABI FFI path:
+
+- per-library TOML manifests under nearby `native_libs/`
+- Clang-driven autobinding generation
+- generated Kira bindings emitted as real Kira source files
+- direct LLVM/native extern calls with no public shim layer
+- hybrid bridge marshalling for arguments and results
+- explicit native callback support with function-pointer passing
+- full-surface Sokol header generation and a real triangle app proof
+
 The working execution paths today are:
 
 - source -> lexer -> parser -> semantics -> IR -> bytecode -> VM
@@ -27,6 +37,14 @@ The native path currently supports the same bootstrap subset as the VM path:
 - `return`
 - block statements
 
+The FFI path extends that executable boundary with:
+
+- direct extern/native calls with arguments and return values
+- `RawPtr`, `CString`, callback typedefs, and imported extern declarations
+- native struct field access and assignment for generated FFI types
+- hybrid runtime/native argument and result marshalling
+- native callback targets for C-ABI callback parameters
+
 ## Quick Start
 
 ```bash
@@ -34,15 +52,16 @@ zig build
 zig build install
 kira-bootstrapper --help
 kira-bootstrapper fetch-llvm
-kira-bootstrapper run examples/hello.kira
-kira-bootstrapper run --backend llvm examples/hello.kira
-kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip.kira
-kira-bootstrapper tokens examples/hello.kira
-kira-bootstrapper ast examples/hello.kira
-kira-bootstrapper check examples/hello.kira
-kira-bootstrapper build examples/hello.kira
-kira-bootstrapper build --backend llvm examples/hello.kira
-kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip.kira
+kira-bootstrapper run examples/hello/main.kira
+kira-bootstrapper run --backend llvm examples/hello/main.kira
+kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira
+kira-bootstrapper tokens examples/hello/main.kira
+kira-bootstrapper ast examples/hello/main.kira
+kira-bootstrapper check examples/hello/main.kira
+kira-bootstrapper build examples/hello/main.kira
+kira-bootstrapper build --backend llvm examples/hello/main.kira
+kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip/main.kira
+kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira
 kira-bootstrapper new DemoApp generated/DemoApp
 zig build test
 ```
@@ -91,7 +110,7 @@ If you need to override the managed install, point Kira at a different LLVM tree
 
 ```powershell
 $env:KIRA_LLVM_HOME = "C:\path\to\llvm"
-kira-bootstrapper run --backend llvm examples/hello.kira
+kira-bootstrapper run --backend llvm examples/hello/main.kira
 ```
 
 The pinned LLVM download flow intentionally does not use checksum verification. The release tag, asset name, host mapping, and install marker are the source of truth for reuse.
@@ -101,16 +120,16 @@ The pinned LLVM download flow intentionally does not use checksum verification. 
 The standalone binary is now the normal path:
 
 ```bash
-kira-bootstrapper run examples/hello.kira
-kira-bootstrapper build examples/hello.kira
-kira-bootstrapper check examples/hello.kira
+kira-bootstrapper run examples/hello/main.kira
+kira-bootstrapper build examples/hello/main.kira
+kira-bootstrapper check examples/hello/main.kira
 ```
 
 `zig build run -- ...` is still useful when iterating on the CLI itself because it rebuilds and runs in one step:
 
 ```bash
-zig build run -- run examples/hello.kira
-zig build run -- build --backend llvm examples/hello.kira
+zig build run -- run examples/hello/main.kira
+zig build run -- build --backend llvm examples/hello/main.kira
 ```
 
 ## Bootstrap Syntax
@@ -136,7 +155,10 @@ function entry() {
 - `kira_llvm_backend` lowers shared IR through LLVM C API and emits native objects/executables
 - `kira_native_bridge` owns the native runtime helper surface used by LLVM lowering
 - `kira_hybrid_runtime` hosts mixed bytecode/native programs and routes boundary calls through explicit bridge/trampoline logic
+- generated FFI bindings are emitted as normal Kira modules rather than wrapper APIs
 - hybrid contracts remain layered and future-facing without forcing the repo back into VM-only assumptions
 - native library manifests live outside the root `Kira.toml`
+
+The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/main.kira](examples/sokol_triangle/main.kira) and [examples/sokol_runtime_entry/main.kira](examples/sokol_runtime_entry/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira-bootstrapper check examples/sokol_triangle/main.kira` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira` to build and launch the native triangle proof.
 
 See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), and [docs/native_libraries.md](docs/native_libraries.md).

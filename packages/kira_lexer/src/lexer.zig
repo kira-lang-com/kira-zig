@@ -317,9 +317,9 @@ test "tokenizes modern expression and member syntax" {
 
 test "tokenizes the checked-in Kira corpus" {
     const corpus = [_][]const u8{
-        "examples/hello.kira",
-        "examples/arithmetic.kira",
-        "examples/hybrid_roundtrip.kira",
+        "examples/hello/main.kira",
+        "examples/arithmetic/main.kira",
+        "examples/hybrid_roundtrip/main.kira",
         "generated/BootstrapApp/src/main.kira",
         "generated/DemoApp/src/main.kira",
         "templates/app/src/main.kira",

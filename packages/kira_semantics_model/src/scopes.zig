@@ -1,9 +1,9 @@
 const std = @import("std");
-const Type = @import("types.zig").Type;
+const ResolvedType = @import("types.zig").ResolvedType;
 
 pub const LocalBinding = struct {
     id: u32,
-    ty: Type,
+    ty: ResolvedType,
 };
 
 pub const Scope = struct {

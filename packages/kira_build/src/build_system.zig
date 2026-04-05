@@ -7,6 +7,7 @@ const hybrid = @import("kira_hybrid_definition");
 const runtime_abi = @import("kira_runtime_abi");
 const llvm_backend = @import("kira_llvm_backend");
 const pipeline = @import("pipeline.zig");
+const ffi_support = @import("ffi_support.zig");
 const builtin = @import("builtin");
 
 pub const BuildFailureKind = enum {
@@ -86,6 +87,11 @@ pub const BuildSystem = struct {
 
         const ir_program = compiled.ir_program.?;
         const object_path = try defaultObjectPath(self.allocator, request.output_path);
+        const parsed = try pipeline.parseFile(self.allocator, request.source_path);
+        const discovered_native_libraries = if (parsed.program) |program|
+            try ffi_support.prepareNativeLibraries(self.allocator, request.source_path, program.imports)
+        else
+            &.{};
         const backend_result = llvm_backend.compile(self.allocator, .{
             .mode = .llvm_native,
             .program = &ir_program,
@@ -94,7 +100,7 @@ pub const BuildSystem = struct {
                 .object_path = object_path,
                 .executable_path = request.output_path,
             },
-            .resolved_native_libraries = request.native_libraries,
+            .resolved_native_libraries = try mergeNativeLibraries(self.allocator, request.native_libraries, discovered_native_libraries),
         }) catch |err| {
             const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
@@ -134,6 +140,11 @@ pub const BuildSystem = struct {
         const bytecode_path = try replaceExtension(self.allocator, request.output_path, ".kbc");
         const object_path = try replaceExtension(self.allocator, request.output_path, objectExtension());
         const library_path = try replaceExtension(self.allocator, request.output_path, sharedLibraryExtension());
+        const parsed = try pipeline.parseFile(self.allocator, request.source_path);
+        const discovered_native_libraries = if (parsed.program) |program|
+            try ffi_support.prepareNativeLibraries(self.allocator, request.source_path, program.imports)
+        else
+            &.{};
 
         const bytecode_module = bytecode.compileProgram(self.allocator, ir_program, .hybrid_runtime) catch |err| {
             const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
@@ -153,7 +164,7 @@ pub const BuildSystem = struct {
                 .object_path = object_path,
                 .shared_library_path = library_path,
             },
-            .resolved_native_libraries = request.native_libraries,
+            .resolved_native_libraries = try mergeNativeLibraries(self.allocator, request.native_libraries, discovered_native_libraries),
         }) catch |err| {
             const backend_diagnostics = try backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
@@ -206,6 +217,17 @@ fn defaultObjectPath(allocator: std.mem.Allocator, executable_path: []const u8) 
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ executable_path, objectExtension() });
 }
 
+fn mergeNativeLibraries(
+    allocator: std.mem.Allocator,
+    explicit: []const @import("kira_native_lib_definition").ResolvedNativeLibrary,
+    discovered: []const @import("kira_native_lib_definition").ResolvedNativeLibrary,
+) ![]const @import("kira_native_lib_definition").ResolvedNativeLibrary {
+    const merged = try allocator.alloc(@import("kira_native_lib_definition").ResolvedNativeLibrary, explicit.len + discovered.len);
+    @memcpy(merged[0..explicit.len], explicit);
+    @memcpy(merged[explicit.len..], discovered);
+    return merged;
+}
+
 fn replaceExtension(allocator: std.mem.Allocator, path: []const u8, extension: []const u8) ![]const u8 {
     const ext = std.fs.path.extension(path);
     if (ext.len == 0) return std.fmt.allocPrint(allocator, "{s}{s}", .{ path, extension });
@@ -242,7 +264,7 @@ fn buildHybridManifest(
             .id = function_decl.id,
             .name = function_decl.name,
             .execution = resolved_execution,
-            .exported_name = if (resolved_execution == .native)
+            .exported_name = if (resolved_execution == .native and !function_decl.is_extern)
                 try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id})
             else
                 null,

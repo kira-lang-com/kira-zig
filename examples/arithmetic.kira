@@ -1,8 +1,0 @@
-@Main
-function main() {
-    let left = 40;
-    let right = 2;
-    let sum = left + right;
-    print(sum);
-    return;
-}

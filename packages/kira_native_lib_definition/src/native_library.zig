@@ -11,6 +11,27 @@ pub const LibraryAbi = enum {
     c,
 };
 
+pub const HeaderSpec = struct {
+    entrypoint: ?[]const u8 = null,
+    include_dirs: []const []const u8 = &.{},
+    defines: []const []const u8 = &.{},
+    frameworks: []const []const u8 = &.{},
+    system_libs: []const []const u8 = &.{},
+};
+
+pub const AutobindingSpec = struct {
+    module_name: []const u8,
+    output_path: []const u8,
+    spec_path: ?[]const u8 = null,
+    headers: []const []const u8 = &.{},
+};
+
+pub const BuildRecipe = struct {
+    sources: []const []const u8 = &.{},
+    include_dirs: []const []const u8 = &.{},
+    defines: []const []const u8 = &.{},
+};
+
 pub const TargetSpec = struct {
     selector: TargetSelector,
     static_lib: ?[]const u8 = null,
@@ -22,7 +43,9 @@ pub const NativeLibrarySpec = struct {
     name: []const u8,
     link_mode: LinkMode,
     abi: LibraryAbi,
-    headers: LinkExtras = .{},
+    headers: HeaderSpec = .{},
+    autobinding: ?AutobindingSpec = null,
+    build: BuildRecipe = .{},
     targets: []const TargetSpec,
     symbols: []const ffi.NativeSymbol = &.{},
 };

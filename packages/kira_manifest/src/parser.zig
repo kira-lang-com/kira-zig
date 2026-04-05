@@ -77,7 +77,12 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
     var library_name: []const u8 = "";
     var link_mode: native.LinkMode = .static;
     var abi: native.LibraryAbi = .c;
-    var headers = native.LinkExtras{};
+    var headers = native.HeaderSpec{};
+    var autobinding_module_name: ?[]const u8 = null;
+    var autobinding_output_path: ?[]const u8 = null;
+    var autobinding_spec_path: ?[]const u8 = null;
+    var autobinding_headers: []const []const u8 = &.{};
+    var build = native.BuildRecipe{};
     var targets = std.array_list.Managed(native.TargetSpec).init(allocator);
 
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -101,10 +106,20 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
             if (assignString(line, "link_mode")) |value| link_mode = parseLinkMode(value);
             if (assignString(line, "abi")) |value| abi = parseAbi(value);
         } else if (std.mem.eql(u8, section, "headers")) {
+            if (assignString(line, "entrypoint")) |value| headers.entrypoint = try allocator.dupe(u8, value);
             if (std.mem.startsWith(u8, line, "include_dirs")) headers.include_dirs = try parseStringArray(allocator, line);
             if (std.mem.startsWith(u8, line, "defines")) headers.defines = try parseStringArray(allocator, line);
             if (std.mem.startsWith(u8, line, "frameworks")) headers.frameworks = try parseStringArray(allocator, line);
             if (std.mem.startsWith(u8, line, "system_libs")) headers.system_libs = try parseStringArray(allocator, line);
+        } else if (std.mem.eql(u8, section, "autobinding")) {
+            if (assignString(line, "module")) |value| autobinding_module_name = try allocator.dupe(u8, value);
+            if (assignString(line, "output")) |value| autobinding_output_path = try allocator.dupe(u8, value);
+            if (assignString(line, "spec")) |value| autobinding_spec_path = try allocator.dupe(u8, value);
+            if (std.mem.startsWith(u8, line, "headers")) autobinding_headers = try parseStringArray(allocator, line);
+        } else if (std.mem.eql(u8, section, "build")) {
+            if (std.mem.startsWith(u8, line, "sources")) build.sources = try parseStringArray(allocator, line);
+            if (std.mem.startsWith(u8, line, "include_dirs")) build.include_dirs = try parseStringArray(allocator, line);
+            if (std.mem.startsWith(u8, line, "defines")) build.defines = try parseStringArray(allocator, line);
         } else if (target_name != null and targets.items.len > 0) {
             var current = &targets.items[targets.items.len - 1];
             if (assignString(line, "static_lib")) |value| current.static_lib = try allocator.dupe(u8, value);
@@ -122,6 +137,13 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
             .link_mode = link_mode,
             .abi = abi,
             .headers = headers,
+            .autobinding = if (autobinding_module_name != null and autobinding_output_path != null) .{
+                .module_name = autobinding_module_name.?,
+                .output_path = autobinding_output_path.?,
+                .spec_path = autobinding_spec_path,
+                .headers = autobinding_headers,
+            } else null,
+            .build = build,
             .targets = try targets.toOwnedSlice(),
         },
     };
@@ -175,20 +197,34 @@ test "parses native library manifest" {
 
     const manifest = try parseNativeLibManifest(arena.allocator(),
         \\[library]
-        \\name = "glfw"
+        \\name = "sokol_gfx"
         \\link_mode = "static"
         \\abi = "c"
         \\
         \\[headers]
-        \\include_dirs = ["include"]
-        \\defines = ["GLFW_INCLUDE_NONE"]
+        \\entrypoint = "vendor/sokol/sokol_gfx.h"
+        \\include_dirs = ["vendor/sokol"]
+        \\defines = ["SOKOL_DUMMY_BACKEND"]
+        \\
+        \\[autobinding]
+        \\module = "generated.bindings.sokol_gfx"
+        \\output = "generated/bindings/sokol_gfx.kira"
+        \\spec = "native_libs/sokol_gfx.bind.toml"
+        \\headers = ["vendor/sokol/sokol_gfx.h"]
+        \\
+        \\[build]
+        \\sources = ["vendor/sokol/sokol_gfx_impl.c"]
+        \\defines = ["SOKOL_IMPL", "SOKOL_DUMMY_BACKEND"]
         \\
         \\[target.x86_64-linux-gnu]
-        \\static_lib = "vendor/glfw/linux/x86_64/libglfw3.a"
+        \\static_lib = "generated/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a"
         \\frameworks = ["X11"]
     );
 
-    try std.testing.expectEqualStrings("glfw", manifest.library.name);
+    try std.testing.expectEqualStrings("sokol_gfx", manifest.library.name);
+    try std.testing.expectEqualStrings("vendor/sokol/sokol_gfx.h", manifest.library.headers.entrypoint.?);
+    try std.testing.expectEqualStrings("generated.bindings.sokol_gfx", manifest.library.autobinding.?.module_name);
+    try std.testing.expectEqualStrings("vendor/sokol/sokol_gfx_impl.c", manifest.library.build.sources[0]);
     try std.testing.expectEqual(@as(usize, 1), manifest.library.targets.len);
-    try std.testing.expectEqualStrings("vendor/glfw/linux/x86_64/libglfw3.a", manifest.library.targets[0].static_lib.?);
+    try std.testing.expectEqualStrings("generated/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a", manifest.library.targets[0].static_lib.?);
 }

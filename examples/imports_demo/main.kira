@@ -1,0 +1,23 @@
+import Support as Support
+import Formatting as Formatting
+
+@Main
+function main() {
+    let activeUsers = 12 + 8
+    let trialUsers = 4 + 3
+    let convertedUsers = activeUsers + trialUsers
+
+    print("imports demo")
+    print(activeUsers)
+    print(trialUsers)
+    print(convertedUsers)
+    localSummary()
+    return
+}
+
+function localSummary() {
+    let queueA = 2 + 3
+    let queueB = queueA + 4
+    print(queueB)
+    return
+}

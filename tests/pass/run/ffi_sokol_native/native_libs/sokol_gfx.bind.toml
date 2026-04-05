@@ -1,0 +1,3 @@
+[bindings]
+functions = ["sg_setup", "sg_isvalid", "sg_shutdown"]
+structs = ["sg_desc"]

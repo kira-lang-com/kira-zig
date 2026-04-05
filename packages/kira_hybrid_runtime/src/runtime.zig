@@ -45,17 +45,22 @@ pub const HybridRuntime = struct {
         defer native_bridge.clearRuntimeInvoker();
 
         switch (self.manifest.entry_execution) {
-            .runtime => try self.invokeRuntime(&runtime_context, self.manifest.entry_function_id),
-            .native => try self.bridge.call(self.manifest.entry_function_id),
+            .runtime => try self.invokeRuntime(&runtime_context, self.manifest.entry_function_id, &.{}, null),
+            .native => _ = try self.bridge.call(self.manifest.entry_function_id, &.{}),
             .inherited => unreachable,
         }
     }
 
-    fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32) !void {
-        try self.vm.runFunctionById(&self.module, function_id, context.writer, .{
+    fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: ?*runtime_abi.BridgeValue) !void {
+        const runtime_args = try self.allocator.alloc(runtime_abi.Value, args.len);
+        defer self.allocator.free(runtime_args);
+        for (args, 0..) |arg, index| runtime_args[index] = runtime_abi.bridgeValueToValue(arg);
+
+        const result = try self.vm.runFunctionById(&self.module, function_id, runtime_args, context.writer, .{
             .context = @as(?*anyopaque, @ptrCast(context)),
             .call_native = callNative(@TypeOf(context.*)),
         });
+        if (out_result) |ptr| ptr.* = runtime_abi.bridgeValueFromValue(result);
     }
 };
 
@@ -66,20 +71,20 @@ fn RuntimeContext(comptime Writer: type) type {
     };
 }
 
-fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32) anyerror!void {
+fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void {
     return struct {
-        fn invoke(context: ?*anyopaque, function_id: u32) !void {
+        fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: *runtime_abi.BridgeValue) !void {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-            try runtime_context.runtime.invokeRuntime(runtime_context, function_id);
+            try runtime_context.runtime.invokeRuntime(runtime_context, function_id, args, out_result);
         }
     }.invoke;
 }
 
-fn callNative(comptime Context: type) *const fn (?*anyopaque, u32) anyerror!void {
+fn callNative(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value {
     return struct {
-        fn invoke(context: ?*anyopaque, function_id: u32) !void {
+        fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-            return runtime_context.runtime.bridge.call(function_id);
+            return runtime_context.runtime.bridge.call(function_id, args);
         }
     }.invoke;
 }
@@ -88,10 +93,11 @@ fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.Hybrid
     var descriptors = std.array_list.Managed(hybrid.BridgeDescriptor).init(allocator);
     for (manifest.functions) |function_decl| {
         if (function_decl.execution != .native) continue;
+        if (function_decl.exported_name == null) continue;
         try descriptors.append(.{
             .bridge_id = .init(function_decl.id),
             .function_id = .init(function_decl.id),
-            .symbol_name = function_decl.exported_name orelse return error.MissingNativeExportName,
+            .symbol_name = function_decl.exported_name.?,
             .source_execution = .runtime,
             .target_execution = .native,
             .calling_convention = .kira_hybrid,

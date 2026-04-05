@@ -140,7 +140,7 @@ If you need a different LLVM tree temporarily, set `KIRA_LLVM_HOME`. That overri
 
 ```powershell
 $env:KIRA_LLVM_HOME = "C:\path\to\llvm"
-kira-bootstrapper build --backend llvm examples/hello.kira
+kira-bootstrapper build --backend llvm examples/hello/main.kira
 ```
 
 ## No checksum verification

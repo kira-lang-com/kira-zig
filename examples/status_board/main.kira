@@ -1,0 +1,32 @@
+@Main
+function main() {
+    let openTickets = 3 + 6
+    let activeMigrations = openTickets + 2
+    let completedReleases = activeMigrations + 4
+    let totalSignals = completedReleases + 7
+
+    print("status board")
+    print(openTickets)
+    print(activeMigrations)
+    print(completedReleases)
+    print(totalSignals)
+    print(renderSummary())
+    return
+}
+
+function renderSummary() -> Int {
+    let summaryRows = 2 + 2
+    let highlightedRows = summaryRows + 1
+    return highlightedRows
+}
+
+type ServiceStatus {
+    let name: String
+    let incidents: Int
+    let owners: Int
+}
+
+type ReleaseWindow {
+    let morning: ServiceStatus
+    let evening: ServiceStatus
+}

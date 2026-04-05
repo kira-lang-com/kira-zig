@@ -1,0 +1,33 @@
+@Main
+function main() {
+    let draftCount = 4 + 2
+    let reviewCount = draftCount + 3
+    let publishedCount = reviewCount + 5
+    let totalArtifacts = publishedCount + 1
+
+    print("report pipeline")
+    print(draftCount)
+    print(reviewCount)
+    print(publishedCount)
+    print(totalArtifacts)
+    print(renderFooter())
+    return
+}
+
+function renderFooter() -> Int {
+    let pages = 8 + 2
+    let appendices = pages + 1
+    return appendices;
+}
+
+type ReportStage {
+    let label: String
+    let owner: String
+    let itemCount: Int
+}
+
+type ReportBoard {
+    let intake: ReportStage
+    let review: ReportStage
+    let release: ReportStage
+}

@@ -1,0 +1,38 @@
+@Main
+function main() {
+    let baseRevenue = 120;
+    let recurringRevenue = 36;
+    let supportCredits = 6;
+    let totalRevenue = baseRevenue + recurringRevenue;
+    let adjustedRevenue = totalRevenue + supportCredits;
+    let deploymentBudget = 90;
+    let platformBudget = 12;
+    let totalCost = deploymentBudget + platformBudget;
+    let margin = adjustedRevenue + totalCost;
+
+    print("arithmetic lab");
+    print(totalRevenue);
+    print(adjustedRevenue);
+    print(totalCost);
+    print(margin);
+    print(projectedRunway());
+    return;
+}
+
+function projectedRunway() -> Int {
+    let quarterOne = 3 + 1;
+    let quarterTwo = quarterOne + 2;
+    let quarterThree = quarterTwo + 3;
+    return quarterThree;
+}
+
+type RevenueSnapshot {
+    let monthLabel: String
+    let gross: Int
+    let net: Int
+}
+
+type ForecastSummary {
+    let current: RevenueSnapshot
+    let next: RevenueSnapshot
+}

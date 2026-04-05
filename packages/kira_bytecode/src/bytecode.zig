@@ -30,6 +30,7 @@ pub const Module = struct {
 pub const Function = struct {
     id: u32,
     name: []const u8,
+    param_count: u32 = 0,
     register_count: u32,
     local_count: u32,
     instructions: []instruction.Instruction,
@@ -43,6 +44,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
     for (module.functions) |function_decl| {
         try writer.writeInt(u32, function_decl.id, .little);
         try writeString(writer, function_decl.name);
+        try writer.writeInt(u32, function_decl.param_count, .little);
         try writer.writeInt(u32, function_decl.register_count, .little);
         try writer.writeInt(u32, function_decl.local_count, .little);
         try writer.writeInt(u32, @as(u32, @intCast(function_decl.instructions.len)), .little);
@@ -56,6 +58,13 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .const_string => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.value);
+                },
+                .const_bool => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeByte(if (value.value) 1 else 0);
+                },
+                .const_null_ptr => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
                 },
                 .add => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -71,9 +80,9 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.local, .little);
                 },
                 .print => |value| try writer.writeInt(u32, value.src, .little),
-                .call_runtime => |value| try writer.writeInt(u32, value.function_id, .little),
-                .call_native => |value| try writer.writeInt(u32, value.function_id, .little),
-                .ret_void => {},
+                .call_runtime => |value| try writeCall(writer, value.function_id, value.args, value.dst),
+                .call_native => |value| try writeCall(writer, value.function_id, value.args, value.dst),
+                .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
             }
         }
     }
@@ -94,6 +103,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     for (0..function_count) |_| {
         const function_id = try reader.readInt(u32, .little);
         const name = try readString(allocator, reader);
+        const param_count = try reader.readInt(u32, .little);
         const register_count = try reader.readInt(u32, .little);
         const local_count = try reader.readInt(u32, .little);
         const instruction_count = try reader.readInt(u32, .little);
@@ -109,6 +119,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .const_string => try instructions.append(.{ .const_string = .{
                     .dst = try reader.readInt(u32, .little),
                     .value = try readString(allocator, reader),
+                } }),
+                .const_bool => try instructions.append(.{ .const_bool = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .value = (try reader.readByte()) != 0,
+                } }),
+                .const_null_ptr => try instructions.append(.{ .const_null_ptr = .{
+                    .dst = try reader.readInt(u32, .little),
                 } }),
                 .add => try instructions.append(.{ .add = .{
                     .dst = try reader.readInt(u32, .little),
@@ -126,18 +143,20 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .print => try instructions.append(.{ .print = .{
                     .src = try reader.readInt(u32, .little),
                 } }),
-                .call_runtime => try instructions.append(.{ .call_runtime = .{
-                    .function_id = try reader.readInt(u32, .little),
+                .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
+                .call_native => try instructions.append(.{ .call_native = try readNativeCall(allocator, reader) }),
+                .ret => try instructions.append(.{ .ret = .{
+                    .src = blk: {
+                        const raw = try reader.readInt(i32, .little);
+                        break :blk if (raw >= 0) @as(?u32, @intCast(raw)) else null;
+                    },
                 } }),
-                .call_native => try instructions.append(.{ .call_native = .{
-                    .function_id = try reader.readInt(u32, .little),
-                } }),
-                .ret_void => try instructions.append(.{ .ret_void = {} }),
             }
         }
         try functions.append(.{
             .id = function_id,
             .name = name,
+            .param_count = param_count,
             .register_count = register_count,
             .local_count = local_count,
             .instructions = try instructions.toOwnedSlice(),
@@ -160,4 +179,36 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
     const buffer = try allocator.alloc(u8, length);
     _ = try reader.readAll(buffer);
     return buffer;
+}
+
+fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !void {
+    try writer.writeInt(u32, function_id, .little);
+    try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
+    for (args) |arg| try writer.writeInt(u32, arg, .little);
+    try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
+}
+
+fn readRuntimeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_runtime") {
+    const call = try readCallParts(allocator, reader);
+    return .{ .function_id = call.function_id, .args = call.args, .dst = call.dst };
+}
+
+fn readNativeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_native") {
+    const call = try readCallParts(allocator, reader);
+    return .{ .function_id = call.function_id, .args = call.args, .dst = call.dst };
+}
+
+fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { function_id: u32, args: []const u32, dst: ?u32 } {
+    const function_id = try reader.readInt(u32, .little);
+    const arg_count = try reader.readInt(u32, .little);
+    const args = try allocator.alloc(u32, arg_count);
+    for (0..arg_count) |index| {
+        args[index] = try reader.readInt(u32, .little);
+    }
+    const raw_dst = try reader.readInt(i32, .little);
+    return .{
+        .function_id = function_id,
+        .args = args,
+        .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
+    };
 }

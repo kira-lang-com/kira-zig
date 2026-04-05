@@ -23,26 +23,31 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
             switch (inst) {
                 .const_int => |value| try instructions.append(.{ .const_int = .{ .dst = value.dst, .value = value.value } }),
                 .const_string => |value| try instructions.append(.{ .const_string = .{ .dst = value.dst, .value = value.value } }),
+                .const_bool => |value| try instructions.append(.{ .const_bool = .{ .dst = value.dst, .value = value.value } }),
+                .const_null_ptr => |value| try instructions.append(.{ .const_null_ptr = .{ .dst = value.dst } }),
+                .const_function => return error.UnsupportedExecutableFeature,
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src } }),
                 .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local } }),
+                .field_ptr, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
                 .print => |value| try instructions.append(.{ .print = .{ .src = value.src } }),
                 .call => |value| {
                     const callee_execution = functionExecutionById(program, value.callee) orelse return error.UnknownFunction;
                     const resolved_callee_execution = resolveExecution(callee_execution, mode);
                     try instructions.append(switch (resolved_callee_execution) {
-                        .runtime => .{ .call_runtime = .{ .function_id = value.callee } },
-                        .native => .{ .call_native = .{ .function_id = value.callee } },
+                        .runtime => .{ .call_runtime = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
+                        .native => .{ .call_native = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
                         .inherited => unreachable,
                     });
                 },
-                .ret_void => try instructions.append(.{ .ret_void = {} }),
+                .ret => |value| try instructions.append(.{ .ret = .{ .src = value.src } }),
             }
         }
 
         try functions.append(.{
             .id = function_decl.id,
             .name = function_decl.name,
+            .param_count = @as(u32, @intCast(function_decl.param_types.len)),
             .register_count = function_decl.register_count,
             .local_count = function_decl.local_count,
             .instructions = try instructions.toOwnedSlice(),
@@ -78,37 +83,50 @@ fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: CompileMode)
 
 test "emits hybrid bytecode for runtime and native calls" {
     const program = ir_pkg.Program{
+        .types = &.{},
         .functions = &.{
             .{
                 .id = 0,
                 .name = "main",
                 .execution = .runtime,
+                .is_extern = false,
+                .foreign = null,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
                 .register_count = 0,
                 .local_count = 0,
                 .local_types = &.{},
                 .instructions = &.{
-                    .{ .call = .{ .callee = 1 } },
-                    .{ .call = .{ .callee = 2 } },
-                    .{ .ret_void = {} },
+                    .{ .call = .{ .callee = 1, .args = &.{}, .dst = null } },
+                    .{ .call = .{ .callee = 2, .args = &.{}, .dst = null } },
+                    .{ .ret = .{ .src = null } },
                 },
             },
             .{
                 .id = 1,
                 .name = "runtime_helper",
                 .execution = .runtime,
+                .is_extern = false,
+                .foreign = null,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
                 .register_count = 0,
                 .local_count = 0,
                 .local_types = &.{},
-                .instructions = &.{.{ .ret_void = {} }},
+                .instructions = &.{.{ .ret = .{ .src = null } }},
             },
             .{
                 .id = 2,
                 .name = "native_helper",
                 .execution = .native,
+                .is_extern = false,
+                .foreign = null,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
                 .register_count = 0,
                 .local_count = 0,
                 .local_types = &.{},
-                .instructions = &.{.{ .ret_void = {} }},
+                .instructions = &.{.{ .ret = .{ .src = null } }},
             },
         },
         .entry_index = 0,

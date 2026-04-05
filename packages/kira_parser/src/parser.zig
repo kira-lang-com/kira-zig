@@ -194,7 +194,14 @@ const Parser = struct {
         const name_token = try self.expect(.identifier, "expected function name", "name the function here");
         const params = try self.parseParamList();
         const return_type = try self.parseOptionalReturnType();
-        const body = try self.parseBlock();
+        var body: ?syntax.ast.Block = null;
+        var end = if (return_type) |ty| typeSpan(ty.*).end else paramsEnd(params, name_token.span.end);
+        if (self.match(.semicolon)) {
+            end = self.previous().span.end;
+        } else {
+            body = try self.parseBlock();
+            end = body.?.span.end;
+        }
         const start = if (annotations.len > 0) annotations[0].span.start else function_token.span.start;
         return .{
             .annotations = annotations,
@@ -202,7 +209,7 @@ const Parser = struct {
             .params = params,
             .return_type = return_type,
             .body = body,
-            .span = source_pkg.Span.init(start, body.span.end),
+            .span = source_pkg.Span.init(start, end),
         };
     }
 
@@ -589,7 +596,7 @@ const Parser = struct {
             const return_token = self.previous();
             var value: ?*syntax.ast.Expr = null;
             var end = return_token.span.end;
-            if (!self.at(.semicolon) and !self.isStatementBoundary()) {
+            if (!self.at(.semicolon) and !self.at(.r_brace) and !self.at(.eof)) {
                 value = try self.parseExpression();
                 end = exprSpan(value.?.*).end;
             }
@@ -610,6 +617,15 @@ const Parser = struct {
         }
 
         const expr = try self.parseExpression();
+        if (self.match(.equal)) {
+            const value = try self.parseExpression();
+            const end = try self.consumeStatementTerminator(exprSpan(value.*).end, "expected ';' after assignment", "terminate the assignment with ';'");
+            return .{ .assign_stmt = .{
+                .target = expr,
+                .value = value,
+                .span = source_pkg.Span.init(exprSpan(expr.*).start, end),
+            } };
+        }
         const end = try self.consumeStatementTerminator(exprSpan(expr.*).end, "expected ';' after expression", "terminate the expression with ';'");
         return .{ .expr_stmt = .{
             .expr = expr,
@@ -1147,8 +1163,8 @@ const Parser = struct {
     fn isLifecycleHookStart(self: *Parser) bool {
         return self.at(.identifier) and self.peekNext().kind == .l_paren and
             (std.mem.eql(u8, self.peek().lexeme, "onAppear") or
-            std.mem.eql(u8, self.peek().lexeme, "onDisappear") or
-            std.mem.eql(u8, self.peek().lexeme, "onChange"));
+                std.mem.eql(u8, self.peek().lexeme, "onDisappear") or
+                std.mem.eql(u8, self.peek().lexeme, "onChange"));
     }
 
     fn expect(self: *Parser, kind: syntax.TokenKind, title: []const u8, label_message: []const u8) !syntax.Token {
@@ -1409,7 +1425,7 @@ test "parses the hybrid example corpus shape" {
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const source_text = try readRepoFileForTest(allocator, "examples/hybrid_roundtrip.kira");
+    const source_text = try readRepoFileForTest(allocator, "examples/hybrid_roundtrip/main.kira");
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
@@ -1423,11 +1439,11 @@ test "parses the restored hello example with modern type syntax" {
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const source_text = try readRepoFileForTest(allocator, "examples/hello.kira");
+    const source_text = try readRepoFileForTest(allocator, "examples/hello/main.kira");
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(@as(usize, 3), program.decls.len);
+    try std.testing.expectEqual(@as(usize, 4), program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
 }
 

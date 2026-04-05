@@ -27,12 +27,15 @@ pub const TargetSelector = struct {
 };
 
 pub const ResolvedNativeLibrary = struct {
+    manifest_path: ?[]const u8 = null,
     name: []const u8,
     link_mode: native.LinkMode,
     abi: native.LibraryAbi,
     artifact_path: []const u8,
     target: TargetSelector,
-    headers: LinkExtras,
+    headers: native.HeaderSpec,
+    autobinding: ?native.AutobindingSpec = null,
+    build: native.BuildRecipe = .{},
     link: LinkExtras,
 };
 
@@ -54,12 +57,49 @@ pub fn resolveLibrary(allocator: std.mem.Allocator, spec: native.NativeLibrarySp
                     .operating_system = try allocator.dupe(u8, active_target.operating_system),
                     .abi = try allocator.dupe(u8, active_target.abi),
                 },
-                .headers = try LinkExtras.clone(allocator, spec.headers),
+                .headers = try cloneHeaders(allocator, spec.headers),
+                .autobinding = if (spec.autobinding) |autobinding| try cloneAutobinding(allocator, autobinding) else null,
+                .build = try cloneBuildRecipe(allocator, spec.build),
                 .link = try LinkExtras.clone(allocator, target_spec.link),
             };
         }
     }
     return error.UnsupportedTarget;
+}
+
+fn cloneHeaders(allocator: std.mem.Allocator, headers: native.HeaderSpec) !native.HeaderSpec {
+    return .{
+        .entrypoint = if (headers.entrypoint) |value| try allocator.dupe(u8, value) else null,
+        .include_dirs = try cloneStrings(allocator, headers.include_dirs),
+        .defines = try cloneStrings(allocator, headers.defines),
+        .frameworks = try cloneStrings(allocator, headers.frameworks),
+        .system_libs = try cloneStrings(allocator, headers.system_libs),
+    };
+}
+
+fn cloneAutobinding(allocator: std.mem.Allocator, autobinding: native.AutobindingSpec) !native.AutobindingSpec {
+    return .{
+        .module_name = try allocator.dupe(u8, autobinding.module_name),
+        .output_path = try allocator.dupe(u8, autobinding.output_path),
+        .spec_path = if (autobinding.spec_path) |value| try allocator.dupe(u8, value) else null,
+        .headers = try cloneStrings(allocator, autobinding.headers),
+    };
+}
+
+fn cloneBuildRecipe(allocator: std.mem.Allocator, build: native.BuildRecipe) !native.BuildRecipe {
+    return .{
+        .sources = try cloneStrings(allocator, build.sources),
+        .include_dirs = try cloneStrings(allocator, build.include_dirs),
+        .defines = try cloneStrings(allocator, build.defines),
+    };
+}
+
+fn cloneStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    var list = std.array_list.Managed([]const u8).init(allocator);
+    for (values) |value| {
+        try list.append(try allocator.dupe(u8, value));
+    }
+    return list.toOwnedSlice();
 }
 
 test "resolves native library for target" {

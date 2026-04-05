@@ -1,10 +1,11 @@
 const std = @import("std");
 const hybrid = @import("kira_hybrid_definition");
+const runtime_abi = @import("kira_runtime_abi");
 const symbol_resolver = @import("symbol_resolver.zig");
 const trampoline = @import("trampoline.zig");
 
-pub const RuntimeInvoker = *const fn (?*anyopaque, u32) anyerror!void;
-const InstallRuntimeInvokerFn = *const fn (*const fn (u32) callconv(.c) void) callconv(.c) void;
+pub const RuntimeInvoker = *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void;
+const InstallRuntimeInvokerFn = *const fn (*const fn (u32, ?[*]const runtime_abi.BridgeValue, u32, *runtime_abi.BridgeValue) callconv(.c) void) callconv(.c) void;
 
 var active_runtime_context: ?*anyopaque = null;
 var active_runtime_invoker: ?RuntimeInvoker = null;
@@ -43,9 +44,18 @@ pub const NativeBridge = struct {
         self.library = library;
     }
 
-    pub fn call(self: *NativeBridge, function_id: u32) !void {
+    pub fn call(self: *NativeBridge, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
         const tramp = self.trampolines.get(function_id) orelse return error.MissingNativeTrampoline;
-        tramp.invoke();
+        const lowered_args = try self.allocator.alloc(runtime_abi.BridgeValue, args.len);
+        defer self.allocator.free(lowered_args);
+        for (args, 0..) |arg, index| lowered_args[index] = runtime_abi.bridgeValueFromValue(arg);
+
+        var result = runtime_abi.BridgeValue{
+            .tag = .void,
+            .payload = .{ .raw_ptr = 0 },
+        };
+        tramp.invoke(if (lowered_args.len == 0) null else lowered_args.ptr, @intCast(lowered_args.len), &result);
+        return runtime_abi.bridgeValueToValue(result);
     }
 };
 
@@ -59,9 +69,15 @@ pub fn clearRuntimeInvoker() void {
     active_runtime_invoker = null;
 }
 
-pub export fn kira_hybrid_host_call_runtime(function_id: u32) callconv(.c) void {
+pub export fn kira_hybrid_host_call_runtime(
+    function_id: u32,
+    args: ?[*]const runtime_abi.BridgeValue,
+    arg_count: u32,
+    out_result: *runtime_abi.BridgeValue,
+) callconv(.c) void {
     const invoker = active_runtime_invoker orelse @panic("hybrid runtime invoker not installed");
-    invoker(active_runtime_context, function_id) catch |err| {
+    const slice = if (args) |ptr| ptr[0..arg_count] else &.{};
+    invoker(active_runtime_context, function_id, slice, out_result) catch |err| {
         std.debug.panic("hybrid runtime call failed: {s}", .{@errorName(err)});
     };
 }

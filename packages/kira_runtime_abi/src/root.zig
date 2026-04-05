@@ -1,5 +1,10 @@
 pub const Value = @import("value.zig").Value;
 pub const ValueTag = @import("value.zig").ValueTag;
+pub const BridgeValue = @import("bridge_value.zig").BridgeValue;
+pub const BridgeValueTag = @import("bridge_value.zig").BridgeValueTag;
+pub const BridgeString = @import("bridge_value.zig").BridgeString;
+pub const bridgeValueFromValue = @import("bridge_value.zig").fromValue;
+pub const bridgeValueToValue = @import("bridge_value.zig").toValue;
 pub const RuntimeHandle = @import("handles.zig").RuntimeHandle;
 pub const ModuleHandle = @import("handles.zig").ModuleHandle;
 pub const RuntimeSymbol = @import("symbols.zig").RuntimeSymbol;

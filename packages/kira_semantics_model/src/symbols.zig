@@ -1,10 +1,10 @@
 const source_pkg = @import("kira_source");
-const Type = @import("types.zig").Type;
+const ResolvedType = @import("types.zig").ResolvedType;
 
 pub const LocalSymbol = struct {
     id: u32,
     name: []const u8,
-    ty: Type,
+    ty: ResolvedType,
     is_param: bool = false,
     span: source_pkg.Span,
 };

@@ -2,6 +2,8 @@ const source_pkg = @import("kira_source");
 const runtime_abi = @import("kira_runtime_abi");
 const symbols = @import("symbols.zig");
 const Type = @import("types.zig").Type;
+const ResolvedType = @import("types.zig").ResolvedType;
+const ffi = @import("ffi.zig");
 
 pub const Program = struct {
     imports: []Import,
@@ -40,6 +42,7 @@ pub const AnnotationRule = struct {
 pub const TypeDecl = struct {
     name: []const u8,
     fields: []Field,
+    ffi: ?ffi.NamedTypeInfo = null,
     span: source_pkg.Span,
 };
 
@@ -54,7 +57,7 @@ pub const ConstructForm = struct {
 
 pub const Field = struct {
     name: []const u8,
-    ty: Type,
+    ty: ResolvedType,
     explicit_type: bool,
     annotations: []Annotation,
     span: source_pkg.Span,
@@ -70,10 +73,12 @@ pub const Function = struct {
     name: []const u8,
     is_main: bool,
     execution: runtime_abi.FunctionExecution,
+    is_extern: bool = false,
+    foreign: ?ffi.ForeignFunction = null,
     annotations: []Annotation,
     params: []Parameter,
     locals: []symbols.LocalSymbol,
-    return_type: Type,
+    return_type: ResolvedType,
     body: []Statement,
     span: source_pkg.Span,
 };
@@ -81,12 +86,13 @@ pub const Function = struct {
 pub const Parameter = struct {
     id: u32,
     name: []const u8,
-    ty: Type,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const Statement = union(enum) {
     let_stmt: LetStatement,
+    assign_stmt: AssignStatement,
     expr_stmt: ExprStatement,
     if_stmt: IfStatement,
     for_stmt: ForStatement,
@@ -96,7 +102,7 @@ pub const Statement = union(enum) {
 
 pub const LetStatement = struct {
     local_id: u32,
-    ty: Type,
+    ty: ResolvedType,
     explicit_type: bool,
     value: ?*Expr,
     span: source_pkg.Span,
@@ -104,6 +110,12 @@ pub const LetStatement = struct {
 
 pub const ExprStatement = struct {
     expr: *Expr,
+    span: source_pkg.Span,
+};
+
+pub const AssignStatement = struct {
+    target: *Expr,
+    value: *Expr,
     span: source_pkg.Span,
 };
 
@@ -188,8 +200,11 @@ pub const Expr = union(enum) {
     float: FloatExpr,
     string: StringExpr,
     boolean: BooleanExpr,
+    null_ptr: NullPtrExpr,
+    function_ref: FunctionRefExpr,
     local: LocalExpr,
     namespace_ref: NamespaceRefExpr,
+    field: FieldExpr,
     binary: BinaryExpr,
     unary: UnaryExpr,
     call: CallExpr,
@@ -198,39 +213,59 @@ pub const Expr = union(enum) {
 
 pub const IntegerExpr = struct {
     value: i64,
-    ty: Type = .integer,
+    ty: ResolvedType = .{ .kind = .integer },
     span: source_pkg.Span,
 };
 
 pub const FloatExpr = struct {
     value: f64,
-    ty: Type = .float,
+    ty: ResolvedType = .{ .kind = .float },
     span: source_pkg.Span,
 };
 
 pub const StringExpr = struct {
     value: []const u8,
-    ty: Type = .string,
+    ty: ResolvedType = .{ .kind = .string },
     span: source_pkg.Span,
 };
 
 pub const BooleanExpr = struct {
     value: bool,
-    ty: Type = .boolean,
+    ty: ResolvedType = .{ .kind = .boolean },
+    span: source_pkg.Span,
+};
+
+pub const NullPtrExpr = struct {
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const FunctionRefExpr = struct {
+    function_id: u32,
+    name: []const u8,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const LocalExpr = struct {
     local_id: u32,
     name: []const u8,
-    ty: Type,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const NamespaceRefExpr = struct {
     root: []const u8,
     path: []const u8,
-    ty: Type = .unknown,
+    ty: ResolvedType = .{ .kind = .unknown },
+    span: source_pkg.Span,
+};
+
+pub const FieldExpr = struct {
+    object: *Expr,
+    field_name: []const u8,
+    owner_type: ResolvedType,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -238,14 +273,14 @@ pub const BinaryExpr = struct {
     op: BinaryOp,
     lhs: *Expr,
     rhs: *Expr,
-    ty: Type,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const UnaryExpr = struct {
     op: UnaryOp,
     operand: *Expr,
-    ty: Type,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -253,13 +288,13 @@ pub const CallExpr = struct {
     callee_name: []const u8,
     function_id: ?u32,
     args: []*Expr,
-    ty: Type,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const ArrayExpr = struct {
     elements: []*Expr,
-    ty: Type = .array,
+    ty: ResolvedType = .{ .kind = .array },
     span: source_pkg.Span,
 };
 
@@ -284,17 +319,20 @@ pub const UnaryOp = enum {
     not,
 };
 
-pub fn exprType(expr: Expr) Type {
+pub fn exprType(expr: Expr) ResolvedType {
     return switch (expr) {
-        .integer => .integer,
-        .float => .float,
-        .string => .string,
-        .boolean => .boolean,
+        .integer => .{ .kind = .integer },
+        .float => .{ .kind = .float },
+        .string => .{ .kind = .string },
+        .boolean => .{ .kind = .boolean },
+        .null_ptr => |node| node.ty,
+        .function_ref => |node| node.ty,
         .local => |node| node.ty,
         .namespace_ref => |node| node.ty,
+        .field => |node| node.ty,
         .binary => |node| node.ty,
         .unary => |node| node.ty,
         .call => |node| node.ty,
-        .array => .array,
+        .array => .{ .kind = .array },
     };
 }

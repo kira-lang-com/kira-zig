@@ -52,6 +52,15 @@ pub fn lowerStatement(
                 .span = node.span,
             } };
         },
+        .assign_stmt => |node| blk: {
+            const target = try lowerAssignmentTarget(ctx, node.target, imports, scope, function_headers);
+            const value = try lowerExpectedValue(ctx, node.value, model.hir.exprType(target.*), imports, scope, function_headers, node.span);
+            break :blk .{ .assign_stmt = .{
+                .target = target,
+                .value = value,
+                .span = node.span,
+            } };
+        },
         .expr_stmt => |node| .{ .expr_stmt = .{
             .expr = try lowerExpr(ctx, node.expr, imports, scope, function_headers),
             .span = node.span,
@@ -198,7 +207,15 @@ pub fn lowerExpr(
         },
         .member => |node| {
             const flattened = try flattenMemberExpr(ctx.allocator, expr);
-            if (!shared.isImportedRoot(flattened.root, imports)) {
+            if (shared.isImportedRoot(flattened.root, imports) and scope.get(flattened.root) == null) {
+                lowered.* = .{ .namespace_ref = .{
+                    .root = flattened.root,
+                    .path = flattened.path,
+                    .span = node.span,
+                } };
+                return lowered;
+            }
+            if (scope.get(flattened.root) == null) {
                 try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                     .severity = .@"error",
                     .code = "KSEM027",
@@ -211,9 +228,20 @@ pub fn lowerExpr(
                 });
                 return error.DiagnosticsEmitted;
             }
-            lowered.* = .{ .namespace_ref = .{
-                .root = flattened.root,
-                .path = flattened.path,
+
+            const object = try lowerExpr(ctx, node.object, imports, scope, function_headers);
+            const maybe_owner_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*));
+            if (maybe_owner_type == null) {
+                _ = try resolveFieldType(ctx, model.hir.exprType(object.*), node.member, node.span);
+                return error.DiagnosticsEmitted;
+            }
+            const owner_type = maybe_owner_type.?;
+            const field_type = try resolveFieldType(ctx, model.hir.exprType(object.*), node.member, node.span);
+            lowered.* = .{ .field = .{
+                .object = object,
+                .field_name = try ctx.allocator.dupe(u8, node.member),
+                .owner_type = owner_type,
+                .ty = field_type,
                 .span = node.span,
             } };
         },
@@ -225,7 +253,7 @@ pub fn lowerExpr(
                 .operand = operand,
                 .ty = switch (node.op) {
                     .negate => operand_type,
-                    .not => .boolean,
+                    .not => .{ .kind = .boolean },
                 },
                 .span = node.span,
             } };
@@ -283,10 +311,11 @@ fn lowerCallExpr(
     function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !void {
     const callee_name = try flattenCalleeName(ctx.allocator, node.callee);
-    var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-    for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
+    const callee_leaf = qualifiedLeaf(callee_name);
 
     if (std.mem.eql(u8, callee_name, "print")) {
+        var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+        for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
         if (args.items.len != 1) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
@@ -301,7 +330,7 @@ fn lowerCallExpr(
             return error.DiagnosticsEmitted;
         }
         const arg_ty = model.hir.exprType(args.items[0].*);
-        if (arg_ty != .integer and arg_ty != .string) {
+        if (arg_ty.kind != .integer and arg_ty.kind != .string) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM008",
@@ -318,19 +347,50 @@ fn lowerCallExpr(
             .callee_name = callee_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .ty = .void,
+            .ty = .{ .kind = .void },
             .span = node.span,
         } };
         return;
     }
 
     if (function_headers) |headers| {
-        if (headers.get(callee_name)) |header| {
+        const header = headers.get(callee_name) orelse headers.get(callee_leaf) orelse blk: {
+            if (ctx.imported_globals.findFunction(callee_leaf)) |function_decl| {
+                break :blk shared.FunctionHeader{
+                    .id = 0,
+                    .params = function_decl.params,
+                    .execution = function_decl.execution,
+                    .return_type = function_decl.return_type,
+                    .is_extern = function_decl.is_extern,
+                    .foreign = function_decl.foreign,
+                    .span = .{ .start = 0, .end = 0 },
+                };
+            }
+            break :blk null;
+        };
+        if (header) |resolved_header| {
+            if (node.args.len != resolved_header.params.len) {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM042",
+                    .title = "wrong number of arguments",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected {d} argument(s) but received {d}.", .{ callee_name, resolved_header.params.len, node.args.len }),
+                    .labels = &.{
+                        diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments"),
+                    },
+                    .help = "Update the call so it matches the function signature exactly.",
+                });
+                return error.DiagnosticsEmitted;
+            }
+            var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+            for (node.args, 0..) |arg, index| {
+                try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index], imports, scope, headers, node.span));
+            }
             lowered.* = .{ .call = .{
                 .callee_name = callee_name,
-                .function_id = header.id,
+                .function_id = resolved_header.id,
                 .args = try args.toOwnedSlice(),
-                .ty = header.return_type,
+                .ty = resolved_header.return_type,
                 .span = node.span,
             } };
             return;
@@ -338,11 +398,13 @@ fn lowerCallExpr(
     }
 
     if (ctx.imported_globals.hasCallable(callee_name)) {
+        var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+        for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
         lowered.* = .{ .call = .{
             .callee_name = callee_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .ty = .unknown,
+            .ty = .{ .kind = .unknown },
             .span = node.span,
         } };
         return;
@@ -362,11 +424,13 @@ fn lowerCallExpr(
             });
             return error.DiagnosticsEmitted;
         }
+        var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+        for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
         lowered.* = .{ .call = .{
             .callee_name = callee_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .ty = .unknown,
+            .ty = .{ .kind = .unknown },
             .span = node.span,
         } };
         return;
@@ -385,25 +449,278 @@ fn lowerCallExpr(
     return error.DiagnosticsEmitted;
 }
 
-pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span: source_pkg.Span) !model.Type {
-    _ = ctx;
-    _ = span;
+fn lowerCallArgument(
+    ctx: *shared.Context,
+    syntax_arg: *syntax.ast.Expr,
+    expected_type: model.ResolvedType,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+    call_span: source_pkg.Span,
+) !*model.Expr {
+    return lowerExpectedValue(ctx, syntax_arg, expected_type, imports, scope, function_headers, call_span);
+}
+
+fn lowerExpectedValue(
+    ctx: *shared.Context,
+    syntax_arg: *syntax.ast.Expr,
+    expected_type: model.ResolvedType,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+    span: source_pkg.Span,
+) !*model.Expr {
+    if (shared.callbackInfo(ctx, expected_type)) |callback_info| {
+        return lowerCallbackArgument(ctx, syntax_arg, expected_type, callback_info, function_headers);
+    }
+
+    if (shared.isPointerLike(ctx, expected_type) and isNullPointerLiteral(syntax_arg.*)) {
+        const lowered = try ctx.allocator.create(model.Expr);
+        lowered.* = .{ .null_ptr = .{
+            .ty = expected_type,
+            .span = exprSpan(syntax_arg.*),
+        } };
+        return lowered;
+    }
+
+    const lowered = try lowerExpr(ctx, syntax_arg, imports, scope, function_headers);
+    const actual_type = model.hir.exprType(lowered.*);
+    if (!canPassArgument(ctx, expected_type, actual_type)) {
+        try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, expected_type, actual_type);
+        return error.DiagnosticsEmitted;
+    }
+    return lowered;
+}
+
+fn lowerAssignmentTarget(
+    ctx: *shared.Context,
+    expr: *syntax.ast.Expr,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !*model.Expr {
     return switch (expr.*) {
-        .integer => .integer,
-        .float => .float,
-        .string => .string,
-        .bool => .boolean,
-        .array => .array,
-        else => .unknown,
+        .identifier, .member => try lowerExpr(ctx, expr, imports, scope, function_headers),
+        else => blk: {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM046",
+                .title = "invalid assignment target",
+                .message = "Assignments can only target locals or fields.",
+                .labels = &.{
+                    diagnostics.primaryLabel(exprSpan(expr.*), "this expression cannot appear on the left side of '='"),
+                },
+                .help = "Assign to a local name or a field reference.",
+            });
+            break :blk error.DiagnosticsEmitted;
+        },
     };
 }
 
-pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*model.Expr, span: source_pkg.Span) !model.Type {
+fn lowerCallbackArgument(
+    ctx: *shared.Context,
+    syntax_arg: *syntax.ast.Expr,
+    expected_type: model.ResolvedType,
+    callback_info: model.CallbackInfo,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !*model.Expr {
+    const name = try flattenCalleeName(ctx.allocator, syntax_arg);
+    const header = function_headers.get(name) orelse {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM043",
+            .title = "unknown callback target",
+            .message = try std.fmt.allocPrint(ctx.allocator, "Kira could not find a function named '{s}' for this callback argument.", .{name}),
+            .labels = &.{
+                diagnostics.primaryLabel(exprSpan(syntax_arg.*), "callback target is not a known function"),
+            },
+            .help = "Pass a named function that matches the callback signature.",
+        });
+        return error.DiagnosticsEmitted;
+    };
+
+    if (header.execution == .runtime) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM044",
+            .title = "runtime callbacks are not supported here",
+            .message = "Callbacks passed to native FFI must currently resolve to native or extern functions.",
+            .labels = &.{
+                diagnostics.primaryLabel(exprSpan(syntax_arg.*), "runtime function cannot be converted to a native callback"),
+            },
+            .help = "Mark the callback target with @Native or use an extern callback symbol.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    if (header.params.len != callback_info.params.len or !shared.canAssignExactly(header.return_type, callback_info.result)) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM045",
+            .title = "invalid callback signature",
+            .message = "The callback target does not match the required callback signature.",
+            .labels = &.{
+                diagnostics.primaryLabel(exprSpan(syntax_arg.*), "callback signature does not match"),
+            },
+            .help = "Match the callback parameter and result types exactly.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+    for (header.params, 0..) |param_type, index| {
+        if (!shared.canAssignExactly(param_type, callback_info.params[index])) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM045",
+                .title = "invalid callback signature",
+                .message = "The callback target does not match the required callback signature.",
+                .labels = &.{
+                    diagnostics.primaryLabel(exprSpan(syntax_arg.*), "callback signature does not match"),
+                },
+                .help = "Match the callback parameter and result types exactly.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+    }
+
+    const lowered = try ctx.allocator.create(model.Expr);
+    lowered.* = .{ .function_ref = .{
+        .function_id = header.id,
+        .name = name,
+        .ty = expected_type,
+        .span = exprSpan(syntax_arg.*),
+    } };
+    return lowered;
+}
+
+fn canPassArgument(ctx: *const shared.Context, expected: model.ResolvedType, actual: model.ResolvedType) bool {
+    if (shared.canAssign(expected, actual)) return true;
+    if (expected.kind == .c_string and actual.kind == .string) return true;
+    if (shared.isPointerLike(ctx, expected) and actual.kind == .raw_ptr) return true;
+    if (expected.kind == .raw_ptr and actual.kind == .named) {
+        if (shared.namedTypeInfo(ctx, actual)) |info| {
+            return switch (info) {
+                .ffi_struct => true,
+                .alias => |value| canPassArgument(ctx, expected, value.target),
+                else => false,
+            };
+        }
+    }
+    if (expected.kind == .named and actual.kind == .named) {
+        if (shared.namedTypeInfo(ctx, expected)) |info| {
+            return switch (info) {
+                .alias => |value| canPassArgument(ctx, value.target, actual),
+                .pointer => |value| std.mem.eql(u8, value.target_name, actual.name orelse ""),
+                else => false,
+            };
+        }
+    }
+    return false;
+}
+
+fn resolveFieldType(
+    ctx: *shared.Context,
+    object_type: model.ResolvedType,
+    field_name: []const u8,
+    span: source_pkg.Span,
+) !model.ResolvedType {
+    const container_type = resolveFieldContainerType(ctx, object_type) orelse {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM047",
+            .title = "field access requires a structured type",
+            .message = "This member access does not resolve to a Kira or FFI struct value.",
+            .labels = &.{
+                diagnostics.primaryLabel(span, "field access target is not a struct or pointer-to-struct"),
+            },
+            .help = "Access fields on a named struct value or a pointer-to-struct type.",
+        });
+        return error.DiagnosticsEmitted;
+    };
+
+    for (shared.namedTypeFields(ctx, container_type)) |field_decl| {
+        if (std.mem.eql(u8, field_decl.name, field_name)) return field_decl.ty;
+    }
+
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM048",
+        .title = "unknown field",
+        .message = try std.fmt.allocPrint(ctx.allocator, "The type '{s}' does not declare a field named '{s}'.", .{
+            container_type.name orelse "<anonymous>",
+            field_name,
+        }),
+        .labels = &.{
+            diagnostics.primaryLabel(span, "field name is not declared on this type"),
+        },
+        .help = "Check the field spelling or use a type that declares the field.",
+    });
+    return error.DiagnosticsEmitted;
+}
+
+fn resolveFieldContainerType(ctx: *shared.Context, ty: model.ResolvedType) ?model.ResolvedType {
+    return switch (ty.kind) {
+        .named => if (shared.namedTypeInfo(ctx, ty)) |info|
+            switch (info) {
+                .ffi_struct => ty,
+                .pointer => |value| .{ .kind = .named, .name = value.target_name },
+                .alias => |value| resolveFieldContainerType(ctx, value.target),
+                else => if (shared.namedTypeFields(ctx, ty).len > 0) ty else null,
+            }
+        else if (shared.namedTypeFields(ctx, ty).len > 0)
+            ty
+        else
+            null,
+        else => null,
+    };
+}
+
+fn isNullPointerLiteral(expr: syntax.ast.Expr) bool {
+    return switch (expr) {
+        .integer => |node| node.value == 0,
+        else => false,
+    };
+}
+
+fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
+    return switch (expr) {
+        .integer => |node| node.span,
+        .float => |node| node.span,
+        .string => |node| node.span,
+        .bool => |node| node.span,
+        .identifier => |node| node.span,
+        .array => |node| node.span,
+        .unary => |node| node.span,
+        .binary => |node| node.span,
+        .conditional => |node| node.span,
+        .member => |node| node.span,
+        .call => |node| node.span,
+    };
+}
+
+fn qualifiedLeaf(name: []const u8) []const u8 {
+    const index = std.mem.lastIndexOfScalar(u8, name, '.') orelse return name;
+    return name[index + 1 ..];
+}
+
+pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span: source_pkg.Span) !model.ResolvedType {
+    _ = ctx;
+    _ = span;
+    return switch (expr.*) {
+        .integer => .{ .kind = .integer },
+        .float => .{ .kind = .float },
+        .string => .{ .kind = .string },
+        .bool => .{ .kind = .boolean },
+        .array => .{ .kind = .array },
+        else => .{ .kind = .unknown },
+    };
+}
+
+pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*model.Expr, span: source_pkg.Span) !model.ResolvedType {
     if (explicit_type_expr) |type_expr| {
         const explicit_type = shared.typeFromSyntax(type_expr.*);
         if (value_expr) |expr| {
             const actual = model.hir.exprType(expr.*);
-            if (!shared.canAssign(explicit_type, actual)) {
+            if (!(shared.canAssign(explicit_type, actual) or canPassArgument(ctx, explicit_type, actual))) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, explicit_type, actual);
                 return error.DiagnosticsEmitted;
             }
@@ -415,12 +732,12 @@ pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*synta
     return error.DiagnosticsEmitted;
 }
 
-pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*syntax.ast.Expr, span: source_pkg.Span) !model.Type {
+pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*syntax.ast.Expr, span: source_pkg.Span) !model.ResolvedType {
     if (explicit_type_expr) |type_expr| {
         const explicit_type = shared.typeFromSyntax(type_expr.*);
         if (value_expr) |expr| {
             const inferred = try resolveSyntaxExprType(ctx, expr, span);
-            if (!shared.canAssign(explicit_type, inferred)) {
+            if (!(shared.canAssign(explicit_type, inferred) or canPassArgument(ctx, explicit_type, inferred))) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, explicit_type, inferred);
                 return error.DiagnosticsEmitted;
             }
@@ -432,13 +749,13 @@ pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.T
     return error.DiagnosticsEmitted;
 }
 
-pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: model.Type, body: []const model.Statement) !model.Type {
-    var inferred: ?model.Type = null;
+pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: model.ResolvedType, body: []const model.Statement) !model.ResolvedType {
+    var inferred: ?model.ResolvedType = null;
     for (body) |statement| {
         if (statement != .return_stmt) continue;
         const return_stmt = statement.return_stmt;
-        const actual = if (return_stmt.value) |expr| model.hir.exprType(expr.*) else model.Type.void;
-        if (explicit_return_type != .unknown) {
+        const actual = if (return_stmt.value) |expr| model.hir.exprType(expr.*) else model.ResolvedType{ .kind = .void };
+        if (explicit_return_type.kind != .unknown) {
             if (!shared.canAssignExactly(explicit_return_type, actual)) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, return_stmt.span, explicit_return_type, actual);
                 return error.DiagnosticsEmitted;
@@ -447,7 +764,7 @@ pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: mod
         }
         if (inferred == null) {
             inferred = actual;
-        } else if (inferred.? != actual) {
+        } else if (!inferred.?.eql(actual)) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM030",
@@ -461,16 +778,16 @@ pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: mod
             return error.DiagnosticsEmitted;
         }
     }
-    if (explicit_return_type != .unknown) return explicit_return_type;
-    return inferred orelse .void;
+    if (explicit_return_type.kind != .unknown) return explicit_return_type;
+    return inferred orelse .{ .kind = .void };
 }
 
-fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *model.Expr, rhs: *model.Expr, span: source_pkg.Span) !model.Type {
+fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *model.Expr, rhs: *model.Expr, span: source_pkg.Span) !model.ResolvedType {
     const lhs_ty = model.hir.exprType(lhs.*);
     const rhs_ty = model.hir.exprType(rhs.*);
     return switch (op) {
         .add, .subtract, .multiply, .divide, .modulo => blk: {
-            if (lhs_ty == rhs_ty and (lhs_ty == .integer or lhs_ty == .float)) break :blk lhs_ty;
+            if (lhs_ty.eql(rhs_ty) and (lhs_ty.kind == .integer or lhs_ty.kind == .float)) break :blk lhs_ty;
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM013",
@@ -484,7 +801,7 @@ fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *model.
             return error.DiagnosticsEmitted;
         },
         .equal, .not_equal, .less, .less_equal, .greater, .greater_equal => blk: {
-            if (lhs_ty == rhs_ty) break :blk .boolean;
+            if (lhs_ty.eql(rhs_ty)) break :blk .{ .kind = .boolean };
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM028",
@@ -498,7 +815,7 @@ fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *model.
             return error.DiagnosticsEmitted;
         },
         .logical_and, .logical_or => blk: {
-            if (lhs_ty == .boolean and rhs_ty == .boolean) break :blk .boolean;
+            if (lhs_ty.kind == .boolean and rhs_ty.kind == .boolean) break :blk .{ .kind = .boolean };
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM034",

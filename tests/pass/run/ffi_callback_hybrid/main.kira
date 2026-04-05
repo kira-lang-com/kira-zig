@@ -1,0 +1,20 @@
+import bindings.callbacks as callbacks
+
+@Main
+@Runtime
+function main() {
+    let result: I64 = run_native(5)
+    print(result)
+    return
+}
+
+@Native
+function run_native(value: I64): I64 {
+    return callbacks.kira_invoke_callback(add_two, 0, value)
+}
+
+@Native
+function add_two(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 2
+    return sum
+}

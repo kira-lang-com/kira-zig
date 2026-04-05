@@ -1,0 +1,34 @@
+@Main
+function main() {
+    let laneWidth = 10 + 6
+    let laneHeight = 8 + 4
+    let checkpointCount = laneWidth + laneHeight
+    let totalDistance = checkpointCount + 14
+
+    print("geometry story")
+    print(laneWidth)
+    print(laneHeight)
+    print(checkpointCount)
+    print(totalDistance)
+    return
+}
+
+type StoryPoint {
+    let x: Float
+    let y: Float
+}
+
+type StoryLane {
+    let origin: StoryPoint
+    let width: Float
+    let height: Float
+
+    function area() -> Float {
+        return width * height
+    }
+}
+
+type StoryBoard {
+    let lead: StoryLane
+    let fallback: StoryLane
+}

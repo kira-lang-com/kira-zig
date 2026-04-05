@@ -7,15 +7,15 @@ Standalone CLI:
 - `kira-bootstrapper --help`
 - `kira-bootstrapper --version`
 - `kira-bootstrapper fetch-llvm`
-- `kira-bootstrapper run examples/hello.kira`
-- `kira-bootstrapper run --backend llvm examples/hello.kira`
-- `kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip.kira`
-- `kira-bootstrapper tokens examples/hello.kira`
-- `kira-bootstrapper ast examples/hello.kira`
-- `kira-bootstrapper check examples/hello.kira`
-- `kira-bootstrapper build examples/hello.kira`
-- `kira-bootstrapper build --backend llvm examples/hello.kira`
-- `kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip.kira`
+- `kira-bootstrapper run examples/hello/main.kira`
+- `kira-bootstrapper run --backend llvm examples/hello/main.kira`
+- `kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira`
+- `kira-bootstrapper tokens examples/hello/main.kira`
+- `kira-bootstrapper ast examples/hello/main.kira`
+- `kira-bootstrapper check examples/hello/main.kira`
+- `kira-bootstrapper build examples/hello/main.kira`
+- `kira-bootstrapper build --backend llvm examples/hello/main.kira`
+- `kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip/main.kira`
 - `kira-bootstrapper new DemoApp generated/DemoApp`
 
 Build-system convenience:
@@ -25,15 +25,15 @@ Build-system convenience:
 - `zig build kira-bootstrapper`
 - `zig build test`
 - `zig build fetch-llvm`
-- `zig build run -- run examples/hello.kira`
-- `zig build run -- run --backend llvm examples/hello.kira`
-- `zig build run -- run --backend hybrid examples/hybrid_roundtrip.kira`
-- `zig build run -- tokens examples/hello.kira`
-- `zig build run -- ast examples/hello.kira`
-- `zig build run -- check examples/hello.kira`
-- `zig build run -- build examples/hello.kira`
-- `zig build run -- build --backend llvm examples/hello.kira`
-- `zig build run -- build --backend hybrid examples/hybrid_roundtrip.kira`
+- `zig build run -- run examples/hello/main.kira`
+- `zig build run -- run --backend llvm examples/hello/main.kira`
+- `zig build run -- run --backend hybrid examples/hybrid_roundtrip/main.kira`
+- `zig build run -- tokens examples/hello/main.kira`
+- `zig build run -- ast examples/hello/main.kira`
+- `zig build run -- check examples/hello/main.kira`
+- `zig build run -- build examples/hello/main.kira`
+- `zig build run -- build --backend llvm examples/hello/main.kira`
+- `zig build run -- build --backend hybrid examples/hybrid_roundtrip/main.kira`
 - `zig build run -- new DemoApp generated/DemoApp`
 
 Install notes:

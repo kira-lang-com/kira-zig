@@ -7,6 +7,7 @@ const semantics = @import("kira_semantics");
 const syntax = @import("kira_syntax_model");
 const ir = @import("kira_ir");
 const bytecode = @import("kira_bytecode");
+const ffi_support = @import("ffi_support.zig");
 
 pub const FrontendStage = enum {
     lexer,
@@ -228,6 +229,8 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineR
         else => return err,
     };
 
+    _ = try ffi_support.prepareNativeLibraries(allocator, path, program.imports);
+
     return .{
         .source = lexed.source,
         .diagnostics = try diags.toOwnedSlice(),
@@ -320,6 +323,8 @@ fn collectImportedGlobals(
 ) !semantics.ImportedGlobals {
     var constructs = std.array_list.Managed([]const u8).init(allocator);
     var callables = std.array_list.Managed([]const u8).init(allocator);
+    var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
+    var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
 
     for (program.imports) |import_decl| {
         const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name);
@@ -333,11 +338,15 @@ fn collectImportedGlobals(
         const harvested = try collectModuleGlobals(allocator, module_path);
         for (harvested.constructs) |name| try constructs.append(name);
         for (harvested.callables) |name| try callables.append(name);
+        for (harvested.functions) |function_decl| try functions.append(function_decl);
+        for (harvested.types) |type_decl| try types.append(type_decl);
     }
 
     return .{
         .constructs = try constructs.toOwnedSlice(),
         .callables = try callables.toOwnedSlice(),
+        .functions = try functions.toOwnedSlice(),
+        .types = try types.toOwnedSlice(),
     };
 }
 
@@ -360,19 +369,65 @@ fn collectModuleGlobals(allocator: std.mem.Allocator, module_path: []const u8) !
 fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Program) !semantics.ImportedGlobals {
     var constructs = std.array_list.Managed([]const u8).init(allocator);
     var callables = std.array_list.Managed([]const u8).init(allocator);
+    var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
+    var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    var lowering_ctx = semantics.LoweringContext{
+        .allocator = allocator,
+        .diagnostics = &diags,
+    };
 
     for (program.decls) |decl| {
         switch (decl) {
             .construct_decl => |construct_decl| try constructs.append(try allocator.dupe(u8, construct_decl.name)),
             .construct_form_decl => |form_decl| try callables.append(try allocator.dupe(u8, form_decl.name)),
-            .function_decl => |function_decl| try callables.append(try allocator.dupe(u8, function_decl.name)),
-            else => {},
+            .function_decl => |function_decl| {
+                try callables.append(try allocator.dupe(u8, function_decl.name));
+                const foreign = semantics.resolveForeignFunction(&lowering_ctx, function_decl.annotations, function_decl.span) catch null;
+                var params = std.array_list.Managed(semantics.ResolvedType).init(allocator);
+                for (function_decl.params) |param| {
+                    if (param.type_expr) |type_expr| {
+                        try params.append(semantics.typeFromSyntax(type_expr.*));
+                    } else {
+                        try params.append(.{ .kind = .unknown });
+                    }
+                }
+                try functions.append(.{
+                    .name = try allocator.dupe(u8, function_decl.name),
+                    .params = try params.toOwnedSlice(),
+                    .return_type = if (function_decl.return_type) |return_type| semantics.typeFromSyntax(return_type.*) else .{ .kind = .unknown },
+                    .execution = if (foreign != null) .native else .inherited,
+                    .is_extern = foreign != null,
+                    .foreign = foreign,
+                });
+            },
+            .type_decl => |type_decl| {
+                var fields = std.array_list.Managed(semantics.ImportedField).init(allocator);
+                for (type_decl.members) |member| {
+                    if (member != .field_decl or member.field_decl.is_static) continue;
+                    const field_ty: semantics.ResolvedType = if (member.field_decl.type_expr) |type_expr|
+                        semantics.typeFromSyntax(type_expr.*)
+                    else
+                        .{ .kind = .unknown };
+                    try fields.append(.{
+                        .name = try allocator.dupe(u8, member.field_decl.name),
+                        .ty = field_ty,
+                    });
+                }
+                try types.append(.{
+                    .name = try allocator.dupe(u8, type_decl.name),
+                    .fields = try fields.toOwnedSlice(),
+                    .ffi = semantics.resolveNamedTypeInfo(&lowering_ctx, type_decl.annotations, type_decl.span) catch null,
+                });
+            },
         }
     }
 
     return .{
         .constructs = try constructs.toOwnedSlice(),
         .callables = try callables.toOwnedSlice(),
+        .functions = try functions.toOwnedSlice(),
+        .types = try types.toOwnedSlice(),
     };
 }
 

@@ -69,7 +69,7 @@ pub const FunctionDecl = struct {
     name: []const u8,
     params: []ParamDecl,
     return_type: ?*TypeExpr,
-    body: Block,
+    body: ?Block,
     span: Span,
 };
 
@@ -205,6 +205,7 @@ pub const Block = struct {
 
 pub const Statement = union(enum) {
     let_stmt: LetStatement,
+    assign_stmt: AssignStatement,
     expr_stmt: ExprStatement,
     return_stmt: ReturnStatement,
     if_stmt: IfStatement,
@@ -222,6 +223,12 @@ pub const LetStatement = struct {
 
 pub const ExprStatement = struct {
     expr: *Expr,
+    span: Span,
+};
+
+pub const AssignStatement = struct {
+    target: *Expr,
+    value: *Expr,
     span: Span,
 };
 
@@ -431,7 +438,9 @@ fn dumpDecl(writer: anytype, decl: Decl, depth: usize) anyerror!void {
         .function_decl => |function_decl| {
             try indent(writer, depth);
             try writer.print("Function {s}\n", .{function_decl.name});
-            try dumpBlock(writer, function_decl.body, depth + 1);
+            if (function_decl.body) |body| {
+                try dumpBlock(writer, body, depth + 1);
+            }
         },
         .type_decl => |type_decl| {
             try indent(writer, depth);
@@ -467,7 +476,9 @@ fn dumpBodyMember(writer: anytype, member: BodyMember, depth: usize) anyerror!vo
         .function_decl => |function_decl| {
             try indent(writer, depth);
             try writer.print("Function {s}\n", .{function_decl.name});
-            try dumpBlock(writer, function_decl.body, depth + 1);
+            if (function_decl.body) |body| {
+                try dumpBlock(writer, body, depth + 1);
+            }
         },
         .content_section => |content| {
             try indent(writer, depth);
@@ -502,6 +513,12 @@ fn dumpStatement(writer: anytype, statement: Statement, depth: usize) anyerror!v
             try indent(writer, depth);
             try writer.print("Let {s}\n", .{let_stmt.name});
             if (let_stmt.value) |value| try dumpExpr(writer, value.*, depth + 1);
+        },
+        .assign_stmt => |assign_stmt| {
+            try indent(writer, depth);
+            try writer.writeAll("Assign\n");
+            try dumpExpr(writer, assign_stmt.target.*, depth + 1);
+            try dumpExpr(writer, assign_stmt.value.*, depth + 1);
         },
         .expr_stmt => |expr_stmt| {
             try indent(writer, depth);

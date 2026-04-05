@@ -7,6 +7,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Top-level declarations: `import`, `construct`, `type`, `function`, and construct-defined declaration forms such as `Widget Button(...) { ... }`
 - Annotation syntax: bare annotations, namespaced annotations, annotation arguments, and block-form annotations such as `@Doc { ... }`
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
+- FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`
 - Function syntax: parameters, optional return types, blocks, `let`, expression statements, `return`, calls, typed locals, and local inference
 - Expressions: integer, float, string, boolean, arrays, unary operators, binary operators, grouped expressions, member access, namespaced references, and call syntax
 - Control flow syntax: `if`, `for`, and `switch` in statement and builder/content contexts
@@ -27,9 +28,12 @@ The frontend and semantic model understand the broader language surface above. T
 - identifier loads
 - integer `+`
 - builtin `print`
-- zero-argument direct function calls
-- `return;`
+- direct function calls with arguments and results in the lowered scalar/pointer subset
+- `return` with or without a value in the lowered scalar/pointer subset
 - block statements
+- explicit FFI extern declarations
+- callback-typed arguments targeting native/external functions
+- `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
 
 `kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset.
 

@@ -29,11 +29,52 @@ pub fn lowerProgram(
     defer construct_headers.deinit(allocator);
     var function_headers = std.StringHashMapUnmanaged(shared.FunctionHeader){};
     defer function_headers.deinit(allocator);
+    var type_headers = std.StringHashMapUnmanaged(shared.TypeHeader){};
+    defer type_headers.deinit(allocator);
+    ctx.type_headers = &type_headers;
 
     var constructs = std.array_list.Managed(model.Construct).init(allocator);
     var types = std.array_list.Managed(model.TypeDecl).init(allocator);
     var forms = std.array_list.Managed(model.ConstructForm).init(allocator);
     var functions = std.array_list.Managed(model.Function).init(allocator);
+
+    for (imported_globals.functions) |function_decl| {
+        if (!function_decl.is_extern) continue;
+        try function_headers.put(allocator, function_decl.name, .{
+            .id = @as(u32, @intCast(function_headers.count())),
+            .params = function_decl.params,
+            .execution = if (function_decl.execution == .inherited) .native else function_decl.execution,
+            .return_type = function_decl.return_type,
+            .is_extern = true,
+            .foreign = function_decl.foreign,
+            .span = .{ .start = 0, .end = 0 },
+        });
+    }
+
+    for (imported_globals.types) |type_decl| {
+        var fields = std.array_list.Managed(model.Field).init(allocator);
+        for (type_decl.fields) |field_decl| {
+            try fields.append(.{
+                .name = try allocator.dupe(u8, field_decl.name),
+                .ty = field_decl.ty,
+                .explicit_type = true,
+                .annotations = &.{},
+                .span = .{ .start = 0, .end = 0 },
+            });
+        }
+        const lowered_fields = try fields.toOwnedSlice();
+        try type_headers.put(allocator, type_decl.name, .{
+            .fields = lowered_fields,
+            .ffi = type_decl.ffi,
+            .span = .{ .start = 0, .end = 0 },
+        });
+        try types.append(.{
+            .name = try allocator.dupe(u8, type_decl.name),
+            .fields = lowered_fields,
+            .ffi = type_decl.ffi,
+            .span = .{ .start = 0, .end = 0 },
+        });
+    }
 
     for (program.decls) |decl| {
         switch (decl) {
@@ -48,7 +89,13 @@ pub fn lowerProgram(
             },
             .type_decl => |type_decl| {
                 try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, type_decl.name, type_decl.span);
-                try types.append(try lowerTypeDecl(&ctx, type_decl));
+                const lowered = try lowerTypeDecl(&ctx, type_decl);
+                try type_headers.put(allocator, lowered.name, .{
+                    .fields = lowered.fields,
+                    .ffi = lowered.ffi,
+                    .span = lowered.span,
+                });
+                try types.append(lowered);
             },
             .construct_form_decl => |form_decl| {
                 try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, form_decl.name, form_decl.span);
@@ -56,10 +103,22 @@ pub fn lowerProgram(
             .function_decl => |function_decl| {
                 try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, function_decl.name, function_decl.span);
                 const annotation_info = try shared.resolveFunctionAnnotations(&ctx, function_decl.annotations);
+                const foreign = try shared.resolveForeignFunction(&ctx, function_decl.annotations, function_decl.span);
+                var param_types = std.array_list.Managed(model.ResolvedType).init(allocator);
+                for (function_decl.params) |param| {
+                    if (param.type_expr) |type_expr| {
+                        try param_types.append(shared.typeFromSyntax(type_expr.*));
+                    } else {
+                        try param_types.append(.{ .kind = .unknown });
+                    }
+                }
                 try function_headers.put(allocator, function_decl.name, .{
                     .id = @as(u32, @intCast(function_headers.count())),
-                    .execution = annotation_info.execution,
-                    .return_type = if (function_decl.return_type) |return_type| shared.typeFromSyntax(return_type.*) else .unknown,
+                    .params = try param_types.toOwnedSlice(),
+                    .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
+                    .return_type = if (function_decl.return_type) |return_type| shared.typeFromSyntax(return_type.*) else .{ .kind = .unknown },
+                    .is_extern = foreign != null,
+                    .foreign = foreign,
                     .span = function_decl.span,
                 });
             },
@@ -68,6 +127,27 @@ pub fn lowerProgram(
 
     var main_index: ?usize = null;
     var first_main_span: ?source_pkg.Span = null;
+
+    for (imported_globals.functions) |function_decl| {
+        if (!function_decl.is_extern) continue;
+        const header = function_headers.get(function_decl.name) orelse continue;
+        const empty_statements = try allocator.alloc(model.Statement, 0);
+        const params = try lowerImportedParams(allocator, function_decl.params);
+        try functions.append(.{
+            .id = header.id,
+            .name = try allocator.dupe(u8, function_decl.name),
+            .is_main = false,
+            .execution = header.execution,
+            .is_extern = true,
+            .foreign = function_decl.foreign,
+            .annotations = &.{},
+            .params = params,
+            .locals = &.{},
+            .return_type = function_decl.return_type,
+            .body = empty_statements,
+            .span = header.span,
+        });
+    }
 
     for (program.decls) |decl| {
         switch (decl) {
@@ -188,6 +268,7 @@ fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Construct
 
 fn lowerTypeDecl(ctx: *shared.Context, type_decl: syntax.ast.TypeDecl) !model.TypeDecl {
     try shared.validateAnnotationPlacement(ctx, type_decl.annotations, .type_decl, null);
+    const ffi_type = try shared.resolveNamedTypeInfo(ctx, type_decl.annotations, type_decl.span);
     var fields = std.array_list.Managed(model.Field).init(ctx.allocator);
     for (type_decl.members) |member| {
         if (member == .field_decl and !member.field_decl.is_static) try fields.append(try lowerField(ctx, member.field_decl, null));
@@ -195,6 +276,7 @@ fn lowerTypeDecl(ctx: *shared.Context, type_decl: syntax.ast.TypeDecl) !model.Ty
     return .{
         .name = try ctx.allocator.dupe(u8, type_decl.name),
         .fields = try fields.toOwnedSlice(),
+        .ffi = ffi_type,
         .span = type_decl.span,
     };
 }
@@ -294,6 +376,7 @@ fn lowerFunction(
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !model.Function {
     const annotation_info = try shared.resolveFunctionAnnotations(ctx, function_decl.annotations);
+    const foreign = try shared.resolveForeignFunction(ctx, function_decl.annotations, function_decl.span);
 
     var scope = model.Scope{};
     defer scope.deinit(ctx.allocator);
@@ -348,16 +431,51 @@ fn lowerFunction(
         return error.DiagnosticsEmitted;
     }
 
-    const body = try exprs.lowerBlockStatements(ctx, function_decl.body, imports, &scope, &locals, &next_local_id, function_headers);
-    const explicit_return_type = if (function_decl.return_type) |return_type| shared.typeFromSyntax(return_type.*) else model.Type.unknown;
-    const return_type = try exprs.resolveFunctionReturnType(ctx, explicit_return_type, body);
+    if (foreign != null and function_decl.body != null) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM041",
+            .title = "FFI extern must not declare a body",
+            .message = "An @FFI.Extern function must be a declaration terminated with `;`.",
+            .labels = &.{
+                diagnostics.primaryLabel(function_decl.span, "FFI extern unexpectedly declares a body"),
+            },
+            .help = "Remove the body and keep only the signature for the foreign declaration.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    const explicit_return_type = if (function_decl.return_type) |return_type| shared.typeFromSyntax(return_type.*) else model.ResolvedType{ .kind = .unknown };
+    const body = if (function_decl.body) |syntax_body|
+        try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers)
+    else if (foreign != null)
+        try ctx.allocator.alloc(model.Statement, 0)
+    else {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM035",
+            .title = "function body is required",
+            .message = "This declaration does not have a function body, and non-FFI bodyless functions are not supported.",
+            .labels = &.{
+                diagnostics.primaryLabel(function_decl.span, "missing function body"),
+            },
+            .help = "Add a `{ ... }` body or mark the declaration with @FFI.Extern.",
+        });
+        return error.DiagnosticsEmitted;
+    };
+    const return_type = if (foreign != null)
+        (if (explicit_return_type.kind == .unknown) model.ResolvedType{ .kind = .void } else explicit_return_type)
+    else
+        try exprs.resolveFunctionReturnType(ctx, explicit_return_type, body);
     const header = function_headers.get(function_decl.name).?;
 
     return .{
         .id = header.id,
         .name = try ctx.allocator.dupe(u8, function_decl.name),
         .is_main = annotation_info.is_main,
-        .execution = annotation_info.execution,
+        .execution = header.execution,
+        .is_extern = foreign != null,
+        .foreign = foreign,
         .annotations = annotation_info.annotations,
         .params = try params.toOwnedSlice(),
         .locals = try locals.toOwnedSlice(),
@@ -377,4 +495,17 @@ fn lowerField(ctx: *shared.Context, field_decl: syntax.ast.FieldDecl, construct_
         .annotations = try shared.lowerAnnotations(ctx, field_decl.annotations),
         .span = field_decl.span,
     };
+}
+
+fn lowerImportedParams(allocator: std.mem.Allocator, param_types: []const model.ResolvedType) ![]model.Parameter {
+    var params = std.array_list.Managed(model.Parameter).init(allocator);
+    for (param_types, 0..) |param_type, index| {
+        try params.append(.{
+            .id = @as(u32, @intCast(index)),
+            .name = try std.fmt.allocPrint(allocator, "arg_{d}", .{index}),
+            .ty = param_type,
+            .span = .{ .start = 0, .end = 0 },
+        });
+    }
+    return params.toOwnedSlice();
 }

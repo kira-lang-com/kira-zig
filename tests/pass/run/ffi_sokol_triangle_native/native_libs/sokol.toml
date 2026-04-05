@@ -1,0 +1,30 @@
+[library]
+name = "sokol"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "../../../../../third_party/sokol/sokol_bindings.h"
+include_dirs = ["../../../../../third_party/sokol"]
+defines = ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"]
+
+[autobinding]
+module = "bindings.sokol"
+output = "../bindings/sokol.kira"
+spec = "sokol.bind.toml"
+headers = ["../../../../../third_party/sokol/sokol_app.h", "../../../../../third_party/sokol/sokol_gfx.h", "../../../../../third_party/sokol/sokol_glue.h"]
+
+[build]
+sources = ["../../../../../third_party/sokol/sokol_impl.m"]
+include_dirs = ["../../../../../third_party/sokol"]
+
+[target.aarch64-macos-none]
+static_lib = "../generated/native/aarch64-macos/libsokol.a"
+frameworks = ["AppKit", "QuartzCore", "OpenGL"]
+
+[target.x86_64-linux-gnu]
+static_lib = "../generated/native/x86_64-linux-gnu/libsokol.a"
+system_libs = ["X11", "Xi", "Xcursor", "GL", "dl", "pthread", "m"]
+
+[target.x86_64-windows-msvc]
+static_lib = "../generated/native/x86_64-windows-msvc/sokol.lib"

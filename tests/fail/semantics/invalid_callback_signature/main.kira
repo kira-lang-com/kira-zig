@@ -1,0 +1,13 @@
+import bindings.callbacks as callbacks
+
+@Main
+@Native
+function main() {
+    callbacks.kira_invoke_callback(bad_callback, 0, 5)
+    return
+}
+
+@Native
+function bad_callback(value: I64): I64 {
+    return value
+}
