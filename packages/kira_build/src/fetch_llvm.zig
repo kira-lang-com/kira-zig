@@ -255,7 +255,9 @@ fn looksLikeLlvmInstall(allocator: std.mem.Allocator, install_home: []const u8) 
         },
         .macos => [_][]const []const u8{
             &.{ install_home, "lib", "libLLVM-C.dylib" },
+            &.{ install_home, "lib", "libLLVM.dylib" },
             &.{ install_home, "bin", "libLLVM-C.dylib" },
+            &.{ install_home, "bin", "libLLVM.dylib" },
         },
         else => return false,
     };
@@ -291,7 +293,7 @@ test "validates managed marker and install path" {
     const library_relative_path = switch (builtin.os.tag) {
         .windows => "bin/LLVM-C.dll",
         .linux => "lib/libLLVM-C.so",
-        .macos => "lib/libLLVM-C.dylib",
+        .macos => "lib/libLLVM.dylib",
         else => return error.UnsupportedLlvmHost,
     };
     if (std.fs.path.dirname(library_relative_path)) |parent| {
@@ -305,14 +307,14 @@ test "validates managed marker and install path" {
     try writeInstallMarker(std.testing.allocator, install_home, .{
         .llvm_version = "22.1.2",
         .host_key = "x86_64-windows-msvc",
-        .release_tag = "llvm-v22.1.2-kira.1",
+        .release_tag = "llvm-v22.1.2-kira.2",
         .asset_name = "llvm-22.1.2-x86_64-windows-msvc.zip",
     });
 
     try std.testing.expect(try isInstalledAndValid(std.testing.allocator, install_home, .{
         .llvm_version = "22.1.2",
         .host_key = "x86_64-windows-msvc",
-        .release_tag = "llvm-v22.1.2-kira.1",
+        .release_tag = "llvm-v22.1.2-kira.2",
         .asset_name = "llvm-22.1.2-x86_64-windows-msvc.zip",
     }));
 }

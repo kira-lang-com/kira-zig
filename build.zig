@@ -373,7 +373,7 @@ fn addManagedToolchainInstallStep(
                     "New-Item -ItemType Directory -Force -Path $bootstrapperBinDir | Out-Null; " ++
                     "$bootstrapperDest = Join-Path $bootstrapperBinDir 'kira-bootstrapper.exe'; " ++
                     "$kiraDest = Join-Path $bootstrapperBinDir 'kira.exe'; " ++
-                    "Copy-Item $bootstrapperSource $bootstrapperDest -Force; " ++
+                    "if ([System.IO.Path]::GetFullPath($bootstrapperSource) -ne [System.IO.Path]::GetFullPath($bootstrapperDest)) {{ Copy-Item $bootstrapperSource $bootstrapperDest -Force }}; " ++
                     "Copy-Item $bootstrapperSource $kiraDest -Force; " ++
                     "(Get-Item $bootstrapperDest).LastWriteTime = Get-Date; " ++
                     "(Get-Item $kiraDest).LastWriteTime = Get-Date; " ++
@@ -412,17 +412,17 @@ fn addManagedToolchainInstallStep(
             "-c",
             b.fmt(
                 "set -eu; " ++
-                    "cli_source=\"$1\"; bootstrapper_source=\"$2\"; version=\"$3\"; channel=\"$4\"; metadata_source=\"$5\"; templates_source=\"$6\"; bootstrapper_bin_dir=\"$7\"; " ++
+                    "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; bootstrapper_bin_dir=\"$6\"; " ++
                     "kira_home=\"$HOME/.kira\"; toolchain_root=\"$kira_home/toolchains/$channel/$version\"; bin_dir=\"$toolchain_root/bin\"; " ++
                     "mkdir -p \"$bin_dir\"; " ++
                     "cp \"$cli_source\" \"$bin_dir/kirac\"; chmod +x \"$bin_dir/kirac\"; touch \"$bin_dir/kirac\"; " ++
                     "mkdir -p \"$bootstrapper_bin_dir\"; " ++
-                    "cp \"$bootstrapper_source\" \"$bootstrapper_bin_dir/kira-bootstrapper\"; chmod +x \"$bootstrapper_bin_dir/kira-bootstrapper\"; touch \"$bootstrapper_bin_dir/kira-bootstrapper\"; " ++
+                    "if [ \"$bootstrapper_source\" != \"$bootstrapper_bin_dir/kira-bootstrapper\" ]; then cp \"$bootstrapper_source\" \"$bootstrapper_bin_dir/kira-bootstrapper\"; fi; chmod +x \"$bootstrapper_bin_dir/kira-bootstrapper\"; touch \"$bootstrapper_bin_dir/kira-bootstrapper\"; " ++
                     "cp \"$bootstrapper_source\" \"$bootstrapper_bin_dir/kira\"; chmod +x \"$bootstrapper_bin_dir/kira\"; touch \"$bootstrapper_bin_dir/kira\"; " ++
                     "cp \"$metadata_source\" \"$toolchain_root/llvm-metadata.toml\"; " ++
                     "rm -rf \"$toolchain_root/templates\"; cp -R \"$templates_source\" \"$toolchain_root/templates\"; " ++
                     "mkdir -p \"$kira_home/toolchains\"; " ++
-                    "cat > \"$kira_home/toolchains/current.toml\" <<'EOF'\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
+                    "cat > \"$kira_home/toolchains/current.toml\" <<EOF\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
                     "path_added=0; " ++
                     "case \":$PATH:\" in *\":$bootstrapper_bin_dir:\"*) path_exists=1 ;; *) path_exists=0 ;; esac; " ++
                     "if [ \"$path_exists\" -eq 0 ]; then " ++
@@ -451,4 +451,3 @@ fn addManagedToolchainInstallStep(
     step.addArg(bootstrapper_install_dir);
     return step;
 }
-

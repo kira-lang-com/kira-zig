@@ -263,7 +263,7 @@ test "parses llvm metadata and resolves target" {
         \\[llvm]
         \\version = "22.1.2"
         \\source_tag = "llvmorg-22.1.2"
-        \\release_tag = "llvm-v22.1.2-kira.1"
+        \\release_tag = "llvm-v22.1.2-kira.2"
         \\
         \\[build]
         \\build_type = "Release"
@@ -300,7 +300,7 @@ test "rejects incorrect asset naming" {
         \\[llvm]
         \\version = "22.1.2"
         \\source_tag = "llvmorg-22.1.2"
-        \\release_tag = "llvm-v22.1.2-kira.1"
+        \\release_tag = "llvm-v22.1.2-kira.2"
         \\
         \\[build]
         \\build_type = "Release"

@@ -166,7 +166,9 @@ fn libraryPath(allocator: std.mem.Allocator, bin_dir: []const u8, lib_dir: []con
         },
         .macos => [_]struct { dir: []const u8, name: []const u8 }{
             .{ .dir = lib_dir, .name = "libLLVM-C.dylib" },
+            .{ .dir = lib_dir, .name = "libLLVM.dylib" },
             .{ .dir = bin_dir, .name = "libLLVM-C.dylib" },
+            .{ .dir = bin_dir, .name = "libLLVM.dylib" },
         },
         else => return null,
     };

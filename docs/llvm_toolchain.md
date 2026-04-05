@@ -61,6 +61,8 @@ Each release asset is produced from an LLVM install tree, not from the raw build
 - `bin/llvm-config` or `bin/llvm-config.exe` when LLVM installs it on that host
 - any supporting files installed alongside those directories by LLVM's normal install step
 
+On macOS, the shared runtime may appear as `libLLVM.dylib` rather than `libLLVM-C.dylib`; Kira accepts either layout.
+
 The workflow intentionally avoids building LLVM examples, tests, benchmarks, docs, bindings, and optional compression or XML dependencies. The goal is a usable LLVM integration bundle for Kira, not a full general-purpose LLVM workstation image.
 
 ## Release workflow
@@ -111,7 +113,7 @@ The LLVM backend uses an explicit discovery order instead of silently falling ba
 2. active managed install at `~/.kira/toolchains/llvm/<llvm-version>/<host-key>`
 3. older repo-managed fallback paths under `.kira/llvm/` if they already exist locally
 
-When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout.
+When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout. On macOS, it accepts either the C API dylib or the unified `libLLVM.dylib` produced by the install tree.
 
 If discovery fails, the LLVM backend reports the paths it checked and tells the caller to set `KIRA_LLVM_HOME` or run `kira-bootstrapper fetch-llvm`. The backend does not silently bind to an arbitrary machine-local LLVM install.
 
