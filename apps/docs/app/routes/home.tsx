@@ -75,7 +75,7 @@ export function meta({}: Route.MetaArgs) {
 export default function Home() {
   return (
     <HomeLayout {...baseOptions()}>
-      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-14 px-4 py-10 md:px-6 md:py-16">
+      <div className="mx-auto flex w-full flex-1 flex-col gap-14 px-4 py-10 md:px-6 md:py-16">
 
         {/* ── Hero ─────────────────────────────────────────────── */}
         <section className="flex flex-col gap-7">

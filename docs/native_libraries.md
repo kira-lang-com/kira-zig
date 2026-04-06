@@ -134,19 +134,19 @@ The real proof target for this pass is a full generated Sokol binding and a nati
 - generated Kira module emitted directly from the public headers:
   - [examples/sokol_triangle/bindings/sokol.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/bindings/sokol.kira)
 - fully Kira-written app logic using the generated bindings directly:
-  - [examples/sokol_triangle/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/main.kira)
-  - [examples/sokol_runtime_entry/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_runtime_entry/main.kira)
+  - [examples/sokol_triangle/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/app/main.kira)
+  - [examples/sokol_runtime_entry/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_runtime_entry/app/main.kira)
 - runnable native proof case:
   - [tests/pass/run/ffi_sokol_triangle_native/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_sokol_triangle_native/main.kira)
 
 To regenerate the bindings without launching the app, run:
 
 ```bash
-kira-bootstrapper check examples/sokol_triangle/main.kira
+kira check examples/sokol_triangle
 ```
 
 To build and launch the native triangle proof, run:
 
 ```bash
-kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira
+kira run --backend llvm examples/sokol_triangle
 ```

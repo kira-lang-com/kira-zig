@@ -19,7 +19,7 @@ It proves all of these together:
 Start with:
 
 ```bash
-kira-bootstrapper check examples/sokol_triangle/main.kira
+kira check examples/sokol_triangle
 ```
 
 That validates the import/manifests/autobinding path before launching the app.
@@ -27,7 +27,7 @@ That validates the import/manifests/autobinding path before launching the app.
 ## Run The Native Proof
 
 ```bash
-kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira
+kira run --backend llvm examples/sokol_triangle
 ```
 
 This example opens a window, initializes Sokol, draws a triangle, and shuts down through Kira-written native code using the generated bindings directly.
@@ -37,16 +37,16 @@ This example opens a window, initializes Sokol, draws a triangle, and shuts down
 - `examples/sokol_triangle/native_libs/sokol.toml`
 - `examples/sokol_triangle/native_libs/sokol.bind.toml`
 - `examples/sokol_triangle/bindings/sokol.kira`
-- `examples/sokol_triangle/main.kira`
+- `examples/sokol_triangle/app/main.kira`
 
-There is also `examples/sokol_runtime_entry/main.kira`, which uses the same general binding flow with slightly different state handling.
+There is also `examples/sokol_runtime_entry/app/main.kira`, which uses the same general binding flow with slightly different state handling.
 
 ## Non-GUI Companion Proof
 
 If you want a no-window proof that still exercises Sokol FFI, the corpus includes:
 
 ```bash
-zig build run -- run --backend hybrid tests/pass/run/ffi_sokol_hybrid/main.kira
+zig build run -- run --backend hybrid tests/pass/run/ffi_sokol_hybrid
 ```
 
 Current output:

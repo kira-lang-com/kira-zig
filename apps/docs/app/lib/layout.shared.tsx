@@ -1,5 +1,14 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
+import { ThemeSwitch, type ThemeSwitchProps } from "fumadocs-ui/layouts/shared/slots/theme-switch";
 import { appName, gitConfig } from "./shared";
+
+function HeaderOnlyThemeSwitch(props: ThemeSwitchProps) {
+  if (typeof props.className === "string" && props.className.includes("ms-auto")) {
+    return null;
+  }
+
+  return <ThemeSwitch {...props} />;
+}
 
 export function baseOptions(): BaseLayoutProps {
   return {
@@ -26,5 +35,8 @@ export function baseOptions(): BaseLayoutProps {
         ),
       },
     ],
+    slots: {
+      themeSwitch: HeaderOnlyThemeSwitch,
+    },
   };
 }

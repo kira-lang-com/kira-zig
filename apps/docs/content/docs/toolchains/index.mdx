@@ -1,11 +1,11 @@
 ---
 title: Bootstrapper and Managed Toolchains
-description: How `kira-bootstrapper`, `kirac`, templates, and the managed install layout work.
+description: How `kira`, `kirac`, templates, and the managed install layout work.
 ---
 
 ## Launcher vs Real CLI
 
-The user-facing command is `kira-bootstrapper`.
+The user-facing command is `kira`.
 
 Its job is to:
 
@@ -32,7 +32,7 @@ The install flow writes:
 - version
 - primary executable
 
-That is how the bootstrapper knows which real toolchain to launch.
+That is how the launcher knows which real toolchain to launch.
 
 ## Developer Targets
 
@@ -61,11 +61,11 @@ That resource root is what gives the CLI access to:
 
 ## Template Apps
 
-`kira-bootstrapper new` copies from the managed template tree, not from a remote service.
+`kira new` copies from the managed template tree, not from a remote service.
 
 Current template output:
 
-- `Kira.toml`
-- `src/main.kira`
+- `project.toml`
+- `app/main.kira`
 
 The template is intentionally small. It reflects the current executable subset instead of pretending the repo already ships a full batteries-included application framework.
