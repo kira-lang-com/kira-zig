@@ -14,7 +14,8 @@ import NotFound from "./routes/not-found";
 import { siteDescription } from "@/lib/shared";
 
 export const links: Route.LinksFunction = () => [
-  { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+  { rel: "icon", href: "/KiraNameIcon.png", type: "image/png" },
+  { rel: "apple-touch-icon", href: "/KiraNameIcon.png", type: "image/png" },
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
     rel: "preconnect",
