@@ -147,6 +147,10 @@ html.dark body {
   max-width: none !important;
 }
 
+#nd-home-layout > div.kira-home-content {
+  max-width: 72rem !important;
+}
+
 /* Keep document pages readable, but a bit wider than the fumadocs default. */
 #nd-page {
   max-width: 1040px !important;

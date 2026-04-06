@@ -1,6 +1,7 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 import { ThemeSwitch, type ThemeSwitchProps } from "fumadocs-ui/layouts/shared/slots/theme-switch";
-import { appName, gitConfig } from "./shared";
+import { KiraWordmark } from "@/components/brand";
+import { gitConfig } from "./shared";
 
 function HeaderOnlyThemeSwitch(props: ThemeSwitchProps) {
   if (typeof props.className === "string" && props.className.includes("ms-auto")) {
@@ -15,8 +16,7 @@ export function baseOptions(): BaseLayoutProps {
     nav: {
       title: (
         <span className="kira-nav-title">
-          <span className="kira-nav-mark">K</span>
-          <span>{appName}</span>
+          <KiraWordmark className="h-9 md:h-10" />
         </span>
       ),
     },
