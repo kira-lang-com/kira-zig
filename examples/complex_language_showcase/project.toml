@@ -1,0 +1,7 @@
+[project]
+name = "complex_language_showcase"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "vm"
+build_target = "host"

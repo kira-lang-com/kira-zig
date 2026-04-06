@@ -18,7 +18,7 @@ The working execution paths today are:
 - source -> lexer -> parser -> semantics -> IR -> LLVM IR -> object file -> native executable
 - source -> lexer -> parser -> semantics -> IR -> bytecode plus native shared library -> hybrid runtime host
 - `print(...)` works for integers and strings
-- `kira-bootstrapper` launches the active managed Kira toolchain
+- `kira` launches the active managed Kira toolchain
 - `KiraMain` can load and run bytecode modules
 
 The native path currently supports the same bootstrap subset as the VM path:
@@ -50,25 +50,25 @@ The FFI path extends that executable boundary with:
 ```bash
 zig build
 zig build install
-kira-bootstrapper --help
-kira-bootstrapper fetch-llvm
-kira-bootstrapper run examples/hello/main.kira
-kira-bootstrapper run --backend llvm examples/hello/main.kira
-kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira
-kira-bootstrapper tokens examples/hello/main.kira
-kira-bootstrapper ast examples/hello/main.kira
-kira-bootstrapper check examples/hello/main.kira
-kira-bootstrapper build examples/hello/main.kira
-kira-bootstrapper build --backend llvm examples/hello/main.kira
-kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip/main.kira
-kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira
-kira-bootstrapper new DemoApp generated/DemoApp
+kira --help
+kira fetch-llvm
+kira run examples/hello
+kira run --backend llvm examples/hello
+kira run --backend hybrid examples/hybrid_roundtrip
+kira tokens examples/hello
+kira ast examples/hello
+kira check examples/hello
+kira build examples/hello
+kira build --backend llvm examples/hello
+kira build --backend hybrid examples/hybrid_roundtrip
+kira run --backend llvm examples/sokol_triangle
+kira new DemoApp generated/DemoApp
 zig build test
 ```
 
 `zig build install` and `zig build install-kirac` now do two things:
 
-- install the PATH-facing launcher into `zig-out/bin/kira-bootstrapper` by default
+- install the PATH-facing launcher into `zig-out/bin/kira` by default
 - install the real active Kira toolchain into `~/.kira/toolchains/<channel>/<version>/`
 
 The managed toolchain layout is:
@@ -84,7 +84,7 @@ The managed toolchain layout is:
 ~/.kira/toolchains/llvm/<llvm-version>/<host-key>/
 ```
 
-On Windows, you can run the launcher directly as `.\zig-out\bin\kira-bootstrapper.exe`, or add `zig-out\bin` to `PATH`:
+On Windows, you can run the launcher directly as `.\zig-out\bin\kira.exe`, or add `zig-out\bin` to `PATH`:
 
 ```powershell
 $env:Path = "$PWD\zig-out\bin;$env:Path"
@@ -98,7 +98,7 @@ For development:
 - `zig build kira-bootstrapper` builds the forwarding launcher
 - `zig build install-kirac` installs the active toolchain and launcher together
 
-Install the pinned LLVM bundle with `kira-bootstrapper fetch-llvm` before using the LLVM backend. `zig build fetch-llvm` remains available as the build-step convenience path. Kira reads `llvm-metadata.toml`, resolves the current host bundle from the published GitHub release assets, and installs it into `~/.kira/toolchains/llvm/<llvm-version>/<host>/`.
+Install the pinned LLVM bundle with `kira fetch-llvm` before using the LLVM backend. `zig build fetch-llvm` remains available as the build-step convenience path. Kira reads `llvm-metadata.toml`, resolves the current host bundle from the published GitHub release assets, and installs it into `~/.kira/toolchains/llvm/<llvm-version>/<host>/`.
 
 LLVM discovery order is:
 
@@ -110,7 +110,7 @@ If you need to override the managed install, point Kira at a different LLVM tree
 
 ```powershell
 $env:KIRA_LLVM_HOME = "C:\path\to\llvm"
-kira-bootstrapper run --backend llvm examples/hello/main.kira
+kira run --backend llvm examples/hello
 ```
 
 The pinned LLVM download flow intentionally does not use checksum verification. The release tag, asset name, host mapping, and install marker are the source of truth for reuse.
@@ -120,16 +120,16 @@ The pinned LLVM download flow intentionally does not use checksum verification. 
 The standalone binary is now the normal path:
 
 ```bash
-kira-bootstrapper run examples/hello/main.kira
-kira-bootstrapper build examples/hello/main.kira
-kira-bootstrapper check examples/hello/main.kira
+kira run examples/hello
+kira build examples/hello
+kira check examples/hello
 ```
 
 `zig build run -- ...` is still useful when iterating on the CLI itself because it rebuilds and runs in one step:
 
 ```bash
-zig build run -- run examples/hello/main.kira
-zig build run -- build --backend llvm examples/hello/main.kira
+zig build run -- run examples/hello
+zig build run -- build --backend llvm examples/hello
 ```
 
 ## Documentation Site
@@ -170,8 +170,8 @@ function entry() {
 - `kira_hybrid_runtime` hosts mixed bytecode/native programs and routes boundary calls through explicit bridge/trampoline logic
 - generated FFI bindings are emitted as normal Kira modules rather than wrapper APIs
 - hybrid contracts remain layered and future-facing without forcing the repo back into VM-only assumptions
-- native library manifests live outside the root `Kira.toml`
+- native library manifests live outside the root `project.toml`
 
-The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/main.kira](examples/sokol_triangle/main.kira) and [examples/sokol_runtime_entry/main.kira](examples/sokol_runtime_entry/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira-bootstrapper check examples/sokol_triangle/main.kira` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira-bootstrapper run --backend llvm examples/sokol_triangle/main.kira` to build and launch the native triangle proof.
+The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/app/main.kira](examples/sokol_triangle/app/main.kira) and [examples/sokol_runtime_entry/app/main.kira](examples/sokol_runtime_entry/app/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira check examples/sokol_triangle` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira run --backend llvm examples/sokol_triangle` to build and launch the native triangle proof.
 
 See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), and [docs/native_libraries.md](docs/native_libraries.md).

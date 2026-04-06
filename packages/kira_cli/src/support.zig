@@ -1,7 +1,9 @@
 const std = @import("std");
 const build = @import("kira_build");
+const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
 const kira_log = @import("kira_log");
+const kira_project = @import("kira_project");
 const source_pkg = @import("kira_source");
 const kira_toolchain = @import("kira_toolchain");
 const build_options = @import("kira_cli_build_options");
@@ -110,6 +112,50 @@ pub fn renderInternalCompilerError(stderr: anytype, err_name: []const u8) !void 
     try stderr.writeAll("  help: Please report this bug with the command you ran and the source file that triggered it.\n");
 }
 
+pub const ResolvedCommandInput = struct {
+    source_path: []const u8,
+    project_root: ?[]const u8 = null,
+    project_name: ?[]const u8 = null,
+    default_backend: ?build_def.ExecutionTarget = null,
+};
+
+pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedCommandInput {
+    if (std.mem.eql(u8, std.fs.path.basename(path), kira_project.manifest_file_name) or directoryExists(path)) {
+        const resolved = try kira_project.loadProjectFromPath(allocator, path);
+        return .{
+            .source_path = resolved.entrypoint_path,
+            .project_root = resolved.root_path,
+            .project_name = resolved.project.manifest.name,
+            .default_backend = try parseExecutionTarget(resolved.project.manifest.execution_mode),
+        };
+    }
+
+    return error.InvalidArguments;
+}
+
+pub fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
+    if (std.mem.eql(u8, text, "vm")) return .vm;
+    if (std.mem.eql(u8, text, "llvm") or std.mem.eql(u8, text, "llvm_native")) return .llvm_native;
+    if (std.mem.eql(u8, text, "hybrid")) return .hybrid;
+    return error.InvalidProjectExecutionMode;
+}
+
+pub fn outputRoot(allocator: std.mem.Allocator, project_root: ?[]const u8) ![]u8 {
+    if (project_root) |root| return std.fs.path.join(allocator, &.{ root, "generated" });
+    return allocator.dupe(u8, "generated");
+}
+
+pub fn ensurePath(path: []const u8) !void {
+    if (!std.fs.path.isAbsolute(path)) {
+        try std.fs.cwd().makePath(path);
+        return;
+    }
+
+    var root = try std.fs.openDirAbsolute("/", .{});
+    defer root.close();
+    try root.makePath(path[1..]);
+}
+
 fn frontendStageName(stage: ?build.FrontendStage) []const u8 {
     return switch (stage orelse .ir) {
         .lexer => "lexer",
@@ -182,7 +228,25 @@ fn hasManagedResources(path: []const u8) bool {
 }
 
 fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
+    if (std.fs.path.isAbsolute(path)) {
+        var file = std.fs.openFileAbsolute(path, .{}) catch return false;
+        file.close();
+        return true;
+    }
+
+    var file = std.fs.cwd().openFile(path, .{}) catch return false;
     file.close();
+    return true;
+}
+
+fn directoryExists(path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
+        dir.close();
+        return true;
+    }
+
+    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
+    dir.close();
     return true;
 }

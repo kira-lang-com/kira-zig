@@ -65,15 +65,16 @@ fn executeCommand(allocator: std.mem.Allocator, _: []const u8, args: []const []c
 fn printUsage(writer: anytype) !void {
     try writer.print(
         \\{s} <command> [args]
-        \\  run [--backend vm|llvm|hybrid] <file.kira>
-        \\  build [--backend vm|llvm|hybrid] <file.kira>
-        \\  check <file.kira>
-        \\  tokens <file.kira>
-        \\  ast <file.kira>
+        \\  run [--backend vm|llvm|hybrid] <project-dir|project.toml>
+        \\  build [--backend vm|llvm|hybrid] <project-dir|project.toml>
+        \\  check <project-dir|project.toml>
+        \\  tokens <project-dir|project.toml>
+        \\  ast <project-dir|project.toml>
         \\  new <Name> <destination>
         \\  fetch-llvm
         \\  help
         \\  version
+        \\  project layout: <root>/project.toml with entrypoint at <root>/app/main.kira
         \\  entrypoint syntax: @Main [@Runtime|@Native] function entry() {{ ... }}
         \\
         \\install:
@@ -92,11 +93,22 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    try tmp.dir.makePath("DemoApp/app");
     try tmp.dir.writeFile(.{
-        .sub_path = "broken.kira",
+        .sub_path = "DemoApp/project.toml",
+        .data =
+            "[project]\n" ++
+            "name = \"DemoApp\"\n" ++
+            "version = \"0.1.0\"\n\n" ++
+            "[defaults]\n" ++
+            "execution_mode = \"vm\"\n" ++
+            "build_target = \"host\"\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/app/main.kira",
         .data = "@Main\nfunction main() { let x = ; }\n",
     });
-    const path = try tmp.dir.realpathAlloc(arena.allocator(), "broken.kira");
+    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
@@ -122,8 +134,19 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    try tmp.dir.makePath("DemoApp/app");
     try tmp.dir.writeFile(.{
-        .sub_path = "broken_hybrid.kira",
+        .sub_path = "DemoApp/project.toml",
+        .data =
+            "[project]\n" ++
+            "name = \"DemoApp\"\n" ++
+            "version = \"0.1.0\"\n\n" ++
+            "[defaults]\n" ++
+            "execution_mode = \"hybrid\"\n" ++
+            "build_target = \"host\"\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/app/main.kira",
         .data =
             "@Main\n" ++
             "@Native\n" ++
@@ -137,7 +160,7 @@ test "invalid hybrid input exits cleanly without renderer crash" {
             "    return;\n" ++
             "}\n",
     });
-    const path = try tmp.dir.realpathAlloc(arena.allocator(), "broken_hybrid.kira");
+    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;

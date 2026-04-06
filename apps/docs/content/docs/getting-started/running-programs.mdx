@@ -8,7 +8,7 @@ description: Use the current CLI to run, inspect, check, and build Kira source f
 The normal first run is:
 
 ```bash
-kira-bootstrapper run examples/hello/main.kira
+kira run examples/hello
 ```
 
 On the current repo state, that prints:
@@ -26,10 +26,10 @@ geometry demo
 Use these first:
 
 ```bash
-kira-bootstrapper run examples/hello/main.kira
-kira-bootstrapper check examples/hello/main.kira
-kira-bootstrapper tokens examples/hello/main.kira
-kira-bootstrapper ast examples/hello/main.kira
+kira run examples/hello
+kira check examples/hello
+kira tokens examples/hello
+kira ast examples/hello
 ```
 
 What they do:
@@ -44,9 +44,9 @@ What they do:
 The CLI supports three execution targets:
 
 ```bash
-kira-bootstrapper run --backend vm examples/hello/main.kira
-kira-bootstrapper run --backend llvm examples/callbacks/main.kira
-kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira
+kira run --backend vm examples/hello
+kira run --backend llvm examples/callbacks
+kira run --backend hybrid examples/hybrid_roundtrip
 ```
 
 The repo currently proves all three paths:
@@ -60,9 +60,9 @@ The repo currently proves all three paths:
 `build` writes artifacts into `generated/` by default:
 
 ```bash
-kira-bootstrapper build examples/hello/main.kira
-kira-bootstrapper build --backend llvm examples/hello/main.kira
-kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip/main.kira
+kira build examples/hello
+kira build --backend llvm examples/hello
+kira build --backend hybrid examples/hybrid_roundtrip
 ```
 
 Current output shapes:
@@ -78,7 +78,7 @@ Current output shapes:
 If you are editing the CLI itself, use:
 
 ```bash
-zig build run -- run examples/hello/main.kira
+zig build run -- run examples/hello
 ```
 
 That keeps you on the freshly rebuilt in-repo CLI instead of whatever launcher is currently on your `PATH`.
@@ -90,7 +90,7 @@ That keeps you on the freshly rebuilt in-repo CLI instead of whatever launcher i
 For example:
 
 ```bash
-kira-bootstrapper check examples/sokol_triangle/main.kira
+kira check examples/sokol_triangle
 ```
 
 That succeeds only after Kira has:

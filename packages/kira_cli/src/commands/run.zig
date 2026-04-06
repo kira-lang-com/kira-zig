@@ -7,17 +7,19 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    const input = try support.resolveCommandInput(allocator, parsed.input_path);
+    const backend = parsed.backend orelse input.default_backend orelse .vm;
 
-    try support.logFrontendStarted(stderr, "run", parsed.source_path);
+    try support.logFrontendStarted(stderr, "run", input.source_path);
     var system = build.BuildSystem.init(allocator);
-    switch (parsed.backend) {
+    switch (backend) {
         .vm => {
-            const result = try system.compileVm(parsed.source_path);
+            const result = try system.compileVm(input.source_path);
             if (result.failed()) {
                 if (result.failure_stage == .ir) {
-                    try support.logBuildAborted(stderr, "run", .build, parsed.source_path);
+                    try support.logBuildAborted(stderr, "run", .build, input.source_path);
                 } else {
-                    try support.logFrontendFailed(stderr, result.failure_stage, parsed.source_path, result.diagnostics.len);
+                    try support.logFrontendFailed(stderr, result.failure_stage, input.source_path, result.diagnostics.len);
                 }
                 try support.renderDiagnostics(stderr, &result.source, result.diagnostics);
                 return error.CommandFailed;
@@ -28,19 +30,22 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             try vm.runMain(&module, stdout);
         },
         .llvm_native => {
-            try std.fs.cwd().makePath("generated");
+            const output_root = try support.outputRoot(allocator, input.project_root);
+            defer allocator.free(output_root);
+            try support.ensurePath(output_root);
+            const stem = input.project_name orelse std.fs.path.stem(input.source_path);
             const executable_path = try std.fmt.allocPrint(
                 allocator,
-                "generated/{s}.run{s}",
-                .{ std.fs.path.stem(parsed.source_path), build.executableExtension() },
+                "{s}/{s}.run{s}",
+                .{ output_root, stem, build.executableExtension() },
             );
             const result = try system.buildNativeArtifact(.{
-                .source_path = parsed.source_path,
+                .source_path = input.source_path,
                 .output_path = executable_path,
                 .target = .{ .execution = .llvm_native },
             });
             if (result.failed()) {
-                try support.logBuildAborted(stderr, "run", result.failure_kind.?, parsed.source_path);
+                try support.logBuildAborted(stderr, "run", result.failure_kind.?, input.source_path);
                 if (result.source) |source| {
                     try support.renderDiagnostics(stderr, &source, result.diagnostics);
                 }
@@ -51,19 +56,22 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             try runExecutable(allocator, executable.path);
         },
         .hybrid => {
-            try std.fs.cwd().makePath("generated");
+            const output_root = try support.outputRoot(allocator, input.project_root);
+            defer allocator.free(output_root);
+            try support.ensurePath(output_root);
+            const stem = input.project_name orelse std.fs.path.stem(input.source_path);
             const manifest_path = try std.fmt.allocPrint(
                 allocator,
-                "generated/{s}.run.khm",
-                .{std.fs.path.stem(parsed.source_path)},
+                "{s}/{s}.run.khm",
+                .{ output_root, stem },
             );
             const result = try system.buildHybridArtifact(.{
-                .source_path = parsed.source_path,
+                .source_path = input.source_path,
                 .output_path = manifest_path,
                 .target = .{ .execution = .hybrid },
             });
             if (result.failed()) {
-                try support.logBuildAborted(stderr, "run", result.failure_kind.?, parsed.source_path);
+                try support.logBuildAborted(stderr, "run", result.failure_kind.?, input.source_path);
                 if (result.source) |source| {
                     try support.renderDiagnostics(stderr, &source, result.diagnostics);
                 }
@@ -79,13 +87,13 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 }
 
 const ParsedArgs = struct {
-    backend: build_def.ExecutionTarget,
-    source_path: []const u8,
+    backend: ?build_def.ExecutionTarget = null,
+    input_path: []const u8,
 };
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
-    var backend: build_def.ExecutionTarget = .vm;
-    var source_path: ?[]const u8 = null;
+    var backend: ?build_def.ExecutionTarget = null;
+    var input_path: ?[]const u8 = null;
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -96,13 +104,13 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
             continue;
         }
-        if (source_path != null) return error.InvalidArguments;
-        source_path = arg;
+        if (input_path != null) return error.InvalidArguments;
+        input_path = arg;
     }
 
     return .{
         .backend = backend,
-        .source_path = source_path orelse return error.InvalidArguments,
+        .input_path = input_path orelse return error.InvalidArguments,
     };
 }
 

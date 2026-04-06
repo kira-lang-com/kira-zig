@@ -438,18 +438,31 @@ const ImportResolution = struct {
 };
 
 fn resolveImportPath(allocator: std.mem.Allocator, source_path: []const u8, module_name: syntax.ast.QualifiedName) !ImportResolution {
-    const base_dir = std.fs.path.dirname(source_path) orelse ".";
     const display_name = try qualifiedNameDisplay(allocator, module_name);
     const relative_slash = try qualifiedNameRelativePath(allocator, module_name, '/');
     defer allocator.free(relative_slash);
     const relative_backslash = try qualifiedNameRelativePath(allocator, module_name, '\\');
     defer allocator.free(relative_backslash);
 
-    const candidates = try allocator.alloc([]u8, 4);
-    candidates[0] = try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ base_dir, relative_slash });
-    candidates[1] = try std.fmt.allocPrint(allocator, "{s}/{s}/main.kira", .{ base_dir, relative_slash });
-    candidates[2] = try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ base_dir, relative_backslash });
-    candidates[3] = try std.fmt.allocPrint(allocator, "{s}\\{s}\\main.kira", .{ base_dir, relative_backslash });
+    var candidates_list = std.array_list.Managed([]u8).init(allocator);
+    var cursor = try absolutizePath(allocator, std.fs.path.dirname(source_path) orelse ".");
+    defer allocator.free(cursor);
+
+    while (true) {
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ cursor, relative_slash }));
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}/main.kira", .{ cursor, relative_slash }));
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ cursor, relative_backslash }));
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}\\main.kira", .{ cursor, relative_backslash }));
+
+        const parent = std.fs.path.dirname(cursor) orelse break;
+        if (std.mem.eql(u8, parent, cursor)) break;
+
+        const parent_copy = try allocator.dupe(u8, parent);
+        allocator.free(cursor);
+        cursor = parent_copy;
+    }
+
+    const candidates = try candidates_list.toOwnedSlice();
 
     var exists = false;
     for (candidates) |candidate| {
@@ -464,6 +477,11 @@ fn resolveImportPath(allocator: std.mem.Allocator, source_path: []const u8, modu
         .candidates = candidates,
         .exists = exists,
     };
+}
+
+fn absolutizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+    return std.fs.cwd().realpathAlloc(allocator, path);
 }
 
 fn resolvedCandidateNotes(allocator: std.mem.Allocator, candidates: [][]u8) ![]const []const u8 {

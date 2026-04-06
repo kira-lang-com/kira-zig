@@ -1,0 +1,15 @@
+import bindings.sokol_gfx as sg
+
+@Main
+@Runtime
+function main() {
+    run_sokol()
+    return
+}
+
+@Native
+function run_sokol() {
+    sg.sg_isvalid()
+    print("sokol ffi")
+    return
+}
