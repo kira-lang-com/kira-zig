@@ -1,12 +1,12 @@
 ---
 title: Command Reference
-description: Command-by-command behavior for the current `kira-bootstrapper` CLI.
+description: Command-by-command behavior for the current `kira` CLI.
 ---
 
 ## `run`
 
 ```bash
-kira-bootstrapper run [--backend vm|llvm|hybrid] <file.kira>
+kira run [--backend vm|llvm|hybrid] <project-dir|project.toml>
 ```
 
 - default backend: VM
@@ -16,7 +16,7 @@ kira-bootstrapper run [--backend vm|llvm|hybrid] <file.kira>
 ## `build`
 
 ```bash
-kira-bootstrapper build [--backend vm|llvm|hybrid] <file.kira>
+kira build [--backend vm|llvm|hybrid] <project-dir|project.toml>
 ```
 
 Current output conventions:
@@ -28,7 +28,7 @@ Current output conventions:
 ## `check`
 
 ```bash
-kira-bootstrapper check <file.kira>
+kira check <project-dir|project.toml>
 ```
 
 `check` does more than syntax-only validation. It currently:
@@ -48,7 +48,7 @@ check passed
 ## `tokens`
 
 ```bash
-kira-bootstrapper tokens <file.kira>
+kira tokens <project-dir|project.toml>
 ```
 
 Prints lexer tokens with:
@@ -62,7 +62,7 @@ This is useful when you are adjusting syntax or trying to understand a parser fa
 ## `ast`
 
 ```bash
-kira-bootstrapper ast <file.kira>
+kira ast <project-dir|project.toml>
 ```
 
 Prints the parsed AST from `kira_syntax_model`.
@@ -72,7 +72,7 @@ Use it when you want to confirm that the parser understood a construct, annotati
 ## `fetch-llvm`
 
 ```bash
-kira-bootstrapper fetch-llvm
+kira fetch-llvm
 ```
 
 Reads `llvm-metadata.toml`, chooses the host bundle, downloads the pinned release asset, and installs it under:
@@ -84,7 +84,7 @@ Reads `llvm-metadata.toml`, chooses the host bundle, downloads the pinned releas
 ## `new`
 
 ```bash
-kira-bootstrapper new <Name> <destination>
+kira new <Name> <destination>
 ```
 
 Copies the current managed app template into the destination and substitutes the app name into the template files.
@@ -92,7 +92,7 @@ Copies the current managed app template into the destination and substitutes the
 ## `version`
 
 ```bash
-kira-bootstrapper version
+kira version
 ```
 
 Prints the launcher identity and version string.
@@ -100,7 +100,7 @@ Prints the launcher identity and version string.
 ## `help`
 
 ```bash
-kira-bootstrapper help
+kira help
 ```
 
 Prints the command summary and current install notes.

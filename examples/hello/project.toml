@@ -1,0 +1,7 @@
+[project]
+name = "hello"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "vm"
+build_target = "host"

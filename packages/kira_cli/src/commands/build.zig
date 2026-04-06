@@ -5,19 +5,28 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    const input = try support.resolveCommandInput(allocator, parsed.input_path);
+    const backend = parsed.backend orelse input.default_backend orelse .vm;
 
-    try support.logFrontendStarted(stderr, "build", parsed.source_path);
-    try std.fs.cwd().makePath("generated");
-    const output_path = try defaultOutputPath(allocator, parsed);
+    try support.logFrontendStarted(stderr, "build", input.source_path);
+    const output_root = try support.outputRoot(allocator, input.project_root);
+    defer allocator.free(output_root);
+    try support.ensurePath(output_root);
+    const output_path = try defaultOutputPath(
+        allocator,
+        output_root,
+        input.project_name orelse std.fs.path.stem(input.source_path),
+        backend,
+    );
 
     var system = build_pkg.BuildSystem.init(allocator);
     const result = try system.build(.{
-        .source_path = parsed.source_path,
+        .source_path = input.source_path,
         .output_path = output_path,
-        .target = .{ .execution = parsed.backend },
+        .target = .{ .execution = backend },
     });
     if (result.failed()) {
-        try support.logBuildAborted(stderr, "build", result.failure_kind.?, parsed.source_path);
+        try support.logBuildAborted(stderr, "build", result.failure_kind.?, input.source_path);
         if (result.source) |source| {
             try support.renderDiagnostics(stderr, &source, result.diagnostics);
         }
@@ -30,13 +39,13 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 }
 
 const ParsedArgs = struct {
-    backend: build_def.ExecutionTarget,
-    source_path: []const u8,
+    backend: ?build_def.ExecutionTarget = null,
+    input_path: []const u8,
 };
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
-    var backend: build_def.ExecutionTarget = .vm;
-    var source_path: ?[]const u8 = null;
+    var backend: ?build_def.ExecutionTarget = null;
+    var input_path: ?[]const u8 = null;
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -47,13 +56,13 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
             continue;
         }
-        if (source_path != null) return error.InvalidArguments;
-        source_path = arg;
+        if (input_path != null) return error.InvalidArguments;
+        input_path = arg;
     }
 
     return .{
         .backend = backend,
-        .source_path = source_path orelse return error.InvalidArguments,
+        .input_path = input_path orelse return error.InvalidArguments,
     };
 }
 
@@ -64,11 +73,10 @@ fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     return null;
 }
 
-fn defaultOutputPath(allocator: std.mem.Allocator, parsed: ParsedArgs) ![]const u8 {
-    const stem = std.fs.path.stem(parsed.source_path);
-    return switch (parsed.backend) {
-        .vm => std.fmt.allocPrint(allocator, "generated/{s}.kbc", .{stem}),
-        .llvm_native => std.fmt.allocPrint(allocator, "generated/{s}{s}", .{ stem, build_pkg.executableExtension() }),
-        .hybrid => std.fmt.allocPrint(allocator, "generated/{s}.khm", .{stem}),
+fn defaultOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: []const u8, backend: build_def.ExecutionTarget) ![]const u8 {
+    return switch (backend) {
+        .vm => std.fmt.allocPrint(allocator, "{s}/{s}.kbc", .{ output_root, stem }),
+        .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ output_root, stem, build_pkg.executableExtension() }),
+        .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.khm", .{ output_root, stem }),
     };
 }

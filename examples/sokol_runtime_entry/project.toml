@@ -1,0 +1,7 @@
+[project]
+name = "sokol_runtime_entry"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "llvm"
+build_target = "host"

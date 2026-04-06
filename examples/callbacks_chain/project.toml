@@ -1,0 +1,7 @@
+[project]
+name = "callbacks_chain"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "llvm"
+build_target = "host"

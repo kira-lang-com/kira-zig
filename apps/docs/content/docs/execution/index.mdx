@@ -16,7 +16,7 @@ Kira currently has three execution targets.
 The default `run` path is the VM:
 
 ```bash
-kira-bootstrapper run examples/hello/main.kira
+kira run examples/hello
 ```
 
 The pipeline is:
@@ -32,7 +32,7 @@ VM mode is the simplest backend, but it cannot execute `@Native` functions. If y
 The native path lowers the shared IR through the LLVM C API and links a host executable:
 
 ```bash
-kira-bootstrapper run --backend llvm examples/callbacks/main.kira
+kira run --backend llvm examples/callbacks
 ```
 
 The pipeline is:
@@ -55,7 +55,7 @@ Hybrid mode is where Kira's mixed execution model shows up directly:
 Example:
 
 ```bash
-kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira
+kira run --backend hybrid examples/hybrid_roundtrip
 ```
 
 Current output:

@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install `kira-bootstrapper`, the active managed Kira toolchain, and the pinned LLVM bundle.
+description: Install `kira`, the active managed Kira toolchain, and the pinned LLVM bundle.
 ---
 
 ## Prerequisites
@@ -14,10 +14,10 @@ zig build install
 
 That gives you two things:
 
-- the launcher at `zig-out/bin/kira-bootstrapper`
+- the launcher at `zig-out/bin/kira`
 - the active managed Kira toolchain under `~/.kira/toolchains/<channel>/<version>/`
 
-The repo currently installs the real CLI binary as `kirac` inside that managed toolchain, while `kira-bootstrapper` is the path-facing launcher that forwards into the active toolchain.
+The repo currently installs the real CLI binary as `kirac` inside that managed toolchain, while `kira` is the path-facing launcher that forwards into the active toolchain.
 
 ## Install The Active Toolchain
 
@@ -63,7 +63,7 @@ The launcher is installed to `zig-out/bin/` by default.
 
 You can either:
 
-- run it directly as `zig-out/bin/kira-bootstrapper`
+- run it directly as `zig-out/bin/kira`
 - add `zig-out/bin` to your shell `PATH`
 - use Zig's prefix option if you want a different install destination
 
@@ -82,7 +82,7 @@ The LLVM backend and the native half of hybrid mode use a pinned LLVM bundle rec
 Install it with:
 
 ```bash
-kira-bootstrapper fetch-llvm
+kira fetch-llvm
 ```
 
 or:
@@ -118,16 +118,16 @@ Use `zig build run -- ...` when you are iterating on the CLI itself and want a r
 
 ## Template Apps
 
-`kira-bootstrapper new` copies the app template from the managed toolchain:
+`kira new` copies the app template from the managed toolchain:
 
 ```bash
-kira-bootstrapper new DemoApp generated/DemoApp
+kira new DemoApp generated/DemoApp
 ```
 
 The current template is intentionally minimal:
 
-- `Kira.toml`
-- `src/main.kira`
+- `project.toml`
+- `app/main.kira`
 - a starter `@Main` function that prints a message
 
 The generated app shape is small on purpose so contributors can build outward from the current bootstrap subset instead of inheriting a pretend full framework.

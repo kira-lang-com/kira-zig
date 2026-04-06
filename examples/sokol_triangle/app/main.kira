@@ -82,7 +82,7 @@ function frame(user_data: RawPtr): Void {
     sokol.sg_draw(0, 3, 1)
     sokol.sg_end_pass()
     sokol.sg_commit()
-    sokol.sapp_request_quit()
+    // sokol.sapp_request_quit()
     return
 }
 

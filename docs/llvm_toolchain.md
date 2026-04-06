@@ -5,7 +5,7 @@ Kira ships pinned LLVM bundles so contributors do not need to build LLVM themsel
 Contributors install the pinned bundle with:
 
 ```bash
-kira-bootstrapper fetch-llvm
+kira fetch-llvm
 ```
 
 `zig build fetch-llvm` remains available when you want the old build-step workflow.
@@ -25,7 +25,7 @@ This flow intentionally does not use checksum verification.
 
 - LLVM is large enough that rebuilding it on every contributor machine is a bad default.
 - Kira needs predictable headers, libraries, and tool behavior when the LLVM backend lands.
-- GitHub release assets are durable and easy for `kira-bootstrapper fetch-llvm` or `zig build fetch-llvm` to download and install deterministically.
+- GitHub release assets are durable and easy for `kira fetch-llvm` or `zig build fetch-llvm` to download and install deterministically.
 - Workflow artifacts are still useful during CI, but they are temporary debugging outputs rather than the long-term delivery channel.
 
 ## Source of truth: `llvm-metadata.toml`
@@ -115,7 +115,7 @@ The LLVM backend uses an explicit discovery order instead of silently falling ba
 
 When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout. On macOS, it accepts either the C API dylib or the unified `libLLVM.dylib` produced by the install tree.
 
-If discovery fails, the LLVM backend reports the paths it checked and tells the caller to set `KIRA_LLVM_HOME` or run `kira-bootstrapper fetch-llvm`. The backend does not silently bind to an arbitrary machine-local LLVM install.
+If discovery fails, the LLVM backend reports the paths it checked and tells the caller to set `KIRA_LLVM_HOME` or run `kira fetch-llvm`. The backend does not silently bind to an arbitrary machine-local LLVM install.
 
 The same discovery path is used by the pure LLVM backend and the native half of hybrid mode.
 
@@ -132,7 +132,7 @@ Successful installs write a small marker file inside that directory recording:
 - the release tag
 - the asset filename
 
-`kira-bootstrapper fetch-llvm` and `zig build fetch-llvm` both check that marker and the extracted install tree before deciding to skip. If the marker or extracted tree does not match the current metadata, Kira reinstalls cleanly.
+`kira fetch-llvm` and `zig build fetch-llvm` both check that marker and the extracted install tree before deciding to skip. If the marker or extracted tree does not match the current metadata, Kira reinstalls cleanly.
 
 ## Override behavior
 
@@ -140,7 +140,7 @@ If you need a different LLVM tree temporarily, set `KIRA_LLVM_HOME`. That overri
 
 ```powershell
 $env:KIRA_LLVM_HOME = "C:\path\to\llvm"
-kira-bootstrapper build --backend llvm examples/hello/main.kira
+kira build --backend llvm examples/hello
 ```
 
 ## No checksum verification
@@ -148,7 +148,7 @@ kira-bootstrapper build --backend llvm examples/hello/main.kira
 This repo intentionally does not use checksum verification for LLVM downloads.
 
 - `llvm-metadata.toml` does not carry checksum fields
-- `kira-bootstrapper fetch-llvm` and `zig build fetch-llvm` do not require checksum data
+- `kira fetch-llvm` and `zig build fetch-llvm` do not require checksum data
 - missing checksum data is never treated as an error
 
 The source of truth is the metadata version, release tag, target key, asset name, and the published GitHub release asset itself.
