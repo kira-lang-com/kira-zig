@@ -1,0 +1,133 @@
+---
+title: Installation
+description: Install `kira-bootstrapper`, the active managed Kira toolchain, and the pinned LLVM bundle.
+---
+
+## Prerequisites
+
+Kira is built from this Zig monorepo. The normal contributor path starts with Zig:
+
+```bash
+zig build
+zig build install
+```
+
+That gives you two things:
+
+- the launcher at `zig-out/bin/kira-bootstrapper`
+- the active managed Kira toolchain under `~/.kira/toolchains/<channel>/<version>/`
+
+The repo currently installs the real CLI binary as `kirac` inside that managed toolchain, while `kira-bootstrapper` is the path-facing launcher that forwards into the active toolchain.
+
+## Install The Active Toolchain
+
+Use either of these:
+
+```bash
+zig build install
+```
+
+or:
+
+```bash
+zig build install-kirac
+```
+
+Both flows install the active toolchain and the launcher together.
+
+The managed layout is:
+
+```text
+~/.kira/toolchains/
+  current.toml
+  dev/
+    0.1.0/
+      bin/
+        kirac
+      templates/
+      llvm-metadata.toml
+  llvm/
+    <llvm-version>/
+      <host-key>/
+```
+
+The current toolchain selector lives at:
+
+```text
+~/.kira/toolchains/current.toml
+```
+
+## Put The Launcher On Your PATH
+
+The launcher is installed to `zig-out/bin/` by default.
+
+You can either:
+
+- run it directly as `zig-out/bin/kira-bootstrapper`
+- add `zig-out/bin` to your shell `PATH`
+- use Zig's prefix option if you want a different install destination
+
+Example:
+
+```bash
+zig build install -p .local
+```
+
+That installs the launcher into `.local/bin/`.
+
+## Install The Pinned LLVM Bundle
+
+The LLVM backend and the native half of hybrid mode use a pinned LLVM bundle recorded in `llvm-metadata.toml`.
+
+Install it with:
+
+```bash
+kira-bootstrapper fetch-llvm
+```
+
+or:
+
+```bash
+zig build fetch-llvm
+```
+
+LLVM discovery order is:
+
+1. `KIRA_LLVM_HOME`
+2. `~/.kira/toolchains/llvm/<llvm-version>/<host-key>/`
+3. older repo-local fallback paths under `.kira/`, if they already exist
+
+If you need to override the managed bundle temporarily:
+
+```bash
+export KIRA_LLVM_HOME=/path/to/llvm
+```
+
+## Development Setup
+
+These are the most useful local development targets:
+
+```bash
+zig build kirac
+zig build kira-bootstrapper
+zig build run -- --help
+zig build test
+```
+
+Use `zig build run -- ...` when you are iterating on the CLI itself and want a rebuild plus immediate execution in one step.
+
+## Template Apps
+
+`kira-bootstrapper new` copies the app template from the managed toolchain:
+
+```bash
+kira-bootstrapper new DemoApp generated/DemoApp
+```
+
+The current template is intentionally minimal:
+
+- `Kira.toml`
+- `src/main.kira`
+- a starter `@Main` function that prints a message
+
+The generated app shape is small on purpose so contributors can build outward from the current bootstrap subset instead of inheriting a pretend full framework.

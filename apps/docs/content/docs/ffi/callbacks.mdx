@@ -1,0 +1,74 @@
+---
+title: Callbacks
+description: Callback signatures, `RawPtr` user data, and the current native/hybrid callback rules.
+---
+
+Callbacks are an explicit first-version feature, not an accidental side effect of the FFI system.
+
+## Current Rules
+
+- callback typedefs lower to real native function pointers
+- callback arguments can be passed directly to native or extern functions
+- callback targets must currently resolve to `@Native` functions or extern callback symbols
+- user data/context is passed explicitly as `RawPtr`
+- captured closures do not cross the ABI boundary
+
+## Minimal Example
+
+From `examples/callbacks/main.kira`:
+
+```ts
+import bindings.callbacks as callbacks
+
+@Main
+@Native
+function main() {
+    print("callbacks")
+    let result: I64 = callbacks.kira_invoke_callback(add_two, 0, 5)
+    print(result)
+    return
+}
+
+@Native
+function add_two(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 2
+    return sum
+}
+```
+
+That is backed by a small C header and implementation:
+
+- a callback typedef
+- a function that accepts the callback and invokes it
+
+## Signature Checking
+
+Kira validates callback signatures at semantic-analysis time.
+
+If the target function does not match the required callback type exactly, the repo currently raises:
+
+- `KSEM045`
+- title: `invalid callback signature`
+
+The checks include:
+
+- parameter count
+- parameter types
+- result type
+- execution compatibility
+
+Runtime functions cannot currently be converted into native callback targets.
+
+## Native And Hybrid Support
+
+The callback path is proved in both:
+
+- native-only execution
+- hybrid execution
+
+That is why the repo carries both:
+
+- `tests/pass/run/ffi_callback_native`
+- `tests/pass/run/ffi_callback_hybrid`
+
+For hybrid mode, the callback still crosses a native boundary. The runtime/native bridge handles marshalling around that call path.

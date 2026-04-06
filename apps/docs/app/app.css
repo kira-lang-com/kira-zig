@@ -252,20 +252,33 @@ samp {
 }
 
 /* Position sidebar footer elements inline with theme toggle */
+/* Footer: one unified card, items in a row */
 #nd-sidebar > div:last-child {
-  display: flex !important;
   flex-direction: row !important;
   align-items: center !important;
   justify-content: space-between !important;
-  gap: 1rem !important;
-  flex-wrap: wrap !important;
+  border: 1px solid var(--color-fd-border) !important;
+  background-color: color-mix(in oklab, var(--color-fd-secondary) 50%, transparent) !important;
+  padding: 0.25rem 0.375rem !important;
+  margin: 0.5rem !important;
+  border-radius: 0.5rem !important;
 }
 
+/* Strip theme toggle's nested card so it sits flat inside the parent card */
 #nd-sidebar > div:last-child > div:nth-child(1) {
-  order: 2;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Order the custom footer content (GitHub + Kira Docs) to appear first */
+#nd-sidebar > div:last-child > div:nth-child(2) {
+  order: 1;
   flex-shrink: 0;
 }
 
-#nd-sidebar > div:last-child > div:nth-child(2) {
-  order: 1;
+/* Order the theme toggle to appear last */
+#nd-sidebar > div:last-child > div:nth-child(1) {
+  order: 2;
 }

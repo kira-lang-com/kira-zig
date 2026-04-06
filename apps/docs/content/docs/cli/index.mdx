@@ -1,0 +1,74 @@
+---
+title: CLI Overview
+description: The real `kira-bootstrapper` command surface and the normal developer workflows around it.
+---
+
+The repo currently exposes the toolchain through `kira-bootstrapper`.
+
+The live help text is:
+
+```text
+kira-bootstrapper <command> [args]
+  run [--backend vm|llvm|hybrid] <file.kira>
+  build [--backend vm|llvm|hybrid] <file.kira>
+  check <file.kira>
+  tokens <file.kira>
+  ast <file.kira>
+  new <Name> <destination>
+  fetch-llvm
+  help
+  version
+```
+
+## Everyday Flow
+
+For source iteration:
+
+```bash
+kira-bootstrapper run examples/hello/main.kira
+kira-bootstrapper check examples/hello/main.kira
+```
+
+For backend-specific execution:
+
+```bash
+kira-bootstrapper run --backend llvm examples/callbacks/main.kira
+kira-bootstrapper run --backend hybrid examples/hybrid_roundtrip/main.kira
+```
+
+For artifact creation:
+
+```bash
+kira-bootstrapper build examples/hello/main.kira
+kira-bootstrapper build --backend llvm examples/hello/main.kira
+kira-bootstrapper build --backend hybrid examples/hybrid_roundtrip/main.kira
+```
+
+## CLI vs `zig build run -- ...`
+
+Use `kira-bootstrapper` when you are exercising the installed or managed toolchain.
+
+Use:
+
+```bash
+zig build run -- ...
+```
+
+when you are actively changing the CLI implementation and want each command to run against the just-built in-repo binary.
+
+## Logging And Diagnostics
+
+The CLI writes structured KiraLog lines such as:
+
+```text
+[info] frontend.started: Frontend compilation started. command=run path=examples/hello/main.kira
+```
+
+When compilation fails, the CLI renders Kira-native diagnostics with:
+
+- a diagnostic code
+- a title
+- the source location and caret
+- optional help and notes
+
+That is a deliberate design choice: invalid Kira input should fail as Kira, not as a raw Zig panic or linker crash.

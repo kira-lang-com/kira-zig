@@ -132,6 +132,19 @@ zig build run -- run examples/hello/main.kira
 zig build run -- build --backend llvm examples/hello/main.kira
 ```
 
+## Documentation Site
+
+The repo now carries a Bun-powered documentation website in `apps/docs/` built with Fumadocs and React Router.
+
+```bash
+cd apps/docs
+bun install
+bun run dev
+bun run build
+```
+
+Static output is written to `apps/docs/build/client/`.
+
 ## Bootstrap Syntax
 
 The working bootstrap syntax uses `function` declarations and an explicit `@Main` entrypoint annotation. The entrypoint is chosen by the annotation, not by the function name:

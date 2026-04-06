@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "index",
+    "getting-started",
+    "language",
+    "execution",
+    "compiler",
+    "cli",
+    "toolchains",
+    "ffi",
+    "diagnostics",
+    "examples",
+    "contributing"
+  ]
+}

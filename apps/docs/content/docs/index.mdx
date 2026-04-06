@@ -1,0 +1,79 @@
+---
+title: Documentation Overview
+description: The latest English documentation for the current Kira Zig toolchain.
+---
+
+This site documents Kira as it exists in this repository today.
+
+That means:
+
+- implemented features are described as current behavior
+- partial features are marked as partial
+- planned work is kept separate from implemented work
+- command examples use the checked-in CLI surface
+
+## What Kira Is
+
+Kira is a Zig-hosted compiler and bootstrap toolchain with:
+
+- a frontend pipeline that parses and validates a broader Kira language surface
+- a VM backend that executes bytecode
+- an LLVM-native backend that emits host executables and shared libraries
+- a hybrid runtime that runs bytecode and native code together
+- a manifest-driven native library and autobinding system
+- a managed toolchain flow for `kirac`, templates, and pinned LLVM bundles
+
+## How To Use This Documentation
+
+If you are new to the repo:
+
+1. Read [Getting Started](/docs/getting-started).
+2. Follow [Installation](/docs/getting-started/installation).
+3. Run the sample commands in [Running Programs](/docs/getting-started/running-programs).
+4. Keep [Language Overview](/docs/language) and [Execution Model](/docs/execution) open while you explore examples.
+
+If you need reference material:
+
+- [Language Reference](/docs/language/reference)
+- [CLI Command Reference](/docs/cli/commands)
+- [Bootstrapper and Managed Toolchains](/docs/toolchains)
+- [LLVM Toolchain](/docs/toolchains/llvm)
+- [FFI Overview](/docs/ffi)
+- [Diagnostics and KiraLog](/docs/diagnostics)
+
+## Current State
+
+Kira is not yet documenting a full language/runtime product with every planned feature implemented.
+
+What is real in this repo:
+
+- `@Main`, `@Runtime`, and `@Native`
+- a working VM path
+- a working LLVM/native path
+- a working hybrid path
+- manifest-driven native library discovery
+- Clang-driven autobinding generation
+- generated Kira bindings for callbacks and Sokol
+- corpus coverage for parser, semantics, VM, LLVM, hybrid, callbacks, and Sokol proofs
+
+What you should not assume yet:
+
+- dynamic linking as the documented first-class flow
+- libffi-based runtime interop
+- a stable Kira ABI for third-party binary ecosystems
+- every frontend feature being runnable through `run` or `build`
+
+## Guide vs Reference
+
+The docs are organized so guides explain workflows and reference pages pin down the current contracts.
+
+| Need | Start here |
+| --- | --- |
+| Install Kira and LLVM | [Installation](/docs/getting-started/installation) |
+| Understand what syntax is runnable today | [Language Overview](/docs/language) |
+| See what each backend does | [Execution Model](/docs/execution) |
+| Learn the repo package layering | [Compiler Architecture](/docs/compiler) |
+| Use the CLI precisely | [CLI Command Reference](/docs/cli/commands) |
+| Bind a native library | [FFI Overview](/docs/ffi) |
+| Debug failures | [Diagnostics and KiraLog](/docs/diagnostics) |
+| Follow real proof targets | [Examples Overview](/docs/examples) |
