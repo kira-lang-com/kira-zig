@@ -1,14 +1,18 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 
 pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {
     const helper_object = try helperObjectPath(allocator, object_path);
     const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
+    const target = try zigTargetTriple(allocator);
     try ensureParentDir(helper_object);
     try runCommand(allocator, &.{
         build_options.zig_exe,
         "cc",
+        "-target",
+        target,
         "-c",
         helper_source,
         "-o",
@@ -24,9 +28,10 @@ pub fn linkExecutable(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) !void {
     try ensureParentDir(executable_path);
+    const target = try zigTargetTriple(allocator);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-o", executable_path });
+    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-target", target, "-o", executable_path });
     for (object_paths) |path| try argv.append(path);
 
     for (native_libraries) |library| {
@@ -49,9 +54,10 @@ pub fn linkSharedLibrary(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) !void {
     try ensureParentDir(library_path);
+    const target = try zigTargetTriple(allocator);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-shared", "-o", library_path });
+    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-target", target, "-shared", "-o", library_path });
     for (object_paths) |path| try argv.append(path);
 
     for (native_libraries) |library| {
@@ -90,4 +96,22 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 fn ensureParentDir(path: []const u8) !void {
     const maybe_dir = std.fs.path.dirname(path) orelse return;
     try std.fs.cwd().makePath(maybe_dir);
+}
+
+fn zigTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
+    return switch (builtin.os.tag) {
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),
+            else => error.UnsupportedTarget,
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => allocator.dupe(u8, "aarch64-macos-none"),
+            else => error.UnsupportedTarget,
+        },
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => allocator.dupe(u8, "x86_64-linux-gnu"),
+            else => error.UnsupportedTarget,
+        },
+        else => error.UnsupportedTarget,
+    };
 }

@@ -9643,6 +9643,11 @@ _SOKOL_PRIVATE LRESULT CALLBACK _sapp_win32_wndproc(HWND hWnd, UINT uMsg, WPARAM
                 KillTimer(_sapp.win32.hwnd, 1);
                 break;
             case WM_TIMER:
+                #if defined(SOKOL_GLCORE)
+                if (_sapp_win32_update_dimensions()) {
+                    _sapp_win32_app_event(SAPP_EVENTTYPE_RESIZED);
+                }
+                #endif
                 _sapp_timing_update(&_sapp.timing, 0.0);
                 _sapp_win32_frame(true);
                 /*

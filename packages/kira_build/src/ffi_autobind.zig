@@ -190,8 +190,10 @@ fn buildAstIndex(allocator: std.mem.Allocator, ast_json: []const u8, headers: []
     });
     defer parsed.deinit();
 
+    const normalized_headers = try normalizePaths(allocator, headers);
+
     var index = AstIndex{};
-    try walkNode(allocator, parsed.value, headers, &index);
+    try walkNode(allocator, parsed.value, normalized_headers, &index);
     return index;
 }
 
@@ -244,10 +246,24 @@ fn isHeaderNode(object: std.json.ObjectMap, headers: []const []const u8) bool {
         }
         return false;
     };
+    const normalized_file = normalizePath(std.heap.page_allocator, file) catch file;
+    defer if (normalized_file.ptr != file.ptr) std.heap.page_allocator.free(normalized_file);
     for (headers) |header| {
-        if (std.mem.eql(u8, file, header)) return true;
+        if (std.mem.eql(u8, normalized_file, header)) return true;
     }
     return false;
+}
+
+fn normalizePaths(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    var list = std.array_list.Managed([]const u8).init(allocator);
+    for (values) |value| {
+        try list.append(try normalizePath(allocator, value));
+    }
+    return list.toOwnedSlice();
+}
+
+fn normalizePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fs.path.resolve(allocator, &.{path});
 }
 
 fn extractFunctionDecl(allocator: std.mem.Allocator, object: std.json.ObjectMap) !CFunction {
@@ -1034,13 +1050,7 @@ fn parseStringArray(allocator: std.mem.Allocator, line: []const u8) ![]const []c
 }
 
 fn makePath(path: []const u8) !void {
-    if (!std.fs.path.isAbsolute(path)) {
-        try std.fs.cwd().makePath(path);
-        return;
-    }
-    var root = try std.fs.openDirAbsolute("/", .{});
-    defer root.close();
-    try root.makePath(path[1..]);
+    try std.fs.cwd().makePath(path);
 }
 
 test "parses a simple autobinding spec" {
