@@ -15,7 +15,7 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     const triple = try hostTargetTriple(allocator);
     defer allocator.free(triple);
 
-    if (builtin.os.tag == .macos) {
+    if (builtin.os.tag == .macos or builtin.os.tag == .windows) {
         return compileViaTextIr(allocator, request, triple);
     }
 
@@ -341,7 +341,7 @@ fn lowerFunction(
     const entry_block = api.LLVMAppendBasicBlockInContext(types.context, function_value, "entry");
     api.LLVMPositionBuilderAtEnd(builder, entry_block);
 
-    const register_types = try inferRegisterTypes(allocator, function_decl);
+    const register_types = try inferRegisterTypes(allocator, request.program.*, function_decl);
     const register_values = try allocator.alloc(llvm.c.LLVMValueRef, function_decl.register_count);
     const locals = try allocator.alloc(llvm.c.LLVMValueRef, function_decl.local_count);
 
@@ -359,6 +359,7 @@ fn lowerFunction(
             },
             .const_bool => |value| register_values[value.dst] = api.LLVMConstInt(types.bool_ty, if (value.value) 1 else 0, 0),
             .const_null_ptr => |value| register_values[value.dst] = api.LLVMConstInt(types.usize_ty, 0, 0),
+            .alloc_struct => |_| return error.UnsupportedExecutableFeature,
             .const_function => |_| return error.UnsupportedExecutableFeature,
             .add => |value| register_values[value.dst] = api.LLVMBuildAdd(builder, register_values[value.lhs], register_values[value.rhs], "add"),
             .store_local => |value| _ = api.LLVMBuildStore(builder, register_values[value.src], locals[value.local]),
@@ -500,9 +501,10 @@ fn emitObjectFileFromIr(
     ir_path: []const u8,
     object_path: []const u8,
 ) !void {
+    const target = try zigCcTargetTriple(allocator);
     const result = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ build_options.zig_exe, "cc", "-c", "-o", object_path, ir_path },
+        .argv = &.{ build_options.zig_exe, "cc", "-target", target, "-c", "-o", object_path, ir_path },
         .max_output_bytes = 512 * 1024,
     });
     defer allocator.free(result.stdout);
@@ -511,6 +513,24 @@ fn emitObjectFileFromIr(
     if (result.term != .Exited or result.term.Exited != 0) {
         return error.ObjectEmissionFailed;
     }
+}
+
+fn zigCcTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
+    return switch (builtin.os.tag) {
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),
+            else => error.UnsupportedTarget,
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => allocator.dupe(u8, "aarch64-macos-none"),
+            else => error.UnsupportedTarget,
+        },
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => allocator.dupe(u8, "x86_64-linux-gnu"),
+            else => error.UnsupportedTarget,
+        },
+        else => error.UnsupportedTarget,
+    };
 }
 
 fn buildTextLlvmIr(
@@ -690,6 +710,7 @@ fn buildTextFunctionBody(
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" = add i64 0, 0\n");
             },
+            .alloc_struct => |_| return error.UnsupportedExecutableFeature,
             .const_function => |value| {
                 const callee_decl = functionById(request.program.*, value.function_id) orelse return error.UnknownFunction;
                 const callee_name = symbol_names.get(callee_decl.id) orelse return error.MissingFunctionDeclaration;
@@ -904,6 +925,10 @@ fn writeCallInstruction(
                     try writer.writeAll("  %call.struct.");
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" = call ");
+                } else if (callee_decl.is_extern and callee_decl.return_type.kind == .integer and !std.mem.eql(u8, integerAbiTypeName(callee_decl.return_type.name), "i64")) {
+                    try writer.writeAll("  %call.int.");
+                    try writer.print("{d}", .{dst});
+                    try writer.writeAll(" = call ");
                 } else {
                     try writer.writeAll("  %r");
                     try writer.print("{d}", .{dst});
@@ -973,7 +998,7 @@ fn writeCallInstruction(
                 const abi_type = integerAbiTypeName(callee_decl.return_type.name);
                 if (!std.mem.eql(u8, abi_type, "i64")) {
                     const dst = call_inst.dst.?;
-                    try writer.print("  %r{d}.sext = sext {s} %r{d} to i64\n", .{ dst, abi_type, dst });
+                    try writer.print("  %r{d}.sext = sext {s} %call.int.{d} to i64\n", .{ dst, abi_type, dst });
                     try writer.print("  %r{d} = add i64 %r{d}.sext, 0\n", .{ dst, dst });
                 }
             }
@@ -1372,6 +1397,7 @@ fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, functio
             .const_string => |value| register_types[value.dst] = .{ .kind = .string },
             .const_bool => |value| register_types[value.dst] = .{ .kind = .boolean },
             .const_null_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
+            .alloc_struct => |value| register_types[value.dst] = .{ .kind = .ffi_struct, .name = value.type_name },
             .const_function => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
             .add => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
             .store_local => {},
@@ -1440,7 +1466,11 @@ fn buildHybridBridgeWrapper(
     defer allocator.free(export_name);
     const impl_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
 
-    try writer.writeAll("define void ");
+    try writer.writeAll("define ");
+    if (builtin.os.tag == .windows) {
+        try writer.writeAll("dllexport ");
+    }
+    try writer.writeAll("void ");
     try writeLlvmSymbol(writer, export_name);
     try writer.writeAll("(ptr %args, i32 %arg_count, ptr %out_result) {\nentry:\n");
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const instruction = @import("instruction.zig");
 
 pub const Module = struct {
+    types: []TypeDecl = &.{},
     functions: []Function,
     entry_function_id: ?u32,
 
@@ -33,13 +34,34 @@ pub const Function = struct {
     param_count: u32 = 0,
     register_count: u32,
     local_count: u32,
+    local_types: []instruction.TypeRef = &.{},
     instructions: []instruction.Instruction,
+};
+
+pub const TypeDecl = struct {
+    name: []const u8,
+    fields: []Field,
+};
+
+pub const Field = struct {
+    name: []const u8,
+    ty: instruction.TypeRef,
 };
 
 pub fn serialize(writer: anytype, module: Module) !void {
     try writer.writeAll("KBC0");
+    try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.functions.len)), .little);
     try writer.writeInt(i32, if (module.entry_function_id) |value| @as(i32, @intCast(value)) else -1, .little);
+
+    for (module.types) |type_decl| {
+        try writeString(writer, type_decl.name);
+        try writer.writeInt(u32, @as(u32, @intCast(type_decl.fields.len)), .little);
+        for (type_decl.fields) |field_decl| {
+            try writeString(writer, field_decl.name);
+            try writeTypeRef(writer, field_decl.ty);
+        }
+    }
 
     for (module.functions) |function_decl| {
         try writer.writeInt(u32, function_decl.id, .little);
@@ -47,6 +69,8 @@ pub fn serialize(writer: anytype, module: Module) !void {
         try writer.writeInt(u32, function_decl.param_count, .little);
         try writer.writeInt(u32, function_decl.register_count, .little);
         try writer.writeInt(u32, function_decl.local_count, .little);
+        try writer.writeInt(u32, @as(u32, @intCast(function_decl.local_types.len)), .little);
+        for (function_decl.local_types) |local_ty| try writeTypeRef(writer, local_ty);
         try writer.writeInt(u32, @as(u32, @intCast(function_decl.instructions.len)), .little);
         for (function_decl.instructions) |inst| {
             try writer.writeByte(@intFromEnum(std.meta.activeTag(inst)));
@@ -66,6 +90,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .const_null_ptr => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                 },
+                .alloc_struct => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writeString(writer, value.type_name);
+                },
                 .add => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
@@ -79,7 +107,31 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.local, .little);
                 },
-                .print => |value| try writer.writeInt(u32, value.src, .little),
+                .field_ptr => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.base, .little);
+                    try writeString(writer, value.owner_type_name);
+                    try writeString(writer, value.field_name);
+                },
+                .load_indirect => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.ptr, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .store_indirect => |value| {
+                    try writer.writeInt(u32, value.ptr, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .copy_indirect => |value| {
+                    try writer.writeInt(u32, value.dst_ptr, .little);
+                    try writer.writeInt(u32, value.src_ptr, .little);
+                    try writeString(writer, value.type_name);
+                },
+                .print => |value| {
+                    try writer.writeInt(u32, value.src, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
                 .call_runtime => |value| try writeCall(writer, value.function_id, value.args, value.dst),
                 .call_native => |value| try writeCall(writer, value.function_id, value.args, value.dst),
                 .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
@@ -96,9 +148,27 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     _ = try reader.readAll(&magic);
     if (!std.mem.eql(u8, &magic, "KBC0")) return error.InvalidBytecode;
 
+    const type_count = try reader.readInt(u32, .little);
     const function_count = try reader.readInt(u32, .little);
     const raw_entry = try reader.readInt(i32, .little);
+    var types = std.array_list.Managed(TypeDecl).init(allocator);
     var functions = std.array_list.Managed(Function).init(allocator);
+
+    for (0..type_count) |_| {
+        const name = try readString(allocator, reader);
+        const field_count = try reader.readInt(u32, .little);
+        var fields = std.array_list.Managed(Field).init(allocator);
+        for (0..field_count) |_| {
+            try fields.append(.{
+                .name = try readString(allocator, reader),
+                .ty = try readTypeRef(allocator, reader),
+            });
+        }
+        try types.append(.{
+            .name = name,
+            .fields = try fields.toOwnedSlice(),
+        });
+    }
 
     for (0..function_count) |_| {
         const function_id = try reader.readInt(u32, .little);
@@ -106,6 +176,9 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         const param_count = try reader.readInt(u32, .little);
         const register_count = try reader.readInt(u32, .little);
         const local_count = try reader.readInt(u32, .little);
+        const local_type_count = try reader.readInt(u32, .little);
+        var local_types = std.array_list.Managed(instruction.TypeRef).init(allocator);
+        for (0..local_type_count) |_| try local_types.append(try readTypeRef(allocator, reader));
         const instruction_count = try reader.readInt(u32, .little);
         var instructions = std.array_list.Managed(instruction.Instruction).init(allocator);
         for (0..instruction_count) |_| {
@@ -127,6 +200,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .const_null_ptr => try instructions.append(.{ .const_null_ptr = .{
                     .dst = try reader.readInt(u32, .little),
                 } }),
+                .alloc_struct => try instructions.append(.{ .alloc_struct = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .type_name = try readString(allocator, reader),
+                } }),
                 .add => try instructions.append(.{ .add = .{
                     .dst = try reader.readInt(u32, .little),
                     .lhs = try reader.readInt(u32, .little),
@@ -140,8 +217,30 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.readInt(u32, .little),
                     .local = try reader.readInt(u32, .little),
                 } }),
+                .field_ptr => try instructions.append(.{ .field_ptr = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .base = try reader.readInt(u32, .little),
+                    .owner_type_name = try readString(allocator, reader),
+                    .field_name = try readString(allocator, reader),
+                } }),
+                .load_indirect => try instructions.append(.{ .load_indirect = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .ptr = try reader.readInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .store_indirect => try instructions.append(.{ .store_indirect = .{
+                    .ptr = try reader.readInt(u32, .little),
+                    .src = try reader.readInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .copy_indirect => try instructions.append(.{ .copy_indirect = .{
+                    .dst_ptr = try reader.readInt(u32, .little),
+                    .src_ptr = try reader.readInt(u32, .little),
+                    .type_name = try readString(allocator, reader),
+                } }),
                 .print => try instructions.append(.{ .print = .{
                     .src = try reader.readInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
                 } }),
                 .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
                 .call_native => try instructions.append(.{ .call_native = try readNativeCall(allocator, reader) }),
@@ -159,11 +258,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
             .param_count = param_count,
             .register_count = register_count,
             .local_count = local_count,
+            .local_types = try local_types.toOwnedSlice(),
             .instructions = try instructions.toOwnedSlice(),
         });
     }
 
     return .{
+        .types = try types.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
     };
@@ -186,6 +287,21 @@ fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !v
     try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
     for (args) |arg| try writer.writeInt(u32, arg, .little);
     try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
+}
+
+fn writeTypeRef(writer: anytype, value: instruction.TypeRef) !void {
+    try writer.writeByte(@intFromEnum(value.kind));
+    try writer.writeByte(if (value.name != null) 1 else 0);
+    if (value.name) |name| try writeString(writer, name);
+}
+
+fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !instruction.TypeRef {
+    const kind: instruction.TypeRef.Kind = @enumFromInt(try reader.readByte());
+    const has_name = (try reader.readByte()) != 0;
+    return .{
+        .kind = kind,
+        .name = if (has_name) try readString(allocator, reader) else null,
+    };
 }
 
 fn readRuntimeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_runtime") {
@@ -211,4 +327,52 @@ fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { functi
         .args = args,
         .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
     };
+}
+
+test "round-trips struct metadata and print instructions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .types = &.{
+            .{
+                .name = "Color",
+                .fields = &.{
+                    .{ .name = "r", .ty = .{ .kind = .integer, .name = "I64" } },
+                    .{ .name = "g", .ty = .{ .kind = .integer, .name = "I64" } },
+                    .{ .name = "b", .ty = .{ .kind = .integer, .name = "I64" } },
+                },
+            },
+        },
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Color" } },
+                    .{ .print = .{ .src = 0, .ty = .{ .kind = .ffi_struct, .name = "Color" } } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    var buffer: [2048]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    try serialize(stream.writer(), module);
+
+    const round_tripped = try deserialize(allocator, stream.getWritten());
+    try std.testing.expectEqual(@as(usize, 1), round_tripped.types.len);
+    try std.testing.expectEqualStrings("Color", round_tripped.types[0].name);
+    try std.testing.expectEqual(@as(usize, 3), round_tripped.types[0].fields.len);
+    try std.testing.expectEqual(@as(?u32, 0), round_tripped.entry_function_id);
+    try std.testing.expect(round_tripped.functions[0].instructions[0] == .alloc_struct);
+    try std.testing.expect(round_tripped.functions[0].instructions[1] == .print);
+    try std.testing.expectEqualStrings("Color", round_tripped.functions[0].instructions[1].print.ty.name.?);
 }

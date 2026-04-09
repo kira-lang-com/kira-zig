@@ -1378,7 +1378,39 @@ fn parseSource(
 }
 
 fn readRepoFileForTest(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
+    const repo_root = try findRepoRootForTest(allocator) orelse return error.FileNotFound;
+    defer allocator.free(repo_root);
+    const full_path = try std.fs.path.join(allocator, &.{ repo_root, path });
+    defer allocator.free(full_path);
+    return std.fs.cwd().readFileAlloc(allocator, full_path, std.math.maxInt(usize));
+}
+
+fn findRepoRootForTest(allocator: std.mem.Allocator) !?[]u8 {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+    var current = try allocator.dupe(u8, std.fs.path.dirname(exe_path) orelse ".");
+    errdefer allocator.free(current);
+
+    while (true) {
+        const build_path = try std.fs.path.join(allocator, &.{ current, "build.zig" });
+        defer allocator.free(build_path);
+        if (fileExistsForTest(build_path)) return current;
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const copy = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = copy;
+    }
+
+    allocator.free(current);
+    return null;
+}
+
+fn fileExistsForTest(path: []const u8) bool {
+    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
+    file.close();
+    return true;
 }
 
 test "parses imports functions and construct declarations" {
@@ -1425,7 +1457,7 @@ test "parses the hybrid example corpus shape" {
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const source_text = try readRepoFileForTest(allocator, "examples/hybrid_roundtrip/main.kira");
+    const source_text = try readRepoFileForTest(allocator, "examples/hybrid_roundtrip/app/main.kira");
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
@@ -1439,7 +1471,7 @@ test "parses the restored hello example with modern type syntax" {
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const source_text = try readRepoFileForTest(allocator, "examples/hello/main.kira");
+    const source_text = try readRepoFileForTest(allocator, "examples/hello/app/main.kira");
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);

@@ -8,6 +8,7 @@ const syntax = @import("kira_syntax_model");
 const ir = @import("kira_ir");
 const bytecode = @import("kira_bytecode");
 const ffi_support = @import("ffi_support.zig");
+const package_manager = @import("kira_package_manager");
 
 pub const FrontendStage = enum {
     lexer,
@@ -85,7 +86,10 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     for (parsed.diagnostics) |diag| try diags.append(diag);
 
-    validateImports(allocator, &parsed.source, parsed.program.?, &diags) catch |err| switch (err) {
+    const module_map = try package_manager.loadModuleMapForSource(allocator, parsed.source.path);
+    const merged_program = try buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map);
+
+    validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
             return .{
                 .source = parsed.source,
@@ -97,8 +101,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         else => return err,
     };
 
-    const imported_globals = try collectImportedGlobals(allocator, &parsed.source, parsed.program.?);
-    const hir = semantics.analyzeWithImports(allocator, parsed.program.?, imported_globals, &diags) catch |err| switch (err) {
+    const hir = semantics.analyzeWithImports(allocator, merged_program, .{}, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
             return .{
                 .source = parsed.source,
@@ -281,14 +284,83 @@ pub fn checkFile(allocator: std.mem.Allocator, path: []const u8) !CheckPipelineR
     };
 }
 
+fn buildProgramGraph(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    root_program: syntax.ast.Program,
+    module_map: package_manager.ModuleMap,
+) !syntax.ast.Program {
+    var visited = std.StringHashMap(void).init(allocator);
+    var imports = std.array_list.Managed(syntax.ast.ImportDecl).init(allocator);
+    var decls = std.array_list.Managed(syntax.ast.Decl).init(allocator);
+    var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
+
+    try appendProgramGraph(allocator, &visited, &imports, &decls, &functions, source_path, root_program, module_map);
+
+    return .{
+        .imports = try imports.toOwnedSlice(),
+        .decls = try decls.toOwnedSlice(),
+        .functions = try functions.toOwnedSlice(),
+    };
+}
+
+fn appendProgramGraph(
+    allocator: std.mem.Allocator,
+    visited: *std.StringHashMap(void),
+    imports: *std.array_list.Managed(syntax.ast.ImportDecl),
+    decls: *std.array_list.Managed(syntax.ast.Decl),
+    functions: *std.array_list.Managed(syntax.ast.FunctionDecl),
+    source_path: []const u8,
+    program: syntax.ast.Program,
+    module_map: package_manager.ModuleMap,
+) !void {
+    if (visited.contains(source_path)) return;
+    try visited.put(try allocator.dupe(u8, source_path), {});
+
+    for (program.imports) |import_decl| try imports.append(import_decl);
+    for (program.decls) |decl| try decls.append(decl);
+    for (program.functions) |function_decl| try functions.append(function_decl);
+
+    for (program.imports) |import_decl| {
+        const resolved = try resolveImportPath(allocator, source_path, import_decl.module_name, module_map);
+        defer allocator.free(resolved.display_name);
+        defer {
+            for (resolved.candidates) |candidate| allocator.free(candidate);
+            allocator.free(resolved.candidates);
+        }
+
+        if (packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
+            const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
+            defer allocator.free(module_files);
+            for (module_files) |module_path| {
+                const imported_program = try parseModuleProgram(allocator, module_path);
+                try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map);
+            }
+            continue;
+        }
+
+        const module_path = firstExistingCandidate(resolved.candidates) orelse continue;
+        const imported_program = try parseModuleProgram(allocator, module_path);
+        try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map);
+    }
+}
+
+fn parseModuleProgram(allocator: std.mem.Allocator, module_path: []const u8) !syntax.ast.Program {
+    const source = try source_pkg.SourceFile.fromPath(allocator, module_path);
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = lexer.tokenize(allocator, &source, &diags) catch return error.DiagnosticsEmitted;
+    return parser.parse(allocator, tokens, &diags);
+}
+
 fn validateImports(
     allocator: std.mem.Allocator,
     source: *const source_pkg.SourceFile,
     program: syntax.ast.Program,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !void {
+    const module_map = try package_manager.loadModuleMapForSource(allocator, source.path);
     for (program.imports) |import_decl| {
-        const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name);
+        const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name, module_map);
         defer allocator.free(resolved.display_name);
         defer {
             for (resolved.candidates) |candidate| allocator.free(candidate);
@@ -321,17 +393,31 @@ fn collectImportedGlobals(
     source: *const source_pkg.SourceFile,
     program: syntax.ast.Program,
 ) !semantics.ImportedGlobals {
+    const module_map = try package_manager.loadModuleMapForSource(allocator, source.path);
     var constructs = std.array_list.Managed([]const u8).init(allocator);
     var callables = std.array_list.Managed([]const u8).init(allocator);
     var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
     var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
 
     for (program.imports) |import_decl| {
-        const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name);
+        const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name, module_map);
         defer allocator.free(resolved.display_name);
         defer {
             for (resolved.candidates) |candidate| allocator.free(candidate);
             allocator.free(resolved.candidates);
+        }
+
+        if (packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
+            const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
+            defer allocator.free(module_files);
+            for (module_files) |module_path| {
+                const harvested = try collectModuleGlobals(allocator, module_path);
+                for (harvested.constructs) |name| try constructs.append(name);
+                for (harvested.callables) |name| try callables.append(name);
+                for (harvested.functions) |function_decl| try functions.append(function_decl);
+                for (harvested.types) |type_decl| try types.append(type_decl);
+            }
+            continue;
         }
 
         const module_path = firstExistingCandidate(resolved.candidates) orelse continue;
@@ -402,6 +488,7 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
                 });
             },
             .type_decl => |type_decl| {
+                try callables.append(try allocator.dupe(u8, type_decl.name));
                 var fields = std.array_list.Managed(semantics.ImportedField).init(allocator);
                 for (type_decl.members) |member| {
                     if (member != .field_decl or member.field_decl.is_static) continue;
@@ -437,7 +524,12 @@ const ImportResolution = struct {
     exists: bool,
 };
 
-fn resolveImportPath(allocator: std.mem.Allocator, source_path: []const u8, module_name: syntax.ast.QualifiedName) !ImportResolution {
+fn resolveImportPath(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    module_name: syntax.ast.QualifiedName,
+    module_map: package_manager.ModuleMap,
+) !ImportResolution {
     const display_name = try qualifiedNameDisplay(allocator, module_name);
     const relative_slash = try qualifiedNameRelativePath(allocator, module_name, '/');
     defer allocator.free(relative_slash);
@@ -445,6 +537,7 @@ fn resolveImportPath(allocator: std.mem.Allocator, source_path: []const u8, modu
     defer allocator.free(relative_backslash);
 
     var candidates_list = std.array_list.Managed([]u8).init(allocator);
+    try appendOwnedModuleCandidates(allocator, &candidates_list, module_name, module_map);
     var cursor = try absolutizePath(allocator, std.fs.path.dirname(source_path) orelse ".");
     defer allocator.free(cursor);
 
@@ -477,6 +570,143 @@ fn resolveImportPath(allocator: std.mem.Allocator, source_path: []const u8, modu
         .candidates = candidates,
         .exists = exists,
     };
+}
+
+fn appendOwnedModuleCandidates(
+    allocator: std.mem.Allocator,
+    candidates_list: *std.array_list.Managed([]u8),
+    module_name: syntax.ast.QualifiedName,
+    module_map: package_manager.ModuleMap,
+) !void {
+    var best_owner: ?package_manager.ModuleMap.ModuleOwner = null;
+    var best_depth: usize = 0;
+    for (module_map.owners) |owner| {
+        const owner_depth = qualifiedPrefixDepth(owner.module_root, module_name);
+        if (owner_depth == 0) continue;
+        if (owner_depth > best_depth) {
+            best_depth = owner_depth;
+            best_owner = owner;
+        }
+    }
+
+    if (best_owner) |owner| {
+        const relative_slash = try qualifiedRelativeAfterPrefix(allocator, owner.module_root, module_name, '/');
+        defer allocator.free(relative_slash);
+        const relative_backslash = try qualifiedRelativeAfterPrefix(allocator, owner.module_root, module_name, '\\');
+        defer allocator.free(relative_backslash);
+        try appendRootAwareModuleCandidates(allocator, candidates_list, owner.source_root, owner.module_root, relative_slash, '/');
+        try appendRootAwareModuleCandidates(allocator, candidates_list, owner.source_root, owner.module_root, relative_backslash, '\\');
+        if (relative_slash.len != 0) {
+            try candidates_list.append(try joinModuleDirectoryCandidate(allocator, owner.source_root, owner.module_root, relative_slash, '/'));
+            try candidates_list.append(try joinModuleDirectoryCandidate(allocator, owner.source_root, owner.module_root, relative_backslash, '\\'));
+        }
+    }
+}
+
+fn qualifiedPrefixDepth(prefix: []const u8, module_name: syntax.ast.QualifiedName) usize {
+    var parts = std.mem.splitScalar(u8, prefix, '.');
+    var depth: usize = 0;
+    while (parts.next()) |part| {
+        if (depth >= module_name.segments.len) return 0;
+        if (!std.mem.eql(u8, part, module_name.segments[depth].text)) return 0;
+        depth += 1;
+    }
+    return depth;
+}
+
+fn packageRootOwnerForImport(
+    module_map: package_manager.ModuleMap,
+    module_name: syntax.ast.QualifiedName,
+) ?package_manager.ModuleMap.ModuleOwner {
+    for (module_map.owners) |owner| {
+        const depth = qualifiedPrefixDepth(owner.module_root, module_name);
+        if (depth == 0) continue;
+        if (depth == module_name.segments.len) return owner;
+    }
+    return null;
+}
+
+fn qualifiedRelativeAfterPrefix(
+    allocator: std.mem.Allocator,
+    prefix: []const u8,
+    module_name: syntax.ast.QualifiedName,
+    comptime separator: u8,
+) ![]u8 {
+    const depth = qualifiedPrefixDepth(prefix, module_name);
+    if (depth == 0 or depth > module_name.segments.len) return error.InvalidArguments;
+    if (depth == module_name.segments.len) return allocator.dupe(u8, "");
+
+    var builder = std.array_list.Managed(u8).init(allocator);
+    for (module_name.segments[depth..], 0..) |segment, index| {
+        if (index != 0) try builder.append(separator);
+        try builder.appendSlice(segment.text);
+    }
+    return builder.toOwnedSlice();
+}
+
+fn joinModuleCandidate(
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    _: []const u8,
+    relative: []const u8,
+    comptime separator: u8,
+) ![]u8 {
+    if (relative.len == 0) {
+        return error.InvalidArguments;
+    }
+    return if (separator == '/')
+        std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, relative })
+    else
+        std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, relative });
+}
+
+fn joinModuleDirectoryCandidate(
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    _: []const u8,
+    relative: []const u8,
+    comptime separator: u8,
+) ![]u8 {
+    if (relative.len == 0) {
+        return if (separator == '/')
+            std.fmt.allocPrint(allocator, "{s}/main.kira", .{source_root})
+        else
+            std.fmt.allocPrint(allocator, "{s}\\main.kira", .{source_root});
+    }
+    return if (separator == '/')
+        std.fmt.allocPrint(allocator, "{s}/{s}/main.kira", .{ source_root, relative })
+    else
+        std.fmt.allocPrint(allocator, "{s}\\{s}\\main.kira", .{ source_root, relative });
+}
+
+fn appendRootAwareModuleCandidates(
+    allocator: std.mem.Allocator,
+    candidates_list: *std.array_list.Managed([]u8),
+    source_root: []const u8,
+    module_root: []const u8,
+    relative: []const u8,
+    comptime separator: u8,
+) !void {
+    if (relative.len != 0) {
+        try candidates_list.append(try joinModuleCandidate(allocator, source_root, module_root, relative, separator));
+        return;
+    }
+
+    const root_name = std.fs.path.basename(module_root);
+    const root_name_lower = try std.ascii.allocLowerString(allocator, root_name);
+    defer allocator.free(root_name_lower);
+
+    if (separator == '/') {
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, root_name_lower }));
+        if (!std.mem.eql(u8, root_name, root_name_lower)) {
+            try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, root_name }));
+        }
+    } else {
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, root_name_lower }));
+        if (!std.mem.eql(u8, root_name, root_name_lower)) {
+            try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, root_name }));
+        }
+    }
 }
 
 fn absolutizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -517,7 +747,103 @@ fn firstExistingCandidate(candidates: [][]u8) ?[]const u8 {
     return null;
 }
 
+fn collectPackageModuleFiles(allocator: std.mem.Allocator, source_root: []const u8) ![][]u8 {
+    var files = std.array_list.Managed([]u8).init(allocator);
+    try appendPackageModuleFiles(allocator, &files, source_root, source_root);
+    return files.toOwnedSlice();
+}
+
+fn appendPackageModuleFiles(
+    allocator: std.mem.Allocator,
+    files: *std.array_list.Managed([]u8),
+    root_path: []const u8,
+    current_path: []const u8,
+) !void {
+    var dir = try std.fs.openDirAbsolute(current_path, .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    while (try iterator.next()) |entry| {
+        const child_path = try std.fs.path.join(allocator, &.{ current_path, entry.name });
+        defer allocator.free(child_path);
+        switch (entry.kind) {
+            .directory => try appendPackageModuleFiles(allocator, files, root_path, child_path),
+            .file => {
+                if (!std.mem.eql(u8, std.fs.path.extension(entry.name), ".kira")) continue;
+                try files.append(try allocator.dupe(u8, child_path));
+            },
+            else => {},
+        }
+    }
+}
+
 fn fileExists(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
+}
+
+test "built-in Foundation resolves before installed package conflicts" {
+    const package_manager_pkg = @import("kira_package_manager");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("Workspace/App/app");
+    try tmp.dir.makePath("Workspace/ConflictFoundation");
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/App/kira.toml",
+        .data =
+        \\[package]
+        \\name = "App"
+        \\version = "0.1.0"
+        \\kind = "app"
+        \\kira = "0.1.0"
+        \\
+        \\[defaults]
+        \\execution_mode = "vm"
+        \\build_target = "host"
+        \\
+        \\[dependencies]
+        \\Foundation = { path = "../ConflictFoundation" }
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/App/app/main.kira",
+        .data =
+        \\import Foundation
+        \\
+        \\@Main
+        \\function main() {
+        \\    Foundation.printLine("ok");
+        \\    return;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/ConflictFoundation/kira.toml",
+        .data =
+        \\[package]
+        \\name = "Foundation"
+        \\version = "9.9.9"
+        \\kind = "library"
+        \\kira = "0.1.0"
+        \\module_root = "Foundation"
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/ConflictFoundation/Foundation.kira",
+        .data = "function broken( { return; }\n",
+    });
+
+    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/App");
+    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/App/app/main.kira");
+
+    var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
+    _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
+
+    const result = try checkFile(arena.allocator(), source_path);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }

@@ -32,6 +32,7 @@ Layer 4:
 Layer 5:
 - `kira_manifest`
 - `kira_project`
+- `kira_package_manager`
 - `kira_build_definition`
 
 Layer 6:

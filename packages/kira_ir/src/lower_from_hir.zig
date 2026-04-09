@@ -137,6 +137,7 @@ fn lowerNamedType(program: model.Program, name: []const u8) anyerror!ir.ValueTyp
                 .array => .{ .kind = .raw_ptr, .name = name },
             };
         }
+        return .{ .kind = .ffi_struct, .name = name };
     }
     if (std.mem.endsWith(u8, name, "_ptr")) return .{ .kind = .raw_ptr, .name = name };
     return error.UnsupportedType;
@@ -148,7 +149,10 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
             if (std.mem.eql(u8, call.callee_name, "print")) {
                 if (call.args.len != 1) return error.UnsupportedExecutableFeature;
                 const reg = try lowerer.lowerExpr(instructions, call.args[0]);
-                try instructions.append(.{ .print = .{ .src = reg } });
+                try instructions.append(.{ .print = .{
+                    .src = reg,
+                    .ty = try lowerResolvedType(lowerer.program, model.hir.exprType(call.args[0].*)),
+                } });
                 return;
             }
             if (call.function_id == null) return error.UnsupportedExecutableFeature;
@@ -206,7 +210,42 @@ const Lowerer = struct {
                 break :blk dst;
             },
             .call => |node| blk: {
-                if (node.function_id == null) return error.UnsupportedExecutableFeature;
+                if (node.function_id == null) {
+                    if (node.ty.kind != .named or node.ty.name == null) return error.UnsupportedExecutableFeature;
+                    const type_decl = findTypeDeclByName(self.program, node.ty.name.?) orelse return error.UnsupportedExecutableFeature;
+                    const dst = self.freshRegister();
+                    try instructions.append(.{ .alloc_struct = .{
+                        .dst = dst,
+                        .type_name = type_decl.name,
+                    } });
+                    for (node.args, 0..) |arg, index| {
+                        if (index >= type_decl.fields.len) return error.UnsupportedExecutableFeature;
+                        const field_decl = type_decl.fields[index];
+                        const field_value = try self.lowerExpr(instructions, arg);
+                        const ptr_reg = self.freshRegister();
+                        try instructions.append(.{ .field_ptr = .{
+                            .dst = ptr_reg,
+                            .base = dst,
+                            .owner_type_name = type_decl.name,
+                            .field_name = field_decl.name,
+                        } });
+                        const field_ty = try lowerResolvedType(self.program, field_decl.ty);
+                        if (field_ty.kind == .ffi_struct) {
+                            try instructions.append(.{ .copy_indirect = .{
+                                .dst_ptr = ptr_reg,
+                                .src_ptr = field_value,
+                                .type_name = field_ty.name orelse return error.UnsupportedExecutableFeature,
+                            } });
+                        } else {
+                            try instructions.append(.{ .store_indirect = .{
+                                .ptr = ptr_reg,
+                                .src = field_value,
+                                .ty = field_ty,
+                            } });
+                        }
+                    }
+                    break :blk dst;
+                }
                 if (node.ty.kind == .void) return error.UnsupportedExecutableFeature;
                 var args = std.array_list.Managed(u32).init(self.allocator);
                 defer args.deinit();
@@ -255,6 +294,13 @@ const Lowerer = struct {
         };
     }
 };
+
+fn findTypeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl {
+    for (program.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+    }
+    return null;
+}
 
 fn lowerTypeDecls(
     allocator: std.mem.Allocator,

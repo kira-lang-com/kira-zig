@@ -35,13 +35,14 @@ const packages = [_]Package{
     .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi", "kira_toolchain" } },
     .{ .name = "kira_manifest", .path = "packages/kira_manifest/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
     .{ .name = "kira_project", .path = "packages/kira_project/src/root.zig", .imports = &.{ "kira_core", "kira_manifest" } },
+    .{ .name = "kira_package_manager", .path = "packages/kira_package_manager/src/root.zig", .imports = &.{ "kira_manifest", "kira_diagnostics", "kira_toolchain" } },
     .{ .name = "kira_build_definition", .path = "packages/kira_build_definition/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
-    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_runtime_abi", "kira_llvm_backend", "kira_toolchain" } },
+    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_package_manager", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_runtime_abi", "kira_llvm_backend", "kira_toolchain" } },
     .{ .name = "kira_linter", .path = "packages/kira_linter/src/root.zig", .imports = &.{ "kira_core", "kira_diagnostics", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_doc", .path = "packages/kira_doc/src/root.zig", .imports = &.{ "kira_core", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_app_generation", .path = "packages/kira_app_generation/src/root.zig", .imports = &.{"kira_core"} },
     .{ .name = "kira_main", .path = "packages/kira_main/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_bytecode", "kira_vm_runtime", "kira_native_bridge", "kira_hybrid_runtime" } },
-    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_app_generation", "kira_log", "kira_toolchain", "kira_project" } },
+    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_app_generation", "kira_log", "kira_toolchain", "kira_project", "kira_package_manager", "kira_manifest" } },
 };
 
 fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMap(*std.Build.Module), names: []const []const u8) void {
@@ -51,7 +52,9 @@ fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMap(*std
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        .default_target = preferredDefaultTarget(b.graph.host.result),
+    });
     const optimize = b.standardOptimizeOption(.{});
     const channel = channelForOptimize(optimize);
     const repo_root = b.pathFromRoot("");
@@ -132,6 +135,7 @@ pub fn build(b: *std.Build) void {
         channel.dirName(),
         b.path("llvm-metadata.toml"),
         b.path("templates"),
+        b.path("foundation"),
         bootstrapper_install_dir,
     );
 
@@ -188,6 +192,7 @@ pub fn build(b: *std.Build) void {
         "kira_bytecode",
         "kira_vm_runtime",
         "kira_manifest",
+        "kira_package_manager",
         "kira_native_lib_definition",
         "kira_build",
         "kira_cli",
@@ -236,6 +241,17 @@ pub fn build(b: *std.Build) void {
     b.default_step.dependOn(&cli.step);
     b.default_step.dependOn(&bootstrapper.step);
     b.default_step.dependOn(&kira_main.step);
+}
+
+fn preferredDefaultTarget(host: std.Target) std.Target.Query {
+    return switch (host.os.tag) {
+        .windows => .{
+            .cpu_arch = host.cpu.arch,
+            .os_tag = .windows,
+            .abi = .msvc,
+        },
+        else => .{},
+    };
 }
 
 const LlvmHeaderProbe = struct {
@@ -351,6 +367,7 @@ fn addManagedToolchainInstallStep(
     channel: []const u8,
     metadata_file: std.Build.LazyPath,
     templates_dir: std.Build.LazyPath,
+    foundation_dir: std.Build.LazyPath,
     bootstrapper_install_dir: []const u8,
 ) *std.Build.Step.Run {
     const step = switch (host.os.tag) {
@@ -359,10 +376,11 @@ fn addManagedToolchainInstallStep(
             "-NoProfile",
             "-Command",
             b.fmt(
-                "& {{ param([string]$cliSource, [string]$bootstrapperSource, [string]$version, [string]$channel, [string]$metadataSource, [string]$templatesSource, [string]$bootstrapperBinDir); " ++
+                "& {{ param([string]$cliSource, [string]$bootstrapperSource, [string]$version, [string]$channel, [string]$metadataSource, [string]$templatesSource, [string]$foundationSource, [string]$bootstrapperBinDir); " ++
                     "$ErrorActionPreference = 'Stop'; " ++
                     "$kiraHome = Join-Path $HOME '.kira'; " ++
                     "$toolchainRoot = Join-Path $kiraHome ('toolchains\\' + $channel + '\\' + $version); " ++
+                    "if (Test-Path $toolchainRoot) {{ Remove-Item $toolchainRoot -Recurse -Force; }}; " ++
                     "$binDir = Join-Path $toolchainRoot 'bin'; " ++
                     "New-Item -ItemType Directory -Force -Path $binDir | Out-Null; " ++
                     "$kiracDest = Join-Path $binDir 'kirac.exe'; " ++
@@ -378,11 +396,14 @@ fn addManagedToolchainInstallStep(
                     "(Get-Item $bootstrapperDest).LastWriteTime = Get-Date; " ++
                     "(Get-Item $kiraDest).LastWriteTime = Get-Date; " ++
                     "$bootstrapperPdbSource = [System.IO.Path]::ChangeExtension($bootstrapperSource, 'pdb'); " ++
-                    "if (Test-Path $bootstrapperPdbSource) {{ $bootstrapperPdbDest = Join-Path $bootstrapperBinDir 'kira-bootstrapper.pdb'; $kiraPdbDest = Join-Path $bootstrapperBinDir 'kira.pdb'; Copy-Item $bootstrapperPdbSource $bootstrapperPdbDest -Force; Copy-Item $bootstrapperPdbSource $kiraPdbDest -Force; (Get-Item $bootstrapperPdbDest).LastWriteTime = Get-Date; (Get-Item $kiraPdbDest).LastWriteTime = Get-Date; }}; " ++
+                    "if (Test-Path $bootstrapperPdbSource) {{ $bootstrapperPdbDest = Join-Path $bootstrapperBinDir 'kira-bootstrapper.pdb'; $kiraPdbDest = Join-Path $bootstrapperBinDir 'kira.pdb'; if ([System.IO.Path]::GetFullPath($bootstrapperPdbSource) -ne [System.IO.Path]::GetFullPath($bootstrapperPdbDest)) {{ Copy-Item $bootstrapperPdbSource $bootstrapperPdbDest -Force }}; Copy-Item $bootstrapperPdbSource $kiraPdbDest -Force; (Get-Item $bootstrapperPdbDest).LastWriteTime = Get-Date; (Get-Item $kiraPdbDest).LastWriteTime = Get-Date; }}; " ++
                     "Copy-Item $metadataSource (Join-Path $toolchainRoot 'llvm-metadata.toml') -Force; " ++
                     "$templatesDest = Join-Path $toolchainRoot 'templates'; " ++
                     "if (Test-Path $templatesDest) {{ Remove-Item $templatesDest -Recurse -Force; }}; " ++
                     "Copy-Item $templatesSource $templatesDest -Recurse -Force; " ++
+                    "$foundationDest = Join-Path $toolchainRoot 'foundation'; " ++
+                    "if (Test-Path $foundationDest) {{ Remove-Item $foundationDest -Recurse -Force; }}; " ++
+                    "Copy-Item $foundationSource $foundationDest -Recurse -Force; " ++
                     "$currentDir = Join-Path $kiraHome 'toolchains'; " ++
                     "New-Item -ItemType Directory -Force -Path $currentDir | Out-Null; " ++
                     "$currentPath = Join-Path $currentDir 'current.toml'; " ++
@@ -412,8 +433,9 @@ fn addManagedToolchainInstallStep(
             "-c",
             b.fmt(
                 "set -eu; " ++
-                    "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; bootstrapper_bin_dir=\"$6\"; " ++
+                    "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; foundation_source=\"$6\"; bootstrapper_bin_dir=\"$7\"; " ++
                     "kira_home=\"$HOME/.kira\"; toolchain_root=\"$kira_home/toolchains/$channel/$version\"; bin_dir=\"$toolchain_root/bin\"; " ++
+                    "rm -rf \"$toolchain_root\"; " ++
                     "mkdir -p \"$bin_dir\"; " ++
                     "cp \"$cli_source\" \"$bin_dir/kirac\"; chmod +x \"$bin_dir/kirac\"; touch \"$bin_dir/kirac\"; " ++
                     "mkdir -p \"$bootstrapper_bin_dir\"; " ++
@@ -421,6 +443,7 @@ fn addManagedToolchainInstallStep(
                     "cp \"$bootstrapper_source\" \"$bootstrapper_bin_dir/kira\"; chmod +x \"$bootstrapper_bin_dir/kira\"; touch \"$bootstrapper_bin_dir/kira\"; " ++
                     "cp \"$metadata_source\" \"$toolchain_root/llvm-metadata.toml\"; " ++
                     "rm -rf \"$toolchain_root/templates\"; cp -R \"$templates_source\" \"$toolchain_root/templates\"; " ++
+                    "rm -rf \"$toolchain_root/foundation\"; cp -R \"$foundation_source\" \"$toolchain_root/foundation\"; " ++
                     "mkdir -p \"$kira_home/toolchains\"; " ++
                     "cat > \"$kira_home/toolchains/current.toml\" <<EOF\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
                     "path_added=0; " ++
@@ -448,6 +471,7 @@ fn addManagedToolchainInstallStep(
     step.addArg(channel);
     step.addFileArg(metadata_file);
     step.addFileArg(templates_dir);
+    step.addFileArg(foundation_dir);
     step.addArg(bootstrapper_install_dir);
     return step;
 }

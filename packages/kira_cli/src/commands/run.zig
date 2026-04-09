@@ -1,7 +1,9 @@
 const std = @import("std");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
+const diagnostics = @import("kira_diagnostics");
 const hybrid_runtime = @import("kira_hybrid_runtime");
+const package_manager = @import("kira_package_manager");
 const vm_runtime = @import("kira_vm_runtime");
 const support = @import("../support.zig");
 
@@ -9,6 +11,20 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     const parsed = try parseArgs(args);
     const input = try support.resolveCommandInput(allocator, parsed.input_path);
     const backend = parsed.backend orelse input.default_backend orelse .vm;
+
+    if (input.project_root) |project_root| {
+        var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        _ = package_manager.syncProject(allocator, project_root, support.versionString(), .{
+            .offline = parsed.offline,
+            .locked = parsed.locked,
+        }, &package_diagnostics) catch |err| {
+            if (err == error.DiagnosticsEmitted) {
+                try support.renderStandaloneDiagnostics(stderr, package_diagnostics.items);
+                return error.CommandFailed;
+            }
+            return err;
+        };
+    }
 
     try support.logFrontendStarted(stderr, "run", input.source_path);
     var system = build.BuildSystem.init(allocator);
@@ -88,11 +104,15 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 
 const ParsedArgs = struct {
     backend: ?build_def.ExecutionTarget = null,
+    offline: bool = false,
+    locked: bool = false,
     input_path: []const u8,
 };
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
     var backend: ?build_def.ExecutionTarget = null;
+    var offline = false;
+    var locked = false;
     var input_path: ?[]const u8 = null;
 
     var index: usize = 0;
@@ -104,13 +124,23 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--offline")) {
+            offline = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--locked")) {
+            locked = true;
+            continue;
+        }
         if (input_path != null) return error.InvalidArguments;
         input_path = arg;
     }
 
     return .{
         .backend = backend,
-        .input_path = input_path orelse return error.InvalidArguments,
+        .offline = offline,
+        .locked = locked,
+        .input_path = input_path orelse support.defaultCommandInputPath(),
     };
 }
 

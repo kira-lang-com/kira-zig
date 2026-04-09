@@ -1,6 +1,8 @@
-[project]
+[package]
 name = "DemoApp"
 version = "0.1.0"
+kind = "app"
+kira = "0.1.0"
 
 [defaults]
 execution_mode = "vm"

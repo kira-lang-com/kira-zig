@@ -1,3 +1,5 @@
+import Foundation
+
 @Main
 function main() {
     let pointX = 12 + 8;
@@ -14,6 +16,10 @@ function main() {
     print(pointY);
     print(rightEdge);
     print(bottomEdge);
+    printLine("hello");
+    
+    let color = Color(r: 255, g: 0, b: 0);
+    print(color);
     return;
 }
 

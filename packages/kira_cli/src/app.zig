@@ -5,6 +5,11 @@ const cmd_check = @import("commands/check.zig");
 const cmd_tokens = @import("commands/tokens.zig");
 const cmd_ast = @import("commands/ast.zig");
 const cmd_new = @import("commands/new.zig");
+const cmd_sync = @import("commands/sync.zig");
+const cmd_add = @import("commands/add.zig");
+const cmd_remove = @import("commands/remove.zig");
+const cmd_update = @import("commands/update.zig");
+const cmd_package = @import("commands/package.zig");
 const cmd_fetch_llvm = @import("commands/fetch_llvm.zig");
 const support = @import("support.zig");
 
@@ -42,6 +47,11 @@ pub fn runWithWriters(allocator: std.mem.Allocator, args: []const []const u8, ou
     if (std.mem.eql(u8, command, "check")) return executeCommand(allocator, command, args[2..], out, err, cmd_check.execute);
     if (std.mem.eql(u8, command, "build")) return executeCommand(allocator, command, args[2..], out, err, cmd_build.execute);
     if (std.mem.eql(u8, command, "new")) return executeCommand(allocator, command, args[2..], out, err, cmd_new.execute);
+    if (std.mem.eql(u8, command, "sync")) return executeCommand(allocator, command, args[2..], out, err, cmd_sync.execute);
+    if (std.mem.eql(u8, command, "add")) return executeCommand(allocator, command, args[2..], out, err, cmd_add.execute);
+    if (std.mem.eql(u8, command, "remove")) return executeCommand(allocator, command, args[2..], out, err, cmd_remove.execute);
+    if (std.mem.eql(u8, command, "update")) return executeCommand(allocator, command, args[2..], out, err, cmd_update.execute);
+    if (std.mem.eql(u8, command, "package")) return executeCommand(allocator, command, args[2..], out, err, cmd_package.execute);
 
     try err.print("unknown command: {s}\n\n", .{command});
     try printUsage(err);
@@ -52,6 +62,15 @@ fn executeCommand(allocator: std.mem.Allocator, _: []const u8, args: []const []c
     execute(allocator, args, out, err) catch |run_err| {
         if (run_err == error.CommandFailed or run_err == error.InvalidArguments) {
             if (run_err == error.InvalidArguments) try printUsage(err);
+            return 1;
+        }
+        if (run_err == error.UnsupportedTarget) {
+            try err.writeAll("error[KBUILD002]: unsupported host target\n");
+            try err.print(
+                "  The current host target `{s}` is not supported by this project or one of its native libraries.\n",
+                .{support.currentHostTargetTriple()},
+            );
+            try err.writeAll("  help: Add a matching [target.<triple>] section to the relevant native_libs manifest, or build on a supported host.\n");
             return 1;
         }
 
@@ -65,16 +84,24 @@ fn executeCommand(allocator: std.mem.Allocator, _: []const u8, args: []const []c
 fn printUsage(writer: anytype) !void {
     try writer.print(
         \\{s} <command> [args]
-        \\  run [--backend vm|llvm|hybrid] <project-dir|project.toml>
-        \\  build [--backend vm|llvm|hybrid] <project-dir|project.toml>
-        \\  check <project-dir|project.toml>
-        \\  tokens <project-dir|project.toml>
-        \\  ast <project-dir|project.toml>
+        \\  run [--backend vm|llvm|hybrid] [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  build [--backend vm|llvm|hybrid] [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  check [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  tokens [<project-dir|kira.toml|project.toml>]
+        \\  ast [<project-dir|kira.toml|project.toml>]
+        \\  sync [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  add <Package>
+        \\  add --git <url> --rev <commit> <Package>
+        \\  remove <Package>
+        \\  update [<project-dir|kira.toml|project.toml>]
+        \\  package pack [<project-dir|kira.toml|project.toml>]
+        \\  package inspect <archive-path|project-dir>
         \\  new <Name> <destination>
         \\  fetch-llvm
         \\  help
         \\  version
-        \\  project layout: <root>/project.toml with entrypoint at <root>/app/main.kira
+        \\  project layout: <root>/kira.toml or <root>/project.toml with entrypoint at <root>/app/main.kira
+        \\  default project input: current directory
         \\  entrypoint syntax: @Main [@Runtime|@Native] function entry() {{ ... }}
         \\
         \\install:
@@ -96,8 +123,7 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
     try tmp.dir.makePath("DemoApp/app");
     try tmp.dir.writeFile(.{
         .sub_path = "DemoApp/project.toml",
-        .data =
-            "[project]\n" ++
+        .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
             "version = \"0.1.0\"\n\n" ++
             "[defaults]\n" ++
@@ -137,8 +163,7 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     try tmp.dir.makePath("DemoApp/app");
     try tmp.dir.writeFile(.{
         .sub_path = "DemoApp/project.toml",
-        .data =
-            "[project]\n" ++
+        .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
             "version = \"0.1.0\"\n\n" ++
             "[defaults]\n" ++
@@ -147,12 +172,11 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     });
     try tmp.dir.writeFile(.{
         .sub_path = "DemoApp/app/main.kira",
-        .data =
-            "@Main\n" ++
+        .data = "@Main\n" ++
             "@Native\n" ++
             "function main() {\n" ++
             "    print(\"native main\");\n" ++
-            "    runtime_helper()\n" ++
+            "    runtime_helper(\n" ++
             "    return;\n" ++
             "}\n" ++
             "@Runtime\n" ++
@@ -175,7 +199,7 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     );
 
     try std.testing.expectEqual(@as(u8, 1), exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR001]: expected ';' after expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "panic") == null);
     try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "Segmentation fault") == null);
 }
@@ -196,4 +220,53 @@ test "version prints standalone binary identity" {
     try std.testing.expectEqual(@as(u8, 0), exit_code);
     try std.testing.expectEqualStrings("kira-bootstrapper 0.1.0\n", stdout.getWritten());
     try std.testing.expectEqualStrings("", stderr.getWritten());
+}
+
+test "run defaults to project.toml in the current directory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("DemoApp/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/project.toml",
+        .data = "[project]\n" ++
+            "name = \"DemoApp\"\n" ++
+            "version = \"0.1.0\"\n\n" ++
+            "[defaults]\n" ++
+            "execution_mode = \"vm\"\n" ++
+            "build_target = \"host\"\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/app/main.kira",
+        .data = "@Main\nfunction main() { let x = ; }\n",
+    });
+
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer {
+        original_cwd.setAsCwd() catch {};
+        original_cwd.close();
+    }
+
+    var app_dir = try tmp.dir.openDir("DemoApp", .{});
+    defer app_dir.close();
+    try app_dir.setAsCwd();
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stdout = std.io.fixedBufferStream(&stdout_buffer);
+    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+
+    const exit_code = try runWithWriters(
+        arena.allocator(),
+        &.{ "kirac", "run" },
+        stdout.writer(),
+        stderr.writer(),
+    );
+
+    try std.testing.expectEqual(@as(u8, 1), exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "invalid Kira input") == null);
 }

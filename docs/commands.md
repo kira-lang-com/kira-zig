@@ -14,6 +14,13 @@ Standalone CLI:
 - `kira ast examples/hello`
 - `kira check examples/hello`
 - `kira build examples/hello`
+- `kira sync`
+- `kira add FrostUI`
+- `kira add --git https://github.com/Sunlight-Horizon/GameKit.git --rev <commit> GameKit`
+- `kira remove FrostUI`
+- `kira update`
+- `kira package pack`
+- `kira package inspect generated/DemoApp-0.1.0.tar`
 - `kira build --backend llvm examples/hello`
 - `kira build --backend hybrid examples/hybrid_roundtrip`
 - `kira new DemoApp generated/DemoApp`
@@ -47,15 +54,22 @@ Install notes:
 CLI behavior:
 
 - `fetch-llvm` reads `llvm-metadata.toml`, resolves the current host bundle, downloads the matching GitHub release asset, installs it into `~/.kira/toolchains/llvm/<llvm-version>/<target>/`, and skips when the install marker already matches
+- `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `kira.toml` first, then legacy `project.toml`
 - `run` defaults to the VM backend; `run --backend llvm` builds and runs a native executable
 - `run --backend hybrid` builds a hybrid manifest, bytecode sidecar, and native shared library, then runs the mixed program in the hybrid host
+- `run`, `build`, and `check` automatically sync dependencies before compiling; add `--offline` or `--locked` when you want cache-only or lockfile-only behavior
+- the default VM run path can print scalar values plus named struct values; native/hybrid print support is still narrower
 - `tokens` dumps lexer output
 - `ast` dumps the parsed AST
 - `check` runs parse and semantics
 - `build` defaults to writing a `.kbc` bytecode artifact into `generated/`
+- `sync` resolves registry, path, and git dependencies into `kira.lock`, verifies registry archive SHA-256 checksums, and populates the local cache under `~/.kira/cache/packages/`
+- `add`, `remove`, and `update` edit `kira.toml` and then refresh `kira.lock`
+- `package pack` writes a validated source-only `.tar` archive into `generated/`
+- `package inspect` prints manifest metadata and archive contents without extracting package scripts because package scripts are not supported
 - `build --backend llvm` writes both a native object file and a native executable into `generated/`
 - `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `generated/`
-- `new` copies the app template into a new destination with a root `project.toml` and a starter `@Main`-annotated function in `app/main.kira`
+- `new` copies the app template into a new destination with a root `kira.toml` and a starter `@Main`-annotated function in `app/main.kira`
 
 LLVM backend selection is explicit and host-native. Discovery order is:
 

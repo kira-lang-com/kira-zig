@@ -1,8 +1,11 @@
 pub const bytecode = @import("bytecode.zig");
 pub const Module = bytecode.Module;
 pub const Function = bytecode.Function;
+pub const TypeDecl = bytecode.TypeDecl;
+pub const Field = bytecode.Field;
 pub const Instruction = @import("instruction.zig").Instruction;
 pub const OpCode = @import("instruction.zig").OpCode;
+pub const TypeRef = @import("instruction.zig").TypeRef;
 pub const compileProgram = @import("compiler.zig").compileProgram;
 pub const CompileMode = @import("compiler.zig").CompileMode;
 pub const serialize = bytecode.serialize;
