@@ -329,20 +329,6 @@ fn lowerCallExpr(
             });
             return error.DiagnosticsEmitted;
         }
-        const arg_ty = model.hir.exprType(args.items[0].*);
-        if (arg_ty.kind != .integer and arg_ty.kind != .string) {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM008",
-                .title = "unsupported print argument type",
-                .message = "The current Kira runtime can only print integers and strings.",
-                .labels = &.{
-                    diagnostics.primaryLabel(node.span, "unsupported argument type for print"),
-                },
-                .help = "Pass an integer or string to `print`.",
-            });
-            return error.DiagnosticsEmitted;
-        }
         lowered.* = .{ .call = .{
             .callee_name = callee_name,
             .function_id = null,
@@ -405,6 +391,34 @@ fn lowerCallExpr(
             .function_id = null,
             .args = try args.toOwnedSlice(),
             .ty = .{ .kind = .unknown },
+            .span = node.span,
+        } };
+        return;
+    }
+
+    if (ctx.type_headers) |headers| {
+        if (headers.get(callee_name) != null or headers.get(callee_leaf) != null) {
+            var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+            for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
+            lowered.* = .{ .call = .{
+                .callee_name = callee_name,
+                .function_id = null,
+                .args = try args.toOwnedSlice(),
+                .ty = .{ .kind = .named, .name = try ctx.allocator.dupe(u8, callee_leaf) },
+                .span = node.span,
+            } };
+            return;
+        }
+    }
+
+    if (ctx.imported_globals.findType(callee_name) != null or ctx.imported_globals.findType(callee_leaf) != null) {
+        var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+        for (node.args) |arg| try args.append(try lowerExpr(ctx, arg.value, imports, scope, function_headers));
+        lowered.* = .{ .call = .{
+            .callee_name = callee_name,
+            .function_id = null,
+            .args = try args.toOwnedSlice(),
+            .ty = .{ .kind = .named, .name = try ctx.allocator.dupe(u8, callee_leaf) },
             .span = node.span,
         } };
         return;

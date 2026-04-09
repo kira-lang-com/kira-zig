@@ -35,6 +35,17 @@ pub const Case = struct {
 };
 
 pub fn discoverCases(allocator: std.mem.Allocator) ![]Case {
+    const repo_root = try findRepoRoot(allocator) orelse return error.FileNotFound;
+    defer allocator.free(repo_root);
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer {
+        original_cwd.setAsCwd() catch {};
+        original_cwd.close();
+    }
+    var repo_dir = try std.fs.openDirAbsolute(repo_root, .{});
+    defer repo_dir.close();
+    try repo_dir.setAsCwd();
+
     var cases = std.array_list.Managed(Case).init(allocator);
     try scanRoot(allocator, "tests/pass/run", .run, &cases);
     try scanRoot(allocator, "tests/pass/check", .check, &cases);
@@ -84,8 +95,9 @@ fn scanDir(
                     entry.name
                 else
                     current_rel;
-                const source_path = try std.fs.path.join(allocator, &.{ root_rel, case_rel, "main.kira" });
                 const expect_path = try std.fs.path.join(allocator, &.{ root_rel, case_rel, "expect.toml" });
+                if (!fileExists(expect_path)) continue;
+                const source_path = try std.fs.path.join(allocator, &.{ root_rel, case_rel, "main.kira" });
                 const expectation = try loadExpectation(allocator, expect_path, expected_mode);
                 try cases.append(.{
                     .name = try std.fs.path.join(allocator, &.{ root_rel, case_rel }),
@@ -267,5 +279,36 @@ fn sortCases(items: []Case) void {
 fn dirExists(path: []const u8) bool {
     var dir = std.fs.cwd().openDir(path, .{}) catch return false;
     dir.close();
+    return true;
+}
+
+fn findRepoRoot(allocator: std.mem.Allocator) !?[]u8 {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+    var current = try allocator.dupe(u8, std.fs.path.dirname(exe_path) orelse ".");
+    errdefer allocator.free(current);
+
+    while (true) {
+        const build_path = try std.fs.path.join(allocator, &.{ current, "build.zig" });
+        defer allocator.free(build_path);
+        if (fileExists(build_path)) return current;
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const copy = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = copy;
+    }
+
+    allocator.free(current);
+    return null;
+}
+
+fn fileExists(path: []const u8) bool {
+    var file = if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openFile(path, .{}) catch return false;
+    file.close();
     return true;
 }

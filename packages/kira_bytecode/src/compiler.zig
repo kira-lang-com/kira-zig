@@ -10,6 +10,21 @@ pub const CompileMode = enum {
 };
 
 pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mode: CompileMode) !bytecode.Module {
+    var types = std.array_list.Managed(bytecode.TypeDecl).init(allocator);
+    for (program.types) |type_decl| {
+        var fields = std.array_list.Managed(bytecode.Field).init(allocator);
+        for (type_decl.fields) |field_decl| {
+            try fields.append(.{
+                .name = field_decl.name,
+                .ty = lowerTypeRef(field_decl.ty),
+            });
+        }
+        try types.append(.{
+            .name = type_decl.name,
+            .fields = try fields.toOwnedSlice(),
+        });
+    }
+
     var functions = std.array_list.Managed(bytecode.Function).init(allocator);
     var entry_function_id: ?u32 = null;
 
@@ -25,12 +40,33 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .const_string => |value| try instructions.append(.{ .const_string = .{ .dst = value.dst, .value = value.value } }),
                 .const_bool => |value| try instructions.append(.{ .const_bool = .{ .dst = value.dst, .value = value.value } }),
                 .const_null_ptr => |value| try instructions.append(.{ .const_null_ptr = .{ .dst = value.dst } }),
+                .alloc_struct => |value| try instructions.append(.{ .alloc_struct = .{ .dst = value.dst, .type_name = value.type_name } }),
                 .const_function => return error.UnsupportedExecutableFeature,
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src } }),
                 .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local } }),
-                .field_ptr, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
-                .print => |value| try instructions.append(.{ .print = .{ .src = value.src } }),
+                .field_ptr => |value| try instructions.append(.{ .field_ptr = .{
+                    .dst = value.dst,
+                    .base = value.base,
+                    .owner_type_name = value.owner_type_name,
+                    .field_name = value.field_name,
+                } }),
+                .load_indirect => |value| try instructions.append(.{ .load_indirect = .{
+                    .dst = value.dst,
+                    .ptr = value.ptr,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .store_indirect => |value| try instructions.append(.{ .store_indirect = .{
+                    .ptr = value.ptr,
+                    .src = value.src,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .copy_indirect => |value| try instructions.append(.{ .copy_indirect = .{
+                    .dst_ptr = value.dst_ptr,
+                    .src_ptr = value.src_ptr,
+                    .type_name = value.type_name,
+                } }),
+                .print => |value| try instructions.append(.{ .print = .{ .src = value.src, .ty = lowerTypeRef(value.ty) } }),
                 .call => |value| {
                     const callee_execution = functionExecutionById(program, value.callee) orelse return error.UnknownFunction;
                     const resolved_callee_execution = resolveExecution(callee_execution, mode);
@@ -50,6 +86,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
             .param_count = @as(u32, @intCast(function_decl.param_types.len)),
             .register_count = function_decl.register_count,
             .local_count = function_decl.local_count,
+            .local_types = try lowerLocalTypes(allocator, function_decl.local_types),
             .instructions = try instructions.toOwnedSlice(),
         });
 
@@ -59,8 +96,22 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
     }
 
     return .{
+        .types = try types.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = entry_function_id,
+    };
+}
+
+fn lowerLocalTypes(allocator: std.mem.Allocator, local_types: []const ir_pkg.ValueType) ![]instruction.TypeRef {
+    const lowered = try allocator.alloc(instruction.TypeRef, local_types.len);
+    for (local_types, 0..) |local_ty, index| lowered[index] = lowerTypeRef(local_ty);
+    return lowered;
+}
+
+fn lowerTypeRef(value_type: ir_pkg.ValueType) instruction.TypeRef {
+    return .{
+        .kind = @enumFromInt(@intFromEnum(value_type.kind)),
+        .name = value_type.name,
     };
 }
 

@@ -84,6 +84,7 @@ pub const Instruction = union(enum) {
     const_bool: ConstBool,
     const_null_ptr: ConstNullPtr,
     const_function: ConstFunction,
+    alloc_struct: AllocStruct,
     add: Binary,
     store_local: StoreLocal,
     load_local: LoadLocal,
@@ -118,6 +119,11 @@ pub const ConstNullPtr = struct {
 pub const ConstFunction = struct {
     dst: u32,
     function_id: u32,
+};
+
+pub const AllocStruct = struct {
+    dst: u32,
+    type_name: []const u8,
 };
 
 pub const Binary = struct {
@@ -163,6 +169,7 @@ pub const CopyIndirect = struct {
 
 pub const Print = struct {
     src: u32,
+    ty: ValueType,
 };
 
 pub const Call = struct {

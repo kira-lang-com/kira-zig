@@ -1,6 +1,7 @@
 pub const ValueTag = enum(u8) {
     void,
     integer,
+    float,
     string,
     boolean,
     raw_ptr,
@@ -9,6 +10,7 @@ pub const ValueTag = enum(u8) {
 pub const Value = union(ValueTag) {
     void: void,
     integer: i64,
+    float: f64,
     string: []const u8,
     boolean: bool,
     raw_ptr: usize,
@@ -17,6 +19,7 @@ pub const Value = union(ValueTag) {
         switch (self) {
             .void => try writer.writeAll("void"),
             .integer => |value| try writer.print("{d}", .{value}),
+            .float => |value| try writer.print("{d}", .{value}),
             .string => |value| try writer.writeAll(value),
             .boolean => |value| try writer.writeAll(if (value) "true" else "false"),
             .raw_ptr => |value| try writer.print("0x{x}", .{value}),

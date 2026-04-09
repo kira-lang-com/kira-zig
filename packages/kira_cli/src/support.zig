@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
@@ -22,6 +23,13 @@ pub fn channel() kira_toolchain.Channel {
 
 pub fn primaryExecutableName() []const u8 {
     return build_options.primary_executable;
+}
+
+pub fn currentHostTargetTriple() []const u8 {
+    return comptime std.fmt.comptimePrint(
+        "{s}-{s}-{s}",
+        .{ @tagName(builtin.cpu.arch), @tagName(builtin.os.tag), @tagName(builtin.abi) },
+    );
 }
 
 pub fn resolveManagedToolchainRoot(allocator: std.mem.Allocator) ![]u8 {
@@ -48,6 +56,24 @@ pub fn resolveResourceRoot(allocator: std.mem.Allocator) ![]u8 {
 pub fn renderDiagnostics(stderr: anytype, source: *const source_pkg.SourceFile, items: []const diagnostics.Diagnostic) !void {
     if (items.len == 0) return;
     try diagnostics.renderer.renderAll(stderr, source, items);
+}
+
+pub fn renderStandaloneDiagnostics(stderr: anytype, items: []const diagnostics.Diagnostic) !void {
+    for (items) |item| {
+        const severity = switch (item.severity) {
+            .@"error" => "error",
+            .warning => "warning",
+            .note => "note",
+        };
+        if (item.code) |code| {
+            try stderr.print("{s}[{s}]: {s}\n", .{ severity, code, item.title });
+        } else {
+            try stderr.print("{s}: {s}\n", .{ severity, item.title });
+        }
+        try stderr.print("  {s}\n", .{item.message});
+        for (item.notes) |note| try stderr.print("  note: {s}\n", .{note});
+        if (item.help) |help| try stderr.print("  help: {s}\n", .{help});
+    }
 }
 
 pub fn logFrontendStarted(stderr: anytype, command: []const u8, path: []const u8) !void {
@@ -119,8 +145,17 @@ pub const ResolvedCommandInput = struct {
     default_backend: ?build_def.ExecutionTarget = null,
 };
 
+pub fn defaultCommandInputPath() []const u8 {
+    return ".";
+}
+
 pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedCommandInput {
-    if (std.mem.eql(u8, std.fs.path.basename(path), kira_project.manifest_file_name) or directoryExists(path)) {
+    const base = std.fs.path.basename(path);
+    if (std.mem.eql(u8, base, kira_project.preferred_manifest_file_name) or
+        std.mem.eql(u8, base, kira_project.legacy_manifest_file_name) or
+        std.mem.eql(u8, base, "Kira.toml") or
+        directoryExists(path))
+    {
         const resolved = try kira_project.loadProjectFromPath(allocator, path);
         return .{
             .source_path = resolved.entrypoint_path,
@@ -146,14 +181,7 @@ pub fn outputRoot(allocator: std.mem.Allocator, project_root: ?[]const u8) ![]u8
 }
 
 pub fn ensurePath(path: []const u8) !void {
-    if (!std.fs.path.isAbsolute(path)) {
-        try std.fs.cwd().makePath(path);
-        return;
-    }
-
-    var root = try std.fs.openDirAbsolute("/", .{});
-    defer root.close();
-    try root.makePath(path[1..]);
+    try std.fs.cwd().makePath(path);
 }
 
 fn frontendStageName(stage: ?build.FrontendStage) []const u8 {
@@ -224,7 +252,10 @@ fn hasManagedResources(path: []const u8) bool {
     defer std.heap.page_allocator.free(templates_path);
     var dir = std.fs.openDirAbsolute(templates_path, .{}) catch std.fs.cwd().openDir(templates_path, .{}) catch return false;
     dir.close();
-    return true;
+
+    const foundation_manifest_path = std.fs.path.join(std.heap.page_allocator, &.{ path, "foundation", "kira.toml" }) catch return false;
+    defer std.heap.page_allocator.free(foundation_manifest_path);
+    return fileExists(foundation_manifest_path);
 }
 
 fn fileExists(path: []const u8) bool {

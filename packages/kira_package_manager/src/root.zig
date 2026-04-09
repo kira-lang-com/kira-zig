@@ -1,0 +1,14 @@
+pub const SyncOptions = @import("types.zig").SyncOptions;
+pub const SyncResult = @import("types.zig").SyncResult;
+pub const ResolvedGraph = @import("types.zig").ResolvedGraph;
+pub const ResolvedPackage = @import("types.zig").ResolvedPackage;
+pub const ModuleMap = @import("types.zig").ModuleMap;
+pub const sparseIndexPath = @import("registry.zig").sparseIndexPath;
+pub const extractTarSecure = @import("archive.zig").extractTarSecure;
+pub const sha256Hex = @import("archive.zig").sha256Hex;
+pub const resolveGitCheckout = @import("git.zig").resolveGitCheckout;
+pub const ensureRegistrySource = @import("registry_fetch.zig").ensureRegistrySource;
+pub const fetchPackageVersion = @import("registry_fetch.zig").fetchPackageVersion;
+pub const fetchPackageMetadata = @import("registry_fetch.zig").fetchPackageMetadata;
+pub const syncProject = @import("manager.zig").syncProject;
+pub const loadModuleMapForSource = @import("manager.zig").loadModuleMapForSource;

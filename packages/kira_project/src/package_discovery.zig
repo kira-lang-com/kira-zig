@@ -3,8 +3,17 @@ const manifest = @import("kira_manifest");
 const Project = @import("project.zig").Project;
 const ResolvedProject = @import("project.zig").ResolvedProject;
 
-pub const manifest_file_name = "project.toml";
+pub const preferred_manifest_file_name = "kira.toml";
+pub const legacy_manifest_file_name = "project.toml";
+pub const repo_manifest_file_name = "Kira.toml";
+pub const manifest_file_name = preferred_manifest_file_name;
 pub const entrypoint_rel_path = "app/main.kira";
+
+pub const manifest_file_names = [_][]const u8{
+    preferred_manifest_file_name,
+    legacy_manifest_file_name,
+    repo_manifest_file_name,
+};
 
 pub fn loadProjectFromFile(allocator: std.mem.Allocator, path: []const u8) !Project {
     const text = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
@@ -15,8 +24,7 @@ pub fn loadProjectFromFile(allocator: std.mem.Allocator, path: []const u8) !Proj
 
 pub fn loadProjectFromPath(allocator: std.mem.Allocator, path: []const u8) !ResolvedProject {
     const root_path = try resolveRootPath(allocator, path);
-    const manifest_path = try std.fs.path.join(allocator, &.{ root_path, manifest_file_name });
-    if (!fileExists(manifest_path)) return error.ProjectManifestNotFound;
+    const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
 
     const entrypoint_path = try std.fs.path.join(allocator, &.{ root_path, entrypoint_rel_path });
     if (!fileExists(entrypoint_path)) return error.ProjectEntrypointNotFound;
@@ -30,7 +38,7 @@ pub fn loadProjectFromPath(allocator: std.mem.Allocator, path: []const u8) !Reso
 }
 
 fn resolveRootPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    if (std.mem.eql(u8, std.fs.path.basename(path), manifest_file_name)) {
+    if (isManifestPath(path)) {
         const directory = std.fs.path.dirname(path) orelse ".";
         return absolutize(allocator, directory);
     }
@@ -40,6 +48,23 @@ fn resolveRootPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     }
 
     return error.ProjectManifestNotFound;
+}
+
+fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
+    for (manifest_file_names) |name| {
+        const candidate = try std.fs.path.join(allocator, &.{ root_path, name });
+        if (fileExists(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+    return null;
+}
+
+fn isManifestPath(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    for (manifest_file_names) |name| {
+        if (std.mem.eql(u8, base, name)) return true;
+    }
+    return false;
 }
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

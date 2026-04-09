@@ -24,18 +24,20 @@ The frontend and semantic model understand the broader language surface above. T
 - `@Main`, `@Runtime`, `@Native`
 - `function`
 - integer and string literals
+- float and boolean runtime values in the VM executable path
 - local `let`
 - identifier loads
 - integer `+`
-- builtin `print`
+- builtin `print`, including named-struct formatting on the VM executable path
 - direct function calls with arguments and results in the lowered scalar/pointer subset
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
+- lowered named-struct construction and field access on the VM executable path
 - explicit FFI extern declarations
 - callback-typed arguments targeting native/external functions
 - `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
 
-`kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset.
+`kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset. The broadest runtime-value printing support currently lives on the VM/default execution path.
 
 ## Design Boundary
 

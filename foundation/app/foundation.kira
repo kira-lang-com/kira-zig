@@ -1,0 +1,4 @@
+function printLine(text: String) {
+    print(text);
+    return;
+}

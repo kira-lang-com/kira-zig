@@ -17,11 +17,11 @@ The working execution paths today are:
 - source -> lexer -> parser -> semantics -> IR -> bytecode -> VM
 - source -> lexer -> parser -> semantics -> IR -> LLVM IR -> object file -> native executable
 - source -> lexer -> parser -> semantics -> IR -> bytecode plus native shared library -> hybrid runtime host
-- `print(...)` works for integers and strings
+- `print(...)` works for integers, floats, strings, booleans, raw pointers, and named struct values on the VM path
 - `kira` launches the active managed Kira toolchain
 - `KiraMain` can load and run bytecode modules
 
-The native path currently supports the same bootstrap subset as the VM path:
+The native path currently supports the same bootstrap subset as the VM path, except that richer `print(...)` support is still centered on the VM/default execution path:
 
 - `@Main`
 - `@Runtime`
@@ -45,6 +45,12 @@ The FFI path extends that executable boundary with:
 - hybrid runtime/native argument and result marshalling
 - native callback targets for C-ABI callback parameters
 
+The current VM path also supports:
+
+- named struct construction in the lowered executable subset
+- struct field loads and stores in the lowered executable subset
+- printing named struct values such as `Color(r: 255, g: 0, b: 0)`
+
 ## Quick Start
 
 ```bash
@@ -52,9 +58,11 @@ zig build
 zig build install
 kira --help
 kira fetch-llvm
+kira run
 kira run examples/hello
 kira run --backend llvm examples/hello
 kira run --backend hybrid examples/hybrid_roundtrip
+kira check
 kira tokens examples/hello
 kira ast examples/hello
 kira check examples/hello
@@ -120,10 +128,27 @@ The pinned LLVM download flow intentionally does not use checksum verification. 
 The standalone binary is now the normal path:
 
 ```bash
+kira run
+kira build
+kira check
+kira sync
+kira add FrostUI
+kira update
+kira package pack
 kira run examples/hello
 kira build examples/hello
 kira check examples/hello
 ```
+
+When invoked from a project root, `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `kira.toml` first, then legacy `project.toml`.
+
+Kira package management v1 is now official-registry-first and source-only:
+
+- registry dependencies use exact versions and are locked in `kira.lock`
+- path dependencies are supported for local ecosystem development
+- git dependencies are first-class, but must be pinned and locked to a commit
+- registry archives are verified with SHA-256 before extraction
+- no install scripts, postinstall scripts, lifecycle hooks, or arbitrary code execution are allowed
 
 `zig build run -- ...` is still useful when iterating on the CLI itself because it rebuilds and runs in one step:
 
@@ -174,4 +199,4 @@ function entry() {
 
 The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/app/main.kira](examples/sokol_triangle/app/main.kira) and [examples/sokol_runtime_entry/app/main.kira](examples/sokol_runtime_entry/app/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira check examples/sokol_triangle` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira run --backend llvm examples/sokol_triangle` to build and launch the native triangle proof.
 
-See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), and [docs/native_libraries.md](docs/native_libraries.md).
+See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), [docs/package_management.md](docs/package_management.md), and [docs/native_libraries.md](docs/native_libraries.md).
