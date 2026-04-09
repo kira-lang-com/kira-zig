@@ -12,12 +12,16 @@ pub const ManifestLocation = struct {
 
 pub fn loadManifestLocation(allocator: std.mem.Allocator, input_path: ?[]const u8) !ManifestLocation {
     const path = input_path orelse ".";
-    const root_path = if (isDirectory(path))
-        try absolutize(allocator, path)
-    else if (isManifestPath(path))
+    const root_path = if (isManifestPath(path))
         try absolutize(allocator, std.fs.path.dirname(path) orelse ".")
-    else
-        try absolutize(allocator, ".");
+    else blk: {
+        const absolute = try absolutize(allocator, path);
+        if (!isDirectory(absolute)) {
+            allocator.free(absolute);
+            break :blk try absolutize(allocator, ".");
+        }
+        break :blk absolute;
+    };
     errdefer allocator.free(root_path);
 
     const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
@@ -128,7 +132,10 @@ fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[
 }
 
 fn isDirectory(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.fs.openDirAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openDir(path, .{}) catch return false;
     dir.close();
     return true;
 }
@@ -144,7 +151,10 @@ fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
+    var file = if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openFile(path, .{}) catch return false;
     file.close();
     return true;
 }
