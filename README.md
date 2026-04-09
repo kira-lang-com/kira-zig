@@ -135,6 +135,7 @@ kira sync
 kira add FrostUI
 kira update
 kira package pack
+kira new --lib GraphicsKit generated/GraphicsKit
 kira run examples/hello
 kira build examples/hello
 kira check examples/hello
@@ -149,6 +150,11 @@ Kira package management v1 is now official-registry-first and source-only:
 - git dependencies are first-class, but must be pinned and locked to a commit
 - registry archives are verified with SHA-256 before extraction
 - no install scripts, postinstall scripts, lifecycle hooks, or arbitrary code execution are allowed
+
+`kira new` can scaffold either kind of package:
+
+- `kira new DemoApp generated/DemoApp` for apps
+- `kira new --lib GraphicsKit generated/GraphicsKit` for libraries
 
 `zig build run -- ...` is still useful when iterating on the CLI itself because it rebuilds and runs in one step:
 

@@ -30,8 +30,30 @@ GameKit = { git = "https://github.com/Sunlight-Horizon/GameKit.git", rev = "a1b2
 - `kira add --git <url> --rev <commit> <Package>` adds a pinned git dependency
 - `kira remove <Package>` removes a dependency and refreshes the lockfile
 - `kira update` refreshes registry dependency versions in the manifest, then re-syncs
+- `kira new --lib <Name> <destination>` scaffolds a library package with `kira.toml`, `module_root`, and `app/<lowercased-name>.kira`
 - `kira package pack` writes a validated source-only `.tar` archive into `generated/`
 - `kira package inspect <archive-or-project-dir>` prints package metadata and contents
+
+## Creating A Library
+
+Use the CLI:
+
+```bash
+kira new --lib GraphicsKit generated/GraphicsKit
+```
+
+That scaffold creates:
+
+- `kira.toml`
+- `kind = "library"`
+- `module_root = "GraphicsKit"`
+- `app/graphicskit.kira` as the root module file
+
+Imports from consumers then look like:
+
+```kira
+import GraphicsKit
+```
 
 `kira build`, `kira run`, and `kira check` automatically sync first. Add `--offline` to stay cache-only and `--locked` to require the existing lockfile state.
 

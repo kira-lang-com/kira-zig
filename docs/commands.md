@@ -21,6 +21,7 @@ Standalone CLI:
 - `kira update`
 - `kira package pack`
 - `kira package inspect generated/DemoApp-0.1.0.tar`
+- `kira new --lib GraphicsKit generated/GraphicsKit`
 - `kira build --backend llvm examples/hello`
 - `kira build --backend hybrid examples/hybrid_roundtrip`
 - `kira new DemoApp generated/DemoApp`
@@ -69,7 +70,7 @@ CLI behavior:
 - `package inspect` prints manifest metadata and archive contents without extracting package scripts because package scripts are not supported
 - `build --backend llvm` writes both a native object file and a native executable into `generated/`
 - `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `generated/`
-- `new` copies the app template into a new destination with a root `kira.toml` and a starter `@Main`-annotated function in `app/main.kira`
+- `new` scaffolds either an app or a library package; use `new --lib` for a library template with `kind = "library"`, `module_root`, and a root module file under `app/`
 
 LLVM backend selection is explicit and host-native. Discovery order is:
 

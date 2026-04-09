@@ -96,7 +96,7 @@ fn printUsage(writer: anytype) !void {
         \\  update [<project-dir|kira.toml|project.toml>]
         \\  package pack [<project-dir|kira.toml|project.toml>]
         \\  package inspect <archive-path|project-dir>
-        \\  new <Name> <destination>
+        \\  new [--lib] <Name> <destination>
         \\  fetch-llvm
         \\  help
         \\  version
