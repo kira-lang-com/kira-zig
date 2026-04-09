@@ -34,6 +34,8 @@ function main() {
 @Native
 function init(user_data: RawPtr): Void {
     let state: app_state_ptr = user_data
+    state.viewport_width = sokol.sapp_width()
+    state.viewport_height = sokol.sapp_height()
 
     let desc: sokol.sg_desc
     desc.environment = sokol.sglue_environment()
@@ -73,6 +75,8 @@ void main() {
 @Native
 function frame(user_data: RawPtr): Void {
     let state: app_state_ptr = user_data
+    state.viewport_width = sokol.sapp_width()
+    state.viewport_height = sokol.sapp_height()
 
     let pass: sokol.sg_pass
     pass.swapchain = sokol.sglue_swapchain()

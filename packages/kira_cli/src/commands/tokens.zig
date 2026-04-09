@@ -4,8 +4,8 @@ const diagnostics = @import("kira_diagnostics");
 const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
-    if (args.len < 1) return error.InvalidArguments;
-    const input = try support.resolveCommandInput(allocator, args[0]);
+    if (args.len > 1) return error.InvalidArguments;
+    const input = try support.resolveCommandInput(allocator, if (args.len == 0) support.defaultCommandInputPath() else args[0]);
 
     try support.logFrontendStarted(stderr, "tokens", input.source_path);
     const result = try build.lexFile(allocator, input.source_path);

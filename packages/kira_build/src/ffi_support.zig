@@ -120,17 +120,25 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     if (library.build.sources.len == 0) return;
     const maybe_dir = std.fs.path.dirname(library.artifact_path) orelse ".";
     try makePath(maybe_dir);
+    const target_triple = try targetTriple(allocator, library.target);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ "zig", "build-lib", "-static", try std.fmt.allocPrint(allocator, "-femit-bin={s}", .{library.artifact_path}) });
+    try argv.appendSlice(&.{
+        "zig",
+        "build-lib",
+        "-target",
+        target_triple,
+        "-static",
+        try std.fmt.allocPrint(allocator, "-femit-bin={s}", .{library.artifact_path}),
+    });
+    if (library.abi == .c) {
+        try argv.append("-lc");
+    }
     for (library.headers.include_dirs) |include_dir| {
         try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
     }
     for (library.build.include_dirs) |include_dir| {
         try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
-    }
-    for (library.headers.defines) |define| {
-        try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
     }
     for (library.build.defines) |define| {
         try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
@@ -146,6 +154,14 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     defer allocator.free(result.stderr);
 
     if (result.term != .Exited or result.term.Exited != 0) return error.NativeLibraryBuildFailed;
+}
+
+fn targetTriple(allocator: std.mem.Allocator, selector: native.TargetSelector) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}-{s}-{s}",
+        .{ selector.architecture, selector.operating_system, selector.abi },
+    );
 }
 
 fn hostTargetSelector(allocator: std.mem.Allocator) !native.TargetSelector {
@@ -174,11 +190,5 @@ fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 }
 
 fn makePath(path: []const u8) !void {
-    if (!std.fs.path.isAbsolute(path)) {
-        try std.fs.cwd().makePath(path);
-        return;
-    }
-    var root = try std.fs.openDirAbsolute("/", .{});
-    defer root.close();
-    try root.makePath(path[1..]);
+    try std.fs.cwd().makePath(path);
 }
