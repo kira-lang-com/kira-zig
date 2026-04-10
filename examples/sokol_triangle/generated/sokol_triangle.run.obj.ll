@@ -2,6 +2,7 @@
 source_filename = "main"
 target triple = "x86_64-pc-windows-msvc"
 
+%t.app_state = type { %t.sg_shader, %t.sg_pipeline, i32, i32 }
 %t.sapp_allocator = type { ptr, ptr, ptr }
 %t.sapp_desc = type { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i32, i32, i32, i32, i8, i8, i8, ptr, i8, i32, i8, i32, i32, %t.sapp_icon_desc, %t.sapp_allocator, %t.sapp_logger, %t.sapp_gl_desc, %t.sapp_win32_desc, %t.sapp_html5_desc, %t.sapp_ios_desc }
 %t.sapp_event = type { i64, i32, i32, i32, i8, i32, i32, float, float, float, float, float, float, i32, [8 x %t.sapp_touchpoint], i32, i32, i32, i32 }
@@ -65,7 +66,6 @@ target triple = "x86_64-pc-windows-msvc"
 %t.sg_wgpu_desc = type { i8, i32 }
 %t.sg_wgpu_environment = type { ptr }
 %t.sg_wgpu_swapchain = type { ptr, ptr, ptr }
-%t.app_state = type { %t.sg_shader, %t.sg_pipeline, i32, i32 }
 
 %kira.string = type { ptr, i64 }
 
@@ -120,7 +120,7 @@ declare %t.sg_swapchain @"sglue_swapchain"()
 @kira_str_2 = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([94 x i8], ptr @kira_str_2_data, i64 0, i64 0), i64 93 }
 
 
-define void @"kira_fn_208_main"() {
+define void @"kira_fn_0_main"() {
 entry:
   %local0 = alloca %t.app_state
   store %t.app_state zeroinitializer, ptr %local0
@@ -142,7 +142,7 @@ entry:
   %store.ptr.3 = inttoptr i64 %r5 to ptr
   %store.cast.3 = trunc i64 %r3 to i32
   store i32 %store.cast.3, ptr %store.ptr.3
-  %r6 = ptrtoint ptr @"kira_fn_209_init" to i64
+  %r6 = ptrtoint ptr @"kira_fn_1_init" to i64
   %r7 = ptrtoint ptr %local1 to i64
   %field.base.8 = inttoptr i64 %r7 to ptr
   %field.ptr.8 = getelementptr inbounds %t.sapp_desc, ptr %field.base.8, i32 0, i32 5
@@ -150,7 +150,7 @@ entry:
   %store.ptr.6 = inttoptr i64 %r8 to ptr
   %store.rawptr.6 = inttoptr i64 %r6 to ptr
   store ptr %store.rawptr.6, ptr %store.ptr.6
-  %r9 = ptrtoint ptr @"kira_fn_210_frame" to i64
+  %r9 = ptrtoint ptr @"kira_fn_2_frame" to i64
   %r10 = ptrtoint ptr %local1 to i64
   %field.base.11 = inttoptr i64 %r10 to ptr
   %field.ptr.11 = getelementptr inbounds %t.sapp_desc, ptr %field.base.11, i32 0, i32 6
@@ -158,7 +158,7 @@ entry:
   %store.ptr.9 = inttoptr i64 %r11 to ptr
   %store.rawptr.9 = inttoptr i64 %r9 to ptr
   store ptr %store.rawptr.9, ptr %store.ptr.9
-  %r12 = ptrtoint ptr @"kira_fn_212_cleanup" to i64
+  %r12 = ptrtoint ptr @"kira_fn_4_cleanup" to i64
   %r13 = ptrtoint ptr %local1 to i64
   %field.base.14 = inttoptr i64 %r13 to ptr
   %field.ptr.14 = getelementptr inbounds %t.sapp_desc, ptr %field.base.14, i32 0, i32 7
@@ -166,7 +166,7 @@ entry:
   %store.ptr.12 = inttoptr i64 %r14 to ptr
   %store.rawptr.12 = inttoptr i64 %r12 to ptr
   store ptr %store.rawptr.12, ptr %store.ptr.12
-  %r15 = ptrtoint ptr @"kira_fn_211_event" to i64
+  %r15 = ptrtoint ptr @"kira_fn_3_event" to i64
   %r16 = ptrtoint ptr %local1 to i64
   %field.base.17 = inttoptr i64 %r16 to ptr
   %field.ptr.17 = getelementptr inbounds %t.sapp_desc, ptr %field.base.17, i32 0, i32 8
@@ -207,12 +207,12 @@ entry:
   %store.cstr.27 = extractvalue %kira.string %r27, 0
   store ptr %store.cstr.27, ptr %store.ptr.27
   %r30 = ptrtoint ptr %local1 to i64
-  %call.arg.39.0 = inttoptr i64 %r30 to ptr
-  call void @"sapp_run"(ptr %call.arg.39.0)
+  %call.arg.44.0 = inttoptr i64 %r30 to ptr
+  call void @"sapp_run"(ptr %call.arg.44.0)
   ret void
 }
 
-define void @"kira_fn_209_init"(i64 %arg0) {
+define void @"kira_fn_1_init"(i64 %arg0) {
 entry:
   %local0 = alloca i64
   %local1 = alloca i64
@@ -258,8 +258,8 @@ entry:
   %copy.val.9 = load %t.sg_environment, ptr %copy.src.7
   store %t.sg_environment %copy.val.9, ptr %copy.dst.9
   %r10 = ptrtoint ptr %local2 to i64
-  %call.arg.183.0 = inttoptr i64 %r10 to ptr
-  call void @"sg_setup"(ptr %call.arg.183.0)
+  %call.arg.188.0 = inttoptr i64 %r10 to ptr
+  call void @"sg_setup"(ptr %call.arg.188.0)
   %r11 = load %kira.string, ptr @kira_str_1
   %r12 = ptrtoint ptr %local3 to i64
   %field.base.13 = inttoptr i64 %r12 to ptr
@@ -283,8 +283,8 @@ entry:
   %store.cstr.15 = extractvalue %kira.string %r15, 0
   store ptr %store.cstr.15, ptr %store.ptr.15
   %r19 = ptrtoint ptr %local3 to i64
-  %call.arg.121.0 = inttoptr i64 %r19 to ptr
-  %call.struct.20 = call %t.sg_shader @"sg_make_shader"(ptr %call.arg.121.0)
+  %call.arg.126.0 = inttoptr i64 %r19 to ptr
+  %call.struct.20 = call %t.sg_shader @"sg_make_shader"(ptr %call.arg.126.0)
   %call.ret.ptr.20 = alloca %t.sg_shader
   store %t.sg_shader %call.struct.20, ptr %call.ret.ptr.20
   %r20 = ptrtoint ptr %call.ret.ptr.20 to i64
@@ -309,8 +309,8 @@ entry:
   %copy.val.26 = load %t.sg_shader, ptr %copy.src.24
   store %t.sg_shader %copy.val.26, ptr %copy.dst.26
   %r27 = ptrtoint ptr %local4 to i64
-  %call.arg.119.0 = inttoptr i64 %r27 to ptr
-  %call.struct.28 = call %t.sg_pipeline @"sg_make_pipeline"(ptr %call.arg.119.0)
+  %call.arg.124.0 = inttoptr i64 %r27 to ptr
+  %call.struct.28 = call %t.sg_pipeline @"sg_make_pipeline"(ptr %call.arg.124.0)
   %call.ret.ptr.28 = alloca %t.sg_pipeline
   store %t.sg_pipeline %call.struct.28, ptr %call.ret.ptr.28
   %r28 = ptrtoint ptr %call.ret.ptr.28 to i64
@@ -325,7 +325,7 @@ entry:
   ret void
 }
 
-define void @"kira_fn_210_frame"(i64 %arg0) {
+define void @"kira_fn_2_frame"(i64 %arg0) {
 entry:
   %local0 = alloca i64
   %local1 = alloca i64
@@ -367,8 +367,8 @@ entry:
   %copy.val.9 = load %t.sg_swapchain, ptr %copy.src.7
   store %t.sg_swapchain %copy.val.9, ptr %copy.dst.9
   %r10 = ptrtoint ptr %local2 to i64
-  %call.arg.70.0 = inttoptr i64 %r10 to ptr
-  call void @"sg_begin_pass"(ptr %call.arg.70.0)
+  %call.arg.75.0 = inttoptr i64 %r10 to ptr
+  call void @"sg_begin_pass"(ptr %call.arg.75.0)
   %r11 = add i64 0, 0
   %r12 = add i64 0, 0
   %r13 = load i64, ptr %local1
@@ -386,31 +386,31 @@ entry:
   %load.raw.18 = load i32, ptr %load.ptr.18
   %r18 = sext i32 %load.raw.18 to i64
   %r19 = add i1 0, 1
-  %call.arg.68.0 = trunc i64 %r11 to i32
-  %call.arg.68.1 = trunc i64 %r12 to i32
-  %call.arg.68.2 = trunc i64 %r15 to i32
-  %call.arg.68.3 = trunc i64 %r18 to i32
-  call void @"sg_apply_viewport"(i32 %call.arg.68.0, i32 %call.arg.68.1, i32 %call.arg.68.2, i32 %call.arg.68.3, i1 %r19)
+  %call.arg.73.0 = trunc i64 %r11 to i32
+  %call.arg.73.1 = trunc i64 %r12 to i32
+  %call.arg.73.2 = trunc i64 %r15 to i32
+  %call.arg.73.3 = trunc i64 %r18 to i32
+  call void @"sg_apply_viewport"(i32 %call.arg.73.0, i32 %call.arg.73.1, i32 %call.arg.73.2, i32 %call.arg.73.3, i1 %r19)
   %r20 = load i64, ptr %local1
   %field.base.21 = inttoptr i64 %r20 to ptr
   %field.ptr.21 = getelementptr inbounds %t.app_state, ptr %field.base.21, i32 0, i32 1
   %r21 = ptrtoint ptr %field.ptr.21 to i64
-  %call.arg.ptr.64.0 = inttoptr i64 %r21 to ptr
-  %call.arg.64.0 = load %t.sg_pipeline, ptr %call.arg.ptr.64.0
-  call void @"sg_apply_pipeline"(%t.sg_pipeline %call.arg.64.0)
+  %call.arg.ptr.69.0 = inttoptr i64 %r21 to ptr
+  %call.arg.69.0 = load %t.sg_pipeline, ptr %call.arg.ptr.69.0
+  call void @"sg_apply_pipeline"(%t.sg_pipeline %call.arg.69.0)
   %r22 = add i64 0, 0
   %r23 = add i64 0, 3
   %r24 = add i64 0, 1
-  %call.arg.94.0 = trunc i64 %r22 to i32
-  %call.arg.94.1 = trunc i64 %r23 to i32
-  %call.arg.94.2 = trunc i64 %r24 to i32
-  call void @"sg_draw"(i32 %call.arg.94.0, i32 %call.arg.94.1, i32 %call.arg.94.2)
+  %call.arg.99.0 = trunc i64 %r22 to i32
+  %call.arg.99.1 = trunc i64 %r23 to i32
+  %call.arg.99.2 = trunc i64 %r24 to i32
+  call void @"sg_draw"(i32 %call.arg.99.0, i32 %call.arg.99.1, i32 %call.arg.99.2)
   call void @"sg_end_pass"()
   call void @"sg_commit"()
   ret void
 }
 
-define void @"kira_fn_211_event"(i64 %arg0, i64 %arg1) {
+define void @"kira_fn_3_event"(i64 %arg0, i64 %arg1) {
 entry:
   %local0 = alloca i64
   %local1 = alloca i64
@@ -450,7 +450,7 @@ entry:
   ret void
 }
 
-define void @"kira_fn_212_cleanup"(i64 %arg0) {
+define void @"kira_fn_4_cleanup"(i64 %arg0) {
 entry:
   %local0 = alloca i64
   %local1 = alloca i64
@@ -461,23 +461,23 @@ entry:
   %field.base.2 = inttoptr i64 %r1 to ptr
   %field.ptr.2 = getelementptr inbounds %t.app_state, ptr %field.base.2, i32 0, i32 1
   %r2 = ptrtoint ptr %field.ptr.2 to i64
-  %call.arg.ptr.88.0 = inttoptr i64 %r2 to ptr
-  %call.arg.88.0 = load %t.sg_pipeline, ptr %call.arg.ptr.88.0
-  call void @"sg_destroy_pipeline"(%t.sg_pipeline %call.arg.88.0)
+  %call.arg.ptr.93.0 = inttoptr i64 %r2 to ptr
+  %call.arg.93.0 = load %t.sg_pipeline, ptr %call.arg.ptr.93.0
+  call void @"sg_destroy_pipeline"(%t.sg_pipeline %call.arg.93.0)
   %r3 = load i64, ptr %local1
   %field.base.4 = inttoptr i64 %r3 to ptr
   %field.ptr.4 = getelementptr inbounds %t.app_state, ptr %field.base.4, i32 0, i32 0
   %r4 = ptrtoint ptr %field.ptr.4 to i64
-  %call.arg.ptr.90.0 = inttoptr i64 %r4 to ptr
-  %call.arg.90.0 = load %t.sg_shader, ptr %call.arg.ptr.90.0
-  call void @"sg_destroy_shader"(%t.sg_shader %call.arg.90.0)
+  %call.arg.ptr.95.0 = inttoptr i64 %r4 to ptr
+  %call.arg.95.0 = load %t.sg_shader, ptr %call.arg.ptr.95.0
+  call void @"sg_destroy_shader"(%t.sg_shader %call.arg.95.0)
   call void @"sg_shutdown"()
   ret void
 }
 
 define i32 @main() {
 entry:
-  call void @"kira_fn_208_main"()
+  call void @"kira_fn_0_main"()
   ret i32 0
 }
 

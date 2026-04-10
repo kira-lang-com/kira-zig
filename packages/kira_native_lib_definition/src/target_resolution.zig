@@ -81,8 +81,13 @@ fn cloneAutobinding(allocator: std.mem.Allocator, autobinding: native.Autobindin
     return .{
         .module_name = try allocator.dupe(u8, autobinding.module_name),
         .output_path = try allocator.dupe(u8, autobinding.output_path),
-        .spec_path = if (autobinding.spec_path) |value| try allocator.dupe(u8, value) else null,
         .headers = try cloneStrings(allocator, autobinding.headers),
+        .bindings = .{
+            .mode = autobinding.bindings.mode,
+            .functions = try cloneStrings(allocator, autobinding.bindings.functions),
+            .structs = try cloneStrings(allocator, autobinding.bindings.structs),
+            .callbacks = try cloneStrings(allocator, autobinding.bindings.callbacks),
+        },
     };
 }
 

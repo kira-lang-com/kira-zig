@@ -79,6 +79,7 @@ pub fn loadModuleMapForSource(allocator: std.mem.Allocator, source_path: []const
     defer allocator.free(project_root);
 
     var owners = std.array_list.Managed(types.ModuleMap.ModuleOwner).init(allocator);
+    try appendCurrentProjectOwner(allocator, &owners, project_root);
     try appendBundledFoundationOwner(allocator, &owners, source_path);
 
     const lockfile_path = try std.fs.path.join(allocator, &.{ project_root, "kira.lock" });
@@ -89,17 +90,38 @@ pub fn loadModuleMapForSource(allocator: std.mem.Allocator, source_path: []const
     const lockfile = try manifest.parseLockFile(allocator, lockfile_text);
 
     for (lockfile.packages) |item| {
+        const source_root = switch (item.source) {
+            .registry => |registry| blk: {
+                const package_root = try registry_fetch.ensureRegistrySource(allocator, registry.archive_path, registry.checksum, true);
+                break :blk try discoverModuleSourceRoot(allocator, package_root);
+            },
+            .path => |path_source| try discoverModuleSourceRoot(allocator, path_source.path),
+            .git => |git_source| blk: {
+                const checkout = try git.resolveGitCheckout(allocator, git_source.url, null, null, true, git_source.commit);
+                break :blk try discoverModuleSourceRoot(allocator, checkout.source_root);
+            },
+        };
         try owners.append(.{
             .module_root = item.module_root,
             .package_name = item.name,
-            .source_root = switch (item.source) {
-                .registry => |registry| try registry_fetch.ensureRegistrySource(allocator, registry.archive_path, registry.checksum, true),
-                .path => |path_source| path_source.path,
-                .git => |git_source| (try git.resolveGitCheckout(allocator, git_source.url, null, null, true, git_source.commit)).source_root,
-            },
+            .source_root = source_root,
         });
     }
     return .{ .owners = try owners.toOwnedSlice() };
+}
+
+fn appendCurrentProjectOwner(
+    allocator: std.mem.Allocator,
+    owners: *std.array_list.Managed(types.ModuleMap.ModuleOwner),
+    project_root: []const u8,
+) !void {
+    const loaded = loadPackageManifest(allocator, project_root) catch return;
+    const module_root = loaded.manifest.module_root orelse loaded.manifest.name;
+    try owners.append(.{
+        .module_root = module_root,
+        .package_name = loaded.manifest.name,
+        .source_root = loaded.module_source_root,
+    });
 }
 
 const Resolver = struct {
@@ -138,7 +160,13 @@ const Resolver = struct {
     }
 
     fn resolvePath(self: *Resolver, name: []const u8, relative_path: []const u8, parent_root: []const u8) anyerror!void {
-        const abs_path = try canonicalizePath(self.allocator, parent_root, relative_path);
+        const abs_path = canonicalizePath(self.allocator, parent_root, relative_path) catch |err| switch (err) {
+            error.FileNotFound => {
+                try emitMissingPathDependencyDiagnostic(self.allocator, self.diagnostics, name, relative_path, parent_root);
+                return error.DiagnosticsEmitted;
+            },
+            else => return err,
+        };
         defer self.allocator.free(abs_path);
         const key = try std.fmt.allocPrint(self.allocator, "path|{s}", .{abs_path});
         defer self.allocator.free(key);
@@ -147,7 +175,17 @@ const Resolver = struct {
         try self.pushStack(key);
         defer self.popStack();
 
-        const loaded = try loadPackageManifest(self.allocator, abs_path);
+        const loaded = loadPackageManifest(self.allocator, abs_path) catch |err| switch (err) {
+            error.ProjectManifestNotFound => {
+                try emitMissingPathManifestDiagnostic(self.allocator, self.diagnostics, name, abs_path);
+                return error.DiagnosticsEmitted;
+            },
+            error.FileNotFound => {
+                try emitMissingPathDependencyDiagnostic(self.allocator, self.diagnostics, name, relative_path, parent_root);
+                return error.DiagnosticsEmitted;
+            },
+            else => return err,
+        };
         try validateToolchain(self.allocator, self.diagnostics, self.toolchain_version, loaded.manifest.kira_version, loaded.manifest.name);
         if (!std.mem.eql(u8, loaded.manifest.name, name)) return error.InvalidManifest;
 
@@ -581,6 +619,47 @@ fn directoryExists(path: []const u8) bool {
 }
 
 const default_registry_url = "https://registry.kira.sh";
+
+fn emitMissingPathDependencyDiagnostic(
+    allocator: std.mem.Allocator,
+    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+    name: []const u8,
+    relative_path: []const u8,
+    parent_root: []const u8,
+) !void {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Path dependency `{s}` could not be found at `{s}` relative to `{s}`.",
+        .{ name, relative_path, parent_root },
+    );
+    const help = try std.fmt.allocPrint(
+        allocator,
+        "Check the dependency path or point it at the package root directory that contains `kira.toml`.",
+        .{},
+    );
+    try diag.append(allocator, out_diagnostics, "KPKG001", "path dependency not found", message, help);
+}
+
+fn emitMissingPathManifestDiagnostic(
+    allocator: std.mem.Allocator,
+    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+    name: []const u8,
+    abs_path: []const u8,
+) !void {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Path dependency `{s}` does not contain a `kira.toml` or legacy `project.toml` manifest at `{s}`.",
+        .{ name, abs_path },
+    );
+    try diag.append(
+        allocator,
+        out_diagnostics,
+        "KPKG002",
+        "path dependency manifest not found",
+        message,
+        "Point the dependency at the package root directory.",
+    );
+}
 
 fn appendBundledFoundationOwner(
     allocator: std.mem.Allocator,

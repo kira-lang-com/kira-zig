@@ -29,8 +29,13 @@ fn resolveAutobinding(allocator: std.mem.Allocator, manifest_path: []const u8, a
     return .{
         .module_name = try allocator.dupe(u8, autobinding.module_name),
         .output_path = try absolutizePath(allocator, manifest_path, autobinding.output_path),
-        .spec_path = if (autobinding.spec_path) |value| try absolutizePath(allocator, manifest_path, value) else null,
         .headers = try absolutizePaths(allocator, manifest_path, autobinding.headers),
+        .bindings = .{
+            .mode = autobinding.bindings.mode,
+            .functions = try cloneStrings(allocator, autobinding.bindings.functions),
+            .structs = try cloneStrings(allocator, autobinding.bindings.structs),
+            .callbacks = try cloneStrings(allocator, autobinding.bindings.callbacks),
+        },
     };
 }
 

@@ -15,7 +15,7 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     const triple = try hostTargetTriple(allocator);
     defer allocator.free(triple);
 
-    if (builtin.os.tag == .macos or builtin.os.tag == .windows) {
+    if (builtin.os.tag == .macos or builtin.os.tag == .windows or requiresTextIrFallback(request.program.*, request.mode)) {
         return compileViaTextIr(allocator, request, triple);
     }
 
@@ -588,8 +588,14 @@ fn buildTextLlvmIr(
         try writer.writeAll("%kira.bridge.value = type { i8, [7 x i8], i64, i64 }\n\n");
     }
 
+    try writer.writeAll("@kira_bool_true_data = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
+    try writer.writeAll("@kira_bool_true = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([5 x i8], ptr @kira_bool_true_data, i64 0, i64 0), i64 4 }\n");
+    try writer.writeAll("@kira_bool_false_data = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
+    try writer.writeAll("@kira_bool_false = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([6 x i8], ptr @kira_bool_false_data, i64 0, i64 0), i64 5 }\n\n");
+
     try writer.writeAll("declare void @\"kira_native_print_i64\"(i64)\n");
     try writer.writeAll("declare void @\"kira_native_print_string\"(ptr, i64)\n");
+    try writer.writeAll("declare ptr @malloc(i64)\n");
     if (request.mode == .hybrid) {
         try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32, ptr, i32, ptr)\n");
     }
@@ -668,7 +674,13 @@ fn buildTextFunctionBody(
         try writer.writeAll(storage_type);
         try writer.writeAll("\n");
         if (local_type.kind == .ffi_struct) {
-            try writer.print("  store {s} zeroinitializer, ptr %local{d}\n", .{ storage_type, index });
+            const struct_type_name = typeRefName(local_type.name orelse return error.UnsupportedExecutableFeature);
+            try writer.print("  %local.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ index, struct_type_name });
+            try writer.print("  %local.size.{d} = ptrtoint ptr %local.size.ptr.{d} to i64\n", .{ index, index });
+            try writer.print("  %local.heap.{d} = call ptr @malloc(i64 %local.size.{d})\n", .{ index, index });
+            try writer.print("  store {s} zeroinitializer, ptr %local.heap.{d}\n", .{ struct_type_name, index });
+            try writer.print("  %local.heap.int.{d} = ptrtoint ptr %local.heap.{d} to i64\n", .{ index, index });
+            try writer.print("  store i64 %local.heap.int.{d}, ptr %local{d}\n", .{ index, index });
         }
     }
     for (function_decl.param_types, 0..) |param_type, index| {
@@ -710,7 +722,18 @@ fn buildTextFunctionBody(
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" = add i64 0, 0\n");
             },
-            .alloc_struct => |_| return error.UnsupportedExecutableFeature,
+            .alloc_struct => |value| {
+                const struct_type_name = typeRefName(value.type_name);
+                try writer.print("  %alloc.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ value.dst, struct_type_name });
+                try writer.print("  %alloc.size.{d} = ptrtoint ptr %alloc.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
+                try writer.print("  %alloc.ptr.{d} = call ptr @malloc(i64 %alloc.size.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  store {s} zeroinitializer, ptr %alloc.ptr.{d}\n", .{ struct_type_name, value.dst });
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = ptrtoint ptr %alloc.ptr.");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" to i64\n");
+            },
             .const_function => |value| {
                 const callee_decl = functionById(request.program.*, value.function_id) orelse return error.UnknownFunction;
                 const callee_name = symbol_names.get(callee_decl.id) orelse return error.MissingFunctionDeclaration;
@@ -740,9 +763,8 @@ fn buildTextFunctionBody(
                 try writer.writeAll("  %r");
                 try writer.print("{d}", .{value.dst});
                 if (function_decl.local_types[value.local].kind == .ffi_struct) {
-                    try writer.writeAll(" = ptrtoint ptr %local");
-                    try writer.print("{d}", .{value.local});
-                    try writer.writeAll(" to i64\n");
+                    try writer.writeAll(" = load i64, ptr %local");
+                    try writer.print("{d}\n", .{value.local});
                 } else {
                     try writer.writeAll(" = load ");
                     try writer.writeAll(llvmValueTypeText(function_decl.local_types[value.local]));
@@ -791,6 +813,11 @@ fn buildTextFunctionBody(
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = ptrtoint ptr %load.rawptr.{d} to i64\n", .{value.dst});
                     },
+                    .string => {
+                        try writer.writeAll("  %r");
+                        try writer.print("{d}", .{value.dst});
+                        try writer.print(" = load {s}, ptr %load.ptr.{d}\n", .{ abi_type, value.dst });
+                    },
                     .ffi_struct => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
@@ -823,6 +850,9 @@ fn buildTextFunctionBody(
                             try writer.print("  %store.rawptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.src });
                             try writer.print("  store ptr %store.rawptr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
                         }
+                    },
+                    .string => {
+                        try writer.print("  store {s} %r{d}, ptr %store.ptr.{d}\n", .{ abi_type, value.src, value.src });
                     },
                     else => return error.UnsupportedExecutableFeature,
                 }
@@ -1015,7 +1045,7 @@ fn writeCallInstruction(
                         callee_id, index, bridgeTagValue(register_types[arg]),
                     });
                     switch (register_types[arg].kind) {
-                        .integer, .raw_ptr => {
+                        .integer, .raw_ptr, .ffi_struct => {
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{
                                 callee_id, index, callee_id, index, arg,
                             });
@@ -1048,7 +1078,7 @@ fn writeCallInstruction(
                                 callee_id, index, callee_id, index,
                             });
                         },
-                        .void, .float, .ffi_struct => return error.UnsupportedExecutableFeature,
+                        .void, .float => return error.UnsupportedExecutableFeature,
                     }
                 }
             }
@@ -1069,7 +1099,7 @@ fn writeCallInstruction(
             if (call_inst.dst) |dst| {
                 try writer.print("  %rt.result.load.{d} = load %kira.bridge.value, ptr %rt.result.{d}\n", .{ callee_id, callee_id });
                 switch (callee_decl.return_type.kind) {
-                    .integer, .raw_ptr => {
+                    .integer, .raw_ptr, .ffi_struct => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
                         try writer.print(" = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{callee_id});
@@ -1091,7 +1121,7 @@ fn writeCallInstruction(
                         try writer.print("{d}", .{dst});
                         try writer.print(" = insertvalue %kira.string %r{d}.0, i64 %rt.result.len.{d}, 1\n", .{ dst, callee_id });
                     },
-                    .void, .float, .ffi_struct => {},
+                    .void, .float => {},
                 }
             }
         },
@@ -1126,7 +1156,36 @@ fn writePrintInstruction(writer: anytype, value_type: ir.ValueType, src: u32, te
             try writer.print("{d}", .{temp_index});
             try writer.writeAll(")\n");
         },
-        .void, .float, .boolean, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
+        .boolean => {
+            const temp_index = temp_counter.*;
+            temp_counter.* += 1;
+
+            try writer.writeAll("  %bool.ptr.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = select i1 %r");
+            try writer.print("{d}", .{src});
+            try writer.writeAll(", ptr @kira_bool_true, ptr @kira_bool_false\n");
+            try writer.writeAll("  %bool.val.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = load %kira.string, ptr %bool.ptr.");
+            try writer.print("{d}\n", .{temp_index});
+            try writer.writeAll("  %bool.str.ptr.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(", 0\n");
+            try writer.writeAll("  %bool.str.len.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(", 1\n");
+            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %bool.str.ptr.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(", i64 %bool.str.len.");
+            try writer.print("{d}", .{temp_index});
+            try writer.writeAll(")\n");
+        },
+        .void, .float, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
     }
 }
 
@@ -1190,8 +1249,11 @@ fn hexDigit(value: u8) u8 {
 
 fn appendTypeDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {
     for (program.types) |type_decl| {
-        const ffi_info = type_decl.ffi orelse continue;
-        if (ffi_info != .ffi_struct) continue;
+        if (type_decl.ffi) |ffi_info| {
+            if (ffi_info != .ffi_struct) continue;
+        } else if (type_decl.fields.len == 0) {
+            continue;
+        }
         try writer.writeAll(typeRefName(type_decl.name));
         try writer.writeAll(" = type { ");
         for (type_decl.fields, 0..) |field_decl, index| {
@@ -1281,8 +1343,9 @@ fn llvmCallTypeText(value_type: ir.ValueType, is_extern: bool) []const u8 {
 }
 
 fn llvmLocalStorageTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
+    _ = program;
     return switch (value_type.kind) {
-        .ffi_struct => llvmFieldAbiTypeText(allocator, program, value_type),
+        .ffi_struct => allocator.dupe(u8, "i64"),
         else => allocator.dupe(u8, llvmValueTypeText(value_type)),
     };
 }
@@ -1483,7 +1546,7 @@ fn buildHybridBridgeWrapper(
         try writer.writeAll(" = load %kira.bridge.value, ptr %bridge.slot.");
         try writer.print("{d}\n", .{index});
         switch (param_type.kind) {
-            .integer, .raw_ptr => {
+            .integer, .raw_ptr, .ffi_struct => {
                 try writer.writeAll("  %bridge.word0.");
                 try writer.print("{d}", .{index});
                 try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
@@ -1531,7 +1594,7 @@ fn buildHybridBridgeWrapper(
                 try writer.print("{d}", .{index});
                 try writer.writeAll(", 1\n");
             },
-            .void, .float, .ffi_struct => {},
+            .void, .float => {},
         }
     }
 
@@ -1549,7 +1612,7 @@ fn buildHybridBridgeWrapper(
         try writer.writeAll(llvmValueTypeText(param_type));
         try writer.writeByte(' ');
         switch (param_type.kind) {
-            .integer, .raw_ptr => {
+            .integer, .raw_ptr, .ffi_struct => {
                 try writer.writeAll("%bridge.word0.");
                 try writer.print("{d}", .{index});
             },
@@ -1561,7 +1624,7 @@ fn buildHybridBridgeWrapper(
                 try writer.writeAll("%bridge.str.");
                 try writer.print("{d}", .{index});
             },
-            .void, .float, .ffi_struct => try writer.writeAll("undef"),
+            .void, .float => try writer.writeAll("undef"),
         }
     }
     try writer.writeAll(")\n");
@@ -1573,7 +1636,7 @@ fn buildHybridBridgeWrapper(
         .void => {
             try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
         },
-        .integer, .raw_ptr => {
+        .integer, .raw_ptr, .ffi_struct => {
             try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.call, 2\n");
             try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
         },
@@ -1592,9 +1655,6 @@ fn buildHybridBridgeWrapper(
             try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.ret.ptrint, 2\n");
             try writer.writeAll("  %bridge.out.2 = insertvalue %kira.bridge.value %bridge.out.1, i64 %bridge.ret.len, 3\n");
             try writer.writeAll("  store %kira.bridge.value %bridge.out.2, ptr %out_result\n");
-        },
-        .ffi_struct => {
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
         },
     }
     try writer.writeAll("  ret void\n}\n");
@@ -1621,6 +1681,78 @@ fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: backend_api.
         },
         else => execution,
     };
+}
+
+fn requiresTextIrFallback(program: ir.Program, mode: backend_api.BackendMode) bool {
+    if (mode == .vm_bytecode) return false;
+
+    for (program.functions) |function_decl| {
+        if (!shouldLowerFunction(function_decl.execution, mode)) continue;
+        if (functionDeclNeedsTextIrFallback(program, function_decl, mode)) return true;
+    }
+    return false;
+}
+
+fn functionDeclNeedsTextIrFallback(program: ir.Program, function_decl: ir.Function, mode: backend_api.BackendMode) bool {
+    if (function_decl.is_extern) return true;
+    if (function_decl.param_types.len != 0) return true;
+    if (function_decl.return_type.kind != .void) return true;
+
+    for (function_decl.local_types) |local_type| {
+        if (local_type.kind == .ffi_struct) return true;
+    }
+
+    for (function_decl.instructions) |instruction| {
+        switch (instruction) {
+            .const_int, .const_string, .const_bool, .const_null_ptr, .add, .store_local, .load_local => {},
+            .alloc_struct, .const_function, .field_ptr, .load_indirect, .store_indirect, .copy_indirect => return true,
+            .print => |value| if (value.ty.kind != .integer and value.ty.kind != .string) return true,
+            .call => |value| {
+                if (value.args.len != 0 or value.dst != null) return true;
+                const callee_execution = functionExecutionById(program, value.callee) orelse return true;
+                if (resolveExecution(callee_execution, mode) == .runtime and mode != .hybrid) return true;
+            },
+            .ret => |value| if (value.src != null) return true,
+        }
+    }
+
+    return false;
+}
+
+test "detects fallback features for llvm c api lowering" {
+    const program = ir.Program{
+        .types = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .execution = .native,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_function = .{ .dst = 0, .function_id = 1 } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+            .{
+                .id = 1,
+                .name = "callback",
+                .execution = .native,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
+                .register_count = 0,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{.{ .ret = .{ .src = null } }},
+            },
+        },
+        .entry_index = 0,
+    };
+
+    try std.testing.expect(requiresTextIrFallback(program, .llvm_native));
 }
 
 fn hostTargetTriple(allocator: std.mem.Allocator) ![]const u8 {

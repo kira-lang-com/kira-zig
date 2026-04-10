@@ -1,6 +1,6 @@
 # Examples
 
-Each example now lives in its own folder with a root `project.toml`, an `app/main.kira` entrypoint, and any local support files or `native_libs/` manifests it needs.
+Each example now lives in its own folder with a root `project.toml`, an `app/main.kira` entrypoint, and any local support files or `NativeLibs/` manifests it needs.
 
 Backend matrix:
 

@@ -32,6 +32,9 @@ pub fn linkExecutable(
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-target", target, "-o", executable_path });
+    if (builtin.os.tag == .windows) {
+        try argv.append("-Wl,/subsystem:console");
+    }
     for (object_paths) |path| try argv.append(path);
 
     for (native_libraries) |library| {
@@ -90,6 +93,8 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     defer allocator.free(result.stderr);
 
     if (result.term == .Exited and result.term.Exited == 0) return;
+    if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+    if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
     return error.ExternalCommandFailed;
 }
 

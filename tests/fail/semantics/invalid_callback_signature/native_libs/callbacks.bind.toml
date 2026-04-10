@@ -1,3 +1,0 @@
-[bindings]
-functions = ["kira_invoke_callback"]
-callbacks = ["kira_i64_callback"]

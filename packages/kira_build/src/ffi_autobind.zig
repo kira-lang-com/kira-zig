@@ -2,18 +2,6 @@ const std = @import("std");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 
-pub const AutobindingSpec = struct {
-    mode: Mode = .listed,
-    functions: []const []const u8 = &.{},
-    structs: []const []const u8 = &.{},
-    callbacks: []const []const u8 = &.{},
-
-    const Mode = enum {
-        listed,
-        all_public,
-    };
-};
-
 const CParam = struct {
     name: []const u8,
     qual_type: []const u8,
@@ -82,14 +70,12 @@ const AstIndex = struct {
 
 pub fn ensureGeneratedBindings(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary) !void {
     const autobinding = library.autobinding orelse return;
-    const spec_path = autobinding.spec_path orelse return error.MissingAutobindingSpec;
-    const spec = try parseAutobindingSpecFile(allocator, spec_path);
     const ast_json = try runClangAstDump(allocator, library, autobinding.headers);
     defer allocator.free(ast_json);
 
     var index = try buildAstIndex(allocator, ast_json, autobinding.headers);
     try collectMacroConstants(allocator, autobinding.headers, &index);
-    const rendered = try renderBindings(allocator, library, spec, index);
+    const rendered = try renderBindings(allocator, library, autobinding.bindings, index);
     defer allocator.free(rendered);
 
     const maybe_dir = std.fs.path.dirname(autobinding.output_path) orelse ".";
@@ -104,51 +90,6 @@ pub fn ensureGeneratedBindings(allocator: std.mem.Allocator, library: native.Res
             .data = rendered,
         });
     }
-}
-
-pub fn parseAutobindingSpecFile(allocator: std.mem.Allocator, path: []const u8) !AutobindingSpec {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
-    return parseAutobindingSpec(allocator, text);
-}
-
-pub fn parseAutobindingSpec(allocator: std.mem.Allocator, text: []const u8) !AutobindingSpec {
-    var mode: AutobindingSpec.Mode = .listed;
-    var functions = std.array_list.Managed([]const u8).init(allocator);
-    var structs = std.array_list.Managed([]const u8).init(allocator);
-    var callbacks = std.array_list.Managed([]const u8).init(allocator);
-    var section: []const u8 = "";
-
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw_line| {
-        const line = trimComment(raw_line);
-        if (line.len == 0) continue;
-        if (line[0] == '[' and line[line.len - 1] == ']') {
-            section = line[1 .. line.len - 1];
-            continue;
-        }
-
-        if (!std.mem.eql(u8, section, "bindings")) continue;
-        if (assignString(line, "mode")) |value| {
-            if (std.mem.eql(u8, value, "all_public")) {
-                mode = .all_public;
-            } else {
-                mode = .listed;
-            }
-        } else if (std.mem.startsWith(u8, line, "functions")) {
-            for (try parseStringArray(allocator, line)) |value| try functions.append(value);
-        } else if (std.mem.startsWith(u8, line, "structs")) {
-            for (try parseStringArray(allocator, line)) |value| try structs.append(value);
-        } else if (std.mem.startsWith(u8, line, "callbacks")) {
-            for (try parseStringArray(allocator, line)) |value| try callbacks.append(value);
-        }
-    }
-
-    return .{
-        .mode = mode,
-        .functions = try functions.toOwnedSlice(),
-        .structs = try structs.toOwnedSlice(),
-        .callbacks = try callbacks.toOwnedSlice(),
-    };
 }
 
 fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary, headers: []const []const u8) ![]const u8 {
@@ -395,7 +336,12 @@ fn findFunctionProtoInValue(value: std.json.Value) ?FunctionProto {
     return null;
 }
 
-fn renderBindings(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary, spec: AutobindingSpec, index: AstIndex) ![]u8 {
+fn renderBindings(
+    allocator: std.mem.Allocator,
+    library: native.ResolvedNativeLibrary,
+    spec: native.AutobindingBindings,
+    index: AstIndex,
+) ![]u8 {
     var required_structs = std.StringHashMapUnmanaged(void){};
     var required_callbacks = std.StringHashMapUnmanaged(void){};
     var required_pointers = std.StringHashMapUnmanaged([]const u8){};
@@ -1051,20 +997,4 @@ fn parseStringArray(allocator: std.mem.Allocator, line: []const u8) ![]const []c
 
 fn makePath(path: []const u8) !void {
     try std.fs.cwd().makePath(path);
-}
-
-test "parses a simple autobinding spec" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const spec = try parseAutobindingSpec(arena.allocator(),
-        \\[bindings]
-        \\functions = ["add"]
-        \\structs = ["foo"]
-        \\callbacks = ["log_fn"]
-    );
-
-    try std.testing.expectEqual(@as(usize, 1), spec.functions.len);
-    try std.testing.expectEqual(@as(usize, 1), spec.structs.len);
-    try std.testing.expectEqual(@as(usize, 1), spec.callbacks.len);
 }

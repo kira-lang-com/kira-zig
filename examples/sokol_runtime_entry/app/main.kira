@@ -1,4 +1,4 @@
-import bindings.sokol as sokol
+import sokol as sokol
 
 @FFI.Struct { layout: c; }
 type app_state {

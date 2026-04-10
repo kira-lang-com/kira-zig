@@ -41,22 +41,40 @@ fn runExecutable(
 ) !void {
     if (case.expectation.backends.len == 0) return error.MissingBackendMatrix;
     const expected_stdout = case.expectation.stdout orelse return error.MissingStdoutExpectation;
+    var baseline_stdout: ?[]u8 = null;
+    defer if (baseline_stdout) |stdout| allocator.free(stdout);
 
     for (case.expectation.backends) |backend| {
         const label = try backendLabel(allocator, case.name, backend);
-        switch (backend) {
-            .vm => runVm(allocator, system, case, expected_stdout) catch |err| {
+        const actual_stdout = switch (backend) {
+            .vm => runVm(allocator, system, case) catch |err| {
                 reporter.fail(label, err);
                 return err;
             },
-            .llvm => runLlvm(allocator, system, case, expected_stdout) catch |err| {
+            .llvm => runLlvm(allocator, system, case) catch |err| {
                 reporter.fail(label, err);
                 return err;
             },
-            .hybrid => runHybrid(allocator, system, case, expected_stdout, options) catch |err| {
+            .hybrid => runHybrid(allocator, system, case, options) catch |err| {
                 reporter.fail(label, err);
                 return err;
             },
+        };
+        const keep_stdout = baseline_stdout == null;
+        defer if (!keep_stdout) allocator.free(actual_stdout);
+
+        compare.expectStdout(allocator, actual_stdout, expected_stdout) catch |err| {
+            reporter.fail(label, err);
+            return err;
+        };
+
+        if (baseline_stdout) |baseline| {
+            compare.expectStdout(allocator, actual_stdout, baseline) catch |err| {
+                reporter.fail(label, err);
+                return err;
+            };
+        } else {
+            baseline_stdout = actual_stdout;
         }
         reporter.pass(label);
     }
@@ -106,17 +124,16 @@ fn runFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: di
     }
 }
 
-fn runVm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case, expected_stdout: []const u8) !void {
+fn runVm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) ![]u8 {
     const result = try system.compileVm(case.source_path);
     try std.testing.expect(!result.failed());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 
     var output = std.array_list.Managed(u8).init(allocator);
-    defer output.deinit();
 
     var vm = vm_runtime.Vm.init(allocator);
     try vm.runMain(&result.bytecode_module.?, output.writer());
-    try compare.expectStdout(allocator, output.items, expected_stdout);
+    return output.toOwnedSlice();
 }
 
 fn runVmFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {
@@ -133,7 +150,7 @@ fn runVmFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     _ = allocator;
 }
 
-fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case, expected_stdout: []const u8) !void {
+fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) ![]u8 {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -149,12 +166,12 @@ fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: disco
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
     const child = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ executable.path },
+        .argv = &.{executable.path},
     });
-    defer allocator.free(child.stdout);
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
-    try compare.expectStdout(allocator, child.stdout, expected_stdout);
+    try compare.expectEmptyText(allocator, child.stderr);
+    return child.stdout;
 }
 
 fn runLlvmFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {
@@ -179,9 +196,8 @@ fn runHybrid(
     allocator: std.mem.Allocator,
     system: *build.BuildSystem,
     case: discovery.Case,
-    expected_stdout: []const u8,
     options: Options,
-) !void {
+) ![]u8 {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -199,10 +215,10 @@ fn runHybrid(
         .allocator = allocator,
         .argv = &.{ runner, manifest_path },
     });
-    defer allocator.free(child.stdout);
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
-    try compare.expectStdout(allocator, child.stdout, expected_stdout);
+    try compare.expectEmptyText(allocator, child.stderr);
+    return child.stdout;
 }
 
 fn runHybridFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {

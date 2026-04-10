@@ -1,0 +1,29 @@
+type Pair {
+    let left: I64
+    let right: I64
+}
+
+type State {
+    let first: Pair
+    let second: Pair
+    let total: I64
+}
+
+@Main
+function main() {
+    let seed: Pair = Pair(4, 8)
+    let state: State = State(seed, Pair(1, 2), 0)
+
+    seed.left = seed.left + 3
+    state.first.right = state.first.right + seed.left
+    state.second = seed
+    state.total = state.first.left + state.first.right
+
+    print(seed.left)
+    print(state.first.left)
+    print(state.first.right)
+    print(state.second.left)
+    print(state.second.right)
+    print(state.total)
+    return
+}

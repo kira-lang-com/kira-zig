@@ -1,4 +1,4 @@
-import bindings.callbacks as callbacks
+import callbacks as callbacks
 
 @Main
 @Runtime

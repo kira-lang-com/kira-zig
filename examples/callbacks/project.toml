@@ -1,6 +1,7 @@
 [project]
 name = "callbacks"
 version = "0.1.0"
+native_libraries = ["NativeLibs/callbacks.toml"]
 
 [defaults]
 execution_mode = "llvm"

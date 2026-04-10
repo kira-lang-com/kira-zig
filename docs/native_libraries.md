@@ -26,7 +26,16 @@ Native library work is intentionally split across packages:
 
 ## Manifest Shape
 
-Per-library detail lives in dedicated manifests under a nearby `native_libs/` directory.
+Projects list native-library manifests explicitly in `project.toml`, and each native library keeps its own detail in a dedicated TOML file.
+
+```toml
+[project]
+name = "sokol_triangle"
+version = "0.1.0"
+native_libraries = ["NativeLibs/sokol.toml"]
+```
+
+Per-library detail then lives in the referenced manifest:
 
 ```toml
 [library]
@@ -40,10 +49,12 @@ include_dirs = ["../../third_party/sokol"]
 defines = ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"]
 
 [autobinding]
-module = "bindings.sokol"
-output = "../bindings/sokol.kira"
-spec = "sokol.bind.toml"
+module = "sokol"
+output = "../sokol.kira"
 headers = ["../../third_party/sokol/sokol_app.h", "../../third_party/sokol/sokol_gfx.h", "../../third_party/sokol/sokol_glue.h"]
+
+[bindings]
+mode = "all_public"
 
 [build]
 sources = ["../../third_party/sokol/sokol_impl.m"]
@@ -56,10 +67,11 @@ frameworks = ["AppKit", "QuartzCore", "OpenGL"]
 
 Important rules:
 
+- `project.toml` explicitly lists every native-library manifest used by the project
 - one TOML per native library
-- the TOML owns header paths, autobinding inputs, and target artifacts
+- the library TOML owns header paths, autobinding inputs, binding filters, and target artifacts
 - Kira source does not hardcode binary paths
-- `.bind.toml` autobinding spec files live next to the manifest but are not themselves native library manifests
+- `.bind.toml` sidecar files are no longer used
 
 ## Autobindings
 
@@ -129,10 +141,9 @@ The real proof target for this pass is a full generated Sokol binding and a nati
 - a normal upstream-style implementation TU:
   - [third_party/sokol/sokol_impl.m](/Users/priamc/Coding/kira-projects/kira-zig/third_party/sokol/sokol_impl.m)
 - manifest-driven binding generation and static library build:
-  - [examples/sokol_triangle/native_libs/sokol.toml](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/native_libs/sokol.toml)
-  - [examples/sokol_triangle/native_libs/sokol.bind.toml](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/native_libs/sokol.bind.toml)
+  - [examples/sokol_triangle/NativeLibs/sokol.toml](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/NativeLibs/sokol.toml)
 - generated Kira module emitted directly from the public headers:
-  - [examples/sokol_triangle/bindings/sokol.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/bindings/sokol.kira)
+  - [examples/sokol_triangle/sokol.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/sokol.kira)
 - fully Kira-written app logic using the generated bindings directly:
   - [examples/sokol_triangle/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/app/main.kira)
   - [examples/sokol_runtime_entry/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_runtime_entry/app/main.kira)
