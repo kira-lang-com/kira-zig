@@ -57,6 +57,14 @@ pub const NativeBridge = struct {
         tramp.invoke(if (lowered_args.len == 0) null else lowered_args.ptr, @intCast(lowered_args.len), &result);
         return runtime_abi.bridgeValueToValue(result);
     }
+
+    pub fn resolveImplementationPointer(self: *NativeBridge, function_id: u32) !usize {
+        var library = self.library orelse return error.MissingNativeTrampoline;
+        var buffer: [64]u8 = undefined;
+        const symbol_name = try std.fmt.bufPrintZ(&buffer, "kira_native_impl_{d}", .{function_id});
+        const symbol = library.lookup(*const anyopaque, symbol_name) orelse return error.MissingNativeSymbol;
+        return @intFromPtr(symbol);
+    }
 };
 
 pub fn installRuntimeInvoker(context: ?*anyopaque, invoker: RuntimeInvoker) void {

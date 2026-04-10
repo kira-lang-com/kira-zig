@@ -1,0 +1,8 @@
+[project]
+name = "ffi_sokol_triangle_native"
+version = "0.1.0"
+native_libraries = ["NativeLibs/sokol.toml"]
+
+[defaults]
+execution_mode = "llvm"
+build_target = "host"

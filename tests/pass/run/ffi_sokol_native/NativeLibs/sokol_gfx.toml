@@ -1,0 +1,32 @@
+[library]
+name = "sokol_gfx"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "../../../../../third_party/sokol/sokol_gfx.h"
+include_dirs = ["../../../../../third_party/sokol"]
+defines = ["SOKOL_DUMMY_BACKEND"]
+
+[autobinding]
+module = "sokol_gfx"
+output = "../sokol_gfx.kira"
+headers = ["../../../../../third_party/sokol/sokol_gfx.h"]
+
+[bindings]
+functions = ["sg_setup", "sg_isvalid", "sg_shutdown"]
+structs = ["sg_desc"]
+
+[build]
+sources = ["../../../../../third_party/sokol/sokol_gfx_impl.c"]
+include_dirs = ["../../../../../third_party/sokol"]
+defines = ["SOKOL_DUMMY_BACKEND"]
+
+[target.aarch64-macos-none]
+static_lib = "../generated/native/aarch64-macos/libsokol_gfx.a"
+
+[target.x86_64-linux-gnu]
+static_lib = "../generated/native/x86_64-linux-gnu/libsokol_gfx.a"
+
+[target.x86_64-windows-msvc]
+static_lib = "../generated/native/x86_64-windows-msvc/sokol_gfx.lib"

@@ -695,18 +695,28 @@ fn appendRootAwareModuleCandidates(
     const root_name = std.fs.path.basename(module_root);
     const root_name_lower = try std.ascii.allocLowerString(allocator, root_name);
     defer allocator.free(root_name_lower);
+    const app_root = try appendAppRoot(allocator, source_root);
+    defer allocator.free(app_root);
 
     if (separator == '/') {
         try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, root_name_lower }));
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ app_root, root_name_lower }));
         if (!std.mem.eql(u8, root_name, root_name_lower)) {
             try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, root_name }));
+            try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ app_root, root_name }));
         }
     } else {
         try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, root_name_lower }));
+        try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ app_root, root_name_lower }));
         if (!std.mem.eql(u8, root_name, root_name_lower)) {
             try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, root_name }));
+            try candidates_list.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ app_root, root_name }));
         }
     }
+}
+
+fn appendAppRoot(allocator: std.mem.Allocator, source_root: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ source_root, "app" });
 }
 
 fn absolutizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -844,6 +854,130 @@ test "built-in Foundation resolves before installed package conflicts" {
     var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
     _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
 
+    const result = try checkFile(arena.allocator(), source_path);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "path dependency rooted at repo root resolves module file from app directory" {
+    const package_manager_pkg = @import("kira_package_manager");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("Workspace/KiraUI/app");
+    try tmp.dir.makePath("Workspace/CardExample/app");
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/KiraUI/kira.toml",
+        .data =
+        \\[package]
+        \\name = "KiraUI"
+        \\version = "0.1.0"
+        \\kind = "library"
+        \\kira = "0.1.0"
+        \\module_root = "KiraUI"
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/KiraUI/app/kiraui.kira",
+        .data =
+        \\function hello() {
+        \\    return;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/CardExample/kira.toml",
+        .data =
+        \\[package]
+        \\name = "CardExample"
+        \\version = "0.1.0"
+        \\kind = "app"
+        \\kira = "0.1.0"
+        \\
+        \\[defaults]
+        \\execution_mode = "vm"
+        \\build_target = "host"
+        \\
+        \\[dependencies]
+        \\KiraUI = { path = "../KiraUI" }
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/CardExample/app/main.kira",
+        .data =
+        \\import KiraUI
+        \\
+        \\@Main
+        \\function main() {
+        \\    hello();
+        \\    return;
+        \\}
+        ,
+    });
+
+    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/CardExample");
+    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/CardExample/app/main.kira");
+    var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
+    _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
+
+    const result = try checkFile(arena.allocator(), source_path);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "current library root import exposes declarations from every library file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("Workspace/UILibrary/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/UILibrary/kira.toml",
+        .data =
+        \\[package]
+        \\name = "UILibrary"
+        \\version = "0.1.0"
+        \\kind = "library"
+        \\kira = "0.1.0"
+        \\module_root = "UI"
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/UILibrary/app/main.kira",
+        .data =
+        \\import UI
+        \\
+        \\@Main
+        \\function main() {
+        \\    header()
+        \\    footer()
+        \\    return;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/UILibrary/app/UI.kira",
+        .data =
+        \\function header() {
+        \\    return;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/UILibrary/app/Footer.kira",
+        .data =
+        \\function footer() {
+        \\    return;
+        \\}
+        ,
+    });
+
+    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/UILibrary/app/main.kira");
     const result = try checkFile(arena.allocator(), source_path);
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }

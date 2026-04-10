@@ -70,7 +70,13 @@ fn executeCommand(allocator: std.mem.Allocator, _: []const u8, args: []const []c
                 "  The current host target `{s}` is not supported by this project or one of its native libraries.\n",
                 .{support.currentHostTargetTriple()},
             );
-            try err.writeAll("  help: Add a matching [target.<triple>] section to the relevant native_libs manifest, or build on a supported host.\n");
+            try err.writeAll("  help: Add a matching [target.<triple>] section to the relevant NativeLibs manifest, or build on a supported host.\n");
+            return 1;
+        }
+        if (run_err == error.NativeRunFailed) {
+            try err.writeAll("error[KRUN001]: native executable failed\n");
+            try err.writeAll("  Kira built the native executable, but it exited unsuccessfully while running.\n");
+            try err.writeAll("  help: Re-run the generated executable directly to inspect the application/runtime failure.\n");
             return 1;
         }
 

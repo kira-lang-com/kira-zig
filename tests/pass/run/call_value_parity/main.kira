@@ -1,0 +1,20 @@
+@Main
+function main() {
+    print(echo_text("hello parity"))
+    print(add_pair(20, 22))
+    print(echo_flag(true))
+    print(echo_flag(false))
+    return
+}
+
+function echo_text(value: String): String {
+    return value
+}
+
+function add_pair(left: I64, right: I64): I64 {
+    return left + right
+}
+
+function echo_flag(value: Bool): Bool {
+    return value
+}

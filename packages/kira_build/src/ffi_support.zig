@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 const syntax = @import("kira_syntax_model");
 const resolver = @import("native_lib_resolver.zig");
@@ -11,12 +12,11 @@ pub fn prepareNativeLibraries(
     imports: []const syntax.ast.ImportDecl,
 ) ![]const native.ResolvedNativeLibrary {
     const selector = try hostTargetSelector(allocator);
-    const manifest_paths = try discoverManifestFiles(allocator, source_path);
-    const imported_modules = try importModuleNames(allocator, imports);
+    const manifest_paths = try loadProjectNativeManifestPaths(allocator, source_path);
+    _ = imports;
 
     var libraries = std.array_list.Managed(native.ResolvedNativeLibrary).init(allocator);
     for (manifest_paths) |manifest_path| {
-        if (!manifestPathMatchesImports(allocator, manifest_path, imported_modules)) continue;
         var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
         try ensureNativeArtifact(allocator, &library);
         try autobind.ensureGeneratedBindings(allocator, library);
@@ -25,95 +25,16 @@ pub fn prepareNativeLibraries(
     return libraries.toOwnedSlice();
 }
 
-fn discoverManifestFiles(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {
+fn loadProjectNativeManifestPaths(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {
+    const project_manifest_path = try discoverProjectManifestPath(allocator, source_path) orelse return &.{};
+    const manifest_text = try std.fs.cwd().readFileAlloc(allocator, project_manifest_path, 1024 * 1024);
+    const project_manifest = try manifest.parseProjectManifest(allocator, manifest_text);
+
     var manifests = std.array_list.Managed([]const u8).init(allocator);
-    var seen = std.StringHashMapUnmanaged(void){};
-    defer seen.deinit(allocator);
-
-    const source_dir = std.fs.path.dirname(source_path) orelse ".";
-    var cursor = try absolutize(allocator, source_dir);
-    defer allocator.free(cursor);
-
-    while (true) {
-        const native_dir = try std.fs.path.join(allocator, &.{ cursor, "native_libs" });
-        defer allocator.free(native_dir);
-        try collectTomls(allocator, native_dir, &seen, &manifests);
-
-        const parent = std.fs.path.dirname(cursor) orelse break;
-        if (std.mem.eql(u8, parent, cursor)) break;
-        cursor = try allocator.dupe(u8, parent);
+    for (project_manifest.native_libraries) |value| {
+        try manifests.append(try absolutizeFromManifest(allocator, project_manifest_path, value));
     }
-
     return manifests.toOwnedSlice();
-}
-
-fn importModuleNames(allocator: std.mem.Allocator, imports: []const syntax.ast.ImportDecl) ![]const []const u8 {
-    var modules = std.array_list.Managed([]const u8).init(allocator);
-    for (imports) |import_decl| {
-        var builder = std.array_list.Managed(u8).init(allocator);
-        for (import_decl.module_name.segments, 0..) |segment, index| {
-            if (index != 0) try builder.append('.');
-            try builder.appendSlice(segment.text);
-        }
-        try modules.append(try builder.toOwnedSlice());
-    }
-    return modules.toOwnedSlice();
-}
-
-fn manifestMatchesImports(library: native.ResolvedNativeLibrary, imports: []const []const u8) bool {
-    if (imports.len == 0) return false;
-    const autobinding = library.autobinding orelse return false;
-    for (imports) |import_name| {
-        if (std.mem.eql(u8, import_name, autobinding.module_name)) return true;
-    }
-    return false;
-}
-
-fn manifestPathMatchesImports(allocator: std.mem.Allocator, manifest_path: []const u8, imports: []const []const u8) bool {
-    if (imports.len == 0) return false;
-    const text = std.fs.cwd().readFileAlloc(allocator, manifest_path, 1024 * 1024) catch return false;
-    defer allocator.free(text);
-
-    var section: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[' and line[line.len - 1] == ']') {
-            section = line[1 .. line.len - 1];
-            continue;
-        }
-        if (!std.mem.eql(u8, section, "autobinding")) continue;
-        if (!std.mem.startsWith(u8, line, "module")) continue;
-        const equal_index = std.mem.indexOfScalar(u8, line, '=') orelse return false;
-        const value = std.mem.trim(u8, line[equal_index + 1 ..], " \t\"");
-        for (imports) |import_name| {
-            if (std.mem.eql(u8, import_name, value)) return true;
-        }
-        return false;
-    }
-    return false;
-}
-
-fn collectTomls(
-    allocator: std.mem.Allocator,
-    native_dir: []const u8,
-    seen: *std.StringHashMapUnmanaged(void),
-    manifests: *std.array_list.Managed([]const u8),
-) !void {
-    var dir = std.fs.openDirAbsolute(native_dir, .{ .iterate = true }) catch return;
-    defer dir.close();
-
-    var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".toml")) continue;
-        if (std.mem.endsWith(u8, entry.name, ".bind.toml")) continue;
-        const manifest_path = try std.fs.path.join(allocator, &.{ native_dir, entry.name });
-        if (seen.contains(manifest_path)) continue;
-        try seen.put(allocator, manifest_path, {});
-        try manifests.append(manifest_path);
-    }
 }
 
 fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
@@ -187,6 +108,57 @@ fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, path });
+}
+
+fn absolutizeFromManifest(allocator: std.mem.Allocator, manifest_path: []const u8, value: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(value)) return allocator.dupe(u8, value);
+    const base_dir = std.fs.path.dirname(manifest_path) orelse ".";
+    const joined = try std.fs.path.join(allocator, &.{ base_dir, value });
+    if (std.fs.path.isAbsolute(joined)) return joined;
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, joined });
+}
+
+fn discoverProjectManifestPath(allocator: std.mem.Allocator, source_path: []const u8) !?[]const u8 {
+    const source_dir = std.fs.path.dirname(source_path) orelse ".";
+    var cursor = try absolutize(allocator, source_dir);
+    errdefer allocator.free(cursor);
+
+    while (true) {
+        if (try findManifestInDirectory(allocator, cursor)) |manifest_path| {
+            allocator.free(cursor);
+            return manifest_path;
+        }
+
+        const parent = std.fs.path.dirname(cursor) orelse break;
+        if (std.mem.eql(u8, parent, cursor)) break;
+        const copy = try allocator.dupe(u8, parent);
+        allocator.free(cursor);
+        cursor = copy;
+    }
+
+    allocator.free(cursor);
+    return null;
+}
+
+fn findManifestInDirectory(allocator: std.mem.Allocator, directory: []const u8) !?[]const u8 {
+    const names = [_][]const u8{ "kira.toml", "project.toml" };
+    for (names) |name| {
+        const candidate = try std.fs.path.join(allocator, &.{ directory, name });
+        if (fileExists(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+    return null;
+}
+
+fn fileExists(path: []const u8) bool {
+    var file = if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openFile(path, .{}) catch return false;
+    file.close();
+    return true;
 }
 
 fn makePath(path: []const u8) !void {

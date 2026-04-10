@@ -90,6 +90,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .const_null_ptr => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                 },
+                .const_function => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.function_id, .little);
+                },
                 .alloc_struct => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.type_name);
@@ -199,6 +203,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 } }),
                 .const_null_ptr => try instructions.append(.{ .const_null_ptr = .{
                     .dst = try reader.readInt(u32, .little),
+                } }),
+                .const_function => try instructions.append(.{ .const_function = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .function_id = try reader.readInt(u32, .little),
                 } }),
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
                     .dst = try reader.readInt(u32, .little),
@@ -375,4 +383,37 @@ test "round-trips struct metadata and print instructions" {
     try std.testing.expect(round_tripped.functions[0].instructions[0] == .alloc_struct);
     try std.testing.expect(round_tripped.functions[0].instructions[1] == .print);
     try std.testing.expectEqualStrings("Color", round_tripped.functions[0].instructions[1].print.ty.name.?);
+}
+
+test "round-trips function constants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .types = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_function = .{ .dst = 0, .function_id = 42 } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    var bytes = std.array_list.Managed(u8).init(allocator);
+    defer bytes.deinit();
+    try serialize(bytes.writer(), module);
+
+    const round_tripped = try deserialize(allocator, bytes.items);
+    try std.testing.expect(round_tripped.functions[0].instructions[0] == .const_function);
+    try std.testing.expectEqual(@as(u32, 42), round_tripped.functions[0].instructions[0].const_function.function_id);
 }

@@ -19,6 +19,12 @@ pub fn expectStdout(allocator: std.mem.Allocator, actual: []const u8, expected: 
     }
 }
 
+pub fn expectEmptyText(allocator: std.mem.Allocator, actual: []const u8) !void {
+    const normalized_actual = try normalizeNewlines(allocator, actual);
+    defer allocator.free(normalized_actual);
+    if (normalized_actual.len != 0) return error.ExpectationFailed;
+}
+
 pub fn expectDiagnostic(
     items: []const diagnostics.Diagnostic,
     expected_code: []const u8,

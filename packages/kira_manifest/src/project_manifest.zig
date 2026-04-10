@@ -11,6 +11,7 @@ pub const ProjectManifest = struct {
     kind: PackageKind = .app,
     kira_version: []const u8 = "0.1.0",
     module_root: ?[]const u8 = null,
+    native_libraries: []const []const u8 = &.{},
     dependencies: []const dependency.DependencySpec = &.{},
     packages: []const []const u8 = &.{},
     execution_mode: []const u8 = "vm",

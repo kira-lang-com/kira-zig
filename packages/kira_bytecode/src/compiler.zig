@@ -41,7 +41,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .const_bool => |value| try instructions.append(.{ .const_bool = .{ .dst = value.dst, .value = value.value } }),
                 .const_null_ptr => |value| try instructions.append(.{ .const_null_ptr = .{ .dst = value.dst } }),
                 .alloc_struct => |value| try instructions.append(.{ .alloc_struct = .{ .dst = value.dst, .type_name = value.type_name } }),
-                .const_function => return error.UnsupportedExecutableFeature,
+                .const_function => |value| try instructions.append(.{ .const_function = .{ .dst = value.dst, .function_id = value.function_id } }),
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src } }),
                 .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local } }),
@@ -191,4 +191,45 @@ test "emits hybrid bytecode for runtime and native calls" {
     try std.testing.expectEqual(@as(?u32, 0), module.entry_function_id);
     try std.testing.expect(module.functions[0].instructions[0] == .call_runtime);
     try std.testing.expect(module.functions[0].instructions[1] == .call_native);
+}
+
+test "preserves function constants in bytecode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = ir_pkg.Program{
+        .types = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .execution = .runtime,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_function = .{ .dst = 0, .function_id = 1 } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+            .{
+                .id = 1,
+                .name = "callback",
+                .execution = .runtime,
+                .param_types = &.{},
+                .return_type = .{ .kind = .void },
+                .register_count = 0,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{.{ .ret = .{ .src = null } }},
+            },
+        },
+        .entry_index = 0,
+    };
+
+    const module = try compileProgram(arena.allocator(), program, .vm);
+    try std.testing.expect(module.functions[0].instructions[0] == .const_function);
+    try std.testing.expectEqual(@as(u32, 1), module.functions[0].instructions[0].const_function.function_id);
 }

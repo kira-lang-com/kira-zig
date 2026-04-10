@@ -4,10 +4,12 @@ const runtime_abi = @import("kira_runtime_abi");
 const builtins = @import("builtins.zig");
 
 pub const NativeCallHook = *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value;
+pub const ResolveFunctionHook = *const fn (?*anyopaque, u32) anyerror!usize;
 
 pub const Hooks = struct {
     context: ?*anyopaque = null,
     call_native: ?NativeCallHook = null,
+    resolve_function: ?ResolveFunctionHook = null,
 };
 
 pub const Vm = struct {
@@ -75,7 +77,25 @@ pub const Vm = struct {
             return error.RuntimeFailure;
         }
         for (args, 0..) |arg, index| {
-            locals[index] = arg;
+            if (function_decl.local_types[index].kind == .ffi_struct) {
+                if (arg != .raw_ptr or arg.raw_ptr == 0) {
+                    self.rememberError("struct argument requires a valid pointer");
+                    return error.RuntimeFailure;
+                }
+                const type_name = function_decl.local_types[index].name orelse {
+                    self.rememberError("struct local type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                const type_decl = findType(module, type_name) orelse {
+                    self.rememberError("struct type could not be resolved");
+                    return error.RuntimeFailure;
+                };
+                const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
+                const src_ptr: [*]runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
+                try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+            } else {
+                locals[index] = arg;
+            }
         }
 
         for (function_decl.instructions) |inst| {
@@ -84,6 +104,10 @@ pub const Vm = struct {
                 .const_string => |value| registers[value.dst] = .{ .string = value.value },
                 .const_bool => |value| registers[value.dst] = .{ .boolean = value.value },
                 .const_null_ptr => |value| registers[value.dst] = .{ .raw_ptr = 0 },
+                .const_function => |value| registers[value.dst] = .{ .raw_ptr = if (hooks.resolve_function) |resolve_function|
+                    try resolveFunctionPointer(hooks, resolve_function, value.function_id)
+                else
+                    value.function_id },
                 .alloc_struct => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateStruct(module, value.type_name) },
                 .add => |value| {
                     const lhs = registers[value.lhs];
@@ -102,12 +126,25 @@ pub const Vm = struct {
                         self.rememberError("field access requires a valid struct pointer");
                         return error.RuntimeFailure;
                     }
-                    const field_index = self.fieldIndex(module, value.owner_type_name, value.field_name) orelse {
+                    const type_decl = findType(module, value.owner_type_name) orelse {
+                        self.rememberError("struct field could not be resolved");
+                        return error.RuntimeFailure;
+                    };
+                    const field_index = self.fieldIndex(type_decl, value.field_name) orelse {
                         self.rememberError("struct field could not be resolved");
                         return error.RuntimeFailure;
                     };
                     const base_ptr: [*]runtime_abi.Value = @ptrFromInt(base.raw_ptr);
-                    registers[value.dst] = .{ .raw_ptr = @intFromPtr(&base_ptr[field_index]) };
+                    const field_decl = type_decl.fields[field_index];
+                    if (field_decl.ty.kind == .ffi_struct) {
+                        if (base_ptr[field_index] != .raw_ptr or base_ptr[field_index].raw_ptr == 0) {
+                            self.rememberError("nested struct field storage is invalid");
+                            return error.RuntimeFailure;
+                        }
+                        registers[value.dst] = .{ .raw_ptr = base_ptr[field_index].raw_ptr };
+                    } else {
+                        registers[value.dst] = .{ .raw_ptr = @intFromPtr(&base_ptr[field_index]) };
+                    }
                 },
                 .load_indirect => |value| {
                     const ptr = registers[value.ptr];
@@ -115,9 +152,12 @@ pub const Vm = struct {
                         self.rememberError("indirect load requires a valid pointer");
                         return error.RuntimeFailure;
                     }
-                    const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
-                    registers[value.dst] = slot_ptr.*;
-                    _ = value.ty;
+                    if (value.ty.kind == .ffi_struct) {
+                        registers[value.dst] = .{ .raw_ptr = ptr.raw_ptr };
+                    } else {
+                        const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
+                        registers[value.dst] = slot_ptr.*;
+                    }
                 },
                 .store_indirect => |value| {
                     const ptr = registers[value.ptr];
@@ -136,13 +176,13 @@ pub const Vm = struct {
                         self.rememberError("struct copy requires valid pointers");
                         return error.RuntimeFailure;
                     }
-                    const field_count = self.typeFieldCount(module, value.type_name) orelse {
+                    const type_decl = findType(module, value.type_name) orelse {
                         self.rememberError("struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
                     const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(dst_ptr_value.raw_ptr);
                     const src_ptr: [*]runtime_abi.Value = @ptrFromInt(src_ptr_value.raw_ptr);
-                    for (0..field_count) |index| dst_ptr[index] = src_ptr[index];
+                    try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
                 },
                 .print => |value| try builtins.printValue(writer, module, registers[value.src], value.ty),
                 .call_runtime => |value| {
@@ -174,12 +214,22 @@ pub const Vm = struct {
     }
 
     fn allocateStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8) !usize {
-        const field_count = self.typeFieldCount(module, type_name) orelse {
+        const type_decl = findType(module, type_name) orelse {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
-        const fields = try self.allocator.alloc(runtime_abi.Value, field_count);
-        for (fields) |*slot| slot.* = .{ .void = {} };
+        const fields = try self.allocator.alloc(runtime_abi.Value, type_decl.fields.len);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            if (field_decl.ty.kind == .ffi_struct) {
+                const nested_name = field_decl.ty.name orelse {
+                    self.rememberError("struct field type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+            } else {
+                fields[index] = .{ .void = {} };
+            }
+        }
         return @intFromPtr(fields.ptr);
     }
 
@@ -189,13 +239,42 @@ pub const Vm = struct {
         return type_decl.fields.len;
     }
 
-    fn fieldIndex(self: *Vm, module: *const bytecode.Module, type_name: []const u8, field_name: []const u8) ?usize {
+    fn fieldIndex(self: *Vm, type_decl: bytecode.TypeDecl, field_name: []const u8) ?usize {
         _ = self;
-        const type_decl = findType(module, type_name) orelse return null;
         for (type_decl.fields, 0..) |field_decl, index| {
             if (std.mem.eql(u8, field_decl.name, field_name)) return index;
         }
         return null;
+    }
+
+    fn copyStruct(
+        self: *Vm,
+        module: *const bytecode.Module,
+        type_decl: bytecode.TypeDecl,
+        dst_ptr: [*]runtime_abi.Value,
+        src_ptr: [*]runtime_abi.Value,
+    ) !void {
+        for (type_decl.fields, 0..) |field_decl, index| {
+            if (field_decl.ty.kind == .ffi_struct) {
+                const nested_name = field_decl.ty.name orelse {
+                    self.rememberError("struct field type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                const nested_type = findType(module, nested_name) orelse {
+                    self.rememberError("struct type could not be resolved");
+                    return error.RuntimeFailure;
+                };
+                if (dst_ptr[index] != .raw_ptr or src_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0 or src_ptr[index].raw_ptr == 0) {
+                    self.rememberError("nested struct copy requires valid pointers");
+                    return error.RuntimeFailure;
+                }
+                const nested_dst: [*]runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
+                const nested_src: [*]runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
+                try self.copyStruct(module, nested_type, nested_dst, nested_src);
+            } else {
+                dst_ptr[index] = src_ptr[index];
+            }
+        }
     }
 };
 
@@ -205,6 +284,10 @@ fn collectArgs(allocator: std.mem.Allocator, registers: []const runtime_abi.Valu
         values[index] = registers[register_index];
     }
     return values;
+}
+
+fn resolveFunctionPointer(hooks: Hooks, resolve_function: ResolveFunctionHook, function_id: u32) !usize {
+    return resolve_function(hooks.context, function_id);
 }
 
 fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl {
@@ -304,4 +387,97 @@ test "prints struct values" {
     var stream = std.io.fixedBufferStream(&buffer);
     try vm.runMain(&module, stream.writer());
     try std.testing.expectEqualStrings("Color(r: 255, g: 0, b: 0)\n", stream.getWritten());
+}
+
+test "resolves function constants through hooks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const module = bytecode.Module{
+        .types = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_function = .{ .dst = 0, .function_id = 7 } },
+                    .{ .ret = .{ .src = 0 } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    const result = try vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{
+        .resolve_function = struct {
+            fn resolve(_: ?*anyopaque, function_id: u32) !usize {
+                return 0x1000 + function_id;
+            }
+        }.resolve,
+    });
+
+    try std.testing.expectEqual(@as(usize, 0x1007), result.raw_ptr);
+}
+
+test "copies struct arguments by value for runtime calls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const module = bytecode.Module{
+        .types = &.{
+            .{
+                .name = "Pair",
+                .fields = &.{
+                    .{ .name = "left", .ty = .{ .kind = .integer, .name = "I64" } },
+                    .{ .name = "right", .ty = .{ .kind = .integer, .name = "I64" } },
+                },
+            },
+        },
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 6,
+                .local_count = 1,
+                .local_types = &.{.{ .kind = .ffi_struct, .name = "Pair" }},
+                .instructions = &.{
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Pair" } },
+                    .{ .field_ptr = .{ .dst = 1, .base = 0, .owner_type_name = "Pair", .field_name = "left" } },
+                    .{ .const_int = .{ .dst = 2, .value = 1 } },
+                    .{ .store_indirect = .{ .ptr = 1, .src = 2, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .store_local = .{ .local = 0, .src = 0 } },
+                    .{ .call_runtime = .{ .function_id = 1, .args = &.{0} } },
+                    .{ .field_ptr = .{ .dst = 3, .base = 0, .owner_type_name = "Pair", .field_name = "left" } },
+                    .{ .load_indirect = .{ .dst = 4, .ptr = 3, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .ret = .{ .src = 4 } },
+                },
+            },
+            .{
+                .id = 1,
+                .name = "mutate",
+                .param_count = 1,
+                .register_count = 3,
+                .local_count = 1,
+                .local_types = &.{.{ .kind = .ffi_struct, .name = "Pair" }},
+                .instructions = &.{
+                    .{ .load_local = .{ .dst = 0, .local = 0 } },
+                    .{ .field_ptr = .{ .dst = 1, .base = 0, .owner_type_name = "Pair", .field_name = "left" } },
+                    .{ .const_int = .{ .dst = 2, .value = 99 } },
+                    .{ .store_indirect = .{ .ptr = 1, .src = 2, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    const result = try vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{});
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
 }

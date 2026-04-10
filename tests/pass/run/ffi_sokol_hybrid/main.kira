@@ -1,4 +1,4 @@
-import bindings.sokol_gfx as sg
+import sokol_gfx as sg
 
 @Main
 @Runtime

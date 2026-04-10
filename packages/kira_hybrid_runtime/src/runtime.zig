@@ -59,8 +59,15 @@ pub const HybridRuntime = struct {
         const result = try self.vm.runFunctionById(&self.module, function_id, runtime_args, context.writer, .{
             .context = @as(?*anyopaque, @ptrCast(context)),
             .call_native = callNative(@TypeOf(context.*)),
+            .resolve_function = resolveFunctionHook(@TypeOf(context.*)),
         });
         if (out_result) |ptr| ptr.* = runtime_abi.bridgeValueFromValue(result);
+    }
+
+    fn resolveFunctionPointer(self: *HybridRuntime, function_id: u32) !usize {
+        const function_decl = findFunction(self.manifest.functions, function_id) orelse return error.UnknownFunction;
+        if (function_decl.execution != .native or function_decl.exported_name == null) return error.UnsupportedExecutableFeature;
+        return self.bridge.resolveImplementationPointer(function_id);
     }
 };
 
@@ -89,6 +96,15 @@ fn callNative(comptime Context: type) *const fn (?*anyopaque, u32, []const runti
     }.invoke;
 }
 
+fn resolveFunctionHook(comptime Context: type) *const fn (?*anyopaque, u32) anyerror!usize {
+    return struct {
+        fn resolve(context: ?*anyopaque, function_id: u32) !usize {
+            const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
+            return runtime_context.runtime.resolveFunctionPointer(function_id);
+        }
+    }.resolve;
+}
+
 fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.HybridModuleManifest) ![]hybrid.BridgeDescriptor {
     var descriptors = std.array_list.Managed(hybrid.BridgeDescriptor).init(allocator);
     for (manifest.functions) |function_decl| {
@@ -104,6 +120,13 @@ fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.Hybrid
         });
     }
     return descriptors.toOwnedSlice();
+}
+
+fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?hybrid.FunctionManifest {
+    for (functions) |function_decl| {
+        if (function_decl.id == function_id) return function_decl;
+    }
+    return null;
 }
 
 const DirectStdoutWriter = struct {

@@ -1,6 +1,7 @@
 [project]
 name = "ffi_sokol_hybrid"
 version = "0.1.0"
+native_libraries = ["NativeLibs/sokol_gfx.toml"]
 
 [defaults]
 execution_mode = "hybrid"

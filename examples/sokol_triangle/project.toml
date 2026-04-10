@@ -1,6 +1,7 @@
 [project]
 name = "sokol_triangle"
 version = "0.1.0"
+native_libraries = ["NativeLibs/sokol.toml"]
 
 [defaults]
 execution_mode = "llvm"

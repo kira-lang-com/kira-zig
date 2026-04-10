@@ -19,11 +19,23 @@ pub const HeaderSpec = struct {
     system_libs: []const []const u8 = &.{},
 };
 
+pub const AutobindingMode = enum {
+    listed,
+    all_public,
+};
+
+pub const AutobindingBindings = struct {
+    mode: AutobindingMode = .listed,
+    functions: []const []const u8 = &.{},
+    structs: []const []const u8 = &.{},
+    callbacks: []const []const u8 = &.{},
+};
+
 pub const AutobindingSpec = struct {
     module_name: []const u8,
     output_path: []const u8,
-    spec_path: ?[]const u8 = null,
     headers: []const []const u8 = &.{},
+    bindings: AutobindingBindings = .{},
 };
 
 pub const BuildRecipe = struct {

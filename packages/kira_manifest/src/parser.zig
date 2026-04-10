@@ -13,6 +13,7 @@ pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !Pro
     var kind: PackageKind = .app;
     var kira_version: []const u8 = "0.1.0";
     var module_root: ?[]const u8 = null;
+    var native_libraries = std.array_list.Managed([]const u8).init(allocator);
     var execution_mode: []const u8 = "vm";
     var build_target: []const u8 = "host";
     var registry_url: ?[]const u8 = null;
@@ -20,18 +21,39 @@ pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !Pro
     var packages = std.array_list.Managed([]const u8).init(allocator);
     var dependencies = std.array_list.Managed(dependency.DependencySpec).init(allocator);
     var section: []const u8 = "";
+    var pending_array: ?enum {
+        packages,
+        native_libraries,
+    } = null;
 
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw_line| {
         const line = trimComment(raw_line);
         if (line.len == 0) continue;
+        if (pending_array) |pending_kind| {
+            const finished = switch (pending_kind) {
+                .packages => try appendStringArrayContinuation(allocator, line, &packages),
+                .native_libraries => try appendStringArrayContinuation(allocator, line, &native_libraries),
+            };
+            if (finished) pending_array = null;
+            continue;
+        }
         if (isSectionHeader(line)) {
             section = line[1 .. line.len - 1];
             continue;
         }
 
+        const kv = try splitKeyValue(line);
+        if (std.mem.eql(u8, kv.key, "packages")) {
+            if (!try appendStringArrayValue(allocator, kv.value, &packages)) pending_array = .packages;
+            continue;
+        }
+        if (std.mem.eql(u8, kv.key, "native_libraries")) {
+            if (!try appendStringArrayValue(allocator, kv.value, &native_libraries)) pending_array = .native_libraries;
+            continue;
+        }
+
         if (std.mem.eql(u8, section, "project") or std.mem.eql(u8, section, "package")) {
-            const kv = try splitKeyValue(line);
             if (std.mem.eql(u8, kv.key, "name")) name = try parseOwnedString(allocator, kv.value);
             if (std.mem.eql(u8, kv.key, "version")) version = try parseOwnedString(allocator, kv.value);
             if (std.mem.eql(u8, kv.key, "kind")) kind = try parsePackageKind(kv.value);
@@ -41,32 +63,20 @@ pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !Pro
         }
 
         if (std.mem.eql(u8, section, "defaults")) {
-            const kv = try splitKeyValue(line);
             if (std.mem.eql(u8, kv.key, "execution_mode")) execution_mode = try parseOwnedString(allocator, kv.value);
             if (std.mem.eql(u8, kv.key, "build_target")) build_target = try parseOwnedString(allocator, kv.value);
             continue;
         }
 
         if (std.mem.eql(u8, section, "registry")) {
-            const kv = try splitKeyValue(line);
             if (std.mem.eql(u8, kv.key, "url")) registry_url = try parseOwnedString(allocator, kv.value);
             if (std.mem.eql(u8, kv.key, "token_env")) registry_token_env = try parseOwnedString(allocator, kv.value);
             continue;
         }
 
         if (std.mem.eql(u8, section, "dependencies")) {
-            const kv = try splitKeyValue(line);
             try appendDependency(allocator, &dependencies, kv.key, kv.value);
             continue;
-        }
-
-        if (section.len == 0) {
-            const kv = try splitKeyValue(line);
-            if (std.mem.eql(u8, kv.key, "packages")) {
-                const values = try parseStringArray(allocator, kv.value);
-                for (values) |value| try packages.append(value);
-                continue;
-            }
         }
     }
 
@@ -76,6 +86,7 @@ pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !Pro
         .kind = kind,
         .kira_version = kira_version,
         .module_root = module_root,
+        .native_libraries = try native_libraries.toOwnedSlice(),
         .dependencies = try dependencies.toOwnedSlice(),
         .packages = try packages.toOwnedSlice(),
         .execution_mode = execution_mode,
@@ -180,6 +191,14 @@ pub fn writeProjectManifest(writer: anytype, manifest: ProjectManifest) !void {
     try writer.print("kira = \"{s}\"\n", .{manifest.kira_version});
     if (manifest.module_root) |module_root| {
         try writer.print("module_root = \"{s}\"\n", .{module_root});
+    }
+    if (manifest.native_libraries.len > 0) {
+        try writer.writeAll("native_libraries = [");
+        for (manifest.native_libraries, 0..) |path, index| {
+            if (index != 0) try writer.writeAll(", ");
+            try writer.print("\"{s}\"", .{path});
+        }
+        try writer.writeAll("]\n");
     }
 
     try writer.writeAll("\n[defaults]\n");
@@ -296,8 +315,8 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
     var headers = native.HeaderSpec{};
     var autobinding_module_name: ?[]const u8 = null;
     var autobinding_output_path: ?[]const u8 = null;
-    var autobinding_spec_path: ?[]const u8 = null;
     var autobinding_headers: []const []const u8 = &.{};
+    var autobinding_bindings = native.AutobindingBindings{};
     var build = native.BuildRecipe{};
     var targets = std.array_list.Managed(native.TargetSpec).init(allocator);
 
@@ -330,8 +349,14 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
         } else if (std.mem.eql(u8, section, "autobinding")) {
             if (assignString(line, "module")) |value| autobinding_module_name = try allocator.dupe(u8, value);
             if (assignString(line, "output")) |value| autobinding_output_path = try allocator.dupe(u8, value);
-            if (assignString(line, "spec")) |value| autobinding_spec_path = try allocator.dupe(u8, value);
             if (std.mem.startsWith(u8, line, "headers")) autobinding_headers = try parseStringArray(allocator, (try splitKeyValue(line)).value);
+        } else if (std.mem.eql(u8, section, "bindings")) {
+            if (assignString(line, "mode")) |value| {
+                autobinding_bindings.mode = if (std.mem.eql(u8, value, "all_public")) .all_public else .listed;
+            }
+            if (std.mem.startsWith(u8, line, "functions")) autobinding_bindings.functions = try parseStringArray(allocator, (try splitKeyValue(line)).value);
+            if (std.mem.startsWith(u8, line, "structs")) autobinding_bindings.structs = try parseStringArray(allocator, (try splitKeyValue(line)).value);
+            if (std.mem.startsWith(u8, line, "callbacks")) autobinding_bindings.callbacks = try parseStringArray(allocator, (try splitKeyValue(line)).value);
         } else if (std.mem.eql(u8, section, "build")) {
             if (std.mem.startsWith(u8, line, "sources")) build.sources = try parseStringArray(allocator, (try splitKeyValue(line)).value);
             if (std.mem.startsWith(u8, line, "include_dirs")) build.include_dirs = try parseStringArray(allocator, (try splitKeyValue(line)).value);
@@ -356,8 +381,8 @@ pub fn parseNativeLibManifest(allocator: std.mem.Allocator, text: []const u8) !N
             .autobinding = if (autobinding_module_name != null and autobinding_output_path != null) .{
                 .module_name = autobinding_module_name.?,
                 .output_path = autobinding_output_path.?,
-                .spec_path = autobinding_spec_path,
                 .headers = autobinding_headers,
+                .bindings = autobinding_bindings,
             } else null,
             .build = build,
             .targets = try targets.toOwnedSlice(),
@@ -601,6 +626,47 @@ fn parseStringArray(allocator: std.mem.Allocator, value: []const u8) ![]const []
     return items.toOwnedSlice();
 }
 
+fn appendStringArrayValue(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    list: *std.array_list.Managed([]const u8),
+) !bool {
+    if (value.len < 1 or value[0] != '[') return error.InvalidManifest;
+    if (value.len >= 2 and value[value.len - 1] == ']') {
+        const parsed = try parseStringArray(allocator, value);
+        try list.appendSlice(parsed);
+        return true;
+    }
+
+    try appendStringArrayFragment(allocator, value[1..], list);
+    return false;
+}
+
+fn appendStringArrayContinuation(
+    allocator: std.mem.Allocator,
+    line: []const u8,
+    list: *std.array_list.Managed([]const u8),
+) !bool {
+    if (std.mem.eql(u8, line, "]")) return true;
+    if (line[line.len - 1] == ']') {
+        try appendStringArrayFragment(allocator, line[0 .. line.len - 1], list);
+        return true;
+    }
+
+    try appendStringArrayFragment(allocator, line, list);
+    return false;
+}
+
+fn appendStringArrayFragment(
+    allocator: std.mem.Allocator,
+    fragment: []const u8,
+    list: *std.array_list.Managed([]const u8),
+) !void {
+    const trimmed = std.mem.trim(u8, fragment, " \t,");
+    if (trimmed.len == 0) return;
+    try list.append(try parseOwnedString(allocator, trimmed));
+}
+
 fn parseInlineTable(allocator: std.mem.Allocator, value: []const u8) ![]const KeyValue {
     if (value.len < 2 or value[0] != '{' or value[value.len - 1] != '}') return error.InvalidManifest;
     const body = value[1 .. value.len - 1];
@@ -712,6 +778,46 @@ test "parses project manifest dependencies" {
     try std.testing.expect(manifest.dependencies[2].source == .git);
 }
 
+test "parses project manifest native libraries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const manifest = try parseProjectManifest(arena.allocator(),
+        \\[project]
+        \\name = "DemoApp"
+        \\version = "0.1.0"
+        \\native_libraries = ["NativeLibs/callbacks.toml", "NativeLibs/sokol.toml"]
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), manifest.native_libraries.len);
+    try std.testing.expectEqualStrings("NativeLibs/callbacks.toml", manifest.native_libraries[0]);
+    try std.testing.expectEqualStrings("NativeLibs/sokol.toml", manifest.native_libraries[1]);
+}
+
+test "parses multiline root package array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const manifest = try parseProjectManifest(arena.allocator(),
+        \\[project]
+        \\name = "Repo"
+        \\version = "0.1.0"
+        \\
+        \\[defaults]
+        \\execution_mode = "vm"
+        \\build_target = "host"
+        \\
+        \\packages = [
+        \\  "packages/a",
+        \\  "packages/b",
+        \\]
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), manifest.packages.len);
+    try std.testing.expectEqualStrings("packages/a", manifest.packages[0]);
+    try std.testing.expectEqualStrings("packages/b", manifest.packages[1]);
+}
+
 test "rejects unsupported registry version ranges" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -784,10 +890,13 @@ test "parses native library manifest" {
         \\defines = ["SOKOL_DUMMY_BACKEND"]
         \\
         \\[autobinding]
-        \\module = "generated.bindings.sokol_gfx"
-        \\output = "generated/bindings/sokol_gfx.kira"
-        \\spec = "native_libs/sokol_gfx.bind.toml"
+        \\module = "sokol_gfx"
+        \\output = "sokol_gfx.kira"
         \\headers = ["vendor/sokol/sokol_gfx.h"]
+        \\
+        \\[bindings]
+        \\functions = ["sg_setup"]
+        \\structs = ["sg_desc"]
         \\
         \\[build]
         \\sources = ["vendor/sokol/sokol_gfx_impl.c"]
@@ -800,8 +909,9 @@ test "parses native library manifest" {
 
     try std.testing.expectEqualStrings("sokol_gfx", manifest.library.name);
     try std.testing.expectEqualStrings("vendor/sokol/sokol_gfx.h", manifest.library.headers.entrypoint.?);
-    try std.testing.expectEqualStrings("generated.bindings.sokol_gfx", manifest.library.autobinding.?.module_name);
+    try std.testing.expectEqualStrings("sokol_gfx", manifest.library.autobinding.?.module_name);
     try std.testing.expectEqualStrings("vendor/sokol/sokol_gfx_impl.c", manifest.library.build.sources[0]);
+    try std.testing.expectEqualStrings("sg_setup", manifest.library.autobinding.?.bindings.functions[0]);
     try std.testing.expectEqual(@as(usize, 1), manifest.library.targets.len);
     try std.testing.expectEqualStrings("generated/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a", manifest.library.targets[0].static_lib.?);
 }
