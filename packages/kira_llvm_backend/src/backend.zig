@@ -8,6 +8,60 @@ const llvm = @import("llvm_c.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
+const text_ir_core = @import("backend_text_ir_core.zig");
+const text_ir_calls = @import("backend_text_ir_calls.zig");
+const backend_utils = @import("backend_utils.zig");
+
+pub const buildTextLlvmIr = text_ir_core.buildTextLlvmIr;
+pub const buildTextFunctionBody = text_ir_core.buildTextFunctionBody;
+pub const buildTextMainBody = text_ir_core.buildTextMainBody;
+
+pub const writeCallInstruction = text_ir_calls.writeCallInstruction;
+pub const writeIndirectCallInstruction = text_ir_calls.writeIndirectCallInstruction;
+pub const buildCallValueDispatcher = text_ir_calls.buildCallValueDispatcher;
+pub const dispatcherSymbolName = text_ir_calls.dispatcherSymbolName;
+
+pub const writePrintInstruction = backend_utils.writePrintInstruction;
+pub const appendStringGlobals = backend_utils.appendStringGlobals;
+pub const writeLlvmSymbol = backend_utils.writeLlvmSymbol;
+pub const writeLlvmStringLiteral = backend_utils.writeLlvmStringLiteral;
+pub const writeLlvmEscapedBytes = backend_utils.writeLlvmEscapedBytes;
+pub const writeLlvmFloatLiteral = backend_utils.writeLlvmFloatLiteral;
+pub const hexDigit = backend_utils.hexDigit;
+pub const appendTypeDefinitions = backend_utils.appendTypeDefinitions;
+pub const typeRefName = backend_utils.typeRefName;
+pub const findTypeDecl = backend_utils.findTypeDecl;
+pub const llvmFieldAbiTypeText = backend_utils.llvmFieldAbiTypeText;
+pub const integerAbiTypeName = backend_utils.integerAbiTypeName;
+pub const floatAbiTypeName = backend_utils.floatAbiTypeName;
+pub const llvmValueTypeText = backend_utils.llvmValueTypeText;
+pub const llvmCompareValueTypeText = backend_utils.llvmCompareValueTypeText;
+pub const llvmComparePredicate = backend_utils.llvmComparePredicate;
+pub const llvmCallTypeText = backend_utils.llvmCallTypeText;
+pub const llvmLocalStorageTypeText = backend_utils.llvmLocalStorageTypeText;
+pub const isPointerLikeValueType = backend_utils.isPointerLikeValueType;
+pub const fieldIndex = backend_utils.fieldIndex;
+pub const fieldType = backend_utils.fieldType;
+pub const llvmIndirectLoadTypeText = backend_utils.llvmIndirectLoadTypeText;
+pub const llvmFieldStoreValuePrefix = backend_utils.llvmFieldStoreValuePrefix;
+pub const writeLlvmLabelName = backend_utils.writeLlvmLabelName;
+pub const countStringConstants = backend_utils.countStringConstants;
+pub const freeStringList = backend_utils.freeStringList;
+pub const freeSymbolNames = backend_utils.freeSymbolNames;
+pub const writeTextFile = backend_utils.writeTextFile;
+pub const emitObjectFileViaZigCc = backend_utils.emitObjectFileViaZigCc;
+pub const inferRegisterTypes = backend_utils.inferRegisterTypes;
+pub const functionExecutionById = backend_utils.functionExecutionById;
+pub const functionById = backend_utils.functionById;
+pub const buildTextExternDecl = backend_utils.buildTextExternDecl;
+pub const buildHybridBridgeWrapper = backend_utils.buildHybridBridgeWrapper;
+pub const bridgeTagValue = backend_utils.bridgeTagValue;
+pub const resolveExecution = backend_utils.resolveExecution;
+pub const requiresTextIrFallback = backend_utils.requiresTextIrFallback;
+pub const functionDeclNeedsTextIrFallback = backend_utils.functionDeclNeedsTextIrFallback;
+pub const hostTargetTriple = backend_utils.hostTargetTriple;
+pub const ensureParentDir = backend_utils.ensureParentDir;
+pub const allocPrintZ = backend_utils.allocPrintZ;
 
 pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest) !backend_api.CompileResult {
     if (request.mode != .llvm_native and request.mode != .hybrid) return error.UnsupportedBackendMode;
@@ -202,7 +256,7 @@ const Types = struct {
             .float => self.api.LLVMFloatTypeInContext(self.context),
             .string => self.string_ty,
             .boolean => self.bool_ty,
-            .raw_ptr, .ffi_struct => self.usize_ty,
+            .array, .raw_ptr, .ffi_struct => self.usize_ty,
         };
     }
 
@@ -285,7 +339,7 @@ fn lowerProgram(
     return .{ .context = context, .module_ref = module_ref };
 }
 
-fn shouldLowerFunction(execution: runtime_abi.FunctionExecution, mode: backend_api.BackendMode) bool {
+pub fn shouldLowerFunction(execution: runtime_abi.FunctionExecution, mode: backend_api.BackendMode) bool {
     return switch (mode) {
         .llvm_native => switch (execution) {
             .runtime => false,
@@ -313,7 +367,7 @@ fn declareFunction(
     return function_value;
 }
 
-fn functionSymbolName(allocator: std.mem.Allocator, function_decl: ir.Function, mode: backend_api.BackendMode) ![:0]u8 {
+pub fn functionSymbolName(allocator: std.mem.Allocator, function_decl: ir.Function, mode: backend_api.BackendMode) ![:0]u8 {
     if (function_decl.is_extern) {
         if (function_decl.foreign) |foreign| {
             return allocator.dupeZ(u8, foreign.symbol_name);
@@ -360,16 +414,29 @@ fn lowerFunction(
             .const_bool => |value| register_values[value.dst] = api.LLVMConstInt(types.bool_ty, if (value.value) 1 else 0, 0),
             .const_null_ptr => |value| register_values[value.dst] = api.LLVMConstInt(types.usize_ty, 0, 0),
             .alloc_struct => |_| return error.UnsupportedExecutableFeature,
+            .alloc_array => |_| return error.UnsupportedExecutableFeature,
             .const_function => |_| return error.UnsupportedExecutableFeature,
             .add => |value| register_values[value.dst] = api.LLVMBuildAdd(builder, register_values[value.lhs], register_values[value.rhs], "add"),
+            .subtract => |value| register_values[value.dst] = api.LLVMBuildSub(builder, register_values[value.lhs], register_values[value.rhs], "sub"),
+            .multiply => |value| register_values[value.dst] = api.LLVMBuildMul(builder, register_values[value.lhs], register_values[value.rhs], "mul"),
+            .divide => |value| register_values[value.dst] = api.LLVMBuildSDiv(builder, register_values[value.lhs], register_values[value.rhs], "div"),
+            .modulo => |value| register_values[value.dst] = api.LLVMBuildSRem(builder, register_values[value.lhs], register_values[value.rhs], "mod"),
+            .unary => |value| {
+                register_values[value.dst] = switch (value.op) {
+                    .negate => api.LLVMBuildNeg(builder, register_values[value.src], "neg"),
+                    .not => api.LLVMBuildNot(builder, register_values[value.src], "not"),
+                };
+            },
+            .compare, .branch, .jump, .label => return error.UnsupportedExecutableFeature,
             .store_local => |value| _ = api.LLVMBuildStore(builder, register_values[value.src], locals[value.local]),
             .load_local => |value| register_values[value.dst] = api.LLVMBuildLoad2(builder, types.llvmType(function_decl.local_types[value.local]), locals[value.local], "load"),
-            .field_ptr, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
+            .subobject_ptr, .field_ptr, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
             .print => |value| try lowerPrint(api, builder, runtime_decls, register_types[value.src], register_values[value.src]),
             .call => |value| {
                 if (value.args.len != 0 or value.dst != null) return error.UnsupportedExecutableFeature;
                 try lowerCall(api, builder, types, runtime_decls, request.mode, request.program, functions, value.callee);
             },
+            .call_value => |_| return error.UnsupportedExecutableFeature,
             .ret => |value| {
                 if (value.src != null) return error.UnsupportedExecutableFeature;
                 _ = api.LLVMBuildRetVoid(builder);
@@ -448,7 +515,7 @@ fn lowerPrint(
             var args = [_]llvm.c.LLVMValueRef{ data_ptr, length };
             _ = api.LLVMBuildCall2(builder, runtime_decls.print_string_ty, runtime_decls.print_string_fn, &args, args.len, "");
         },
-        .void, .float, .boolean, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
+        .void, .float, .boolean, .array, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
     }
 }
 
@@ -533,1252 +600,74 @@ fn zigCcTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
     };
 }
 
-fn buildTextLlvmIr(
-    allocator: std.mem.Allocator,
-    request: backend_api.CompileRequest,
-    triple: []const u8,
-) ![]u8 {
-    var globals = std.array_list.Managed([]const u8).init(allocator);
-    defer freeStringList(allocator, &globals);
+pub const CallValueDispatcher = struct {
+    hash: u64,
+    param_types: []const ir.ValueType,
+    return_type: ir.ValueType,
+};
 
-    var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
-    defer freeSymbolNames(allocator, &symbol_names);
-
-    for (request.program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-        const name = try functionSymbolName(allocator, function_decl, request.mode);
-        try symbol_names.put(allocator, function_decl.id, name);
-    }
-
-    var function_bodies = std.array_list.Managed([]const u8).init(allocator);
-    defer freeStringList(allocator, &function_bodies);
-    var function_decls = std.array_list.Managed([]const u8).init(allocator);
-    defer freeStringList(allocator, &function_decls);
-
-    var string_counter: usize = 0;
-    for (request.program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-        if (function_decl.is_extern) {
-            try function_decls.append(try buildTextExternDecl(allocator, request, &symbol_names, function_decl));
-        } else {
-            const body = try buildTextFunctionBody(allocator, request, &symbol_names, &globals, function_decl, string_counter);
-            string_counter += countStringConstants(function_decl);
-            try function_bodies.append(body);
-        }
-    }
-
-    if (request.mode == .llvm_native) {
-        const entry_decl = request.program.functions[request.program.entry_index];
-        if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
-        const entry_function_name = symbol_names.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
-        const main_body = try buildTextMainBody(allocator, entry_function_name);
-        try function_bodies.append(main_body);
-    }
-
-    var output = std.array_list.Managed(u8).init(allocator);
-    errdefer output.deinit();
-
-    var writer = output.writer();
-    try writer.print("; ModuleID = \"{s}\"\n", .{request.module_name});
-    try writer.print("source_filename = \"{s}\"\n", .{request.module_name});
-    try writer.print("target triple = \"{s}\"\n\n", .{triple});
-    try appendTypeDefinitions(allocator, &writer, request.program);
-    try writer.writeAll("%kira.string = type { ptr, i64 }\n\n");
-    if (request.mode == .hybrid) {
-        try writer.writeAll("%kira.bridge.value = type { i8, [7 x i8], i64, i64 }\n\n");
-    }
-
-    try writer.writeAll("@kira_bool_true_data = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
-    try writer.writeAll("@kira_bool_true = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([5 x i8], ptr @kira_bool_true_data, i64 0, i64 0), i64 4 }\n");
-    try writer.writeAll("@kira_bool_false_data = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
-    try writer.writeAll("@kira_bool_false = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([6 x i8], ptr @kira_bool_false_data, i64 0, i64 0), i64 5 }\n\n");
-
-    try writer.writeAll("declare void @\"kira_native_print_i64\"(i64)\n");
-    try writer.writeAll("declare void @\"kira_native_print_string\"(ptr, i64)\n");
-    try writer.writeAll("declare ptr @malloc(i64)\n");
-    if (request.mode == .hybrid) {
-        try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32, ptr, i32, ptr)\n");
-    }
-    for (function_decls.items) |decl| {
-        try writer.writeAll(decl);
-        try writer.writeByte('\n');
-    }
-    try writer.writeByte('\n');
-
-    if (function_bodies.items.len > 0) try writer.writeByte('\n');
-
-    for (globals.items) |global_def| {
-        try writer.writeAll(global_def);
-        try writer.writeByte('\n');
-    }
-
-    if (globals.items.len > 0 and function_bodies.items.len > 0) {
-        try writer.writeByte('\n');
-    }
-
-    for (function_bodies.items) |body| {
-        try writer.writeAll(body);
-        try writer.writeByte('\n');
-    }
-
-    if (request.mode == .hybrid) {
-        for (request.program.functions) |function_decl| {
-            if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
-            try writer.writeAll(try buildHybridBridgeWrapper(allocator, &symbol_names, function_decl));
-            try writer.writeByte('\n');
-        }
-    }
-
-    return output.toOwnedSlice();
-}
-
-fn buildTextFunctionBody(
-    allocator: std.mem.Allocator,
-    request: backend_api.CompileRequest,
-    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
-    globals: *std.array_list.Managed([]const u8),
-    function_decl: ir.Function,
-    string_counter: usize,
-) ![]const u8 {
-    var body = std.array_list.Managed(u8).init(allocator);
-    errdefer body.deinit();
-
-    var writer = body.writer();
-    const function_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
-    try writer.writeAll("define ");
-    try writer.writeAll(llvmValueTypeText(function_decl.return_type));
-    try writer.writeByte(' ');
-    try writeLlvmSymbol(writer, function_name);
-    try writer.writeByte('(');
-    for (function_decl.param_types, 0..) |param_type, index| {
-        if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(llvmValueTypeText(param_type));
-        try writer.writeAll(" %arg");
-        try writer.print("{d}", .{index});
-    }
-    try writer.writeAll(") {\nentry:\n");
-
-    const register_types = try inferRegisterTypes(allocator, request.program.*, function_decl);
-    defer allocator.free(register_types);
-
-    const string_state = try allocator.alloc(usize, 1);
-    defer allocator.free(string_state);
-    string_state[0] = string_counter;
-    var temp_counter: usize = 0;
-
-    for (function_decl.local_types, 0..) |local_type, index| {
-        const storage_type = try llvmLocalStorageTypeText(allocator, request.program, local_type);
-        try writer.writeAll("  %local");
-        try writer.print("{d}", .{index});
-        try writer.writeAll(" = alloca ");
-        try writer.writeAll(storage_type);
-        try writer.writeAll("\n");
-        if (local_type.kind == .ffi_struct) {
-            const struct_type_name = typeRefName(local_type.name orelse return error.UnsupportedExecutableFeature);
-            try writer.print("  %local.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ index, struct_type_name });
-            try writer.print("  %local.size.{d} = ptrtoint ptr %local.size.ptr.{d} to i64\n", .{ index, index });
-            try writer.print("  %local.heap.{d} = call ptr @malloc(i64 %local.size.{d})\n", .{ index, index });
-            try writer.print("  store {s} zeroinitializer, ptr %local.heap.{d}\n", .{ struct_type_name, index });
-            try writer.print("  %local.heap.int.{d} = ptrtoint ptr %local.heap.{d} to i64\n", .{ index, index });
-            try writer.print("  store i64 %local.heap.int.{d}, ptr %local{d}\n", .{ index, index });
-        }
-    }
-    for (function_decl.param_types, 0..) |param_type, index| {
-        try writer.writeAll("  store ");
-        try writer.writeAll(llvmValueTypeText(param_type));
-        try writer.writeAll(" %arg");
-        try writer.print("{d}", .{index});
-        try writer.writeAll(", ptr %local");
-        try writer.print("{d}\n", .{index});
-    }
-
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_int => |value| {
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = add i64 0, ");
-                try writer.print("{d}\n", .{value.value});
-            },
-            .const_string => |value| {
-                const string_index = string_state[0];
-                string_state[0] += 1;
-                try appendStringGlobals(allocator, globals, string_index, value.value);
-
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = load %kira.string, ptr @kira_str_");
-                try writer.print("{d}", .{string_index});
-                try writer.writeAll("\n");
-            },
-            .const_bool => |value| {
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = add i1 0, ");
-                try writer.writeAll(if (value.value) "1\n" else "0\n");
-            },
-            .const_null_ptr => |value| {
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = add i64 0, 0\n");
-            },
-            .alloc_struct => |value| {
-                const struct_type_name = typeRefName(value.type_name);
-                try writer.print("  %alloc.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ value.dst, struct_type_name });
-                try writer.print("  %alloc.size.{d} = ptrtoint ptr %alloc.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
-                try writer.print("  %alloc.ptr.{d} = call ptr @malloc(i64 %alloc.size.{d})\n", .{ value.dst, value.dst });
-                try writer.print("  store {s} zeroinitializer, ptr %alloc.ptr.{d}\n", .{ struct_type_name, value.dst });
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = ptrtoint ptr %alloc.ptr.");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" to i64\n");
-            },
-            .const_function => |value| {
-                const callee_decl = functionById(request.program.*, value.function_id) orelse return error.UnknownFunction;
-                const callee_name = symbol_names.get(callee_decl.id) orelse return error.MissingFunctionDeclaration;
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = ptrtoint ptr ");
-                try writeLlvmSymbol(writer, callee_name);
-                try writer.writeAll(" to i64\n");
-            },
-            .add => |value| {
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = add i64 %r");
-                try writer.print("{d}", .{value.lhs});
-                try writer.writeAll(", %r");
-                try writer.print("{d}\n", .{value.rhs});
-            },
-            .store_local => |value| {
-                try writer.writeAll("  store ");
-                try writer.writeAll(llvmValueTypeText(register_types[value.src]));
-                try writer.writeAll(" %r");
-                try writer.print("{d}", .{value.src});
-                try writer.writeAll(", ptr %local");
-                try writer.print("{d}\n", .{value.local});
-            },
-            .load_local => |value| {
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                if (function_decl.local_types[value.local].kind == .ffi_struct) {
-                    try writer.writeAll(" = load i64, ptr %local");
-                    try writer.print("{d}\n", .{value.local});
-                } else {
-                    try writer.writeAll(" = load ");
-                    try writer.writeAll(llvmValueTypeText(function_decl.local_types[value.local]));
-                    try writer.writeAll(", ptr %local");
-                    try writer.print("{d}\n", .{value.local});
-                }
-            },
-            .field_ptr => |value| {
-                const field_index_value = fieldIndex(request.program, value.owner_type_name, value.field_name) orelse return error.UnknownFunction;
-                const owner_type = fieldType(request.program, value.owner_type_name, value.field_name) orelse return error.UnknownFunction;
-                _ = owner_type;
-                const struct_type_name = typeRefName(value.owner_type_name);
-                try writer.print("  %field.base.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.base });
-                try writer.writeAll("  %field.ptr.");
-                try writer.print("{d}", .{value.dst});
-                try writer.print(" = getelementptr inbounds {s}, ptr %field.base.{d}, i32 0, i32 {d}\n", .{ struct_type_name, value.dst, field_index_value });
-                try writer.writeAll("  %r");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" = ptrtoint ptr %field.ptr.");
-                try writer.print("{d}", .{value.dst});
-                try writer.writeAll(" to i64\n");
-            },
-            .load_indirect => |value| {
-                const abi_type = try llvmIndirectLoadTypeText(allocator, request.program, value.ty);
-                try writer.print("  %load.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.ptr });
-                switch (value.ty.kind) {
-                    .integer => {
-                        try writer.print("  %load.raw.{d} = load {s}, ptr %load.ptr.{d}\n", .{ value.dst, abi_type, value.dst });
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{value.dst});
-                        if (std.mem.eql(u8, abi_type, "i8") or std.mem.eql(u8, abi_type, "i16") or std.mem.eql(u8, abi_type, "i32")) {
-                            try writer.print(" = sext {s} %load.raw.{d} to i64\n", .{ abi_type, value.dst });
-                        } else {
-                            try writer.print(" = load i64, ptr %load.ptr.{d}\n", .{value.dst});
-                        }
-                    },
-                    .boolean => {
-                        try writer.print("  %load.raw.{d} = load i8, ptr %load.ptr.{d}\n", .{ value.dst, value.dst });
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{value.dst});
-                        try writer.print(" = trunc i8 %load.raw.{d} to i1\n", .{value.dst});
-                    },
-                    .raw_ptr => {
-                        try writer.print("  %load.rawptr.{d} = load ptr, ptr %load.ptr.{d}\n", .{ value.dst, value.dst });
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{value.dst});
-                        try writer.print(" = ptrtoint ptr %load.rawptr.{d} to i64\n", .{value.dst});
-                    },
-                    .string => {
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{value.dst});
-                        try writer.print(" = load {s}, ptr %load.ptr.{d}\n", .{ abi_type, value.dst });
-                    },
-                    .ffi_struct => {
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{value.dst});
-                        try writer.print(" = add i64 %r{d}, 0\n", .{value.ptr});
-                    },
-                    else => return error.UnsupportedExecutableFeature,
-                }
-            },
-            .store_indirect => |value| {
-                const abi_type = try llvmIndirectLoadTypeText(allocator, request.program, value.ty);
-                try writer.print("  %store.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.ptr });
-                switch (value.ty.kind) {
-                    .integer => {
-                        if (std.mem.eql(u8, abi_type, "i64")) {
-                            try writer.print("  store i64 %r{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
-                        } else {
-                            try writer.print("  %store.cast.{d} = trunc i64 %r{d} to {s}\n", .{ value.src, value.src, abi_type });
-                            try writer.print("  store {s} %store.cast.{d}, ptr %store.ptr.{d}\n", .{ abi_type, value.src, value.src });
-                        }
-                    },
-                    .boolean => {
-                        try writer.print("  %store.bool.{d} = zext i1 %r{d} to i8\n", .{ value.src, value.src });
-                        try writer.print("  store i8 %store.bool.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
-                    },
-                    .raw_ptr => {
-                        if (value.ty.name != null and std.mem.eql(u8, value.ty.name.?, "CString") and register_types[value.src].kind == .string) {
-                            try writer.print("  %store.cstr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ value.src, value.src });
-                            try writer.print("  store ptr %store.cstr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
-                        } else {
-                            try writer.print("  %store.rawptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.src });
-                            try writer.print("  store ptr %store.rawptr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
-                        }
-                    },
-                    .string => {
-                        try writer.print("  store {s} %r{d}, ptr %store.ptr.{d}\n", .{ abi_type, value.src, value.src });
-                    },
-                    else => return error.UnsupportedExecutableFeature,
-                }
-            },
-            .copy_indirect => |value| {
-                const struct_type_name = typeRefName(value.type_name);
-                try writer.print("  %copy.dst.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst_ptr, value.dst_ptr });
-                try writer.print("  %copy.src.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src_ptr, value.src_ptr });
-                try writer.print("  %copy.val.{d} = load {s}, ptr %copy.src.{d}\n", .{ value.dst_ptr, struct_type_name, value.src_ptr });
-                try writer.print("  store {s} %copy.val.{d}, ptr %copy.dst.{d}\n", .{ struct_type_name, value.dst_ptr, value.dst_ptr });
-            },
-            .print => |value| {
-                try writePrintInstruction(writer, register_types[value.src], value.src, &temp_counter);
-            },
-            .call => |value| {
-                try writeCallInstruction(writer, request, symbol_names, request.program, register_types, value);
-            },
-            .ret => |value| {
-                if (value.src) |src| {
-                    try writer.writeAll("  ret ");
-                    try writer.writeAll(llvmValueTypeText(function_decl.return_type));
-                    try writer.writeAll(" %r");
-                    try writer.print("{d}", .{src});
-                    try writer.writeAll("\n}\n");
-                } else {
-                    try writer.writeAll("  ret void\n}\n");
-                }
-                return body.toOwnedSlice();
-            },
-        }
-    }
-
-    try writer.writeAll("  ret void\n}\n");
-    return body.toOwnedSlice();
-}
-
-fn buildTextMainBody(
-    allocator: std.mem.Allocator,
-    entry_function_name: []const u8,
-) ![]const u8 {
-    var body = std.array_list.Managed(u8).init(allocator);
-    errdefer body.deinit();
-
-    var writer = body.writer();
-    try writer.writeAll("define i32 @main() {\nentry:\n");
-    try writer.writeAll("  call void ");
-    try writeLlvmSymbol(writer, entry_function_name);
-    try writer.writeAll("()\n  ret i32 0\n}\n");
-    return body.toOwnedSlice();
-}
-
-fn writeCallInstruction(
-    writer: anytype,
-    request: backend_api.CompileRequest,
-    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
-    program: *const ir.Program,
-    register_types: []const ir.ValueType,
-    call_inst: ir.Call,
-) !void {
-    const callee_id = call_inst.callee;
-    const callee_decl = functionById(program.*, callee_id) orelse return error.UnknownFunction;
-    const callee_execution = functionExecutionById(request.program.*, callee_id) orelse return error.UnknownFunction;
-    switch (resolveExecution(callee_execution, request.mode)) {
-        .native => {
-            const callee_name = symbol_names.get(callee_id) orelse return error.MissingFunctionDeclaration;
-            if (callee_decl.is_extern) {
-                for (call_inst.args, 0..) |arg, index| {
-                    const param_type = callee_decl.param_types[index];
-                    switch (param_type.kind) {
-                        .raw_ptr => {
-                            if (register_types[arg].kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) {
-                                try writer.print("  %call.arg.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ callee_id, index, arg });
-                            } else {
-                                try writer.print("  %call.arg.{d}.{d} = inttoptr i64 %r{d} to ptr\n", .{ callee_id, index, arg });
-                            }
-                        },
-                        .integer => {
-                            const abi_type = integerAbiTypeName(param_type.name);
-                            if (!std.mem.eql(u8, abi_type, "i64")) {
-                                try writer.print("  %call.arg.{d}.{d} = trunc i64 %r{d} to {s}\n", .{ callee_id, index, arg, abi_type });
-                            }
-                        },
-                        .ffi_struct => {
-                            const struct_type_name = typeRefName(param_type.name orelse return error.UnsupportedExecutableFeature);
-                            try writer.print("  %call.arg.ptr.{d}.{d} = inttoptr i64 %r{d} to ptr\n", .{ callee_id, index, arg });
-                            try writer.print("  %call.arg.{d}.{d} = load {s}, ptr %call.arg.ptr.{d}.{d}\n", .{
-                                callee_id, index, struct_type_name, callee_id, index,
-                            });
-                        },
-                        else => {},
-                    }
-                }
-            }
-            if (call_inst.dst) |dst| {
-                if (callee_decl.is_extern and callee_decl.return_type.kind == .raw_ptr) {
-                    try writer.writeAll("  %call.ptr.");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = call ptr ");
-                } else if (callee_decl.is_extern and callee_decl.return_type.kind == .ffi_struct) {
-                    try writer.writeAll("  %call.struct.");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = call ");
-                } else if (callee_decl.is_extern and callee_decl.return_type.kind == .integer and !std.mem.eql(u8, integerAbiTypeName(callee_decl.return_type.name), "i64")) {
-                    try writer.writeAll("  %call.int.");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = call ");
-                } else {
-                    try writer.writeAll("  %r");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = call ");
-                }
-            } else {
-                try writer.writeAll("  call ");
-            }
-            if (!(callee_decl.is_extern and (callee_decl.return_type.kind == .raw_ptr) and call_inst.dst != null)) {
-                try writer.writeAll(llvmCallTypeText(callee_decl.return_type, callee_decl.is_extern));
-                try writer.writeByte(' ');
-            }
-            try writeLlvmSymbol(writer, callee_name);
-            try writer.writeByte('(');
-            for (call_inst.args, 0..) |arg, index| {
-                if (index != 0) try writer.writeAll(", ");
-                const param_type = callee_decl.param_types[index];
-                try writer.writeAll(llvmCallTypeText(param_type, callee_decl.is_extern));
-                try writer.writeByte(' ');
-                if (callee_decl.is_extern) {
-                    switch (param_type.kind) {
-                        .raw_ptr, .ffi_struct => {
-                            try writer.writeAll("%call.arg.");
-                            try writer.print("{d}.{d}", .{ callee_id, index });
-                        },
-                        .integer => {
-                            const abi_type = integerAbiTypeName(param_type.name);
-                            if (std.mem.eql(u8, abi_type, "i64")) {
-                                try writer.writeAll("%r");
-                                try writer.print("{d}", .{arg});
-                            } else {
-                                try writer.writeAll("%call.arg.");
-                                try writer.print("{d}.{d}", .{ callee_id, index });
-                            }
-                        },
-                        else => {
-                            try writer.writeAll("%r");
-                            try writer.print("{d}", .{arg});
-                        },
-                    }
-                } else {
-                    try writer.writeAll("%r");
-                    try writer.print("{d}", .{arg});
-                }
-            }
-            try writer.writeAll(")\n");
-            if (callee_decl.is_extern and callee_decl.return_type.kind == .raw_ptr) {
-                if (call_inst.dst) |dst| {
-                    try writer.writeAll("  %r");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = ptrtoint ptr %call.ptr.");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" to i64\n");
-                }
-            } else if (callee_decl.is_extern and callee_decl.return_type.kind == .ffi_struct) {
-                if (call_inst.dst) |dst| {
-                    const struct_type_name = typeRefName(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature);
-                    try writer.print("  %call.ret.ptr.{d} = alloca {s}\n", .{ dst, struct_type_name });
-                    try writer.print("  store {s} %call.struct.{d}, ptr %call.ret.ptr.{d}\n", .{ struct_type_name, dst, dst });
-                    try writer.writeAll("  %r");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" = ptrtoint ptr %call.ret.ptr.");
-                    try writer.print("{d}", .{dst});
-                    try writer.writeAll(" to i64\n");
-                }
-            } else if (callee_decl.is_extern and callee_decl.return_type.kind == .integer and call_inst.dst != null) {
-                const abi_type = integerAbiTypeName(callee_decl.return_type.name);
-                if (!std.mem.eql(u8, abi_type, "i64")) {
-                    const dst = call_inst.dst.?;
-                    try writer.print("  %r{d}.sext = sext {s} %call.int.{d} to i64\n", .{ dst, abi_type, dst });
-                    try writer.print("  %r{d} = add i64 %r{d}.sext, 0\n", .{ dst, dst });
-                }
-            }
-        },
-        .runtime => {
-            if (request.mode != .hybrid) return error.RuntimeCallInNativeBuild;
-            if (call_inst.args.len > 0) {
-                try writer.print("  %rt.args.{d} = alloca [{d} x %kira.bridge.value]\n", .{ callee_id, call_inst.args.len });
-                for (call_inst.args, 0..) |arg, index| {
-                    try writer.print("  %rt.slot.{d}.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr %rt.args.{d}, i64 0, i64 {d}\n", .{
-                        callee_id, index, call_inst.args.len, callee_id, index,
-                    });
-                    try writer.print("  %rt.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{
-                        callee_id, index, bridgeTagValue(register_types[arg]),
-                    });
-                    switch (register_types[arg].kind) {
-                        .integer, .raw_ptr, .ffi_struct => {
-                            try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{
-                                callee_id, index, callee_id, index, arg,
-                            });
-                            try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
-                            });
-                        },
-                        .boolean => {
-                            try writer.print("  %rt.bool.{d}.{d} = zext i1 %r{d} to i64\n", .{ callee_id, index, arg });
-                            try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %rt.bool.{d}.{d}, 2\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
-                            });
-                            try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
-                            });
-                        },
-                        .string => {
-                            try writer.print("  %rt.str.ptr.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ callee_id, index, arg });
-                            try writer.print("  %rt.str.ptrint.{d}.{d} = ptrtoint ptr %rt.str.ptr.{d}.{d} to i64\n", .{
-                                callee_id, index, callee_id, index,
-                            });
-                            try writer.print("  %rt.str.len.{d}.{d} = extractvalue %kira.string %r{d}, 1\n", .{ callee_id, index, arg });
-                            try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %rt.str.ptrint.{d}.{d}, 2\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
-                            });
-                            try writer.print("  %rt.pack.{d}.{d}.2 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.1, i64 %rt.str.len.{d}.{d}, 3\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
-                            });
-                            try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.2, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
-                            });
-                        },
-                        .void, .float => return error.UnsupportedExecutableFeature,
-                    }
-                }
-            }
-            try writer.print("  %rt.result.{d} = alloca %kira.bridge.value\n", .{callee_id});
-            try writer.writeAll("  call void @\"kira_hybrid_call_runtime\"(i32 ");
-            try writer.print("{d}", .{callee_id});
-            try writer.writeAll(", ptr ");
-            if (call_inst.args.len == 0) {
-                try writer.writeAll("null");
-            } else {
-                try writer.print("%rt.args.{d}", .{callee_id});
-            }
-            try writer.writeAll(", i32 ");
-            try writer.print("{d}", .{call_inst.args.len});
-            try writer.writeAll(", ptr ");
-            try writer.print("%rt.result.{d}", .{callee_id});
-            try writer.writeAll(")\n");
-            if (call_inst.dst) |dst| {
-                try writer.print("  %rt.result.load.{d} = load %kira.bridge.value, ptr %rt.result.{d}\n", .{ callee_id, callee_id });
-                switch (callee_decl.return_type.kind) {
-                    .integer, .raw_ptr, .ffi_struct => {
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{dst});
-                        try writer.print(" = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{callee_id});
-                    },
-                    .boolean => {
-                        try writer.print("  %rt.result.word.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ callee_id, callee_id });
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{dst});
-                        try writer.print(" = trunc i64 %rt.result.word.{d} to i1\n", .{callee_id});
-                    },
-                    .string => {
-                        try writer.print("  %rt.result.ptrint.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ callee_id, callee_id });
-                        try writer.print("  %rt.result.len.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 3\n", .{ callee_id, callee_id });
-                        try writer.print("  %rt.result.ptr.{d} = inttoptr i64 %rt.result.ptrint.{d} to ptr\n", .{ callee_id, callee_id });
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{dst});
-                        try writer.print(".0 = insertvalue %kira.string zeroinitializer, ptr %rt.result.ptr.{d}, 0\n", .{callee_id});
-                        try writer.writeAll("  %r");
-                        try writer.print("{d}", .{dst});
-                        try writer.print(" = insertvalue %kira.string %r{d}.0, i64 %rt.result.len.{d}, 1\n", .{ dst, callee_id });
-                    },
-                    .void, .float => {},
-                }
-            }
-        },
-        .inherited => unreachable,
-    }
-}
-
-fn writePrintInstruction(writer: anytype, value_type: ir.ValueType, src: u32, temp_counter: *usize) !void {
-    switch (value_type.kind) {
-        .integer => {
-            try writer.writeAll("  call void @\"kira_native_print_i64\"(i64 %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(")\n");
-        },
-        .string => {
-            const temp_index = temp_counter.*;
-            temp_counter.* += 1;
-
-            try writer.writeAll("  %str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", 0\n");
-            try writer.writeAll("  %str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", 1\n");
-            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", i64 %str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(")\n");
-        },
-        .boolean => {
-            const temp_index = temp_counter.*;
-            temp_counter.* += 1;
-
-            try writer.writeAll("  %bool.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = select i1 %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", ptr @kira_bool_true, ptr @kira_bool_false\n");
-            try writer.writeAll("  %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = load %kira.string, ptr %bool.ptr.");
-            try writer.print("{d}\n", .{temp_index});
-            try writer.writeAll("  %bool.str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", 0\n");
-            try writer.writeAll("  %bool.str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", 1\n");
-            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %bool.str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", i64 %bool.str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(")\n");
-        },
-        .void, .float, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
-    }
-}
-
-fn appendStringGlobals(
-    allocator: std.mem.Allocator,
-    globals: *std.array_list.Managed([]const u8),
-    index: usize,
-    value: []const u8,
-) !void {
-    const data_name = try std.fmt.allocPrint(allocator, "kira_str_{d}_data", .{index});
-    defer allocator.free(data_name);
-    const struct_name = try std.fmt.allocPrint(allocator, "kira_str_{d}", .{index});
-    defer allocator.free(struct_name);
-
-    var data_line = std.array_list.Managed(u8).init(allocator);
-    errdefer data_line.deinit();
-    var data_writer = data_line.writer();
-    try data_writer.print("@{s} = private unnamed_addr constant [{d} x i8] c\"", .{ data_name, value.len + 1 });
-    try writeLlvmStringLiteral(data_writer, value);
-    try data_writer.writeAll("\\00\"\n");
-    try globals.append(try data_line.toOwnedSlice());
-
-    var struct_line = std.array_list.Managed(u8).init(allocator);
-    errdefer struct_line.deinit();
-    var struct_writer = struct_line.writer();
-    try struct_writer.print("@{s} = private unnamed_addr constant %kira.string {{ ptr getelementptr inbounds ([{d} x i8], ptr @{s}, i64 0, i64 0), i64 {d} }}\n", .{
-        struct_name,
-        value.len + 1,
-        data_name,
-        value.len,
-    });
-    try globals.append(try struct_line.toOwnedSlice());
-}
-
-fn writeLlvmSymbol(writer: anytype, symbol: []const u8) !void {
-    try writer.writeAll("@\"");
-    try writeLlvmEscapedBytes(writer, symbol);
-    try writer.writeByte('"');
-}
-
-fn writeLlvmStringLiteral(writer: anytype, bytes: []const u8) !void {
-    try writeLlvmEscapedBytes(writer, bytes);
-}
-
-fn writeLlvmEscapedBytes(writer: anytype, bytes: []const u8) !void {
-    for (bytes) |byte| {
-        if (byte >= 0x20 and byte <= 0x7e and byte != '\\' and byte != '"') {
-            try writer.writeByte(byte);
-        } else {
-            try writer.writeByte('\\');
-            try writer.writeByte(hexDigit(byte >> 4));
-            try writer.writeByte(hexDigit(byte & 0x0f));
-        }
-    }
-}
-
-fn hexDigit(value: u8) u8 {
-    const index: usize = @intCast(value & 0x0f);
-    return "0123456789ABCDEF"[index];
-}
-
-fn appendTypeDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {
-    for (program.types) |type_decl| {
-        if (type_decl.ffi) |ffi_info| {
-            if (ffi_info != .ffi_struct) continue;
-        } else if (type_decl.fields.len == 0) {
-            continue;
-        }
-        try writer.writeAll(typeRefName(type_decl.name));
-        try writer.writeAll(" = type { ");
-        for (type_decl.fields, 0..) |field_decl, index| {
-            if (index != 0) try writer.writeAll(", ");
-            try writer.writeAll(try llvmFieldAbiTypeText(allocator, program, field_decl.ty));
-        }
-        try writer.writeAll(" }\n");
-    }
-    if (program.types.len > 0) try writer.writeByte('\n');
-}
-
-fn typeRefName(name: []const u8) []const u8 {
-    return switch (name.len) {
-        0 => "%t.anon",
-        else => std.fmt.allocPrint(std.heap.page_allocator, "%t.{s}", .{name}) catch "%t.invalid",
-    };
-}
-
-fn findTypeDecl(program: *const ir.Program, name: []const u8) ?ir.TypeDecl {
-    for (program.types) |type_decl| {
-        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
-    }
-    return null;
-}
-
-fn llvmFieldAbiTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
-    switch (value_type.kind) {
-        .void => return allocator.dupe(u8, "void"),
-        .string => return allocator.dupe(u8, "%kira.string"),
-        .boolean => return allocator.dupe(u8, "i8"),
-        .raw_ptr => {
-            if (value_type.name) |name| {
-                if (findTypeDecl(program, name)) |type_decl| {
-                    if (type_decl.ffi) |ffi_info| {
-                        return switch (ffi_info) {
-                            .array => |info| std.fmt.allocPrint(allocator, "[{d} x {s}]", .{ info.count, try llvmFieldAbiTypeText(allocator, program, info.element) }),
-                            .alias => |info| llvmFieldAbiTypeText(allocator, program, info.target),
-                            else => allocator.dupe(u8, "ptr"),
-                        };
-                    }
-                }
-            }
-            return allocator.dupe(u8, "ptr");
-        },
-        .integer => return allocator.dupe(u8, integerAbiTypeName(value_type.name)),
-        .float => return allocator.dupe(u8, floatAbiTypeName(value_type.name)),
-        .ffi_struct => return allocator.dupe(u8, typeRefName(value_type.name orelse return error.UnsupportedExecutableFeature)),
-    }
-}
-
-fn integerAbiTypeName(name: ?[]const u8) []const u8 {
-    const value = name orelse "I64";
-    if (std.mem.eql(u8, value, "I8") or std.mem.eql(u8, value, "U8")) return "i8";
-    if (std.mem.eql(u8, value, "I16") or std.mem.eql(u8, value, "U16")) return "i16";
-    if (std.mem.eql(u8, value, "I32") or std.mem.eql(u8, value, "U32")) return "i32";
-    return "i64";
-}
-
-fn floatAbiTypeName(name: ?[]const u8) []const u8 {
-    if (name) |value| {
-        if (std.mem.eql(u8, value, "F64")) return "double";
-    }
-    return "float";
-}
-
-fn llvmValueTypeText(value_type: ir.ValueType) []const u8 {
-    return switch (value_type.kind) {
-        .void => "void",
-        .integer => "i64",
-        .float => "float",
-        .string => "%kira.string",
-        .boolean => "i1",
-        .raw_ptr, .ffi_struct => "i64",
-    };
-}
-
-fn llvmCallTypeText(value_type: ir.ValueType, is_extern: bool) []const u8 {
-    if (!is_extern) return llvmValueTypeText(value_type);
-    return switch (value_type.kind) {
-        .raw_ptr => "ptr",
-        .integer => integerAbiTypeName(value_type.name),
-        .float => floatAbiTypeName(value_type.name),
-        .boolean => "i1",
-        .ffi_struct => typeRefName(value_type.name orelse "anon"),
-        else => llvmValueTypeText(value_type),
-    };
-}
-
-fn llvmLocalStorageTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
-    _ = program;
-    return switch (value_type.kind) {
-        .ffi_struct => allocator.dupe(u8, "i64"),
-        else => allocator.dupe(u8, llvmValueTypeText(value_type)),
-    };
-}
-
-fn isPointerLikeValueType(value_type: ir.ValueType) bool {
-    return value_type.kind == .raw_ptr or value_type.kind == .ffi_struct;
-}
-
-fn fieldIndex(program: *const ir.Program, owner_type_name: []const u8, field_name: []const u8) ?usize {
-    const type_decl = findTypeDecl(program, owner_type_name) orelse return null;
-    for (type_decl.fields, 0..) |field_decl, index| {
-        if (std.mem.eql(u8, field_decl.name, field_name)) return index;
-    }
-    return null;
-}
-
-fn fieldType(program: *const ir.Program, owner_type_name: []const u8, field_name: []const u8) ?ir.ValueType {
-    const type_decl = findTypeDecl(program, owner_type_name) orelse return null;
-    for (type_decl.fields) |field_decl| {
-        if (std.mem.eql(u8, field_decl.name, field_name)) return field_decl.ty;
-    }
-    return null;
-}
-
-fn llvmIndirectLoadTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
-    return switch (value_type.kind) {
-        .integer, .float, .boolean, .raw_ptr, .ffi_struct => llvmFieldAbiTypeText(allocator, program, value_type),
-        else => allocator.dupe(u8, llvmValueTypeText(value_type)),
-    };
-}
-
-fn llvmFieldStoreValuePrefix(writer: anytype, dst_reg: u32) !void {
-    try writer.writeAll("  %r");
-    try writer.print("{d}", .{dst_reg});
-    try writer.writeAll(" = ");
-}
-
-fn countStringConstants(function_decl: ir.Function) usize {
-    var count: usize = 0;
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_string => count += 1,
-            else => {},
-        }
-    }
-    return count;
-}
-
-fn freeStringList(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8)) void {
-    for (list.items) |item| allocator.free(item);
-    list.deinit();
-}
-
-fn freeSymbolNames(allocator: std.mem.Allocator, symbols: *std.AutoHashMapUnmanaged(u32, []const u8)) void {
-    var iterator = symbols.iterator();
-    while (iterator.next()) |entry| {
-        allocator.free(entry.value_ptr.*);
-    }
-    symbols.deinit(allocator);
-}
-
-fn writeTextFile(path: []const u8, data: []const u8) !void {
-    if (std.fs.path.isAbsolute(path)) {
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(data);
-        return;
-    }
-    try std.fs.cwd().writeFile(.{
-        .sub_path = path,
-        .data = data,
-    });
-}
-
-fn emitObjectFileViaZigCc(
-    allocator: std.mem.Allocator,
-    api: *const llvm.Api,
-    module_ref: llvm.c.LLVMModuleRef,
-    object_path: []const u8,
-) !void {
-    const ir_text_z = api.LLVMPrintModuleToString(module_ref);
-    defer api.LLVMDisposeMessage(ir_text_z);
-
-    const ir_text = std.mem.span(ir_text_z);
-    const ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{object_path});
-    defer allocator.free(ir_path);
-    defer std.fs.cwd().deleteFile(ir_path) catch {};
-
-    try std.fs.cwd().writeFile(.{
-        .sub_path = ir_path,
-        .data = ir_text,
-    });
-
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ build_options.zig_exe, "cc", "-c", "-x", "ir", "-o", object_path, ir_path },
-        .max_output_bytes = 512 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term != .Exited or result.term.Exited != 0) {
-        return error.ObjectEmissionFailed;
-    }
-}
-
-fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, function_decl: ir.Function) ![]ir.ValueType {
-    const register_types = try allocator.alloc(ir.ValueType, function_decl.register_count);
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_int => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
-            .const_string => |value| register_types[value.dst] = .{ .kind = .string },
-            .const_bool => |value| register_types[value.dst] = .{ .kind = .boolean },
-            .const_null_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
-            .alloc_struct => |value| register_types[value.dst] = .{ .kind = .ffi_struct, .name = value.type_name },
-            .const_function => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
-            .add => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
-            .store_local => {},
-            .load_local => |value| register_types[value.dst] = function_decl.local_types[value.local],
-            .field_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.owner_type_name },
-            .load_indirect => |value| register_types[value.dst] = value.ty,
-            .store_indirect, .copy_indirect => {},
-            .print => {},
-            .call => |value| if (value.dst) |dst| {
-                const callee_decl = functionById(program, value.callee) orelse return error.UnknownFunction;
-                register_types[dst] = callee_decl.return_type;
-            },
-            .ret => {},
-        }
-    }
-    return register_types;
-}
-
-fn functionExecutionById(program: ir.Program, function_id: u32) ?runtime_abi.FunctionExecution {
+pub fn collectCallValueDispatchers(allocator: std.mem.Allocator, program: ir.Program) ![]CallValueDispatcher {
+    var dispatchers = std.array_list.Managed(CallValueDispatcher).init(allocator);
     for (program.functions) |function_decl| {
-        if (function_decl.id == function_id) return function_decl.execution;
-    }
-    return null;
-}
-
-fn functionById(program: ir.Program, function_id: u32) ?ir.Function {
-    for (program.functions) |function_decl| {
-        if (function_decl.id == function_id) return function_decl;
-    }
-    return null;
-}
-
-fn buildTextExternDecl(
-    allocator: std.mem.Allocator,
-    request: backend_api.CompileRequest,
-    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
-    function_decl: ir.Function,
-) ![]const u8 {
-    _ = request;
-    var output = std.array_list.Managed(u8).init(allocator);
-    errdefer output.deinit();
-    var writer = output.writer();
-    try writer.writeAll("declare ");
-    try writer.writeAll(llvmCallTypeText(function_decl.return_type, true));
-    try writer.writeByte(' ');
-    try writeLlvmSymbol(writer, symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration);
-    try writer.writeByte('(');
-    for (function_decl.param_types, 0..) |param_type, index| {
-        if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(llvmCallTypeText(param_type, true));
-    }
-    try writer.writeAll(")\n");
-    return output.toOwnedSlice();
-}
-
-fn buildHybridBridgeWrapper(
-    allocator: std.mem.Allocator,
-    symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
-    function_decl: ir.Function,
-) ![]const u8 {
-    var output = std.array_list.Managed(u8).init(allocator);
-    errdefer output.deinit();
-    var writer = output.writer();
-
-    const export_name = try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id});
-    defer allocator.free(export_name);
-    const impl_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
-
-    try writer.writeAll("define ");
-    if (builtin.os.tag == .windows) {
-        try writer.writeAll("dllexport ");
-    }
-    try writer.writeAll("void ");
-    try writeLlvmSymbol(writer, export_name);
-    try writer.writeAll("(ptr %args, i32 %arg_count, ptr %out_result) {\nentry:\n");
-
-    for (function_decl.param_types, 0..) |param_type, index| {
-        try writer.writeAll("  %bridge.slot.");
-        try writer.print("{d}", .{index});
-        try writer.print(" = getelementptr inbounds %kira.bridge.value, ptr %args, i64 {d}\n", .{index});
-        try writer.writeAll("  %bridge.load.");
-        try writer.print("{d}", .{index});
-        try writer.writeAll(" = load %kira.bridge.value, ptr %bridge.slot.");
-        try writer.print("{d}\n", .{index});
-        switch (param_type.kind) {
-            .integer, .raw_ptr, .ffi_struct => {
-                try writer.writeAll("  %bridge.word0.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 2\n");
-            },
-            .boolean => {
-                try writer.writeAll("  %bridge.word0.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 2\n");
-                try writer.writeAll("  %bridge.bool.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = trunc i64 %bridge.word0.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" to i1\n");
-            },
-            .string => {
-                try writer.writeAll("  %bridge.ptrint.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 2\n");
-                try writer.writeAll("  %bridge.len.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 3\n");
-                try writer.writeAll("  %bridge.ptr.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = inttoptr i64 %bridge.ptrint.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" to ptr\n");
-                try writer.writeAll("  %bridge.str.init.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = insertvalue %kira.string zeroinitializer, ptr %bridge.ptr.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 0\n");
-                try writer.writeAll("  %bridge.str.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(" = insertvalue %kira.string %bridge.str.init.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", i64 %bridge.len.");
-                try writer.print("{d}", .{index});
-                try writer.writeAll(", 1\n");
-            },
-            .void, .float => {},
+        for (function_decl.instructions) |instruction| {
+            if (instruction != .call_value) continue;
+            const call_inst = instruction.call_value;
+            const hash = hashCallValueSignature(call_inst.param_types, call_inst.return_type);
+            var found = false;
+            for (dispatchers.items) |existing| {
+                if (existing.hash != hash) continue;
+                if (!sameCallValueSignature(existing.param_types, existing.return_type, call_inst.param_types, call_inst.return_type)) {
+                    return error.UnsupportedExecutableFeature;
+                }
+                found = true;
+                break;
+            }
+            if (!found) {
+                try dispatchers.append(.{
+                    .hash = hash,
+                    .param_types = call_inst.param_types,
+                    .return_type = call_inst.return_type,
+                });
+            }
         }
     }
+    return dispatchers.toOwnedSlice();
+}
 
-    if (function_decl.return_type.kind == .void) {
-        try writer.writeAll("  call void ");
+pub fn hashCallValueSignature(param_types: []const ir.ValueType, return_type: ir.ValueType) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    for (param_types) |param_type| hashValueType(&hasher, param_type);
+    hasher.update(&.{0xff});
+    hashValueType(&hasher, return_type);
+    return hasher.final();
+}
+
+pub fn hashValueType(hasher: *std.hash.Wyhash, value_type: ir.ValueType) void {
+    hasher.update(&.{@intFromEnum(value_type.kind)});
+    if (value_type.name) |name| {
+        hasher.update(&.{1});
+        hasher.update(name);
     } else {
-        try writer.writeAll("  %bridge.call = call ");
-        try writer.writeAll(llvmValueTypeText(function_decl.return_type));
-        try writer.writeByte(' ');
+        hasher.update(&.{0});
     }
-    try writeLlvmSymbol(writer, impl_name);
-    try writer.writeByte('(');
-    for (function_decl.param_types, 0..) |param_type, index| {
-        if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(llvmValueTypeText(param_type));
-        try writer.writeByte(' ');
-        switch (param_type.kind) {
-            .integer, .raw_ptr, .ffi_struct => {
-                try writer.writeAll("%bridge.word0.");
-                try writer.print("{d}", .{index});
-            },
-            .boolean => {
-                try writer.writeAll("%bridge.bool.");
-                try writer.print("{d}", .{index});
-            },
-            .string => {
-                try writer.writeAll("%bridge.str.");
-                try writer.print("{d}", .{index});
-            },
-            .void, .float => try writer.writeAll("undef"),
-        }
+}
+
+pub fn sameCallValueSignature(
+    lhs_params: []const ir.ValueType,
+    lhs_return: ir.ValueType,
+    rhs_params: []const ir.ValueType,
+    rhs_return: ir.ValueType,
+) bool {
+    if (lhs_params.len != rhs_params.len) return false;
+    for (lhs_params, 0..) |lhs, index| {
+        const rhs = rhs_params[index];
+        if (!sameValueType(lhs, rhs)) return false;
     }
-    try writer.writeAll(")\n");
-
-    try writer.writeAll("  %bridge.out.0 = insertvalue %kira.bridge.value zeroinitializer, i8 ");
-    try writer.print("{d}", .{bridgeTagValue(function_decl.return_type)});
-    try writer.writeAll(", 0\n");
-    switch (function_decl.return_type.kind) {
-        .void => {
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
-        },
-        .integer, .raw_ptr, .ffi_struct => {
-            try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.call, 2\n");
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
-        },
-        .boolean => {
-            try writer.writeAll("  %bridge.ret.bool = zext i1 %bridge.call to i64\n");
-            try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.ret.bool, 2\n");
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
-        },
-        .float => {
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
-        },
-        .string => {
-            try writer.writeAll("  %bridge.ret.ptr = extractvalue %kira.string %bridge.call, 0\n");
-            try writer.writeAll("  %bridge.ret.ptrint = ptrtoint ptr %bridge.ret.ptr to i64\n");
-            try writer.writeAll("  %bridge.ret.len = extractvalue %kira.string %bridge.call, 1\n");
-            try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.ret.ptrint, 2\n");
-            try writer.writeAll("  %bridge.out.2 = insertvalue %kira.bridge.value %bridge.out.1, i64 %bridge.ret.len, 3\n");
-            try writer.writeAll("  store %kira.bridge.value %bridge.out.2, ptr %out_result\n");
-        },
-    }
-    try writer.writeAll("  ret void\n}\n");
-    return output.toOwnedSlice();
+    return sameValueType(lhs_return, rhs_return);
 }
 
-fn bridgeTagValue(value_type: ir.ValueType) u8 {
-    return switch (value_type.kind) {
-        .void => 0,
-        .integer => 1,
-        .float => 1,
-        .string => 2,
-        .boolean => 3,
-        .raw_ptr, .ffi_struct => 4,
-    };
-}
-
-fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: backend_api.BackendMode) runtime_abi.FunctionExecution {
-    return switch (execution) {
-        .inherited => switch (mode) {
-            .llvm_native => .native,
-            .hybrid => .runtime,
-            .vm_bytecode => .runtime,
-        },
-        else => execution,
-    };
-}
-
-fn requiresTextIrFallback(program: ir.Program, mode: backend_api.BackendMode) bool {
-    if (mode == .vm_bytecode) return false;
-
-    for (program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, mode)) continue;
-        if (functionDeclNeedsTextIrFallback(program, function_decl, mode)) return true;
-    }
-    return false;
-}
-
-fn functionDeclNeedsTextIrFallback(program: ir.Program, function_decl: ir.Function, mode: backend_api.BackendMode) bool {
-    if (function_decl.is_extern) return true;
-    if (function_decl.param_types.len != 0) return true;
-    if (function_decl.return_type.kind != .void) return true;
-
-    for (function_decl.local_types) |local_type| {
-        if (local_type.kind == .ffi_struct) return true;
-    }
-
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_int, .const_string, .const_bool, .const_null_ptr, .add, .store_local, .load_local => {},
-            .alloc_struct, .const_function, .field_ptr, .load_indirect, .store_indirect, .copy_indirect => return true,
-            .print => |value| if (value.ty.kind != .integer and value.ty.kind != .string) return true,
-            .call => |value| {
-                if (value.args.len != 0 or value.dst != null) return true;
-                const callee_execution = functionExecutionById(program, value.callee) orelse return true;
-                if (resolveExecution(callee_execution, mode) == .runtime and mode != .hybrid) return true;
-            },
-            .ret => |value| if (value.src != null) return true,
-        }
-    }
-
-    return false;
-}
-
-test "detects fallback features for llvm c api lowering" {
-    const program = ir.Program{
-        .types = &.{},
-        .functions = &.{
-            .{
-                .id = 0,
-                .name = "main",
-                .execution = .native,
-                .param_types = &.{},
-                .return_type = .{ .kind = .void },
-                .register_count = 1,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{
-                    .{ .const_function = .{ .dst = 0, .function_id = 1 } },
-                    .{ .ret = .{ .src = null } },
-                },
-            },
-            .{
-                .id = 1,
-                .name = "callback",
-                .execution = .native,
-                .param_types = &.{},
-                .return_type = .{ .kind = .void },
-                .register_count = 0,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{.{ .ret = .{ .src = null } }},
-            },
-        },
-        .entry_index = 0,
-    };
-
-    try std.testing.expect(requiresTextIrFallback(program, .llvm_native));
-}
-
-fn hostTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
-    return switch (builtin.os.tag) {
-        .windows => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-pc-windows-gnu" else "x86_64-pc-windows-msvc"),
-            else => error.UnsupportedTarget,
-        },
-        .linux => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, "x86_64-pc-linux-gnu"),
-            else => error.UnsupportedTarget,
-        },
-        .macos => switch (builtin.cpu.arch) {
-            .aarch64 => allocator.dupe(u8, "arm64-apple-macosx"),
-            else => error.UnsupportedTarget,
-        },
-        else => error.UnsupportedTarget,
-    };
-}
-
-fn ensureParentDir(path: []const u8) !void {
-    const maybe_dir = std.fs.path.dirname(path) orelse return;
-    try std.fs.cwd().makePath(maybe_dir);
-}
-
-fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
-    const rendered = try std.fmt.allocPrint(allocator, fmt, args);
-    return allocator.dupeZ(u8, rendered);
+pub fn sameValueType(lhs: ir.ValueType, rhs: ir.ValueType) bool {
+    if (lhs.kind != rhs.kind) return false;
+    if (lhs.name == null or rhs.name == null) return lhs.name == null and rhs.name == null;
+    return std.mem.eql(u8, lhs.name.?, rhs.name.?);
 }
