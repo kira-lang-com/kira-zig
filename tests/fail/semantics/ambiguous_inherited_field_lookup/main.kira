@@ -1,0 +1,18 @@
+struct Left {
+    let value: I64 = 1
+}
+
+struct Right {
+    let value: I64 = 2
+}
+
+class Child extends Left, Right {
+    function read(): I64 {
+        return value
+    }
+}
+
+@Main
+function entry() {
+    return
+}

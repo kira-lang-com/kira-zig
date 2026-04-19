@@ -1,0 +1,7 @@
+@Main
+function main() {
+    for item in [10, 20, 30] {
+        print("loop")
+    }
+    return
+}

@@ -1,0 +1,26 @@
+struct Left {
+    let value: I64 = 1
+
+    function read() -> I64 {
+        return value
+    }
+}
+
+struct Right {
+    let value: I64 = 2
+
+    function read() -> I64 {
+        return value
+    }
+}
+
+class Child extends Left {
+    function callOther(): I64 {
+        return Right.read()
+    }
+}
+
+@Main
+function entry() {
+    return
+}

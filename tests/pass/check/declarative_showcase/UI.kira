@@ -1,3 +1,18 @@
+annotation State {
+}
+
+annotation Binding {
+}
+
+annotation Env {
+}
+
+annotation Doc {
+    parameters {
+        text: String
+    }
+}
+
 construct Widget {
     annotations {
         @State;

@@ -1,0 +1,8 @@
+import support as Support
+
+@Main
+function main() {
+    let app: Support.Application = Support.Application()
+    print(app.run())
+    return
+}

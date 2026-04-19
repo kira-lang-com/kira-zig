@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM056"
+diagnostic_title = "ambiguous inherited method lookup"
+stage = "semantics"

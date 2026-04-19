@@ -1,0 +1,33 @@
+@Main
+function main() {
+    let value = 1
+    var score = 0
+
+    if value == 1 {
+        print("then")
+        score = score + 10
+    } else {
+        print("else")
+        score = score + 1
+    }
+
+    switch value {
+        case 1 {
+            print("case-one")
+            score = score + 20
+        }
+        case 2 {
+            print("case-two")
+            score = score + 200
+        }
+    }
+
+    if score == 30 {
+        print("matched")
+    } else {
+        print("broken")
+    }
+
+    print(score)
+    return
+}

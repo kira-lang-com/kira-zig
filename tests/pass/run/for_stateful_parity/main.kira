@@ -1,0 +1,26 @@
+@Main
+function main() {
+    var total = 0
+
+    for item in [1, 1, 1] {
+        total = total + 1
+        switch total {
+            case 1 {
+                print("one")
+            }
+            case 2 {
+                print("two")
+            }
+            default {
+                print("other")
+            }
+        }
+    }
+
+    if total == 3 {
+        print("done")
+    } else {
+        print("broken")
+    }
+    return
+}

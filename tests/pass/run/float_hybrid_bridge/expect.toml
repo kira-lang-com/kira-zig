@@ -1,0 +1,3 @@
+mode = "run"
+backends = ["hybrid"]
+stdout = "5.5\n"

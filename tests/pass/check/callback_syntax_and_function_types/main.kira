@@ -1,0 +1,18 @@
+function sink(value: Int) {
+    print(value);
+    return;
+}
+
+function register(handler: (Int) -> Void) {
+    return;
+}
+
+@Main
+function main() {
+    let callback: (Int) -> Void = sink;
+    register { value in
+        sink(value);
+    }
+    callback(1);
+    return;
+}

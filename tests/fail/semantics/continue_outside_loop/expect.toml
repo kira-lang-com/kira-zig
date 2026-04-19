@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM076"
+diagnostic_title = "continue requires a loop"
+stage = "semantics"

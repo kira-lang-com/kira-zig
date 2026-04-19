@@ -1,0 +1,7 @@
+class Application {
+    let value: I64 = 7
+
+    function run(): I64 {
+        return self.value
+    }
+}

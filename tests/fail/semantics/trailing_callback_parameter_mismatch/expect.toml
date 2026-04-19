@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM083"
+diagnostic_title = "callback parameter list does not match"
+stage = "semantics"

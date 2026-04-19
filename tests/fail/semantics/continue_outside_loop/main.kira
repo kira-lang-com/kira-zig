@@ -1,0 +1,4 @@
+@Main
+function entry() {
+    continue
+}

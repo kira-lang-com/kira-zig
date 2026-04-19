@@ -1,0 +1,11 @@
+@Main
+function main() {
+    print(!false)
+    print(!true)
+    if !false {
+        print("open")
+    } else {
+        print("closed")
+    }
+    return
+}

@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM069"
+diagnostic_title = "missing annotation parameter"
+stage = "semantics"

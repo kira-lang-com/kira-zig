@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM080"
+diagnostic_title = "duplicate struct field"
+stage = "semantics"

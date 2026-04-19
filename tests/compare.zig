@@ -14,9 +14,7 @@ pub fn expectStdout(allocator: std.mem.Allocator, actual: []const u8, expected: 
     const normalized_expected = try normalizeNewlines(allocator, expected);
     defer allocator.free(normalized_expected);
 
-    if (!std.mem.eql(u8, normalized_expected, normalized_actual)) {
-        return error.ExpectationFailed;
-    }
+    if (!std.mem.eql(u8, normalized_expected, normalized_actual)) return error.ExpectationFailed;
 }
 
 pub fn expectEmptyText(allocator: std.mem.Allocator, actual: []const u8) !void {

@@ -1,0 +1,30 @@
+struct Point {
+    let x: Int = 0;
+    let y: Int = 0;
+    let zero: Point = Point(x: 0, y: 0);
+}
+
+struct Rect {
+    let origin: Point = Point.zero;
+    let width: Int = 10;
+
+    function maxX() -> Int {
+        return origin.x + width;
+    }
+}
+
+@Main
+function main() {
+    let rect = Rect {
+        origin: Point {
+            x: 7
+            y: 2
+        }
+        width: 5
+    };
+    let defaultRect = Rect { };
+
+    print(rect.maxX());
+    print(defaultRect.maxX());
+    return;
+}

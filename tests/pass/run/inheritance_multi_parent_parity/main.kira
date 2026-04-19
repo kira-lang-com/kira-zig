@@ -1,0 +1,35 @@
+class Left {
+    let value: I64 = 10
+
+    function doubled(): I64 {
+        return value * 2
+    }
+}
+
+class Right {
+    let bonus: I64 = 5
+
+    function tripled(): I64 {
+        return bonus * 3
+    }
+}
+
+class Child extends Left, Right {
+    override let value = 11
+    override let bonus = 7
+
+    function total(): I64 {
+        return Left.doubled() + Right.tripled() + Left.value + Right.bonus
+    }
+}
+
+@Main
+function main() {
+    let child: Child = Child()
+    print(child.doubled())
+    print(child.tripled())
+    print(child.value)
+    print(child.bonus)
+    print(child.total())
+    return
+}

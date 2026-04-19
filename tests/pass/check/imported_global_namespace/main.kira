@@ -1,5 +1,6 @@
 import UI as Kit
 
+@Kit.Doc("Qualified imported annotation")
 Widget DashboardShell() {
     content {
         Card("Global")

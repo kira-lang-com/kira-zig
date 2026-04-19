@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM061"
+diagnostic_title = "invalid parent-qualified member reference"
+stage = "semantics"

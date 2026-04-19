@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM057"
+diagnostic_title = "ambiguous inherited field lookup"
+stage = "semantics"

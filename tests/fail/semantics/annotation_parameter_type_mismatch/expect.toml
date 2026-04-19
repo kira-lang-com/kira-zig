@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM071"
+diagnostic_title = "annotation parameter type mismatch"
+stage = "semantics"

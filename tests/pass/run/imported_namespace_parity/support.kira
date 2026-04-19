@@ -1,0 +1,3 @@
+function value(): I64 {
+    return 41 + 1
+}

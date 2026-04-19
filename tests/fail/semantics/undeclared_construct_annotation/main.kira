@@ -1,0 +1,10 @@
+construct Widget {
+    annotations {
+        @State;
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

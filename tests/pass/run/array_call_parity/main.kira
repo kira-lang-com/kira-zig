@@ -1,0 +1,16 @@
+@Main
+function main() {
+    let values: [Int] = make_values()
+    for item in values {
+        print(item)
+    }
+    return
+}
+
+function make_values(): [Int] {
+    return pass_through([4, 5, 6])
+}
+
+function pass_through(values: [Int]): [Int] {
+    return values
+}

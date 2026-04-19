@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM055"
+diagnostic_title = "override signature mismatch"
+stage = "semantics"

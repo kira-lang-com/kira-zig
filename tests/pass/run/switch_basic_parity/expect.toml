@@ -1,0 +1,3 @@
+mode = "run"
+backends = ["vm", "llvm", "hybrid"]
+stdout = "two\n"

@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM075"
+diagnostic_title = "break requires a loop"
+stage = "semantics"

@@ -1,0 +1,14 @@
+@Main
+function main() {
+    let base = 8.5
+    let delta = 2.0
+    print(base + delta)
+    print(base - delta)
+    print(base * delta)
+    print(base / delta)
+    print(base % delta)
+    print(-delta)
+    print(base > delta)
+    print(base == 8.5)
+    return
+}

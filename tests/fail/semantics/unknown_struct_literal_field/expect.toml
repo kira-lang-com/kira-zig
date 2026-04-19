@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM082"
+diagnostic_title = "unknown struct field"
+stage = "semantics"

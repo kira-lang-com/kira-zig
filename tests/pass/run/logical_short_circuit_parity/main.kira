@@ -1,0 +1,13 @@
+@Main
+function main() {
+    print(false && emit_true("and-skip"))
+    print(true || emit_true("or-skip"))
+    print(true && emit_true("and-run"))
+    print(false || emit_true("or-run"))
+    return
+}
+
+function emit_true(label: String): Bool {
+    print(label)
+    return true
+}

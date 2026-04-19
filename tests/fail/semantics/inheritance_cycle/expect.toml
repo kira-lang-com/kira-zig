@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM050"
+diagnostic_title = "inheritance cycle"
+stage = "semantics"

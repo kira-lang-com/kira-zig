@@ -1,0 +1,16 @@
+class Base {
+    function ping(value: I64): I64 {
+        return value
+    }
+}
+
+class Child extends Base {
+    override function ping(): I64 {
+        return 1
+    }
+}
+
+@Main
+function entry() {
+    return
+}

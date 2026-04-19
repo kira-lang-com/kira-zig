@@ -1,3 +1,6 @@
+annotation State {
+}
+
 construct Widget {
     annotations {
         @State;

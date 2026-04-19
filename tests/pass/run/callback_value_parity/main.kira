@@ -1,0 +1,36 @@
+class HandlerBox {
+    let onDone: () -> Void
+    let onValue: (Int) -> Void
+}
+
+function invokeLater(callback: () -> Void) {
+    callback()
+    return
+}
+
+function sayHi() {
+    print("hi")
+    return
+}
+
+function trigger(box: HandlerBox) {
+    box.onDone()
+    box.onValue(42)
+    return
+}
+
+@Main
+function main() {
+    let callback: () -> Void = sayHi
+    let printer: (Int) -> Void = { value in
+        print(value)
+    }
+
+    callback()
+    printer(7)
+    invokeLater(callback)
+
+    let box: HandlerBox = HandlerBox(callback, printer)
+    trigger(box)
+    return
+}

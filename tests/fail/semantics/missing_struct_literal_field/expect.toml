@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM081"
+diagnostic_title = "missing required struct field"
+stage = "semantics"

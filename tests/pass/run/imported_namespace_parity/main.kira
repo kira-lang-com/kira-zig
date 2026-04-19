@@ -1,0 +1,7 @@
+import support as Support
+
+@Main
+function main() {
+    print(Support.value())
+    return
+}

@@ -1,0 +1,15 @@
+class Counter {
+    let value: I64 = 1
+
+    function bump() {
+        value = 2;
+        return;
+    }
+}
+
+@Main
+function entry() {
+    let counter: Counter = Counter();
+    counter.bump();
+    return;
+}

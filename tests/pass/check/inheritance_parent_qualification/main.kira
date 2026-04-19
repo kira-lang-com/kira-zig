@@ -1,0 +1,28 @@
+class Left {
+    let value: I64 = 1
+
+    function read(): I64 {
+        return value
+    }
+}
+
+class Right {
+    let value: I64 = 2
+
+    function read(): I64 {
+        return value
+    }
+}
+
+class Child extends Left, Right {
+    function combine(): I64 {
+        return Left.read() + Right.read() + Left.value + Right.value
+    }
+}
+
+@Main
+function entry() {
+    let child: Child = Child()
+    child.combine()
+    return
+}

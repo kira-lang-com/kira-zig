@@ -1,0 +1,11 @@
+struct Point {
+    let x: Int = 0
+    let y: Int = 0
+}
+
+@Main
+function entry() {
+    let point = Point { x: 1 y: 2 x: 3 }
+    print(point.x)
+    return
+}

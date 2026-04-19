@@ -1,0 +1,9 @@
+@Main
+function main() {
+    for item in [] {
+        print("unreachable")
+    }
+
+    print("done")
+    return
+}

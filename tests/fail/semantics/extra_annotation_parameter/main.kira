@@ -1,0 +1,25 @@
+annotation State {
+}
+
+construct Widget {
+    annotations {
+        @State;
+    }
+
+    requires {
+        content;
+    }
+}
+
+Widget Button() {
+    @State(1)
+    let isPressed: Bool = false;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

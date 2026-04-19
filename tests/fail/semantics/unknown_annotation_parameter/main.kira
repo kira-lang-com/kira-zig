@@ -1,0 +1,28 @@
+annotation Attribute {
+    parameters {
+        index: Int
+    }
+}
+
+construct Widget {
+    annotations {
+        @Attribute;
+    }
+
+    requires {
+        content;
+    }
+}
+
+Widget Button() {
+    @Attribute(offset: 0)
+    let position: Float = 0.0;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

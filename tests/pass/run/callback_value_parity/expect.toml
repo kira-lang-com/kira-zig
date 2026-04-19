@@ -1,0 +1,3 @@
+mode = "run"
+backends = ["vm", "llvm", "hybrid"]
+stdout = "hi\n7\nhi\nhi\n42\n"

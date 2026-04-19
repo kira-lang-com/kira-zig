@@ -1,0 +1,11 @@
+function register(handler: (Int) -> Void) {
+    return;
+}
+
+@Main
+function main() {
+    register { in
+        return;
+    }
+    return;
+}

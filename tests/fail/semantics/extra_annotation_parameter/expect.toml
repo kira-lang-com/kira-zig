@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM064"
+diagnostic_title = "annotation does not accept parameters"
+stage = "semantics"

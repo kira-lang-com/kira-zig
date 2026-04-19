@@ -1,0 +1,18 @@
+import support as Support
+
+class Child extends Support.ImportedBase {
+    override let base = 33
+
+    function total(): I64 {
+        return ImportedBase.baseValue() + ImportedBase.base
+    }
+}
+
+@Main
+function main() {
+    let child: Child = Child()
+    print(child.baseValue())
+    print(child.base)
+    print(child.total())
+    return
+}

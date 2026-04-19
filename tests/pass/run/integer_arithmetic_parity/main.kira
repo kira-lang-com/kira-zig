@@ -1,0 +1,10 @@
+@Main
+function main() {
+    let base = 8
+    print(base - 3)
+    print(base * 2)
+    print(base / 2)
+    print(base % 3)
+    print(-5)
+    return
+}

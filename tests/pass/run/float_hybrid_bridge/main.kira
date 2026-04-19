@@ -1,0 +1,12 @@
+@Main
+@Runtime
+function main() {
+    let result = native_mix(3.5, 2.0)
+    print(result)
+    return
+}
+
+@Native
+function native_mix(left: F64, right: F64): F64 {
+    return left + right
+}

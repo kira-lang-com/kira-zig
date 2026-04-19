@@ -1,0 +1,14 @@
+class Counter {
+    let value: I64
+
+    function emit(): I64 {
+        return self.value
+    }
+}
+
+@Main
+function main() {
+    let counter: Counter = Counter(42)
+    print(counter.emit())
+    return
+}

@@ -1,0 +1,10 @@
+@Main
+function main() {
+    let left = true ? 7 : 9
+    let right = false ? "bad" : "ok"
+    let mixed = false ? 1 : 2.5
+    print(left)
+    print(right)
+    print(mixed)
+    return
+}

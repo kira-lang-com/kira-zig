@@ -1,0 +1,22 @@
+class Left {
+    function ping(): I64 {
+        return 1
+    }
+}
+
+class Right {
+    function ping(): I64 {
+        return 2
+    }
+}
+
+class Child extends Left, Right {
+    function read(): I64 {
+        return ping()
+    }
+}
+
+@Main
+function entry() {
+    return
+}

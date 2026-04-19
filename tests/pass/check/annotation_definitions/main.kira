@@ -1,0 +1,46 @@
+annotation State {
+}
+
+annotation Attribute {
+    parameters {
+        index: Int
+    }
+}
+
+annotation InputMapping {
+    parameters {
+        priority: Int = 0
+        blocksLowerPriorityMappings: Bool = false
+    }
+}
+
+construct Widget {
+    annotations {
+        @State;
+        @Attribute;
+        @InputMapping;
+    }
+
+    requires {
+        content;
+    }
+}
+
+Widget Button() {
+    @State
+    let isPressed: Bool = false;
+
+    @Attribute(0)
+    let position: Float = 0.0;
+
+    @InputMapping
+    let mapping: Int = 1;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}

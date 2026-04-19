@@ -1,0 +1,7 @@
+class ImportedBase {
+    let base: I64 = 30
+
+    function baseValue(): I64 {
+        return base
+    }
+}
