@@ -238,12 +238,21 @@ fn isIdentifierContinue(byte: u8) bool {
 }
 
 fn keywordKind(lexeme: []const u8) syntax.TokenKind {
+    if (std.mem.eql(u8, lexeme, "annotation")) return .kw_annotation;
+    if (std.mem.eql(u8, lexeme, "capability")) return .kw_capability;
+    if (std.mem.eql(u8, lexeme, "class")) return .kw_class;
     if (std.mem.eql(u8, lexeme, "construct")) return .kw_construct;
+    if (std.mem.eql(u8, lexeme, "struct")) return .kw_struct;
     if (std.mem.eql(u8, lexeme, "type")) return .kw_type;
+    if (std.mem.eql(u8, lexeme, "extends")) return .kw_extends;
     if (std.mem.eql(u8, lexeme, "function")) return .kw_function;
+    if (std.mem.eql(u8, lexeme, "generated")) return .kw_generated;
+    if (std.mem.eql(u8, lexeme, "override")) return .kw_override;
+    if (std.mem.eql(u8, lexeme, "overridable")) return .kw_overridable;
+    if (std.mem.eql(u8, lexeme, "targets")) return .kw_targets;
+    if (std.mem.eql(u8, lexeme, "uses")) return .kw_uses;
     if (std.mem.eql(u8, lexeme, "let")) return .kw_let;
     if (std.mem.eql(u8, lexeme, "var")) return .kw_var;
-    if (std.mem.eql(u8, lexeme, "static")) return .kw_static;
     if (std.mem.eql(u8, lexeme, "return")) return .kw_return;
     if (std.mem.eql(u8, lexeme, "import")) return .kw_import;
     if (std.mem.eql(u8, lexeme, "as")) return .kw_as;
@@ -301,18 +310,35 @@ test "tokenizes modern expression and member syntax" {
     const source = try source_pkg.SourceFile.initOwned(
         allocator,
         "modern.kira",
-        "type Rect { static let zero: Rect = Rect(x: 0.0) function contains(point: Point) -> Bool { return point.x >= 0.0 && point.y >= 0.0 ? true : false } }",
+        "class Rect { let zero: Rect = Rect(x: 0.0) function contains(point: Point) -> Bool { return point.x >= 0.0 && point.y >= 0.0 ? true : false } }",
     );
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const tokens = try tokenize(allocator, &source, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(syntax.TokenKind.kw_static, tokens[4].kind);
-    try std.testing.expectEqual(syntax.TokenKind.kw_let, tokens[5].kind);
-    try std.testing.expectEqual(syntax.TokenKind.arrow, tokens[21].kind);
-    try std.testing.expectEqual(syntax.TokenKind.amp_amp, tokens[34].kind);
-    try std.testing.expectEqual(syntax.TokenKind.question, tokens[40].kind);
-    try std.testing.expectEqual(syntax.TokenKind.colon, tokens[42].kind);
+    try std.testing.expectEqual(syntax.TokenKind.kw_let, tokens[4].kind);
+    try std.testing.expectEqual(syntax.TokenKind.arrow, tokens[20].kind);
+    try std.testing.expectEqual(syntax.TokenKind.amp_amp, tokens[33].kind);
+    try std.testing.expectEqual(syntax.TokenKind.question, tokens[39].kind);
+    try std.testing.expectEqual(syntax.TokenKind.colon, tokens[41].kind);
+}
+
+test "tokenizes inheritance keywords" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(
+        allocator,
+        "inheritance.kira",
+        "class Dog extends Animal, Pet { override function run() { return; } }",
+    );
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = try tokenize(allocator, &source, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(syntax.TokenKind.kw_extends, tokens[2].kind);
+    try std.testing.expectEqual(syntax.TokenKind.kw_override, tokens[7].kind);
 }
 
 test "tokenizes the checked-in Kira corpus" {

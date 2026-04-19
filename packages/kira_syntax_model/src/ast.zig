@@ -8,6 +8,8 @@ pub const Program = struct {
 };
 
 pub const Decl = union(enum) {
+    annotation_decl: AnnotationDecl,
+    capability_decl: CapabilityDecl,
     function_decl: FunctionDecl,
     type_decl: TypeDecl,
     construct_decl: ConstructDecl,
@@ -64,8 +66,45 @@ pub const AnnotationBlockField = struct {
     span: Span,
 };
 
+pub const AnnotationDecl = struct {
+    name: []const u8,
+    targets: []AnnotationTarget,
+    uses: []QualifiedName,
+    parameters: []AnnotationParameterDecl,
+    generated_members: []GeneratedMember,
+    span: Span,
+};
+
+pub const CapabilityDecl = struct {
+    name: []const u8,
+    generated_members: []GeneratedMember,
+    span: Span,
+};
+
+pub const AnnotationTarget = enum {
+    class,
+    struct_decl,
+    function,
+    construct,
+    field,
+};
+
+pub const AnnotationParameterDecl = struct {
+    name: []const u8,
+    type_expr: *TypeExpr,
+    default_value: ?*Expr,
+    span: Span,
+};
+
+pub const GeneratedMember = struct {
+    overridable: bool,
+    member: BodyMember,
+    span: Span,
+};
+
 pub const FunctionDecl = struct {
     annotations: []const Annotation,
+    is_override: bool = false,
     name: []const u8,
     params: []ParamDecl,
     return_type: ?*TypeExpr,
@@ -88,10 +127,17 @@ pub const ParamDecl = struct {
 };
 
 pub const TypeDecl = struct {
+    kind: TypeKind,
     annotations: []const Annotation,
     name: []const u8,
+    parents: []QualifiedName,
     members: []BodyMember,
     span: Span,
+};
+
+pub const TypeKind = enum {
+    class,
+    struct_decl,
 };
 
 pub const ConstructDecl = struct {
@@ -172,7 +218,7 @@ pub const BodyMember = union(enum) {
 
 pub const FieldDecl = struct {
     annotations: []const Annotation,
-    is_static: bool,
+    is_override: bool = false,
     storage: FieldStorage,
     name: []const u8,
     type_expr: ?*TypeExpr,
@@ -215,6 +261,7 @@ pub const Statement = union(enum) {
 
 pub const LetStatement = struct {
     annotations: []const Annotation,
+    storage: FieldStorage,
     name: []const u8,
     type_expr: ?*TypeExpr,
     value: ?*Expr,
@@ -435,6 +482,14 @@ pub fn dumpProgram(writer: anytype, program: Program) !void {
 
 fn dumpDecl(writer: anytype, decl: Decl, depth: usize) anyerror!void {
     switch (decl) {
+        .annotation_decl => |annotation_decl| {
+            try indent(writer, depth);
+            try writer.print("Annotation {s}\n", .{annotation_decl.name});
+        },
+        .capability_decl => |capability_decl| {
+            try indent(writer, depth);
+            try writer.print("Capability {s}\n", .{capability_decl.name});
+        },
         .function_decl => |function_decl| {
             try indent(writer, depth);
             try writer.print("Function {s}\n", .{function_decl.name});
@@ -444,7 +499,7 @@ fn dumpDecl(writer: anytype, decl: Decl, depth: usize) anyerror!void {
         },
         .type_decl => |type_decl| {
             try indent(writer, depth);
-            try writer.print("Type {s}\n", .{type_decl.name});
+            try writer.print("{s} {s}\n", .{ typeKindLabel(type_decl.kind), type_decl.name });
             for (type_decl.members) |member| try dumpBodyMember(writer, member, depth + 1);
         },
         .construct_decl => |construct_decl| {
@@ -467,9 +522,8 @@ fn dumpBodyMember(writer: anytype, member: BodyMember, depth: usize) anyerror!vo
     switch (member) {
         .field_decl => |field_decl| {
             try indent(writer, depth);
-            try writer.print("Field {s} {s}{s}\n", .{
+            try writer.print("Field {s} {s}\n", .{
                 @tagName(field_decl.storage),
-                if (field_decl.is_static) "static " else "",
                 field_decl.name,
             });
         },
@@ -499,6 +553,13 @@ fn dumpBodyMember(writer: anytype, member: BodyMember, depth: usize) anyerror!vo
 
 fn indent(writer: anytype, depth: usize) !void {
     for (0..depth) |_| try writer.writeAll("  ");
+}
+
+fn typeKindLabel(kind: TypeKind) []const u8 {
+    return switch (kind) {
+        .class => "Class",
+        .struct_decl => "Struct",
+    };
 }
 
 fn dumpBlock(writer: anytype, block: Block, depth: usize) anyerror!void {

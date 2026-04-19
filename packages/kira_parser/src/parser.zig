@@ -91,14 +91,59 @@ const Parser = struct {
     }
 
     fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotation) !?syntax.ast.Decl {
+        if (self.at(.kw_annotation)) {
+            if (annotations.len != 0) {
+                try self.emitUnexpectedToken(
+                    "annotation declarations cannot be annotated",
+                    self.peek(),
+                    "annotation declaration starts here",
+                    "Remove the preceding annotation usage.",
+                );
+                return error.DiagnosticsEmitted;
+            }
+            return .{ .annotation_decl = try self.parseAnnotationDecl() };
+        }
+        if (self.at(.kw_capability)) {
+            if (annotations.len != 0) {
+                try self.emitUnexpectedToken(
+                    "capability declarations cannot be annotated",
+                    self.peek(),
+                    "capability declaration starts here",
+                    "Remove the preceding annotation usage.",
+                );
+                return error.DiagnosticsEmitted;
+            }
+            return .{ .capability_decl = try self.parseCapabilityDecl() };
+        }
         if (self.at(.kw_function)) {
-            return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations) };
+            return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, false) };
+        }
+        if (self.at(.kw_class)) {
+            return .{ .type_decl = try self.parseTypeDeclWithAnnotations(annotations, .class) };
+        }
+        if (self.at(.kw_struct)) {
+            return .{ .type_decl = try self.parseTypeDeclWithAnnotations(annotations, .struct_decl) };
         }
         if (self.at(.kw_type)) {
-            return .{ .type_decl = try self.parseTypeDeclWithAnnotations(annotations) };
+            try self.emitUnexpectedToken(
+                "outdated type declaration syntax",
+                self.peek(),
+                "`type` is no longer the canonical declaration keyword",
+                "Use `class` for inheritable declarations with methods or `struct` for simpler value declarations.",
+            );
+            return error.DiagnosticsEmitted;
         }
         if (self.at(.kw_construct)) {
             return .{ .construct_decl = try self.parseConstructDeclWithAnnotations(annotations) };
+        }
+        if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "func")) {
+            try self.emitUnexpectedToken(
+                "outdated function declaration syntax",
+                self.peek(),
+                "`func` has been replaced by `function`",
+                "Write `function` for function declarations.",
+            );
+            return error.DiagnosticsEmitted;
         }
         if (self.looksLikeConstructFormDecl()) {
             return .{ .construct_form_decl = try self.parseConstructFormDeclWithAnnotations(annotations) };
@@ -109,9 +154,168 @@ const Parser = struct {
             "expected top-level declaration",
             token,
             "expected a declaration here",
-            "Start a declaration with `function`, `type`, `construct`, or a construct-defined declaration form such as `Widget Button(...) { ... }`.",
+            "Start a declaration with `annotation`, `capability`, `class`, `struct`, `function`, `construct`, or a construct-defined declaration form such as `Widget Button(...) { ... }`.",
         );
         return error.DiagnosticsEmitted;
+    }
+
+    fn parseAnnotationDecl(self: *Parser) !syntax.ast.AnnotationDecl {
+        const annotation_token = try self.expect(.kw_annotation, "expected 'annotation'", "annotation declarations start with 'annotation'");
+        const name_token = try self.expect(.identifier, "expected annotation name", "name the annotation here");
+        _ = try self.expect(.l_brace, "expected '{' to start annotation body", "open the annotation body here");
+        var parameters = std.array_list.Managed(syntax.ast.AnnotationParameterDecl).init(self.allocator);
+        var targets = std.array_list.Managed(syntax.ast.AnnotationTarget).init(self.allocator);
+        var uses = std.array_list.Managed(syntax.ast.QualifiedName).init(self.allocator);
+        var generated_members = std.array_list.Managed(syntax.ast.GeneratedMember).init(self.allocator);
+
+        while (!self.at(.r_brace) and !self.at(.eof)) {
+            if (self.at(.kw_targets)) {
+                _ = self.advance();
+                _ = try self.expect(.colon, "expected ':' after targets", "declare annotation targets after `targets:`");
+                while (true) {
+                    try targets.append(try self.parseAnnotationTarget());
+                    if (!self.match(.comma)) break;
+                }
+                _ = self.match(.semicolon);
+                continue;
+            }
+            if (self.at(.kw_uses)) {
+                _ = self.advance();
+                while (true) {
+                    try uses.append(try self.parseQualifiedName("expected capability name after 'uses'"));
+                    if (!self.match(.comma)) break;
+                }
+                _ = self.match(.semicolon);
+                continue;
+            }
+            if (self.at(.kw_generated)) {
+                try generated_members.appendSlice(try self.parseGeneratedBlock());
+                continue;
+            }
+
+            const block_token = try self.expect(.identifier, "expected annotation declaration member", "annotation declarations support `targets: ...`, `uses ...`, `generated { ... }`, and `parameters { ... }`");
+            if (!std.mem.eql(u8, block_token.lexeme, "parameters")) {
+                try self.emitUnexpectedToken(
+                    "unsupported annotation declaration block",
+                    block_token,
+                    "unsupported annotation block here",
+                    "Use `targets: ...`, `uses CapabilityName`, `generated { ... }`, or `parameters { ... }` inside an annotation.",
+                );
+                return error.DiagnosticsEmitted;
+            }
+            _ = try self.expect(.l_brace, "expected '{' after parameters", "open the parameters block here");
+            while (!self.at(.r_brace) and !self.at(.eof)) {
+                try parameters.append(try self.parseAnnotationParameterDecl());
+            }
+            _ = try self.expect(.r_brace, "expected '}' to close parameters", "parameters block should end here");
+        }
+
+        const close = try self.expect(.r_brace, "expected '}' to close annotation body", "annotation body should end here");
+        return .{
+            .name = name_token.lexeme,
+            .targets = try targets.toOwnedSlice(),
+            .uses = try uses.toOwnedSlice(),
+            .parameters = try parameters.toOwnedSlice(),
+            .generated_members = try generated_members.toOwnedSlice(),
+            .span = source_pkg.Span.init(annotation_token.span.start, close.span.end),
+        };
+    }
+
+    fn parseCapabilityDecl(self: *Parser) !syntax.ast.CapabilityDecl {
+        const capability_token = try self.expect(.kw_capability, "expected 'capability'", "capability declarations start with 'capability'");
+        const name_token = try self.expect(.identifier, "expected capability name", "name the capability here");
+        _ = try self.expect(.l_brace, "expected '{' to start capability body", "open the capability body here");
+        var generated_members = std.array_list.Managed(syntax.ast.GeneratedMember).init(self.allocator);
+
+        while (!self.at(.r_brace) and !self.at(.eof)) {
+            if (self.at(.kw_generated)) {
+                try generated_members.appendSlice(try self.parseGeneratedBlock());
+                continue;
+            }
+            try self.emitUnexpectedToken(
+                "unsupported capability declaration member",
+                self.peek(),
+                "capabilities currently declare reusable generated members",
+                "Use `generated { ... }` inside a capability.",
+            );
+            return error.DiagnosticsEmitted;
+        }
+
+        const close = try self.expect(.r_brace, "expected '}' to close capability body", "capability body should end here");
+        return .{
+            .name = name_token.lexeme,
+            .generated_members = try generated_members.toOwnedSlice(),
+            .span = source_pkg.Span.init(capability_token.span.start, close.span.end),
+        };
+    }
+
+    fn parseAnnotationTarget(self: *Parser) !syntax.ast.AnnotationTarget {
+        if (self.match(.kw_class)) return .class;
+        if (self.match(.kw_struct)) return .struct_decl;
+        if (self.match(.kw_function)) return .function;
+        if (self.match(.kw_construct)) return .construct;
+        if (self.match(.identifier)) {
+            const token = self.previous();
+            if (std.mem.eql(u8, token.lexeme, "field")) return .field;
+        }
+        try self.emitUnexpectedToken(
+            "expected annotation target",
+            self.peek(),
+            "target must name a declaration kind",
+            "Use targets such as `class`, `struct`, `function`, `construct`, or `field`.",
+        );
+        return error.DiagnosticsEmitted;
+    }
+
+    fn parseGeneratedBlock(self: *Parser) ![]syntax.ast.GeneratedMember {
+        const generated_token = try self.expect(.kw_generated, "expected 'generated'", "generated member blocks start with 'generated'");
+        _ = try self.expect(.l_brace, "expected '{' to start generated block", "open the generated block here");
+        var members = std.array_list.Managed(syntax.ast.GeneratedMember).init(self.allocator);
+        while (!self.at(.r_brace) and !self.at(.eof)) {
+            try members.append(try self.parseGeneratedMember());
+        }
+        _ = try self.expect(.r_brace, "expected '}' to close generated block", "generated block should end here");
+        _ = generated_token;
+        return members.toOwnedSlice();
+    }
+
+    fn parseGeneratedMember(self: *Parser) !syntax.ast.GeneratedMember {
+        const start_token = self.peek();
+        const overridable = self.match(.kw_overridable);
+        if (self.at(.kw_function)) {
+            const function_decl = try self.parseFunctionDeclWithAnnotations(&.{}, false);
+            return .{
+                .overridable = overridable,
+                .member = .{ .function_decl = function_decl },
+                .span = source_pkg.Span.init(start_token.span.start, function_decl.span.end),
+            };
+        }
+        try self.emitUnexpectedToken(
+            "expected generated member",
+            self.peek(),
+            "generated blocks currently support functions",
+            "Write `function name(...) { ... }` or `overridable function name(...) { ... }`.",
+        );
+        return error.DiagnosticsEmitted;
+    }
+
+    fn parseAnnotationParameterDecl(self: *Parser) !syntax.ast.AnnotationParameterDecl {
+        const name_token = try self.expect(.identifier, "expected annotation parameter name", "name the annotation parameter here");
+        _ = try self.expect(.colon, "expected ':' after annotation parameter name", "declare the parameter type here");
+        const type_expr = try self.parseTypeExpr();
+        var default_value: ?*syntax.ast.Expr = null;
+        var end = typeSpan(type_expr.*).end;
+        if (self.match(.equal)) {
+            default_value = try self.parseExpression();
+            end = exprSpan(default_value.?.*).end;
+        }
+        _ = self.match(.semicolon);
+        return .{
+            .name = name_token.lexeme,
+            .type_expr = type_expr,
+            .default_value = default_value,
+            .span = source_pkg.Span.init(name_token.span.start, end),
+        };
     }
 
     fn parseAnnotations(self: *Parser) ![]syntax.ast.Annotation {
@@ -189,7 +393,7 @@ const Parser = struct {
         };
     }
 
-    fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.FunctionDecl {
+    fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation, is_override: bool) !syntax.ast.FunctionDecl {
         const function_token = try self.expect(.kw_function, "expected 'function'", "function declarations start with 'function'");
         const name_token = try self.expect(.identifier, "expected function name", "name the function here");
         const params = try self.parseParamList();
@@ -205,6 +409,7 @@ const Parser = struct {
         const start = if (annotations.len > 0) annotations[0].span.start else function_token.span.start;
         return .{
             .annotations = annotations,
+            .is_override = is_override,
             .name = name_token.lexeme,
             .params = params,
             .return_type = return_type,
@@ -258,10 +463,29 @@ const Parser = struct {
         return params.toOwnedSlice();
     }
 
-    fn parseTypeDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.TypeDecl {
-        const type_token = try self.expect(.kw_type, "expected 'type'", "type declarations start with 'type'");
-        const name_token = try self.expect(.identifier, "expected type name", "name the type here");
-        _ = try self.expect(.l_brace, "expected '{' to start type body", "open the type body here");
+    fn parseTypeDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation, kind: syntax.ast.TypeKind) !syntax.ast.TypeDecl {
+        const decl_token = if (kind == .class)
+            try self.expect(.kw_class, "expected 'class'", "class declarations start with 'class'")
+        else
+            try self.expect(.kw_struct, "expected 'struct'", "struct declarations start with 'struct'");
+        const name_token = try self.expect(.identifier, "expected declaration name", "name the declaration here");
+        var parents = std.array_list.Managed(syntax.ast.QualifiedName).init(self.allocator);
+        if (self.match(.kw_extends)) {
+            if (kind == .struct_decl) {
+                try self.emitUnexpectedToken(
+                    "struct cannot inherit",
+                    self.previous(),
+                    "`extends` is only valid on classes",
+                    "Use `class` when inheritance is intended, or remove the `extends` clause for a value-oriented struct.",
+                );
+                return error.DiagnosticsEmitted;
+            }
+            while (true) {
+                try parents.append(try self.parseQualifiedName("expected parent type name after 'extends'"));
+                if (!self.match(.comma)) break;
+            }
+        }
+        _ = try self.expect(.l_brace, "expected '{' to start declaration body", "open the declaration body here");
         var members = std.array_list.Managed(syntax.ast.BodyMember).init(self.allocator);
 
         while (!self.at(.r_brace) and !self.at(.eof)) {
@@ -269,11 +493,13 @@ const Parser = struct {
             try members.append(try self.parseBodyMember(annotations_inner));
         }
 
-        const close = try self.expect(.r_brace, "expected '}' to close type body", "type body should end here");
-        const start = if (annotations.len > 0) annotations[0].span.start else type_token.span.start;
+        const close = try self.expect(.r_brace, "expected '}' to close declaration body", "declaration body should end here");
+        const start = if (annotations.len > 0) annotations[0].span.start else decl_token.span.start;
         return .{
+            .kind = kind,
             .annotations = annotations,
             .name = name_token.lexeme,
+            .parents = try parents.toOwnedSlice(),
             .members = try members.toOwnedSlice(),
             .span = source_pkg.Span.init(start, close.span.end),
         };
@@ -310,7 +536,7 @@ const Parser = struct {
                 continue;
             }
             if (self.at(.kw_let)) {
-                try entries.append(.{ .field_decl = try self.parseFieldDecl(&.{}) });
+                try entries.append(.{ .field_decl = try self.parseFieldDecl(&.{}, false) });
                 continue;
             }
             if (self.at(.kw_function)) {
@@ -400,8 +626,18 @@ const Parser = struct {
     }
 
     fn parseBodyMember(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.BodyMember {
-        if (self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_static)) return .{ .field_decl = try self.parseFieldDecl(annotations) };
-        if (self.at(.kw_function)) return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations) };
+        const is_override = self.match(.kw_override);
+        if (self.at(.kw_let) or self.at(.kw_var)) return .{ .field_decl = try self.parseFieldDecl(annotations, is_override) };
+        if (self.at(.kw_function)) return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, is_override) };
+        if (is_override) {
+            try self.emitUnexpectedToken(
+                "expected override member declaration",
+                self.peek(),
+                "override must apply to a field or function declaration",
+                "Use `override function ...`, `override let ...`, or `override var ...` inside a type body.",
+            );
+            return error.DiagnosticsEmitted;
+        }
         if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "content") and self.peekNext().kind == .l_brace) {
             return .{ .content_section = try self.parseContentSection(annotations) };
         }
@@ -409,9 +645,7 @@ const Parser = struct {
         return .{ .named_rule = try self.parseNamedRule() };
     }
 
-    fn parseFieldDecl(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.FieldDecl {
-        const static_token = if (self.match(.kw_static)) self.previous() else null;
-        const is_static = static_token != null;
+    fn parseFieldDecl(self: *Parser, annotations: []const syntax.ast.Annotation, is_override: bool) !syntax.ast.FieldDecl {
         const storage_token = if (self.at(.kw_let) or self.at(.kw_var))
             self.advance()
         else
@@ -431,7 +665,7 @@ const Parser = struct {
         end = try self.consumeFieldTerminator(end);
         return .{
             .annotations = annotations,
-            .is_static = is_static,
+            .is_override = is_override,
             .storage = switch (storage_token.kind) {
                 .kw_let => .immutable,
                 .kw_var => .mutable,
@@ -440,7 +674,7 @@ const Parser = struct {
             .name = name_token.lexeme,
             .type_expr = type_expr,
             .value = value,
-            .span = source_pkg.Span.init(if (annotations.len > 0) annotations[0].span.start else if (static_token) |token| token.span.start else storage_token.span.start, end),
+            .span = source_pkg.Span.init(if (annotations.len > 0) annotations[0].span.start else storage_token.span.start, end),
         };
     }
 
@@ -571,9 +805,10 @@ const Parser = struct {
 
     fn parseStatement(self: *Parser) anyerror!?syntax.ast.Statement {
         const annotations = try self.parseAnnotations();
-        if (self.at(.kw_let)) {
-            const let_token = self.advance();
-            const name_token = try self.expect(.identifier, "expected identifier after 'let'", "write the binding name here");
+        if (self.at(.kw_let) or self.at(.kw_var)) {
+            const storage_token = self.advance();
+            const storage: syntax.ast.FieldStorage = if (storage_token.kind == .kw_var) .mutable else .immutable;
+            const name_token = try self.expect(.identifier, "expected identifier after binding keyword", "write the binding name here");
             var type_expr: ?*syntax.ast.TypeExpr = null;
             var value: ?*syntax.ast.Expr = null;
             var end = name_token.span.end;
@@ -583,13 +818,14 @@ const Parser = struct {
                 value = try self.parseExpression();
                 end = exprSpan(value.?.*).end;
             }
-            end = try self.consumeStatementTerminator(end, "expected ';' after let binding", "terminate the binding with ';'");
+            end = try self.consumeStatementTerminator(end, "expected ';' after binding", "terminate the binding with ';'");
             return .{ .let_stmt = .{
                 .annotations = annotations,
+                .storage = storage,
                 .name = name_token.lexeme,
                 .type_expr = type_expr,
                 .value = value,
-                .span = source_pkg.Span.init(if (annotations.len > 0) annotations[0].span.start else let_token.span.start, end),
+                .span = source_pkg.Span.init(if (annotations.len > 0) annotations[0].span.start else storage_token.span.start, end),
             } };
         }
         if (self.match(.kw_return)) {
@@ -1132,7 +1368,7 @@ const Parser = struct {
 
     fn consumeFieldTerminator(self: *Parser, fallback_end: usize) !usize {
         if (self.match(.semicolon)) return self.previous().span.end;
-        if (self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_function) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_static) or self.isLifecycleHookStart()) {
+        if (self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_function) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_override) or self.isLifecycleHookStart()) {
             return fallback_end;
         }
         if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "content") and self.peekNext().kind == .l_brace) return fallback_end;
@@ -1146,7 +1382,7 @@ const Parser = struct {
     }
 
     fn isStatementBoundary(self: *Parser) bool {
-        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_let) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_switch) or
+        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_switch) or
             self.at(.identifier) or self.at(.integer) or self.at(.float) or self.at(.string) or self.at(.kw_true) or self.at(.kw_false) or self.at(.l_paren) or self.at(.l_bracket) or self.at(.bang) or self.at(.minus);
     }
 
@@ -1217,7 +1453,7 @@ const Parser = struct {
 
     fn recoverToTopLevel(self: *Parser) void {
         if (!self.at(.eof)) _ = self.advance();
-        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
+        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
             _ = self.advance();
         }
     }
@@ -1297,12 +1533,21 @@ fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .integer => "an integer literal",
         .float => "a float literal",
         .string => "a string literal",
+        .kw_annotation => "'annotation'",
+        .kw_capability => "'capability'",
+        .kw_class => "'class'",
         .kw_construct => "'construct'",
+        .kw_struct => "'struct'",
         .kw_type => "'type'",
+        .kw_extends => "'extends'",
         .kw_function => "'function'",
+        .kw_generated => "'generated'",
+        .kw_override => "'override'",
+        .kw_overridable => "'overridable'",
+        .kw_targets => "'targets'",
+        .kw_uses => "'uses'",
         .kw_let => "'let'",
         .kw_var => "'var'",
-        .kw_static => "'static'",
         .kw_return => "'return'",
         .kw_import => "'import'",
         .kw_as => "'as'",
@@ -1435,6 +1680,32 @@ test "parses imports functions and construct declarations" {
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
 }
 
+test "parses annotation declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "annotation State { }\n" ++
+            "annotation Attribute { parameters { index: Int } }\n" ++
+            "annotation InputMapping { parameters { priority: Int = 0 blocksLowerPriorityMappings: Bool = false } }\n",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 3), program.decls.len);
+    try std.testing.expectEqualStrings("State", program.decls[0].annotation_decl.name);
+    try std.testing.expectEqual(@as(usize, 0), program.decls[0].annotation_decl.parameters.len);
+    try std.testing.expectEqualStrings("Attribute", program.decls[1].annotation_decl.name);
+    try std.testing.expectEqual(@as(usize, 1), program.decls[1].annotation_decl.parameters.len);
+    try std.testing.expectEqualStrings("index", program.decls[1].annotation_decl.parameters[0].name);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[2].annotation_decl.parameters.len);
+    try std.testing.expect(program.decls[2].annotation_decl.parameters[0].default_value != null);
+    try std.testing.expect(program.decls[2].annotation_decl.parameters[1].default_value != null);
+}
+
 test "parses builder control flow" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1451,6 +1722,137 @@ test "parses builder control flow" {
     try std.testing.expectEqual(@as(usize, 1), program.decls.len);
 }
 
+test "parses inheritance declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "class Dog extends Animal, Pet {\n" ++
+            "    override function run(): Int { return 1; }\n" ++
+            "    override let name = \"Dog\";\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 2), program.decls.len);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[0].type_decl.parents.len);
+    try std.testing.expect(program.decls[0].type_decl.members[0].function_decl.is_override);
+    try std.testing.expect(program.decls[0].type_decl.members[1].field_decl.is_override);
+}
+
+test "parses qualified extends lists and override members" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "class WorkingDog extends animals.Dog, behavior.Runner {\n" ++
+            "    override function pace(steps: I64): I64 { return steps; }\n" ++
+            "    override var energy: I64 = 9;\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[0].type_decl.parents.len);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[0].type_decl.parents[0].segments.len);
+    try std.testing.expectEqualStrings("animals", program.decls[0].type_decl.parents[0].segments[0].text);
+    try std.testing.expectEqualStrings("Dog", program.decls[0].type_decl.parents[0].segments[1].text);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[0].type_decl.parents[1].segments.len);
+    try std.testing.expectEqualStrings("behavior", program.decls[0].type_decl.parents[1].segments[0].text);
+    try std.testing.expectEqualStrings("Runner", program.decls[0].type_decl.parents[1].segments[1].text);
+    try std.testing.expect(program.decls[0].type_decl.members[0].function_decl.is_override);
+    try std.testing.expect(program.decls[0].type_decl.members[1].field_decl.is_override);
+    try std.testing.expectEqual(syntax.ast.FieldStorage.mutable, program.decls[0].type_decl.members[1].field_decl.storage);
+}
+
+test "parses class struct capability and generated annotation declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "capability Serializable { generated { overridable function toText(): String { return \"ok\" } } }\n" ++
+            "annotation GameItem { targets: class uses Serializable generated { function stableId(): Int { return 1 } } }\n" ++
+            "struct Position { let x: Float = 0.0 }\n" ++
+            "@GameItem class Player extends Base { override function toText(): String { return \"player\" } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 5), program.decls.len);
+    try std.testing.expectEqualStrings("Serializable", program.decls[0].capability_decl.name);
+    try std.testing.expectEqual(@as(usize, 1), program.decls[0].capability_decl.generated_members.len);
+    try std.testing.expectEqual(@as(usize, 1), program.decls[1].annotation_decl.targets.len);
+    try std.testing.expectEqual(@as(usize, 1), program.decls[1].annotation_decl.uses.len);
+    try std.testing.expectEqual(syntax.ast.TypeKind.struct_decl, program.decls[2].type_decl.kind);
+    try std.testing.expectEqual(syntax.ast.TypeKind.class, program.decls[3].type_decl.kind);
+}
+
+test "reports outdated func and type syntax with migration hints" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = parseSource(allocator, "func main() { return; }", &diags);
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("outdated function declaration syntax", diags.items[0].title);
+        try std.testing.expect(diags.items[0].help != null);
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = parseSource(allocator, "type Old { }", &diags);
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("outdated type declaration syntax", diags.items[0].title);
+        try std.testing.expect(diags.items[0].help != null);
+    }
+}
+
+test "reports struct inheritance as invalid syntax" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = parseSource(allocator, "struct Point extends Base { }", &diags);
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try std.testing.expectEqualStrings("struct cannot inherit", diags.items[0].title);
+}
+
+test "reports invalid bare override members" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = parseSource(
+        allocator,
+        "class Dog {\n" ++
+            "    override ready;\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try std.testing.expectEqual(@as(usize, 1), diags.items.len);
+    try std.testing.expectEqualStrings("expected override member declaration", diags.items[0].title);
+}
+
 test "parses the hybrid example corpus shape" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1465,7 +1867,7 @@ test "parses the hybrid example corpus shape" {
     try std.testing.expectEqual(@as(usize, 3), program.decls.len);
 }
 
-test "parses the restored hello example with modern type syntax" {
+test "parses the restored hello example with canonical class/struct syntax" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -1475,7 +1877,7 @@ test "parses the restored hello example with modern type syntax" {
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(@as(usize, 4), program.decls.len);
+    try std.testing.expectEqual(@as(usize, 5), program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
 }
 
