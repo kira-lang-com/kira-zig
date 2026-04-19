@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #if defined(_WIN32)
 #define KIRA_BRIDGE_EXPORT __declspec(dllexport)
@@ -17,13 +18,15 @@ typedef struct {
 typedef enum {
     KIRA_BRIDGE_VALUE_VOID = 0,
     KIRA_BRIDGE_VALUE_INTEGER = 1,
-    KIRA_BRIDGE_VALUE_STRING = 2,
-    KIRA_BRIDGE_VALUE_BOOLEAN = 3,
-    KIRA_BRIDGE_VALUE_RAW_PTR = 4
+    KIRA_BRIDGE_VALUE_FLOAT = 2,
+    KIRA_BRIDGE_VALUE_STRING = 3,
+    KIRA_BRIDGE_VALUE_BOOLEAN = 4,
+    KIRA_BRIDGE_VALUE_RAW_PTR = 5
 } KiraBridgeValueTag;
 
 typedef union {
     int64_t integer;
+    double float64;
     KiraBridgeString string;
     uint8_t boolean;
     uintptr_t raw_ptr;
@@ -35,6 +38,11 @@ typedef struct {
     KiraBridgePayload payload;
 } KiraBridgeValue;
 
+typedef struct {
+    size_t len;
+    KiraBridgeValue *items;
+} KiraArray;
+
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
 
 KIRA_BRIDGE_EXPORT void kira_native_print_i64(int64_t value) {
@@ -42,10 +50,44 @@ KIRA_BRIDGE_EXPORT void kira_native_print_i64(int64_t value) {
     fflush(stdout);
 }
 
+KIRA_BRIDGE_EXPORT void kira_native_print_f64(double value) {
+    printf("%g\n", value);
+    fflush(stdout);
+}
+
 KIRA_BRIDGE_EXPORT void kira_native_print_string(const unsigned char *ptr, size_t len) {
     fwrite(ptr, 1, len, stdout);
     fputc('\n', stdout);
     fflush(stdout);
+}
+
+KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
+    if (len < 0) return NULL;
+    KiraArray *array = (KiraArray *)malloc(sizeof(KiraArray));
+    if (array == NULL) return NULL;
+    array->len = (size_t)len;
+    array->items = array->len == 0 ? NULL : (KiraBridgeValue *)calloc(array->len, sizeof(KiraBridgeValue));
+    return array;
+}
+
+KIRA_BRIDGE_EXPORT int64_t kira_array_len(const KiraArray *array) {
+    return array == NULL ? 0 : (int64_t)array->len;
+}
+
+KIRA_BRIDGE_EXPORT void kira_array_store(KiraArray *array, int64_t index, const KiraBridgeValue *value) {
+    if (array == NULL || index < 0 || (size_t)index >= array->len) return;
+    if (value == NULL) return;
+    array->items[index] = *value;
+}
+
+KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, KiraBridgeValue *out_value) {
+    KiraBridgeValue zero = {0};
+    if (out_value == NULL) return;
+    if (array == NULL || index < 0 || (size_t)index >= array->len) {
+        *out_value = zero;
+        return;
+    }
+    *out_value = array->items[index];
 }
 
 KIRA_BRIDGE_EXPORT void kira_hybrid_install_runtime_invoker(void (*invoker)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *)) {

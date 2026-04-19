@@ -79,6 +79,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(i64, value.value, .little);
                 },
+                .const_float => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u64, @bitCast(value.value), .little);
+                },
                 .const_string => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.value);
@@ -93,15 +97,51 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .const_function => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.function_id, .little);
+                    try writer.writeByte(@intFromEnum(value.representation));
                 },
                 .alloc_struct => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.type_name);
                 },
+                .alloc_array => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.len, .little);
+                },
                 .add => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
                     try writer.writeInt(u32, value.rhs, .little);
+                },
+                .subtract => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                },
+                .multiply => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                },
+                .divide => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                },
+                .modulo => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                },
+                .compare => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                    try writer.writeByte(@intFromEnum(value.op));
+                },
+                .unary => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writer.writeByte(@intFromEnum(value.op));
                 },
                 .store_local => |value| {
                     try writer.writeInt(u32, value.local, .little);
@@ -111,11 +151,32 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.local, .little);
                 },
+                .subobject_ptr => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.base, .little);
+                    try writer.writeInt(u32, value.offset, .little);
+                },
                 .field_ptr => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.base, .little);
-                    try writeString(writer, value.owner_type_name);
-                    try writeString(writer, value.field_name);
+                    try writeString(writer, value.base_type_name);
+                    try writer.writeInt(u32, value.field_index, .little);
+                    try writeTypeRef(writer, value.field_ty);
+                },
+                .array_len => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.array, .little);
+                },
+                .array_get => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.array, .little);
+                    try writer.writeInt(u32, value.index, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .array_set => |value| {
+                    try writer.writeInt(u32, value.array, .little);
+                    try writer.writeInt(u32, value.index, .little);
+                    try writer.writeInt(u32, value.src, .little);
                 },
                 .load_indirect => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -132,12 +193,20 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.src_ptr, .little);
                     try writeString(writer, value.type_name);
                 },
+                .branch => |value| {
+                    try writer.writeInt(u32, value.condition, .little);
+                    try writer.writeInt(u32, value.true_label, .little);
+                    try writer.writeInt(u32, value.false_label, .little);
+                },
+                .jump => |value| try writer.writeInt(u32, value.label, .little),
+                .label => |value| try writer.writeInt(u32, value.id, .little),
                 .print => |value| {
                     try writer.writeInt(u32, value.src, .little);
                     try writeTypeRef(writer, value.ty);
                 },
                 .call_runtime => |value| try writeCall(writer, value.function_id, value.args, value.dst),
                 .call_native => |value| try writeCall(writer, value.function_id, value.args, value.dst),
+                .call_value => |value| try writeIndirectCall(writer, value.callee, value.args, value.dst),
                 .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
             }
         }
@@ -193,6 +262,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.readInt(u32, .little),
                     .value = try reader.readInt(i64, .little),
                 } }),
+                .const_float => try instructions.append(.{ .const_float = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .value = @bitCast(try reader.readInt(u64, .little)),
+                } }),
                 .const_string => try instructions.append(.{ .const_string = .{
                     .dst = try reader.readInt(u32, .little),
                     .value = try readString(allocator, reader),
@@ -207,15 +280,51 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .const_function => try instructions.append(.{ .const_function = .{
                     .dst = try reader.readInt(u32, .little),
                     .function_id = try reader.readInt(u32, .little),
+                    .representation = @enumFromInt(try reader.readByte()),
                 } }),
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
                     .dst = try reader.readInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                 } }),
+                .alloc_array => try instructions.append(.{ .alloc_array = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .len = try reader.readInt(u32, .little),
+                } }),
                 .add => try instructions.append(.{ .add = .{
                     .dst = try reader.readInt(u32, .little),
                     .lhs = try reader.readInt(u32, .little),
                     .rhs = try reader.readInt(u32, .little),
+                } }),
+                .subtract => try instructions.append(.{ .subtract = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .lhs = try reader.readInt(u32, .little),
+                    .rhs = try reader.readInt(u32, .little),
+                } }),
+                .multiply => try instructions.append(.{ .multiply = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .lhs = try reader.readInt(u32, .little),
+                    .rhs = try reader.readInt(u32, .little),
+                } }),
+                .divide => try instructions.append(.{ .divide = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .lhs = try reader.readInt(u32, .little),
+                    .rhs = try reader.readInt(u32, .little),
+                } }),
+                .modulo => try instructions.append(.{ .modulo = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .lhs = try reader.readInt(u32, .little),
+                    .rhs = try reader.readInt(u32, .little),
+                } }),
+                .compare => try instructions.append(.{ .compare = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .lhs = try reader.readInt(u32, .little),
+                    .rhs = try reader.readInt(u32, .little),
+                    .op = @enumFromInt(try reader.readByte()),
+                } }),
+                .unary => try instructions.append(.{ .unary = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .src = try reader.readInt(u32, .little),
+                    .op = @enumFromInt(try reader.readByte()),
                 } }),
                 .store_local => try instructions.append(.{ .store_local = .{
                     .local = try reader.readInt(u32, .little),
@@ -225,11 +334,32 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.readInt(u32, .little),
                     .local = try reader.readInt(u32, .little),
                 } }),
+                .subobject_ptr => try instructions.append(.{ .subobject_ptr = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .base = try reader.readInt(u32, .little),
+                    .offset = try reader.readInt(u32, .little),
+                } }),
                 .field_ptr => try instructions.append(.{ .field_ptr = .{
                     .dst = try reader.readInt(u32, .little),
                     .base = try reader.readInt(u32, .little),
-                    .owner_type_name = try readString(allocator, reader),
-                    .field_name = try readString(allocator, reader),
+                    .base_type_name = try readString(allocator, reader),
+                    .field_index = try reader.readInt(u32, .little),
+                    .field_ty = try readTypeRef(allocator, reader),
+                } }),
+                .array_len => try instructions.append(.{ .array_len = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .array = try reader.readInt(u32, .little),
+                } }),
+                .array_get => try instructions.append(.{ .array_get = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .array = try reader.readInt(u32, .little),
+                    .index = try reader.readInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .array_set => try instructions.append(.{ .array_set = .{
+                    .array = try reader.readInt(u32, .little),
+                    .index = try reader.readInt(u32, .little),
+                    .src = try reader.readInt(u32, .little),
                 } }),
                 .load_indirect => try instructions.append(.{ .load_indirect = .{
                     .dst = try reader.readInt(u32, .little),
@@ -246,12 +376,20 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .src_ptr = try reader.readInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                 } }),
+                .branch => try instructions.append(.{ .branch = .{
+                    .condition = try reader.readInt(u32, .little),
+                    .true_label = try reader.readInt(u32, .little),
+                    .false_label = try reader.readInt(u32, .little),
+                } }),
+                .jump => try instructions.append(.{ .jump = .{ .label = try reader.readInt(u32, .little) } }),
+                .label => try instructions.append(.{ .label = .{ .id = try reader.readInt(u32, .little) } }),
                 .print => try instructions.append(.{ .print = .{
                     .src = try reader.readInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                 } }),
                 .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
                 .call_native => try instructions.append(.{ .call_native = try readNativeCall(allocator, reader) }),
+                .call_value => try instructions.append(.{ .call_value = try readIndirectCall(allocator, reader) }),
                 .ret => try instructions.append(.{ .ret = .{
                     .src = blk: {
                         const raw = try reader.readInt(i32, .little);
@@ -297,6 +435,13 @@ fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !v
     try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
 }
 
+fn writeIndirectCall(writer: anytype, callee: u32, args: []const u32, dst: ?u32) !void {
+    try writer.writeInt(u32, callee, .little);
+    try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
+    for (args) |arg| try writer.writeInt(u32, arg, .little);
+    try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
+}
+
 fn writeTypeRef(writer: anytype, value: instruction.TypeRef) !void {
     try writer.writeByte(@intFromEnum(value.kind));
     try writer.writeByte(if (value.name != null) 1 else 0);
@@ -322,6 +467,11 @@ fn readNativeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(ins
     return .{ .function_id = call.function_id, .args = call.args, .dst = call.dst };
 }
 
+fn readIndirectCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_value") {
+    const call = try readIndirectCallParts(allocator, reader);
+    return .{ .callee = call.callee, .args = call.args, .dst = call.dst };
+}
+
 fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { function_id: u32, args: []const u32, dst: ?u32 } {
     const function_id = try reader.readInt(u32, .little);
     const arg_count = try reader.readInt(u32, .little);
@@ -332,6 +482,21 @@ fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { functi
     const raw_dst = try reader.readInt(i32, .little);
     return .{
         .function_id = function_id,
+        .args = args,
+        .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
+    };
+}
+
+fn readIndirectCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { callee: u32, args: []const u32, dst: ?u32 } {
+    const callee = try reader.readInt(u32, .little);
+    const arg_count = try reader.readInt(u32, .little);
+    const args = try allocator.alloc(u32, arg_count);
+    for (0..arg_count) |index| {
+        args[index] = try reader.readInt(u32, .little);
+    }
+    const raw_dst = try reader.readInt(i32, .little);
+    return .{
+        .callee = callee,
         .args = args,
         .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
     };
