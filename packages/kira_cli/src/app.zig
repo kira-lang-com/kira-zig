@@ -11,6 +11,7 @@ const cmd_remove = @import("commands/remove.zig");
 const cmd_update = @import("commands/update.zig");
 const cmd_package = @import("commands/package.zig");
 const cmd_fetch_llvm = @import("commands/fetch_llvm.zig");
+const cmd_shader = @import("commands/shader.zig");
 const support = @import("support.zig");
 
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
@@ -46,6 +47,7 @@ pub fn runWithWriters(allocator: std.mem.Allocator, args: []const []const u8, ou
     if (std.mem.eql(u8, command, "ast")) return executeCommand(allocator, command, args[2..], out, err, cmd_ast.execute);
     if (std.mem.eql(u8, command, "check")) return executeCommand(allocator, command, args[2..], out, err, cmd_check.execute);
     if (std.mem.eql(u8, command, "build")) return executeCommand(allocator, command, args[2..], out, err, cmd_build.execute);
+    if (std.mem.eql(u8, command, "shader")) return executeCommand(allocator, command, args[2..], out, err, cmd_shader.execute);
     if (std.mem.eql(u8, command, "new")) return executeCommand(allocator, command, args[2..], out, err, cmd_new.execute);
     if (std.mem.eql(u8, command, "sync")) return executeCommand(allocator, command, args[2..], out, err, cmd_sync.execute);
     if (std.mem.eql(u8, command, "add")) return executeCommand(allocator, command, args[2..], out, err, cmd_add.execute);
@@ -92,6 +94,9 @@ fn printUsage(writer: anytype) !void {
         \\{s} <command> [args]
         \\  run [--backend vm|llvm|hybrid] [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
         \\  build [--backend vm|llvm|hybrid] [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  shader check <file.ksl>
+        \\  shader ast <file.ksl>
+        \\  shader build [<file.ksl>|Shaders] [--out-dir <dir>]
         \\  check [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
         \\  tokens [<project-dir|kira.toml|project.toml>]
         \\  ast [<project-dir|kira.toml|project.toml>]
