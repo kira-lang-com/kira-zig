@@ -1,0 +1,326 @@
+const std = @import("std");
+const ir = @import("ir.zig");
+const model = @import("kira_semantics_model");
+const runtime_abi = @import("kira_runtime_abi");
+const parent = @import("lower_from_hir.zig");
+const Lowerer = parent.Lowerer;
+const lowerProgram = parent.lowerProgram;
+const lowerResolvedType = parent.lowerResolvedType;
+pub fn lowerTypeDecls(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable_functions: std.AutoHashMapUnmanaged(u32, void),
+) ![]ir.TypeDecl {
+    var referenced = std.StringHashMapUnmanaged(void){};
+    defer referenced.deinit(allocator);
+
+    for (program.functions) |function_decl| {
+        if (!reachable_functions.contains(function_decl.id)) continue;
+        for (function_decl.params) |param| try markReferencedType(allocator, program, &referenced, param.ty);
+        try markReferencedType(allocator, program, &referenced, function_decl.return_type);
+        for (function_decl.locals) |local| try markReferencedType(allocator, program, &referenced, local.ty);
+    }
+
+    var types = std.array_list.Managed(ir.TypeDecl).init(allocator);
+    for (program.types) |type_decl| {
+        if (!referenced.contains(type_decl.name)) continue;
+        try types.append(.{
+            .name = try allocator.dupe(u8, type_decl.name),
+            .fields = try lowerFieldTypes(allocator, program, type_decl.fields),
+            .ffi = if (type_decl.ffi) |ffi_info| try lowerFfiTypeInfo(allocator, program, ffi_info) else null,
+        });
+    }
+    return types.toOwnedSlice();
+}
+
+pub fn markReachableFunction(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    function_id: u32,
+) anyerror!void {
+    if (reachable.contains(function_id)) return;
+    try reachable.put(allocator, function_id, {});
+
+    for (program.functions) |function_decl| {
+        if (function_decl.id != function_id) continue;
+        if (function_decl.is_extern) return;
+        for (function_decl.body) |statement| try markReachableStatement(allocator, program, reachable, statement);
+        return;
+    }
+}
+
+pub fn markReachableStatement(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    statement: model.Statement,
+) anyerror!void {
+    switch (statement) {
+        .let_stmt => |node| if (node.value) |value| try markReachableExpr(allocator, program, reachable, value),
+        .assign_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.target);
+            try markReachableExpr(allocator, program, reachable, node.value);
+        },
+        .expr_stmt => |node| try markReachableExpr(allocator, program, reachable, node.expr),
+        .if_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.condition);
+            for (node.then_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+            if (node.else_body) |else_body| for (else_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+        },
+        .for_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.iterator);
+            for (node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+        },
+        .while_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.condition);
+            for (node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+        },
+        .break_stmt, .continue_stmt => {},
+        .switch_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.subject);
+            for (node.cases) |case_node| {
+                try markReachableExpr(allocator, program, reachable, case_node.pattern);
+                for (case_node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+            }
+            if (node.default_body) |default_body| for (default_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+        },
+        .return_stmt => |node| if (node.value) |value| try markReachableExpr(allocator, program, reachable, value),
+    }
+}
+
+pub fn markReachableExpr(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    expr: *model.Expr,
+) anyerror!void {
+    switch (expr.*) {
+        .call => |node| {
+            if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
+            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
+        },
+        .function_ref => |node| try markReachableFunction(allocator, program, reachable, node.function_id),
+        .callback => |node| {
+            for (node.body) |statement| try markReachableStatement(allocator, program, reachable, statement);
+        },
+        .call_value => |node| {
+            try markReachableExpr(allocator, program, reachable, node.callee);
+            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
+        },
+        .parent_view => |node| try markReachableExpr(allocator, program, reachable, node.object),
+        .field => |node| try markReachableExpr(allocator, program, reachable, node.object),
+        .binary => |node| {
+            try markReachableExpr(allocator, program, reachable, node.lhs);
+            try markReachableExpr(allocator, program, reachable, node.rhs);
+        },
+        .conditional => |node| {
+            try markReachableExpr(allocator, program, reachable, node.condition);
+            try markReachableExpr(allocator, program, reachable, node.then_expr);
+            try markReachableExpr(allocator, program, reachable, node.else_expr);
+        },
+        .unary => |node| try markReachableExpr(allocator, program, reachable, node.operand),
+        .array => |node| for (node.elements) |element| try markReachableExpr(allocator, program, reachable, element),
+        .index => |node| {
+            try markReachableExpr(allocator, program, reachable, node.object);
+            try markReachableExpr(allocator, program, reachable, node.index);
+        },
+        else => {},
+    }
+}
+
+pub fn markReferencedType(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    referenced: *std.StringHashMapUnmanaged(void),
+    ty: model.ResolvedType,
+) !void {
+    if (ty.kind != .named or ty.name == null) return;
+    const name = ty.name.?;
+    if (referenced.contains(name)) return;
+    try referenced.put(allocator, name, {});
+
+    for (program.types) |type_decl| {
+        if (!std.mem.eql(u8, type_decl.name, name)) continue;
+        for (type_decl.fields) |field_decl| try markReferencedType(allocator, program, referenced, field_decl.ty);
+        if (type_decl.ffi) |ffi_info| {
+            switch (ffi_info) {
+                .pointer => |value| try markReferencedType(allocator, program, referenced, .{ .kind = .named, .name = value.target_name }),
+                .alias => |value| try markReferencedType(allocator, program, referenced, value.target),
+                .array => |value| try markReferencedType(allocator, program, referenced, value.element),
+                .callback => |value| {
+                    for (value.params) |param| try markReferencedType(allocator, program, referenced, param);
+                    try markReferencedType(allocator, program, referenced, value.result);
+                },
+                .ffi_struct => {},
+            }
+        }
+        break;
+    }
+}
+
+pub fn lowerFieldTypes(allocator: std.mem.Allocator, program: model.Program, fields: []const model.Field) ![]ir.Field {
+    const lowered = try allocator.alloc(ir.Field, fields.len);
+    for (fields, 0..) |field_decl, index| {
+        lowered[index] = .{
+            .name = try allocator.dupe(u8, field_decl.name),
+            .ty = try lowerResolvedType(program, field_decl.ty),
+        };
+    }
+    return lowered;
+}
+
+pub fn lowerFfiTypeInfo(allocator: std.mem.Allocator, program: model.Program, ffi_info: model.NamedTypeInfo) !ir.FfiTypeInfo {
+    return switch (ffi_info) {
+        .ffi_struct => .ffi_struct,
+        .pointer => |value| .{ .pointer = .{ .target_name = try allocator.dupe(u8, value.target_name) } },
+        .alias => |value| .{ .alias = .{ .target = try lowerResolvedType(program, value.target) } },
+        .array => |value| .{ .array = .{
+            .element = try lowerResolvedType(program, value.element),
+            .count = value.count,
+        } },
+        .callback => |value| blk: {
+            var params = std.array_list.Managed(ir.ValueType).init(allocator);
+            for (value.params) |param| try params.append(try lowerResolvedType(program, param));
+            break :blk .{ .callback = .{
+                .params = try params.toOwnedSlice(),
+                .result = try lowerResolvedType(program, value.result),
+            } };
+        },
+    };
+}
+
+pub fn lowerAssignmentStatement(
+    lowerer: *Lowerer,
+    instructions: *std.array_list.Managed(ir.Instruction),
+    program: model.Program,
+    node: model.AssignStatement,
+) !void {
+    const value_reg = try lowerer.lowerExpr(instructions, node.value);
+    switch (node.target.*) {
+        .local => |target| {
+            const local_ty = try lowerResolvedType(program, target.ty);
+            if (local_ty.kind == .ffi_struct) {
+                const dst_ptr = lowerer.freshRegister();
+                try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = target.local_id } });
+                try instructions.append(.{ .copy_indirect = .{
+                    .dst_ptr = dst_ptr,
+                    .src_ptr = value_reg,
+                    .type_name = local_ty.name orelse return error.UnsupportedExecutableFeature,
+                } });
+            } else {
+                try instructions.append(.{ .store_local = .{ .local = target.local_id, .src = value_reg } });
+            }
+        },
+        .field => |target| {
+            const base_reg = try lowerer.lowerExpr(instructions, target.object);
+            const target_ty = try lowerResolvedType(program, target.ty);
+            const ptr_reg = lowerer.freshRegister();
+            try instructions.append(.{ .field_ptr = .{
+                .dst = ptr_reg,
+                .base = base_reg,
+                .base_type_name = target.container_type_name,
+                .field_index = target.field_index,
+                .field_ty = target_ty,
+            } });
+            if (target_ty.kind == .ffi_struct) {
+                try instructions.append(.{ .copy_indirect = .{
+                    .dst_ptr = ptr_reg,
+                    .src_ptr = value_reg,
+                    .type_name = target_ty.name orelse return error.UnsupportedExecutableFeature,
+                } });
+            } else {
+                try instructions.append(.{ .store_indirect = .{
+                    .ptr = ptr_reg,
+                    .src = value_reg,
+                    .ty = target_ty,
+                } });
+            }
+        },
+        .index => |target| {
+            const array_reg = try lowerer.lowerExpr(instructions, target.object);
+            const index_reg = try lowerer.lowerExpr(instructions, target.index);
+            try instructions.append(.{ .array_set = .{
+                .array = array_reg,
+                .index = index_reg,
+                .src = value_reg,
+            } });
+        },
+        else => return error.UnsupportedExecutableFeature,
+    }
+}
+
+pub fn findTypeFieldDefaultExpr(program: model.Program, type_name: []const u8, field_name: []const u8) ?*model.Expr {
+    for (program.types) |type_decl| {
+        if (!std.mem.eql(u8, type_decl.name, type_name)) continue;
+        for (type_decl.fields) |field_decl| {
+            if (!std.mem.eql(u8, field_decl.name, field_name)) continue;
+            return field_decl.default_value;
+        }
+    }
+    return null;
+}
+
+pub fn fieldDeclIsTypeConstant(field_decl: model.Field, owner_type_name: []const u8) bool {
+    return field_decl.storage == .immutable and field_decl.ty.kind == .named and field_decl.ty.name != null and std.mem.eql(u8, field_decl.ty.name.?, owner_type_name);
+}
+
+test "lowers zero-argument expression-statement calls even when return type is not resolved to void" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const callee_expr = try allocator.create(model.Expr);
+    callee_expr.* = .{ .call = .{
+        .callee_name = "helper",
+        .function_id = 1,
+        .args = &.{},
+        .ty = .{ .kind = .unknown },
+        .span = .{ .start = 0, .end = 0 },
+    } };
+
+    const program = model.Program{
+        .imports = &.{},
+        .constructs = &.{},
+        .types = &.{},
+        .forms = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "entry",
+                .is_main = true,
+                .execution = .native,
+                .is_extern = false,
+                .foreign = null,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{},
+                .return_type = .{ .kind = .void },
+                .body = &.{
+                    .{ .expr_stmt = .{ .expr = callee_expr, .span = .{ .start = 0, .end = 0 } } },
+                    .{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+                },
+                .span = .{ .start = 0, .end = 0 },
+            },
+            .{
+                .id = 1,
+                .name = "helper",
+                .is_main = false,
+                .execution = .runtime,
+                .is_extern = false,
+                .foreign = null,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{},
+                .return_type = .{ .kind = .void },
+                .body = &.{.{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } }},
+                .span = .{ .start = 0, .end = 0 },
+            },
+        },
+        .entry_index = 0,
+    };
+
+    const lowered = try lowerProgram(allocator, program);
+    try std.testing.expectEqual(@as(usize, 2), lowered.functions.len);
+    try std.testing.expect(lowered.functions[0].instructions[0] == .call);
+}

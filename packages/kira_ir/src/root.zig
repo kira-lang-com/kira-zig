@@ -6,5 +6,7 @@ pub const TypeDecl = ir.TypeDecl;
 pub const Field = ir.Field;
 pub const FfiTypeInfo = ir.FfiTypeInfo;
 pub const Instruction = ir.Instruction;
+pub const CompareOp = ir.CompareOp;
 pub const Call = ir.Call;
+pub const CallValue = ir.CallValue;
 pub const lowerProgram = @import("lower_from_hir.zig").lowerProgram;

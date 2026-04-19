@@ -10,6 +10,7 @@ pub const ValueType = struct {
         float,
         string,
         boolean,
+        array,
         raw_ptr,
         ffi_struct,
     };
@@ -80,26 +81,47 @@ pub const Function = struct {
 
 pub const Instruction = union(enum) {
     const_int: ConstInt,
+    const_float: ConstFloat,
     const_string: ConstString,
     const_bool: ConstBool,
     const_null_ptr: ConstNullPtr,
     const_function: ConstFunction,
     alloc_struct: AllocStruct,
+    alloc_array: AllocArray,
     add: Binary,
+    subtract: Binary,
+    multiply: Binary,
+    divide: Binary,
+    modulo: Binary,
+    compare: Compare,
+    unary: Unary,
     store_local: StoreLocal,
     load_local: LoadLocal,
+    subobject_ptr: SubobjectPtr,
     field_ptr: FieldPtr,
+    array_len: ArrayLen,
+    array_get: ArrayGet,
+    array_set: ArraySet,
     load_indirect: LoadIndirect,
     store_indirect: StoreIndirect,
     copy_indirect: CopyIndirect,
+    branch: Branch,
+    jump: Jump,
+    label: Label,
     print: Print,
     call: Call,
+    call_value: CallValue,
     ret: Return,
 };
 
 pub const ConstInt = struct {
     dst: u32,
     value: i64,
+};
+
+pub const ConstFloat = struct {
+    dst: u32,
+    value: f64,
 };
 
 pub const ConstString = struct {
@@ -119,6 +141,12 @@ pub const ConstNullPtr = struct {
 pub const ConstFunction = struct {
     dst: u32,
     function_id: u32,
+    representation: FunctionConstRepresentation = .callable_value,
+};
+
+pub const FunctionConstRepresentation = enum {
+    callable_value,
+    native_callback,
 };
 
 pub const AllocStruct = struct {
@@ -126,10 +154,42 @@ pub const AllocStruct = struct {
     type_name: []const u8,
 };
 
+pub const AllocArray = struct {
+    dst: u32,
+    len: u32,
+};
+
 pub const Binary = struct {
     dst: u32,
     lhs: u32,
     rhs: u32,
+};
+
+pub const Compare = struct {
+    dst: u32,
+    lhs: u32,
+    rhs: u32,
+    op: CompareOp,
+};
+
+pub const CompareOp = enum {
+    equal,
+    not_equal,
+    less,
+    less_equal,
+    greater,
+    greater_equal,
+};
+
+pub const Unary = struct {
+    dst: u32,
+    src: u32,
+    op: UnaryOp,
+};
+
+pub const UnaryOp = enum {
+    negate,
+    not,
 };
 
 pub const StoreLocal = struct {
@@ -142,11 +202,36 @@ pub const LoadLocal = struct {
     local: u32,
 };
 
+pub const SubobjectPtr = struct {
+    dst: u32,
+    base: u32,
+    offset: u32,
+};
+
 pub const FieldPtr = struct {
     dst: u32,
     base: u32,
-    owner_type_name: []const u8,
-    field_name: []const u8,
+    base_type_name: []const u8,
+    field_index: u32,
+    field_ty: ValueType,
+};
+
+pub const ArrayLen = struct {
+    dst: u32,
+    array: u32,
+};
+
+pub const ArrayGet = struct {
+    dst: u32,
+    array: u32,
+    index: u32,
+    ty: ValueType,
+};
+
+pub const ArraySet = struct {
+    array: u32,
+    index: u32,
+    src: u32,
 };
 
 pub const LoadIndirect = struct {
@@ -167,6 +252,20 @@ pub const CopyIndirect = struct {
     type_name: []const u8,
 };
 
+pub const Branch = struct {
+    condition: u32,
+    true_label: u32,
+    false_label: u32,
+};
+
+pub const Jump = struct {
+    label: u32,
+};
+
+pub const Label = struct {
+    id: u32,
+};
+
 pub const Print = struct {
     src: u32,
     ty: ValueType,
@@ -175,6 +274,14 @@ pub const Print = struct {
 pub const Call = struct {
     callee: u32,
     args: []const u32,
+    dst: ?u32 = null,
+};
+
+pub const CallValue = struct {
+    callee: u32,
+    args: []const u32,
+    param_types: []const ValueType,
+    return_type: ValueType,
     dst: ?u32 = null,
 };
 
