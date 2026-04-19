@@ -1,0 +1,20 @@
+{
+  "shader": "BasicTriangle",
+  "kind": "graphics",
+  "backend": "glsl_330",
+  "options": [
+
+  ],
+  "stages": [
+    { "stage": "vertex", "entry": "BasicTriangle__vertex__entry", "input": "VertexIn", "output": "VertexOut" },
+    { "stage": "fragment", "entry": "BasicTriangle__fragment__entry", "input": "VertexOut", "output": "FragmentOut" }
+  ],
+  "types": [
+    { "name": "VertexIn", "uniform_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "position", "offset": 0, "alignment": 8, "size": 8, "stride": 0 }] }, "storage_layout": { "alignment": 8, "size": 8, "fields": [{ "name": "position", "offset": 0, "alignment": 8, "size": 8, "stride": 0 }] } },
+    { "name": "FragmentOut", "uniform_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "color", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "color", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] } },
+    { "name": "VertexOut", "uniform_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "clip_position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "color", "offset": 16, "alignment": 16, "size": 16, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "clip_position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "color", "offset": 16, "alignment": 16, "size": 16, "stride": 0 }] } }
+  ],
+  "resources": [
+
+  ]
+}

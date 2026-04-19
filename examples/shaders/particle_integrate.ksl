@@ -1,0 +1,48 @@
+type SimulationUniform {
+    let delta_time: Float
+    let damping: Float
+}
+
+type Particle {
+    let position: Float3
+    let velocity: Float3
+}
+
+type ComputeIn {
+    @builtin(thread_id)
+    let thread_id: UInt3
+
+    @builtin(local_id)
+    let local_id: UInt3
+
+    @builtin(group_id)
+    let group_id: UInt3
+}
+
+shader ParticleIntegrate {
+    option workgroup_width: UInt = 64
+
+    group Dispatch {
+        uniform simulation: SimulationUniform
+        storage read_write particles: [Particle]
+    }
+
+    compute {
+        threads(workgroup_width, 1, 1)
+        input ComputeIn
+
+        function entry(input: ComputeIn) {
+            let index: UInt = input.thread_id.x
+            if index >= particles.count {
+                return
+            }
+
+            let particle = particles[index]
+            let next: Particle
+            next.position = particle.position + (particle.velocity * simulation.delta_time)
+            next.velocity = particle.velocity * simulation.damping
+            particles[index] = next
+            return
+        }
+    }
+}

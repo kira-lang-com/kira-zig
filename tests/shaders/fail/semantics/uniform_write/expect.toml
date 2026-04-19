@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL071"
+diagnostic_title = "resource is not writable"
+stage = "semantics"

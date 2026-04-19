@@ -1,0 +1,22 @@
+type VertexIn {
+    let position: Float2
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+}
+
+shader AmbiguousLiteral {
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let count = 4
+            let out: VertexOut
+            out.clip_position = Float4(input.position, 0.0, 1.0)
+            return out
+        }
+    }
+}

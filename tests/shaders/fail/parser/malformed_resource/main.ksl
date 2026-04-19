@@ -1,0 +1,5 @@
+shader BrokenResource {
+    group Material {
+        texture: Texture2d
+    }
+}

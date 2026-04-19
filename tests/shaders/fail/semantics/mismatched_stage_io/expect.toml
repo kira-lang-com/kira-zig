@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL041"
+diagnostic_title = "fragment input does not match vertex output"
+stage = "semantics"

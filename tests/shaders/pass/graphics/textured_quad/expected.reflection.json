@@ -1,0 +1,25 @@
+{
+  "shader": "TexturedQuad",
+  "kind": "graphics",
+  "backend": "glsl_330",
+  "options": [
+    { "name": "use_tint", "type": "Bool", "default": "true" }
+  ],
+  "stages": [
+    { "stage": "vertex", "entry": "TexturedQuad__vertex__entry", "input": "VertexIn", "output": "VertexToFragment" },
+    { "stage": "fragment", "entry": "TexturedQuad__fragment__entry", "input": "VertexToFragment", "output": "FragmentOut" }
+  ],
+  "types": [
+    { "name": "VertexIn", "uniform_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "uv", "offset": 16, "alignment": 8, "size": 8, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "uv", "offset": 16, "alignment": 8, "size": 8, "stride": 0 }] } },
+    { "name": "FragmentOut", "uniform_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "color", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "color", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] } },
+    { "name": "CameraUniform", "uniform_layout": { "alignment": 16, "size": 64, "fields": [{ "name": "view_projection", "offset": 0, "alignment": 16, "size": 64, "stride": 16 }] }, "storage_layout": { "alignment": 16, "size": 64, "fields": [{ "name": "view_projection", "offset": 0, "alignment": 16, "size": 64, "stride": 16 }] } },
+    { "name": "SurfaceUniform", "uniform_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "tint", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 16, "fields": [{ "name": "tint", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }] } },
+    { "name": "VertexToFragment", "uniform_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "clip_position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "uv", "offset": 16, "alignment": 8, "size": 8, "stride": 0 }] }, "storage_layout": { "alignment": 16, "size": 32, "fields": [{ "name": "clip_position", "offset": 0, "alignment": 16, "size": 16, "stride": 0 }, { "name": "uv", "offset": 16, "alignment": 8, "size": 8, "stride": 0 }] } }
+  ],
+  "resources": [
+    { "group": "Frame", "class": "frame", "resource": "camera", "kind": "uniform", "type": "CameraUniform", "group_index": 0, "binding_index": 0 },
+    { "group": "Material", "class": "material", "resource": "surface", "kind": "uniform", "type": "SurfaceUniform", "group_index": 1, "binding_index": 0 },
+    { "group": "Material", "class": "material", "resource": "albedo", "kind": "texture", "type": "Texture2d", "group_index": 1, "binding_index": 1 },
+    { "group": "Material", "class": "material", "resource": "linear", "kind": "sampler", "type": "Sampler", "group_index": 1, "binding_index": 2 }
+  ]
+}

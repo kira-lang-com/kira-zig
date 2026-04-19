@@ -1,0 +1,3 @@
+mode = "build"
+backend = "glsl_330"
+shader = "BasicTriangle"

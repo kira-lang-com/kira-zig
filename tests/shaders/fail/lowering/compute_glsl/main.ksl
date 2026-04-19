@@ -1,0 +1,20 @@
+type ComputeIn {
+    @builtin(thread_id)
+    let thread_id: UInt3
+}
+
+shader ComputeOnly {
+    group Dispatch {
+        storage read_write particles: [UInt]
+    }
+
+    compute {
+        threads(8, 1, 1)
+        input ComputeIn
+
+        function entry(input: ComputeIn) {
+            particles[input.thread_id.x] = 1
+            return
+        }
+    }
+}

@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL021"
+diagnostic_title = "ambiguous integer literal"
+stage = "semantics"

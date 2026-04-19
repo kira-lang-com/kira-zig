@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL051"
+diagnostic_title = "illegal use of stage-specific built-in"
+stage = "semantics"

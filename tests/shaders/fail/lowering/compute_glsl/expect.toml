@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL121"
+diagnostic_title = "compute shaders are not supported by the GLSL 330 backend"
+stage = "lowering"

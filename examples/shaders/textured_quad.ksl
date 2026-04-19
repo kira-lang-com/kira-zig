@@ -1,0 +1,65 @@
+type CameraUniform {
+    let view_projection: Float4x4
+}
+
+type SurfaceUniform {
+    let tint: Float4
+}
+
+type VertexIn {
+    let position: Float3
+    let uv: Float2
+}
+
+type VertexToFragment {
+    @builtin(position)
+    let clip_position: Float4
+
+    let uv: Float2
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader TexturedQuad {
+    option use_tint: Bool = true
+
+    group Frame {
+        uniform camera: CameraUniform
+    }
+
+    group Material {
+        uniform surface: SurfaceUniform
+        texture albedo: Texture2d
+        sampler linear: Sampler
+    }
+
+    vertex {
+        input VertexIn
+        output VertexToFragment
+
+        function entry(input: VertexIn) -> VertexToFragment {
+            let out: VertexToFragment
+            out.clip_position = mul(camera.view_projection, Float4(input.position, 1.0))
+            out.uv = input.uv
+            return out
+        }
+    }
+
+    fragment {
+        input VertexToFragment
+        output FragmentOut
+
+        function entry(input: VertexToFragment) -> FragmentOut {
+            let out: FragmentOut
+            let sampled = sample(albedo, linear, input.uv)
+            if use_tint {
+                out.color = sampled * surface.tint
+            } else {
+                out.color = sampled
+            }
+            return out
+        }
+    }
+}

@@ -1,0 +1,22 @@
+type DirectionalLight {
+    let direction: Float3
+    let intensity: Float
+    let color: Float3
+}
+
+type SceneLighting {
+    let ambient: Float3
+    let sun: DirectionalLight
+}
+
+function saturate(value: Float) -> Float {
+    if value < 0.0 { return 0.0 }
+    if value > 1.0 { return 1.0 }
+    return value
+}
+
+function lambert(normal: Float3, light_direction: Float3) -> Float {
+    let n = normalize(normal)
+    let l = normalize(-light_direction)
+    return saturate(dot(n, l))
+}

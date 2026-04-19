@@ -1,0 +1,30 @@
+type CameraUniform {
+    let view_projection: Float4x4
+}
+
+type VertexIn {
+    let position: Float2
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+}
+
+shader UniformWrite {
+    group Frame {
+        uniform camera: CameraUniform
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            camera.view_projection = Float4x4(1.0)
+            let out: VertexOut
+            out.clip_position = Float4(input.position, 0.0, 1.0)
+            return out
+        }
+    }
+}

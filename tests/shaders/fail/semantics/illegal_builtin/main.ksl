@@ -1,0 +1,22 @@
+type VertexIn {
+    @builtin(frag_coord)
+    let coord: Float4
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+}
+
+shader IllegalBuiltin {
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let out: VertexOut
+            out.clip_position = input.coord
+            return out
+        }
+    }
+}

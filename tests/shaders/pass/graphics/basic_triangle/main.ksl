@@ -1,0 +1,39 @@
+type VertexIn {
+    let position: Float2
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+
+    let color: Float4
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader BasicTriangle {
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let out: VertexOut
+            out.clip_position = Float4(input.position, 0.0, 1.0)
+            out.color = Float4(1.0, 0.25, 0.25, 1.0)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let out: FragmentOut
+            out.color = input.color
+            return out
+        }
+    }
+}

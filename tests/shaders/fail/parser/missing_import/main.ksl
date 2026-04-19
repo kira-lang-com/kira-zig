@@ -1,0 +1,9 @@
+import Missing.Library as Missing
+
+shader MissingImport {
+    vertex {
+        function entry() {
+            return
+        }
+    }
+}

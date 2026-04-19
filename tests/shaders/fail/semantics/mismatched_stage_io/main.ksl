@@ -1,0 +1,43 @@
+type VertexIn {
+    let position: Float2
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+
+    let uv: Float2
+}
+
+type FragmentIn {
+    let uv: Float3
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader BrokenStages {
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let out: VertexOut
+            out.clip_position = Float4(input.position, 0.0, 1.0)
+            out.uv = Float2(0.0, 0.0)
+            return out
+        }
+    }
+
+    fragment {
+        input FragmentIn
+        output FragmentOut
+
+        function entry(input: FragmentIn) -> FragmentOut {
+            let out: FragmentOut
+            out.color = Float4(input.uv, 1.0)
+            return out
+        }
+    }
+}

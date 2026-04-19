@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSLP010"
+diagnostic_title = "expected a resource name"
+stage = "parser"

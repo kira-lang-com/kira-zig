@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSL062"
+diagnostic_title = "unresolved shader import"
+stage = "parser"

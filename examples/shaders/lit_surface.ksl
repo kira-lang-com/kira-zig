@@ -1,0 +1,71 @@
+import Common.Lighting as Lighting
+
+type CameraUniform {
+    let view_projection: Float4x4
+}
+
+type TransformUniform {
+    let model: Float4x4
+}
+
+type SurfaceUniform {
+    let albedo_color: Float3
+    let alpha: Float
+}
+
+type VertexIn {
+    let position: Float3
+    let normal: Float3
+}
+
+type VertexToFragment {
+    @builtin(position)
+    let clip_position: Float4
+
+    let world_normal: Float3
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader LitSurface {
+    group Frame {
+        uniform camera: CameraUniform
+        uniform lighting: Lighting.SceneLighting
+    }
+
+    group Object {
+        uniform transform: TransformUniform
+    }
+
+    group Material {
+        uniform surface: SurfaceUniform
+    }
+
+    vertex {
+        input VertexIn
+        output VertexToFragment
+
+        function entry(input: VertexIn) -> VertexToFragment {
+            let out: VertexToFragment
+            let world_position = mul(transform.model, Float4(input.position, 1.0))
+            out.clip_position = mul(camera.view_projection, world_position)
+            out.world_normal = normalize(input.normal)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexToFragment
+        output FragmentOut
+
+        function entry(input: VertexToFragment) -> FragmentOut {
+            let out: FragmentOut
+            let diffuse = Lighting.lambert(input.world_normal, lighting.sun.direction) * lighting.sun.intensity
+            let lit = lighting.ambient + (lighting.sun.color * diffuse)
+            out.color = Float4(surface.albedo_color * lit, surface.alpha)
+            return out
+        }
+    }
+}
