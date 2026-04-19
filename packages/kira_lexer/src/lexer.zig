@@ -260,6 +260,9 @@ fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "else")) return .kw_else;
     if (std.mem.eql(u8, lexeme, "for")) return .kw_for;
     if (std.mem.eql(u8, lexeme, "in")) return .kw_in;
+    if (std.mem.eql(u8, lexeme, "while")) return .kw_while;
+    if (std.mem.eql(u8, lexeme, "break")) return .kw_break;
+    if (std.mem.eql(u8, lexeme, "continue")) return .kw_continue;
     if (std.mem.eql(u8, lexeme, "switch")) return .kw_switch;
     if (std.mem.eql(u8, lexeme, "case")) return .kw_case;
     if (std.mem.eql(u8, lexeme, "default")) return .kw_default;

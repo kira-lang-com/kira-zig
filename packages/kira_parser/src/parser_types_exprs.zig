@@ -1,0 +1,432 @@
+const std = @import("std");
+const diagnostics = @import("kira_diagnostics");
+const source_pkg = @import("kira_source");
+const syntax = @import("kira_syntax_model");
+const parent = @import("parser.zig");
+const Parser = parent.Parser;
+const exprSpan = parent.exprSpan;
+const typeSpan = parent.typeSpan;
+const cloneQualifiedName = Parser.cloneQualifiedName;
+const tokenDescription = parent.tokenDescription;
+const unexpectedTokenLabel = parent.unexpectedTokenLabel;
+const expectedTokenHelp = parent.expectedTokenHelp;
+pub fn parseTypeExpr(self: *Parser) anyerror!*syntax.ast.TypeExpr {
+    if (self.match(.l_bracket)) {
+        const start = self.previous().span.start;
+        const element_type = try self.parseTypeExpr();
+        const close = try self.expect(.r_bracket, "expected ']' after array type", "close the array type here");
+        const node = try self.allocator.create(syntax.ast.TypeExpr);
+        node.* = .{ .array = .{
+            .element_type = element_type,
+            .span = source_pkg.Span.init(start, close.span.end),
+        } };
+        return node;
+    }
+
+    if (self.match(.l_paren)) {
+        const start = self.previous().span.start;
+        var params = std.array_list.Managed(*syntax.ast.TypeExpr).init(self.allocator);
+        while (!self.at(.r_paren) and !self.at(.eof)) {
+            try params.append(try self.parseTypeExpr());
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.expect(.r_paren, "expected ')' after function type parameters", "close the function parameter type list here");
+        _ = try self.expect(.arrow, "expected '->' in function type", "write `->` before the function result type");
+        const result = try self.parseTypeExpr();
+        const node = try self.allocator.create(syntax.ast.TypeExpr);
+        node.* = .{ .function = .{
+            .params = try params.toOwnedSlice(),
+            .result = result,
+            .span = source_pkg.Span.init(start, typeSpan(result.*).end),
+        } };
+        return node;
+    }
+
+    const name = try self.parseQualifiedName("expected type name");
+    const node = try self.allocator.create(syntax.ast.TypeExpr);
+    node.* = .{ .named = name };
+    return node;
+}
+
+pub fn parseExpression(self: *Parser) anyerror!*syntax.ast.Expr {
+    return self.parseConditional();
+}
+
+pub fn parseExpressionWithoutTrailingBlockCall(self: *Parser) anyerror!*syntax.ast.Expr {
+    const previous_setting = self.allow_trailing_block_call;
+    self.allow_trailing_block_call = false;
+    defer self.allow_trailing_block_call = previous_setting;
+    return self.parseExpression();
+}
+
+pub fn makeIdentifierExpr(self: *Parser, token: syntax.Token) !*syntax.ast.Expr {
+    const name = try self.makeSingleSegmentName(token);
+    const expr = try self.allocator.create(syntax.ast.Expr);
+    expr.* = .{ .identifier = .{
+        .name = name,
+        .span = token.span,
+    } };
+    return expr;
+}
+
+pub fn looksLikeStructLiteral(self: *Parser) bool {
+    if (!self.at(.l_brace)) return false;
+    const next = self.peekNext().kind;
+    if (next == .r_brace) return true;
+    if (next != .identifier) return false;
+    return self.peekAhead(2).kind == .colon;
+}
+
+pub fn parseStructLiteral(self: *Parser, type_expr: *syntax.ast.Expr) anyerror!*syntax.ast.Expr {
+    const type_name = try self.qualifiedNameFromExpr(type_expr);
+    _ = try self.expect(.l_brace, "expected '{' to start struct literal", "open the struct literal here");
+    var fields = std.array_list.Managed(syntax.ast.StructLiteralField).init(self.allocator);
+    while (!self.at(.r_brace) and !self.at(.eof)) {
+        const field_name = try self.expect(.identifier, "expected struct field name", "write the field name here");
+        _ = try self.expect(.colon, "expected ':' after field name", "use ':' between the field name and value");
+        const value = try self.parseExpression();
+        try fields.append(.{
+            .name = field_name.lexeme,
+            .value = value,
+            .span = source_pkg.Span.init(field_name.span.start, exprSpan(value.*).end),
+        });
+        _ = self.match(.comma);
+        _ = self.match(.semicolon);
+    }
+    const close = try self.expect(.r_brace, "expected '}' after struct literal", "close the struct literal here");
+    const node = try self.allocator.create(syntax.ast.Expr);
+    node.* = .{ .struct_literal = .{
+        .type_name = type_name,
+        .fields = try fields.toOwnedSlice(),
+        .span = source_pkg.Span.init(exprSpan(type_expr.*).start, close.span.end),
+    } };
+    return node;
+}
+
+pub fn qualifiedNameFromExpr(self: *Parser, expr: *syntax.ast.Expr) anyerror!syntax.ast.QualifiedName {
+    return switch (expr.*) {
+        .identifier => |node| cloneQualifiedName(self.allocator, node.name),
+        .member => |node| blk: {
+            const object_name = try self.qualifiedNameFromExpr(node.object);
+            const segments = try self.allocator.alloc(syntax.ast.NameSegment, object_name.segments.len + 1);
+            @memcpy(segments[0..object_name.segments.len], object_name.segments);
+            segments[object_name.segments.len] = .{
+                .text = node.member,
+                .span = .{ .start = node.span.end - node.member.len, .end = node.span.end },
+            };
+            break :blk .{
+                .segments = segments,
+                .span = source_pkg.Span.init(object_name.span.start, node.span.end),
+            };
+        },
+        else => {
+            try diagnostics.appendOwned(self.allocator, self.diagnostics, .{
+                .severity = .@"error",
+                .code = "KPAR013",
+                .title = "struct literal requires a type name",
+                .message = "Kira expected a named type before this struct literal.",
+                .labels = &.{
+                    diagnostics.primaryLabel(exprSpan(expr.*), "this expression is not a type name"),
+                },
+                .help = "Write a type name such as `Rect { width: 10.0 }`.",
+            });
+            return error.DiagnosticsEmitted;
+        },
+    };
+}
+
+pub fn parseConditional(self: *Parser) anyerror!*syntax.ast.Expr {
+    const condition = try self.parseLogicalOr();
+    if (!self.match(.question)) return condition;
+
+    const then_expr = try self.parseExpression();
+    _ = try self.expect(.colon, "expected ':' in conditional expression", "separate the true and false branches with ':'");
+    const else_expr = try self.parseExpression();
+    const node = try self.allocator.create(syntax.ast.Expr);
+    node.* = .{ .conditional = .{
+        .condition = condition,
+        .then_expr = then_expr,
+        .else_expr = else_expr,
+        .span = source_pkg.Span.init(exprSpan(condition.*).start, exprSpan(else_expr.*).end),
+    } };
+    return node;
+}
+
+pub fn parseLogicalOr(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseLogicalAnd();
+    while (self.match(.pipe_pipe)) {
+        const operator = self.previous();
+        const rhs = try self.parseLogicalAnd();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseLogicalAnd(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseEquality();
+    while (self.match(.amp_amp)) {
+        const operator = self.previous();
+        const rhs = try self.parseEquality();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseEquality(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseComparison();
+    while (self.match(.equal_equal) or self.match(.bang_equal)) {
+        const operator = self.previous();
+        const rhs = try self.parseComparison();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseComparison(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseTerm();
+    while (self.match(.less) or self.match(.less_equal) or self.match(.greater) or self.match(.greater_equal)) {
+        const operator = self.previous();
+        const rhs = try self.parseTerm();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseTerm(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseFactor();
+    while (self.match(.plus) or self.match(.minus)) {
+        const operator = self.previous();
+        const rhs = try self.parseFactor();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseFactor(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseUnary();
+    while (self.match(.star) or self.match(.slash) or self.match(.percent)) {
+        const operator = self.previous();
+        const rhs = try self.parseUnary();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseUnary(self: *Parser) anyerror!*syntax.ast.Expr {
+    if (self.match(.minus) or self.match(.bang)) {
+        const operator = self.previous();
+        const operand = try self.parseUnary();
+        const node = try self.allocator.create(syntax.ast.Expr);
+        node.* = .{ .unary = .{
+            .op = switch (operator.kind) {
+                .minus => .negate,
+                .bang => .not,
+                else => unreachable,
+            },
+            .operand = operand,
+            .span = source_pkg.Span.init(operator.span.start, exprSpan(operand.*).end),
+        } };
+        return node;
+    }
+    return self.parsePostfix();
+}
+
+pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parsePrimary();
+
+    while (true) {
+        if (self.match(.dot)) {
+            const member_token = try self.expect(.identifier, "expected member name after '.'", "write the member name here");
+            const node = try self.allocator.create(syntax.ast.Expr);
+            node.* = .{ .member = .{
+                .object = expr,
+                .member = member_token.lexeme,
+                .span = source_pkg.Span.init(exprSpan(expr.*).start, member_token.span.end),
+            } };
+            expr = node;
+            continue;
+        }
+        if (self.match(.l_bracket)) {
+            const index = try self.parseExpression();
+            const close = try self.expect(.r_bracket, "expected ']' after index expression", "close the index expression here");
+            const node = try self.allocator.create(syntax.ast.Expr);
+            node.* = .{ .index = .{
+                .object = expr,
+                .index = index,
+                .span = source_pkg.Span.init(exprSpan(expr.*).start, close.span.end),
+            } };
+            expr = node;
+            continue;
+        }
+        if (self.match(.l_paren)) {
+            var args = std.array_list.Managed(syntax.ast.CallArg).init(self.allocator);
+            while (!self.at(.r_paren) and !self.at(.eof)) {
+                const start_token = self.peek();
+                var label: ?[]const u8 = null;
+                if (self.at(.identifier) and self.peekNext().kind == .colon) {
+                    label = self.advance().lexeme;
+                    _ = self.advance();
+                }
+                const value = try self.parseExpression();
+                try args.append(.{
+                    .label = label,
+                    .value = value,
+                    .span = source_pkg.Span.init(start_token.span.start, exprSpan(value.*).end),
+                });
+                if (!self.match(.comma)) break;
+            }
+            const close = try self.expect(.r_paren, "expected ')' after call arguments", "close the argument list here");
+            var trailing_builder: ?syntax.ast.BuilderBlock = null;
+            var trailing_callback: ?syntax.ast.CallbackBlock = null;
+            var end = close.span.end;
+            if (self.at(.l_brace)) {
+                if (self.looksLikeCallbackBlock()) {
+                    trailing_callback = try self.parseCallbackBlock();
+                    end = trailing_callback.?.span.end;
+                } else {
+                    trailing_builder = try self.parseBuilderBlock();
+                    end = trailing_builder.?.span.end;
+                }
+            }
+            const node = try self.allocator.create(syntax.ast.Expr);
+            node.* = .{ .call = .{
+                .callee = expr,
+                .args = try args.toOwnedSlice(),
+                .trailing_builder = trailing_builder,
+                .trailing_callback = trailing_callback,
+                .span = source_pkg.Span.init(exprSpan(expr.*).start, end),
+            } };
+            expr = node;
+            continue;
+        }
+        if (self.allow_trailing_block_call and self.at(.l_brace) and !self.looksLikeStructLiteral()) {
+            var trailing_builder: ?syntax.ast.BuilderBlock = null;
+            var trailing_callback: ?syntax.ast.CallbackBlock = null;
+            var end: usize = exprSpan(expr.*).end;
+            if (self.looksLikeCallbackBlock()) {
+                trailing_callback = try self.parseCallbackBlock();
+                end = trailing_callback.?.span.end;
+            } else {
+                trailing_builder = try self.parseBuilderBlock();
+                end = trailing_builder.?.span.end;
+            }
+            const node = try self.allocator.create(syntax.ast.Expr);
+            node.* = .{ .call = .{
+                .callee = expr,
+                .args = &.{},
+                .trailing_builder = trailing_builder,
+                .trailing_callback = trailing_callback,
+                .span = source_pkg.Span.init(exprSpan(expr.*).start, end),
+            } };
+            expr = node;
+            continue;
+        }
+        if (self.at(.l_brace) and self.looksLikeStructLiteral()) {
+            expr = try self.parseStructLiteral(expr);
+            continue;
+        }
+        break;
+    }
+
+    return expr;
+}
+
+pub fn parsePrimary(self: *Parser) anyerror!*syntax.ast.Expr {
+    if (self.at(.l_brace) and self.looksLikeCallbackBlock()) {
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .callback = try self.parseCallbackBlock() };
+        return expr;
+    }
+    if (self.match(.integer)) {
+        const token = self.previous();
+        const value = std.fmt.parseInt(i64, token.lexeme, 10) catch {
+            try diagnostics.appendOwned(self.allocator, self.diagnostics, .{
+                .severity = .@"error",
+                .code = "KPAR003",
+                .title = "integer literal is out of range",
+                .message = "This integer literal does not fit in Kira's current 64-bit integer range.",
+                .labels = &.{
+                    diagnostics.primaryLabel(token.span, "integer literal is too large"),
+                },
+                .help = "Use a smaller integer literal.",
+            });
+            return error.DiagnosticsEmitted;
+        };
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .integer = .{ .value = value, .span = token.span } };
+        return expr;
+    }
+    if (self.match(.float)) {
+        const token = self.previous();
+        const value = std.fmt.parseFloat(f64, token.lexeme) catch {
+            try diagnostics.appendOwned(self.allocator, self.diagnostics, .{
+                .severity = .@"error",
+                .code = "KPAR004",
+                .title = "invalid float literal",
+                .message = "This floating-point literal could not be parsed.",
+                .labels = &.{
+                    diagnostics.primaryLabel(token.span, "invalid float literal"),
+                },
+                .help = "Use a literal such as `12.0`.",
+            });
+            return error.DiagnosticsEmitted;
+        };
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .float = .{ .value = value, .span = token.span } };
+        return expr;
+    }
+    if (self.match(.string)) {
+        const token = self.previous();
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .string = .{ .value = token.lexeme, .span = token.span } };
+        return expr;
+    }
+    if (self.match(.kw_true) or self.match(.kw_false)) {
+        const token = self.previous();
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .bool = .{ .value = token.kind == .kw_true, .span = token.span } };
+        return expr;
+    }
+    if (self.match(.identifier)) {
+        const token = self.previous();
+        return try self.makeIdentifierExpr(token);
+    }
+    if (self.match(.l_paren)) {
+        const expr = try self.parseExpression();
+        _ = try self.expect(.r_paren, "expected ')' after grouped expression", "close the grouped expression here");
+        return expr;
+    }
+    if (self.match(.l_bracket)) {
+        const start = self.previous().span.start;
+        var elements = std.array_list.Managed(*syntax.ast.Expr).init(self.allocator);
+        while (!self.at(.r_bracket) and !self.at(.eof)) {
+            try elements.append(try self.parseExpression());
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.r_bracket, "expected ']' after array literal", "close the array literal here");
+        const expr = try self.allocator.create(syntax.ast.Expr);
+        expr.* = .{ .array = .{
+            .elements = try elements.toOwnedSlice(),
+            .span = source_pkg.Span.init(start, close.span.end),
+        } };
+        return expr;
+    }
+
+    const token = self.peek();
+    const detail = try std.fmt.allocPrint(
+        self.allocator,
+        "Kira expected an expression here, but found {s}.",
+        .{tokenDescription(token.kind)},
+    );
+    try diagnostics.appendOwned(self.allocator, self.diagnostics, .{
+        .severity = .@"error",
+        .code = "KPAR002",
+        .title = "expected expression",
+        .message = detail,
+        .labels = &.{
+            diagnostics.primaryLabel(token.span, unexpectedTokenLabel(token.kind)),
+        },
+        .help = "Insert a literal, name, call, collection literal, or parenthesized expression.",
+    });
+    return error.DiagnosticsEmitted;
+}

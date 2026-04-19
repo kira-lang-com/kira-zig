@@ -256,6 +256,9 @@ pub const Statement = union(enum) {
     return_stmt: ReturnStatement,
     if_stmt: IfStatement,
     for_stmt: ForStatement,
+    while_stmt: WhileStatement,
+    break_stmt: BreakStatement,
+    continue_stmt: ContinueStatement,
     switch_stmt: SwitchStatement,
 };
 
@@ -295,6 +298,20 @@ pub const ForStatement = struct {
     binding_name: []const u8,
     iterator: *Expr,
     body: Block,
+    span: Span,
+};
+
+pub const WhileStatement = struct {
+    condition: *Expr,
+    body: Block,
+    span: Span,
+};
+
+pub const BreakStatement = struct {
+    span: Span,
+};
+
+pub const ContinueStatement = struct {
     span: Span,
 };
 
@@ -362,10 +379,13 @@ pub const Expr = union(enum) {
     bool: BoolLiteral,
     identifier: IdentifierExpr,
     array: ArrayExpr,
+    callback: CallbackBlock,
+    struct_literal: StructLiteralExpr,
     unary: UnaryExpr,
     binary: BinaryExpr,
     conditional: ConditionalExpr,
     member: MemberExpr,
+    index: IndexExpr,
     call: CallExpr,
 };
 
@@ -399,6 +419,18 @@ pub const ArrayExpr = struct {
     span: Span,
 };
 
+pub const StructLiteralExpr = struct {
+    type_name: QualifiedName,
+    fields: []StructLiteralField,
+    span: Span,
+};
+
+pub const StructLiteralField = struct {
+    name: []const u8,
+    value: *Expr,
+    span: Span,
+};
+
 pub const UnaryExpr = struct {
     op: UnaryOp,
     operand: *Expr,
@@ -425,10 +457,17 @@ pub const MemberExpr = struct {
     span: Span,
 };
 
+pub const IndexExpr = struct {
+    object: *Expr,
+    index: *Expr,
+    span: Span,
+};
+
 pub const CallExpr = struct {
     callee: *Expr,
     args: []CallArg,
     trailing_builder: ?BuilderBlock,
+    trailing_callback: ?CallbackBlock,
     span: Span,
 };
 
@@ -462,10 +501,28 @@ pub const UnaryOp = enum {
 pub const TypeExpr = union(enum) {
     named: QualifiedName,
     array: ArrayTypeExpr,
+    function: FunctionTypeExpr,
 };
 
 pub const ArrayTypeExpr = struct {
     element_type: *TypeExpr,
+    span: Span,
+};
+
+pub const FunctionTypeExpr = struct {
+    params: []*TypeExpr,
+    result: *TypeExpr,
+    span: Span,
+};
+
+pub const CallbackBlock = struct {
+    params: []CallbackParam,
+    body: Block,
+    span: Span,
+};
+
+pub const CallbackParam = struct {
+    name: []const u8,
     span: Span,
 };
 
@@ -603,6 +660,20 @@ fn dumpStatement(writer: anytype, statement: Statement, depth: usize) anyerror!v
             try dumpExpr(writer, for_stmt.iterator.*, depth + 1);
             try dumpBlock(writer, for_stmt.body, depth + 1);
         },
+        .while_stmt => |while_stmt| {
+            try indent(writer, depth);
+            try writer.writeAll("While\n");
+            try dumpExpr(writer, while_stmt.condition.*, depth + 1);
+            try dumpBlock(writer, while_stmt.body, depth + 1);
+        },
+        .break_stmt => {
+            try indent(writer, depth);
+            try writer.writeAll("Break\n");
+        },
+        .continue_stmt => {
+            try indent(writer, depth);
+            try writer.writeAll("Continue\n");
+        },
         .switch_stmt => |switch_stmt| {
             try indent(writer, depth);
             try writer.writeAll("Switch\n");
@@ -664,6 +735,28 @@ fn dumpExpr(writer: anytype, expr: Expr, depth: usize) anyerror!void {
             try writer.writeAll("Array\n");
             for (value.elements) |element| try dumpExpr(writer, element.*, depth + 1);
         },
+        .callback => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("CallbackLiteral\n");
+            if (value.params.len != 0) {
+                try indent(writer, depth + 1);
+                try writer.writeAll("Params\n");
+                for (value.params) |param| {
+                    try indent(writer, depth + 2);
+                    try writer.print("{s}\n", .{param.name});
+                }
+            }
+            try dumpBlock(writer, value.body, depth + 1);
+        },
+        .struct_literal => |value| {
+            try indent(writer, depth);
+            try writer.print("StructLiteral {s}\n", .{qualifiedNameText(value.type_name)});
+            for (value.fields) |field| {
+                try indent(writer, depth + 1);
+                try writer.print("Field {s}\n", .{field.name});
+                try dumpExpr(writer, field.value.*, depth + 2);
+            }
+        },
         .unary => |value| {
             try indent(writer, depth);
             try writer.print("Unary {s}\n", .{@tagName(value.op)});
@@ -687,11 +780,23 @@ fn dumpExpr(writer: anytype, expr: Expr, depth: usize) anyerror!void {
             try writer.print("Member {s}\n", .{value.member});
             try dumpExpr(writer, value.object.*, depth + 1);
         },
+        .index => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("Index\n");
+            try dumpExpr(writer, value.object.*, depth + 1);
+            try dumpExpr(writer, value.index.*, depth + 1);
+        },
         .call => |value| {
             try indent(writer, depth);
             try writer.writeAll("Call\n");
             try dumpExpr(writer, value.callee.*, depth + 1);
             for (value.args) |arg| try dumpExpr(writer, arg.value.*, depth + 1);
+            if (value.trailing_builder) |builder| try dumpBuilderBlock(writer, builder, depth + 1);
+            if (value.trailing_callback) |callback| {
+                try indent(writer, depth + 1);
+                try writer.writeAll("Callback\n");
+                try dumpBlock(writer, callback.body, depth + 2);
+            }
         },
     }
 }
