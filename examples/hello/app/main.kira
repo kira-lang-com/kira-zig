@@ -24,7 +24,7 @@ function main() {
     print(bottomEdge);
     printLine("hello");
     
-    let color = Color(r: 255, g: 0, b: 0);
+    let color = Color { r: 255, g: 0, b: 0 };
     print(color);
     return;
 }
@@ -33,7 +33,7 @@ function main() {
 @Doc("Axis-aligned rectangle in points.
 Use this for widget bounds, clip regions, and draw command geometry.
 The rectangle stores an origin and extent in the same coordinate space.")
-class Rect {
+struct Rect {
     @Doc("Left edge in points.")
     var x: Float = 0.0
     @Doc("Top edge in points.")
@@ -46,7 +46,7 @@ class Rect {
     @Doc("Rectangle with zero origin and zero size.
     Use this as a default before layout places a widget.
     It is also returned when intersections collapse to an empty area.")
-    let zero: Rect = Rect(x: 0.0, y: 0.0, width: 0.0, height: 0.0)
+    let zero: Rect = Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
 
     @Doc("Return whether the rectangle contains the supplied point.
     Bounds checks are inclusive on the trailing edges for stable hit testing.
@@ -75,7 +75,7 @@ class Rect {
         if iw <= 0.0 || ih <= 0.0 {
             return Rect.zero
         }
-        return Rect(x: ix, y: iy, width: iw, height: ih)
+        return Rect { x: ix, y: iy, width: iw, height: ih }
     }
 
     @Doc("Inset the rectangle by the supplied edge values.
@@ -84,14 +84,14 @@ class Rect {
     function inset(by: EdgeInsets) -> Rect {
         let insetWidth = (width - by.leading) - by.trailing
         let insetHeight = (height - by.top) - by.bottom
-        return Rect(x: x + by.leading, y: y + by.top, width: insetWidth, height: insetHeight)
+        return Rect { x: x + by.leading, y: y + by.top, width: insetWidth, height: insetHeight }
     }
 }
 
 @Doc("Two-dimensional point in Foundation layout and drawing space.
 Use this for widget origins, hit-testing, and pointer coordinates.
 All values are expressed in points in the current UI coordinate system.")
-class Point {
+struct Point {
     @Doc("Horizontal position in points.")
     var x: Float = 0.0
     @Doc("Vertical position in points.")
@@ -100,7 +100,7 @@ class Point {
     @Doc("The origin point at `(0, 0)`.
     Use this for default placement before layout has assigned real bounds.
     It is also useful as a neutral offset in simple geometry code.")
-    let zero: Point = Point(x: 0.0, y: 0.0)
+    let zero: Point = Point { x: 0.0, y: 0.0 }
 
     @Doc("Compute the Manhattan distance to another point.
     Use this for simple hit-testing thresholds and gesture heuristics when a scalar distance is sufficient.

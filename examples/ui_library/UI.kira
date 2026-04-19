@@ -1,3 +1,15 @@
+annotation State {
+}
+
+annotation Binding {
+}
+
+annotation Doc {
+    parameters {
+        text: String
+    }
+}
+
 construct Widget {
     annotations {
         @State;
@@ -19,7 +31,7 @@ construct Widget {
     }
 }
 
-type Theme {
+struct Theme {
     let title: String = "Operations";
 }
 

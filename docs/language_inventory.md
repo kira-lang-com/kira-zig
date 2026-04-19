@@ -10,14 +10,14 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Capability declarations: reusable generated function members composed into annotations
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
 - FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`
-- Function syntax: parameters, optional return types, blocks, `let`, expression statements, `return`, calls, typed locals, and local inference
+- Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`, expression statements, `return`, calls, typed locals, local inference, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
 - Class inheritance: comma-separated `extends` lists, inherited field/method lookup, parent-qualified member access, exact-signature method overrides, and inherited field-default overrides
-- Struct declarations: field-only, non-inheriting value shapes
-- Expressions: integer, float, string, boolean, arrays, unary operators, binary operators, grouped expressions, member access, namespaced references, and call syntax
+- Struct declarations: non-inheriting value shapes with stored members, default values, constant members, and methods
+- Expressions: integer, float, string, boolean, arrays, named/nested struct literals, unary operators, binary operators, grouped expressions, member access, namespaced references, indexing, call syntax, named function references, inline callback values, and callable-value invocations
 - Conditional expressions `condition ? then : else`
-- Control flow syntax: `if`, `for`, and `switch` in statement and builder/content contexts
+- Control flow syntax: `if`, `else if`, `for`, `while`, `break`, `continue`, and `switch` in statement position, plus `if`/`else if`, `for`, and `switch` in builder/content contexts
 - Construct sections: `annotations`, `modifiers`, `requires`, `lifecycle`, `builder`, `representation`, plus custom sections preserved structurally
-- Builder/content blocks with sequential composition and control-flow builder items
+- Builder/content blocks with sequential composition, control-flow builder items, and preserved nested trailing-builder child trees on call expressions
 - Lifecycle hook forms such as `onAppear()`, `onDisappear()`, and `onChange(of: value) { ... }`
 - Type inference and explicit-coercion rules for declarations
 - Migration diagnostics for removed `func` and old surface `type` declaration syntax
@@ -39,19 +39,21 @@ The frontend and semantic model understand the broader language surface above. T
 - integer, float, and boolean comparisons in the lowered executable subset
 - short-circuit `&&` and `||` on booleans
 - conditional expressions in the lowered scalar/pointer subset
-- array literals, array locals, array params/returns, and `for` iteration over array values
+- array literals, array locals, array params/returns, indexing, indexed assignment, and `for` iteration over array values
 - statement-form `if`
+- statement-form `while`, `break`, and `continue`
 - statement-form `for` over array literals
 - statement-form `switch`
 - builtin `print`, including named-struct formatting on the VM executable path
 - direct function calls with arguments and results in the lowered scalar/pointer subset
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
-- lowered named-struct construction and field access on the VM executable path
+- lowered named-struct construction, field access, type-qualified constant member lookup, and struct methods on the VM executable path
 - lowered inheritance dispatch across `vm`, `llvm`, and `hybrid`, including multiple parents, imported parents, parent-qualified field/method access, inherited method calls, and inherited field-default overrides
 - explicit FFI extern declarations
 - callback-typed arguments targeting native/external functions
 - `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
+- function types, named function references, non-capturing inline callback literals, direct trailing callbacks, and callable-value invocations through locals and fields across the shared executable backends
 
 `kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset. The broadest runtime-value printing support currently lives on the VM/default execution path.
 
@@ -59,7 +61,7 @@ Executable arrays currently use a shared handle-based runtime representation. Th
 
 ## Design Boundary
 
-- The compiler implements language mechanisms needed by construct-defined libraries, including Kira UI-style builder/content semantics.
+- The compiler implements language mechanisms needed by construct-defined libraries, including Kira UI-style builder/content semantics and preserved nested child trees.
 - The compiler does not hardcode the full UI framework, design packs, or branded theming/runtime behavior in Zig.
 - Higher-level framework behavior remains a Kira/library concern once the language surface has been validated and modeled.
 

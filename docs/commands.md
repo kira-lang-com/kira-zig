@@ -14,6 +14,10 @@ Standalone CLI:
 - `kira ast examples/hello`
 - `kira check examples/hello`
 - `kira build examples/hello`
+- `kira shader check examples/shaders/textured_quad.ksl`
+- `kira shader ast examples/shaders/textured_quad.ksl`
+- `kira shader build examples/shaders/textured_quad.ksl`
+- `kira shader build`
 - `kira sync`
 - `kira add FrostUI`
 - `kira add --git https://github.com/Sunlight-Horizon/GameKit.git --rev <commit> GameKit`
@@ -40,6 +44,9 @@ Build-system convenience:
 - `zig build run -- ast examples/hello`
 - `zig build run -- check examples/hello`
 - `zig build run -- build examples/hello`
+- `zig build run -- shader check examples/shaders/textured_quad.ksl`
+- `zig build run -- shader build examples/shaders/textured_quad.ksl`
+- `zig build run -- shader build`
 - `zig build run -- build --backend llvm examples/hello`
 - `zig build run -- build --backend hybrid examples/hybrid_roundtrip`
 - `zig build run -- new DemoApp generated/DemoApp`
@@ -64,6 +71,11 @@ CLI behavior:
 - `ast` dumps the parsed AST
 - `check` runs parse and semantics
 - `build` defaults to writing a `.kbc` bytecode artifact into `generated/`
+- `shader check` runs the dedicated `.ksl` lexer, parser, import loader, semantic pass, and typed shader IR validation
+- `shader ast` dumps the parsed KSL module shape without routing through the executable `.kira` frontend
+- `shader build <file.ksl>` emits GLSL 330 vertex/fragment source plus reflection JSON into `generated/shaders/` next to the source file by default, or `--out-dir <dir>`
+- `shader build` with no explicit file discovers all top-level PascalCase `*.ksl` entry shaders under `Shaders/` in the current project root and writes outputs to `generated/Shaders/`
+- `shader build` rejects compute shaders today with an explicit backend diagnostic because the current real graphics path in this repo is Sokol/OpenGL with GLSL 330 graphics shaders, not a compute-capable pipeline
 - `sync` resolves registry, path, and git dependencies into `kira.lock`, verifies registry archive SHA-256 checksums, and populates the local cache under `~/.kira/cache/packages/`
 - `add`, `remove`, and `update` edit `kira.toml` and then refresh `kira.lock`
 - `package pack` writes a validated source-only `.tar` archive into `generated/`

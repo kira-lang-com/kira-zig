@@ -37,3 +37,18 @@ The current native and hybrid subset intentionally matches the current VM subset
 Hybrid packages still remain separate, but the repo is no longer structurally VM-only. Shared IR, runtime ABI direction, and stable native helper calls keep future hybrid work additive instead of architectural repair work.
 
 `kira_main` is intentionally separate from compiler packages. It is the app-facing C ABI facade that generated apps will link against.
+
+## KSL Pipeline
+
+`.ksl` should remain a sibling pipeline rather than being forced through the executable `.kira` frontend and IR path.
+
+The implemented shape is:
+
+1. `kira_source` loads `.ksl` source text and spans
+2. `kira_ksl_parser` tokenizes and parses shader AST
+3. `kira_ksl_semantics` resolves groups, resources, stage IO, options, and layouts
+4. `kira_shader_ir` preserves typed shader meaning for diagnostics, reflection, and lowering
+5. `kira_glsl_backend` lowers graphics shaders to GLSL 330 plus reflection
+6. `kira_build` and `kira_cli` expose `kira shader check|ast|build`
+
+This keeps Kira's main executable language and KSL's shader language coherent without pretending they are the same thing. See [docs/ksl.md](ksl.md).

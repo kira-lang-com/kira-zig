@@ -11,18 +11,24 @@ Layer 1:
 - `kira_syntax_model`
 - `kira_lexer`
 - `kira_parser`
+- `kira_ksl_syntax_model`
+- `kira_ksl_parser`
 
 Layer 2:
 - `kira_semantics_model`
+- `kira_shader_model`
+- `kira_ksl_semantics`
 - `kira_semantics`
 
 Layer 3:
 - `kira_ir`
+- `kira_shader_ir`
 - `kira_hybrid_definition`
 - `kira_backend_api`
 - `kira_native_lib_definition`
 
 Layer 4:
+- `kira_glsl_backend`
 - `kira_bytecode`
 - `kira_vm_runtime`
 - `kira_native_bridge`
