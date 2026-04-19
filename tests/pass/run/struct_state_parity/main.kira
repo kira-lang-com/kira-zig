@@ -1,18 +1,18 @@
-type Pair {
-    let left: I64
-    let right: I64
+struct Pair {
+    var left: I64
+    var right: I64
 }
 
-type State {
-    let first: Pair
-    let second: Pair
-    let total: I64
+struct State {
+    var first: Pair
+    var second: Pair
+    var total: I64
 }
 
 @Main
 function main() {
-    let seed: Pair = Pair(4, 8)
-    let state: State = State(seed, Pair(1, 2), 0)
+    var seed: Pair = Pair(4, 8)
+    var state: State = State(seed, Pair(1, 2), 0)
 
     seed.left = seed.left + 3
     state.first.right = state.first.right + seed.left

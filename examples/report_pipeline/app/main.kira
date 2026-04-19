@@ -20,13 +20,13 @@ function renderFooter() -> Int {
     return appendices;
 }
 
-type ReportStage {
+struct ReportStage {
     let label: String
     let owner: String
     let itemCount: Int
 }
 
-type ReportBoard {
+struct ReportBoard {
     let intake: ReportStage
     let review: ReportStage
     let release: ReportStage

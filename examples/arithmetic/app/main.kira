@@ -26,13 +26,13 @@ function projectedRunway() -> Int {
     return quarterThree;
 }
 
-type RevenueSnapshot {
+struct RevenueSnapshot {
     let monthLabel: String
     let gross: Int
     let net: Int
 }
 
-type ForecastSummary {
+struct ForecastSummary {
     let current: RevenueSnapshot
     let next: RevenueSnapshot
 }

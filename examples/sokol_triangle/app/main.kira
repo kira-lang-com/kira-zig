@@ -1,7 +1,7 @@
 import sokol as sokol
 
 @FFI.Struct { layout: c; }
-type app_state {
+struct app_state {
     let shader: sokol.sg_shader
     let pipeline: sokol.sg_pipeline
     let viewport_width: I32
@@ -9,7 +9,7 @@ type app_state {
 }
 
 @FFI.Pointer { target: app_state; ownership: borrowed; }
-type app_state_ptr {}
+struct app_state_ptr {}
 
 @Main
 @Native

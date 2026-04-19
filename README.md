@@ -49,6 +49,8 @@ The current VM path also supports:
 
 - named struct construction in the lowered executable subset
 - struct field loads and stores in the lowered executable subset
+- inherited field and method access, including multiple parents and imported parents, across the VM, LLVM, and hybrid paths
+- parent-qualified member access plus inherited field-default overrides in the lowered executable subset
 - printing named struct values such as `Color(r: 255, g: 0, b: 0)`
 
 ## Quick Start
@@ -190,6 +192,42 @@ function entry() {
 }
 ```
 
+## Classes, Structs, and Generated Members
+
+Kira's canonical declaration surface now distinguishes richer inheritable classes from simpler value-oriented structs:
+
+- `class Child extends Base, Mixin { ... }` accepts a comma-separated parent list
+- `struct Position { ... }` declares a non-inheriting value shape
+- inherited fields and methods are visible on child values
+- inside class methods, parent-qualified access uses the inherited class name, for example `Base.field` or `Base.method()`
+- `override function ...` must match the inherited method signature exactly
+- `override let/var name = ...` replaces only the inherited default value and keeps the original storage slot
+- parent classes can come from imported modules
+- annotations can compose capability-provided generated functions through `uses CapabilityName`; generated functions must be marked `overridable` before a class can replace them
+
+```kira
+struct Position {
+    let x: Float = 0.0
+    let y: Float = 0.0
+}
+
+class Base {
+    let value: I64 = 10
+
+    function doubled(): I64 {
+        return value * 2
+    }
+}
+
+class Child extends Base {
+    override let value = 11
+
+    function total(): I64 {
+        return doubled() + Base.value
+    }
+}
+```
+
 ## Architecture
 
 - `packages/kira_core` stays tiny and universal
@@ -206,3 +244,5 @@ function entry() {
 The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/app/main.kira](examples/sokol_triangle/app/main.kira) and [examples/sokol_runtime_entry/app/main.kira](examples/sokol_runtime_entry/app/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira check examples/sokol_triangle` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira run --backend llvm examples/sokol_triangle` to build and launch the native triangle proof.
 
 See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), [docs/package_management.md](docs/package_management.md), and [docs/native_libraries.md](docs/native_libraries.md).
+
+KSL is now a real sibling shader pipeline. Use `kira shader check <file.ksl>`, `kira shader ast <file.ksl>`, and `kira shader build [<file.ksl>]` to parse, validate, reflect, and lower `.ksl` shaders to GLSL 330 for the repo's current Sokol/OpenGL graphics path. With no explicit file, `kira shader build` discovers all top-level PascalCase shader entry files under `Shaders/` and writes outputs to `generated/Shaders/`. The current implementation lives in [docs/ksl.md](docs/ksl.md) with working examples under [examples/shaders](examples/shaders).

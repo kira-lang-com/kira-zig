@@ -1,5 +1,11 @@
 import Foundation
 
+annotation Doc {
+    parameters {
+        text: String
+    }
+}
+
 @Main
 function main() {
     let pointX = 12 + 8;
@@ -27,7 +33,7 @@ function main() {
 @Doc("Axis-aligned rectangle in points.
 Use this for widget bounds, clip regions, and draw command geometry.
 The rectangle stores an origin and extent in the same coordinate space.")
-type Rect {
+class Rect {
     @Doc("Left edge in points.")
     var x: Float = 0.0
     @Doc("Top edge in points.")
@@ -40,7 +46,7 @@ type Rect {
     @Doc("Rectangle with zero origin and zero size.
     Use this as a default before layout places a widget.
     It is also returned when intersections collapse to an empty area.")
-    static let zero: Rect = Rect(x: 0.0, y: 0.0, width: 0.0, height: 0.0)
+    let zero: Rect = Rect(x: 0.0, y: 0.0, width: 0.0, height: 0.0)
 
     @Doc("Return whether the rectangle contains the supplied point.
     Bounds checks are inclusive on the trailing edges for stable hit testing.
@@ -85,7 +91,7 @@ type Rect {
 @Doc("Two-dimensional point in Foundation layout and drawing space.
 Use this for widget origins, hit-testing, and pointer coordinates.
 All values are expressed in points in the current UI coordinate system.")
-type Point {
+class Point {
     @Doc("Horizontal position in points.")
     var x: Float = 0.0
     @Doc("Vertical position in points.")
@@ -94,7 +100,7 @@ type Point {
     @Doc("The origin point at `(0, 0)`.
     Use this for default placement before layout has assigned real bounds.
     It is also useful as a neutral offset in simple geometry code.")
-    static let zero: Point = Point(x: 0.0, y: 0.0)
+    let zero: Point = Point(x: 0.0, y: 0.0)
 
     @Doc("Compute the Manhattan distance to another point.
     Use this for simple hit-testing thresholds and gesture heuristics when a scalar distance is sufficient.
@@ -111,7 +117,7 @@ type Point {
 @Doc("Small composition example that uses the geometry types together.
 This is a frontend-friendly model shape for simple layout metadata.
 It keeps `hello.kira` runnable while still showing how the new types connect.")
-type LayoutSample {
+struct LayoutSample {
     @Doc("Anchor point for the sample content.")
     let anchor: Point
     @Doc("Bounding rectangle for the sample content.")

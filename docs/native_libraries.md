@@ -81,7 +81,7 @@ Generated output uses annotation-based declarations such as:
 
 ```kira
 @FFI.Callback { abi: c; params: [I64, RawPtr]; result: I64; }
-type kira_i64_callback {}
+struct kira_i64_callback {}
 
 @FFI.Extern { library: callbacks; symbol: kira_invoke_callback; abi: c; }
 function kira_invoke_callback(callback: kira_i64_callback, user_data: RawPtr, value: I64): I64;

@@ -1,10 +1,10 @@
-type SupportQueue {
+struct SupportQueue {
     let name: String
     let openCount: Int
     let closedCount: Int
 }
 
-type SupportDashboard {
+struct SupportDashboard {
     let primary: SupportQueue
     let secondary: SupportQueue
 }

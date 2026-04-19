@@ -13,12 +13,12 @@ function main() {
     return
 }
 
-type StoryPoint {
+struct StoryPoint {
     let x: Float
     let y: Float
 }
 
-type StoryLane {
+class StoryLane {
     let origin: StoryPoint
     let width: Float
     let height: Float
@@ -28,7 +28,7 @@ type StoryLane {
     }
 }
 
-type StoryBoard {
+struct StoryBoard {
     let lead: StoryLane
     let fallback: StoryLane
 }

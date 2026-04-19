@@ -1,9 +1,9 @@
-type FormatterTheme {
+struct FormatterTheme {
     let label: String
     let accent: String
 }
 
-type NumberFormatter {
+struct NumberFormatter {
     let title: String
     let theme: FormatterTheme
 }

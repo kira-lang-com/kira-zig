@@ -1,0 +1,56 @@
+capability Serializable {
+    generated {
+        overridable function transportFormat(): String {
+            return "ktl"
+        }
+
+        function toJson(): String {
+            return "json"
+        }
+    }
+}
+
+annotation GameItem {
+    targets: class
+    uses Serializable
+
+    generated {
+        overridable function displayName(): String {
+            return "item"
+        }
+    }
+}
+
+struct Position {
+    let x: Float = 0.0
+    let y: Float = 0.0
+    let z: Float = 0.0
+}
+
+class GameData {
+    let createdAt: Int = 0
+
+    function debugLabel(): String {
+        return "GameData"
+    }
+}
+
+@GameItem
+class PlayerData extends GameData {
+    let name: String = "DefaultName"
+    let level: Int = 1
+    let position: Position
+
+    override function transportFormat(): String {
+        return "ktl+player"
+    }
+
+    override function displayName(): String {
+        return name
+    }
+}
+
+@Main
+function entry() {
+    return
+}

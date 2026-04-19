@@ -1,24 +1,24 @@
 import sokol as sokol
 
 @FFI.Struct { layout: c; }
-type app_state {
-    let shader: sokol.sg_shader
-    let pipeline: sokol.sg_pipeline
-    let viewport_width: I32
-    let viewport_height: I32
+struct app_state {
+    var shader: sokol.sg_shader
+    var pipeline: sokol.sg_pipeline
+    var viewport_width: I32
+    var viewport_height: I32
 }
 
 @FFI.Pointer { target: app_state; ownership: borrowed; }
-type app_state_ptr {}
+struct app_state_ptr {}
 
 @Main
 @Native
 function main() {
-    let state: app_state
+    var state: app_state
     state.viewport_width = 128
     state.viewport_height = 128
 
-    let desc: sokol.sapp_desc
+    var desc: sokol.sapp_desc
     desc.init_userdata_cb = init
     desc.frame_userdata_cb = frame
     desc.cleanup_userdata_cb = cleanup
@@ -33,13 +33,13 @@ function main() {
 
 @Native
 function init(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state: app_state_ptr = user_data
 
-    let desc: sokol.sg_desc
+    var desc: sokol.sg_desc
     desc.environment = sokol.sglue_environment()
     sokol.sg_setup(desc)
 
-    let shader_desc: sokol.sg_shader_desc
+    var shader_desc: sokol.sg_shader_desc
     shader_desc.vertex_func.source = "#version 330
 out vec4 color;
 const vec2 positions[3] = vec2[3](
@@ -64,7 +64,7 @@ void main() {
 }"
     state.shader = sokol.sg_make_shader(shader_desc)
 
-    let pipeline_desc: sokol.sg_pipeline_desc
+    var pipeline_desc: sokol.sg_pipeline_desc
     pipeline_desc.shader = state.shader
     state.pipeline = sokol.sg_make_pipeline(pipeline_desc)
     return
@@ -72,9 +72,9 @@ void main() {
 
 @Native
 function frame(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state: app_state_ptr = user_data
 
-    let pass: sokol.sg_pass
+    var pass: sokol.sg_pass
     pass.swapchain = sokol.sglue_swapchain()
     sokol.sg_begin_pass(pass)
     sokol.sg_apply_viewport(0, 0, state.viewport_width, state.viewport_height, true)
@@ -88,7 +88,7 @@ function frame(user_data: RawPtr): Void {
 
 @Native
 function event(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state: app_state_ptr = user_data
     state.viewport_width = event.framebuffer_width
     state.viewport_height = event.framebuffer_height
     return
@@ -96,7 +96,7 @@ function event(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
 
 @Native
 function cleanup(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state: app_state_ptr = user_data
     sokol.sg_destroy_pipeline(state.pipeline)
     sokol.sg_destroy_shader(state.shader)
     sokol.sg_shutdown()

@@ -20,13 +20,13 @@ function renderSummary() -> Int {
     return highlightedRows
 }
 
-type ServiceStatus {
+struct ServiceStatus {
     let name: String
     let incidents: Int
     let owners: Int
 }
 
-type ReleaseWindow {
+struct ReleaseWindow {
     let morning: ServiceStatus
     let evening: ServiceStatus
 }
