@@ -546,6 +546,7 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
                         .name = try allocator.dupe(u8, member.field_decl.name),
                         .storage = @enumFromInt(@intFromEnum(member.field_decl.storage)),
                         .ty = field_ty,
+                        .default_value = if (member.field_decl.value) |value| try semantics.lowerFieldDefaultExpr(&lowering_ctx, value) else null,
                     });
                 }
                 try types.append(.{

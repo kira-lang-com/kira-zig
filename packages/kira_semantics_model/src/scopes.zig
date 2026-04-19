@@ -1,9 +1,11 @@
 const std = @import("std");
 const ResolvedType = @import("types.zig").ResolvedType;
+const FieldStorage = @import("hir.zig").FieldStorage;
 
 pub const LocalBinding = struct {
     id: u32,
     ty: ResolvedType,
+    storage: FieldStorage,
 };
 
 pub const Scope = struct {

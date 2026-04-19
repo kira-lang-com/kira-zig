@@ -165,6 +165,9 @@ pub const Statement = union(enum) {
     expr_stmt: ExprStatement,
     if_stmt: IfStatement,
     for_stmt: ForStatement,
+    while_stmt: WhileStatement,
+    break_stmt: BreakStatement,
+    continue_stmt: ContinueStatement,
     switch_stmt: SwitchStatement,
     return_stmt: ReturnStatement,
 };
@@ -201,6 +204,20 @@ pub const ForStatement = struct {
     binding_ty: ResolvedType,
     iterator: *Expr,
     body: []Statement,
+    span: source_pkg.Span,
+};
+
+pub const WhileStatement = struct {
+    condition: *Expr,
+    body: []Statement,
+    span: source_pkg.Span,
+};
+
+pub const BreakStatement = struct {
+    span: source_pkg.Span,
+};
+
+pub const ContinueStatement = struct {
     span: source_pkg.Span,
 };
 
@@ -273,6 +290,7 @@ pub const Expr = union(enum) {
     boolean: BooleanExpr,
     null_ptr: NullPtrExpr,
     function_ref: FunctionRefExpr,
+    callback: CallbackExpr,
     local: LocalExpr,
     namespace_ref: NamespaceRefExpr,
     parent_view: ParentViewExpr,
@@ -281,7 +299,9 @@ pub const Expr = union(enum) {
     unary: UnaryExpr,
     conditional: ConditionalExpr,
     call: CallExpr,
+    call_value: CallValueExpr,
     array: ArrayExpr,
+    index: IndexExpr,
 };
 
 pub const IntegerExpr = struct {
@@ -314,10 +334,16 @@ pub const NullPtrExpr = struct {
 };
 
 pub const FunctionRefExpr = struct {
+    representation: FunctionRefRepresentation = .callable_value,
     function_id: u32,
     name: []const u8,
     ty: ResolvedType,
     span: source_pkg.Span,
+};
+
+pub const FunctionRefRepresentation = enum {
+    callable_value,
+    native_callback,
 };
 
 pub const LocalExpr = struct {
@@ -379,12 +405,37 @@ pub const CallExpr = struct {
     callee_name: []const u8,
     function_id: ?u32,
     args: []*Expr,
+    trailing_builder: ?BuilderBlock = null,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const CallbackExpr = struct {
+    params: []Parameter,
+    locals: []symbols.LocalSymbol,
+    body: []Statement,
+    return_type: ResolvedType,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const CallValueExpr = struct {
+    callee: *Expr,
+    args: []*Expr,
+    param_types: []const ResolvedType,
     ty: ResolvedType,
     span: source_pkg.Span,
 };
 
 pub const ArrayExpr = struct {
     elements: []*Expr,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const IndexExpr = struct {
+    object: *Expr,
+    index: *Expr,
     ty: ResolvedType,
     span: source_pkg.Span,
 };
@@ -423,6 +474,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .boolean => .{ .kind = .boolean },
         .null_ptr => |node| node.ty,
         .function_ref => |node| node.ty,
+        .callback => |node| node.ty,
         .local => |node| node.ty,
         .namespace_ref => |node| node.ty,
         .parent_view => |node| node.ty,
@@ -431,6 +483,8 @@ pub fn exprType(expr: Expr) ResolvedType {
         .unary => |node| node.ty,
         .conditional => |node| node.ty,
         .call => |node| node.ty,
+        .call_value => |node| node.ty,
         .array => |node| node.ty,
+        .index => |node| node.ty,
     };
 }

@@ -161,6 +161,58 @@ test "validates construct-driven requirements" {
     try std.testing.expectEqualStrings("missing required content block", diags.items[0].title);
 }
 
+test "allows struct methods and constant members" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "struct Point {\n" ++
+            "    let x: Float = 0.0;\n" ++
+            "    let y: Float = 0.0;\n" ++
+            "    let zero: Point = Point(x: 0.0, y: 0.0);\n" ++
+            "    function distanceTo(other: Point) -> Float { return x + other.x; }\n" ++
+            "}\n" ++
+            "@Main function entry() { let start = Point.zero; let end = Point { x: 2.0, y: 3.0 }; print(end.distanceTo(other: start)); return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 2), analyzed.functions.len);
+    try std.testing.expectEqualStrings("Point.distanceTo", analyzed.functions[0].name);
+}
+
+test "reports loop control outside loops" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "@Main function entry() { break; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "break requires a loop");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "@Main function entry() { continue; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "continue requires a loop");
+    }
+}
+
 test "validates annotation declarations and fills defaults" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -369,21 +421,21 @@ test "validates annotation targets capabilities and generated overrides" {
     }
 }
 
-test "struct remains value-oriented and rejects methods" {
+test "struct methods lower like value-oriented instance behavior" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const result = analyzeSource(
+    const analyzed = try analyzeSource(
         allocator,
-        "struct Bad { function nope() { return; } }\n" ++
-            "@Main function entry() { return; }",
+        "struct Size { let width: I64 = 2 function doubled() -> I64 { return width * 2; } }\n" ++
+            "@Main function entry() { let size = Size(); print(size.doubled()); return; }",
         &diags,
     );
 
-    try std.testing.expectError(error.DiagnosticsEmitted, result);
-    try expectFirstDiagnosticTitle(diags.items, "struct cannot declare methods");
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqualStrings("Size.doubled", analyzed.functions[0].name);
 }
 
 test "allows imported construct and callable names in the global namespace" {
@@ -530,13 +582,13 @@ test "reports ambiguous inherited method lookups" {
     try expectFirstDiagnosticTitle(diags.items, "ambiguous inherited method lookup");
 }
 
-test "reports invalid parent qualification" {
+test "allows type-qualified constant member lookup outside inheritance" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const result = analyzeSource(
+    const analyzed = try analyzeSource(
         allocator,
         "class Left { let value: I64 = 1 }\n" ++
             "class Right { let value: I64 = 2 }\n" ++
@@ -547,8 +599,73 @@ test "reports invalid parent qualification" {
         &diags,
     );
 
-    try std.testing.expectError(error.DiagnosticsEmitted, result);
-    try expectFirstDiagnosticTitle(diags.items, "invalid parent-qualified member reference");
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 2), analyzed.functions.len);
+}
+
+test "supports function types trailing callbacks and callable values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "function sink(value: Int) { print(value); return; }\n" ++
+            "function register(handler: (Int) -> Void) { return; }\n" ++
+            "@Main function entry() {\n" ++
+            "    let callback: (Int) -> Void = sink;\n" ++
+            "    register { value in sink(value); }\n" ++
+            "    callback(1);\n" ++
+            "    return;\n" ++
+            "}",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const entry = analyzed.functions[2];
+    try std.testing.expect(entry.body[0].let_stmt.value.?.* == .function_ref);
+    try std.testing.expect(entry.body[1].expr_stmt.expr.* == .call);
+    try std.testing.expect(entry.body[1].expr_stmt.expr.call.args[0].* == .callback);
+    try std.testing.expect(entry.body[2].expr_stmt.expr.* == .call_value);
+}
+
+test "preserves trailing builder trees on call expressions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeWithImports(
+        allocator,
+        try parseSource(
+            allocator,
+            "import UI\n" ++
+                "Widget Screen() {\n" ++
+                "    content {\n" ++
+                "        Column(\"root\") {\n" ++
+                "            Text(\"hello\")\n" ++
+                "        }\n" ++
+                "    }\n" ++
+                "}\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        ),
+        .{
+            .constructs = &.{"Widget"},
+            .callables = &.{ "Column", "Text" },
+        },
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const content = analyzed.forms[0].content orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), content.items.len);
+    try std.testing.expect(content.items[0] == .expr);
+    try std.testing.expect(content.items[0].expr.expr.* == .call);
+    try std.testing.expectEqual(@as(usize, 1), content.items[0].expr.expr.call.args.len);
+    try std.testing.expect(content.items[0].expr.expr.call.trailing_builder != null);
+    try std.testing.expectEqual(@as(usize, 1), content.items[0].expr.expr.call.trailing_builder.?.items.len);
 }
 
 test "reports override signature mismatches" {

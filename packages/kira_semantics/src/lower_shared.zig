@@ -5,6 +5,12 @@ const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const ImportedGlobals = @import("imported_globals.zig").ImportedGlobals;
+const function_types = @import("function_types.zig");
+const decls = @import("lower_shared_decls.zig");
+
+pub const lowerAnnotationDecl = decls.lowerAnnotationDecl;
+pub const lowerCapabilityDecl = decls.lowerCapabilityDecl;
+pub const lowerGeneratedFunctions = decls.lowerGeneratedFunctions;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -119,9 +125,10 @@ pub fn qualifiedNameLeaf(allocator: std.mem.Allocator, name: syntax.ast.Qualifie
     return allocator.dupe(u8, name.segments[name.segments.len - 1].text);
 }
 
-pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) !model.ResolvedType {
+pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
     return switch (ty) {
         .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(allocator, info.element_type.*) },
+        .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(allocator, info) },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
             if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
@@ -151,9 +158,10 @@ pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) !mo
     };
 }
 
-pub fn typeTextFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) ![]const u8 {
+pub fn typeTextFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) anyerror![]const u8 {
     return switch (ty) {
         .array => |info| std.fmt.allocPrint(allocator, "[{s}]", .{try typeTextFromSyntax(allocator, info.element_type.*)}),
+        .function => |info| functionTypeTextFromSyntax(allocator, info),
         .named => |name| allocator.dupe(u8, name.segments[name.segments.len - 1].text),
     };
 }
@@ -171,138 +179,6 @@ pub fn typeTextFromResolved(allocator: std.mem.Allocator, ty: model.ResolvedType
         .array => std.fmt.allocPrint(allocator, "[{s}]", .{ty.name orelse ""}),
         .unknown => allocator.dupe(u8, "Unknown"),
     };
-}
-
-pub fn lowerAnnotationDecl(ctx: *Context, decl: syntax.ast.AnnotationDecl, module_path: []const u8) !model.AnnotationDecl {
-    var parameter_names = std.StringHashMapUnmanaged(source_pkg.Span){};
-    defer parameter_names.deinit(ctx.allocator);
-    var parameters = std.array_list.Managed(model.AnnotationParameterDecl).init(ctx.allocator);
-
-    for (decl.parameters) |param| {
-        if (parameter_names.get(param.name)) |previous_span| {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM061",
-                .title = "duplicate annotation parameter",
-                .message = try std.fmt.allocPrint(ctx.allocator, "The annotation '{s}' declares parameter '{s}' more than once.", .{ decl.name, param.name }),
-                .labels = &.{
-                    diagnostics.primaryLabel(param.span, "duplicate parameter"),
-                    diagnostics.secondaryLabel(previous_span, "first parameter was declared here"),
-                },
-                .help = "Remove or rename one of the parameters.",
-            });
-            return error.DiagnosticsEmitted;
-        }
-        try parameter_names.put(ctx.allocator, param.name, param.span);
-
-        const param_type = try typeFromSyntax(ctx.allocator, param.type_expr.*);
-        if (!isSupportedAnnotationParameterType(param_type)) {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM062",
-                .title = "unsupported annotation parameter type",
-                .message = try std.fmt.allocPrint(ctx.allocator, "Annotation parameter '{s}' uses unsupported type {s}.", .{ param.name, typeLabel(param_type) }),
-                .labels = &.{diagnostics.primaryLabel(param.span, "unsupported annotation parameter type")},
-                .help = "Use Bool, Int, Float, or String for first-version annotation parameters.",
-            });
-            return error.DiagnosticsEmitted;
-        }
-
-        const default_value = if (param.default_value) |value|
-            (try annotationValueForParameter(ctx, decl.name, param.name, param_type, value, true)).value
-        else
-            null;
-
-        try parameters.append(.{
-            .name = try ctx.allocator.dupe(u8, param.name),
-            .ty = param_type,
-            .default_value = default_value,
-            .span = param.span,
-        });
-    }
-
-    return .{
-        .name = try ctx.allocator.dupe(u8, decl.name),
-        .targets = try lowerAnnotationTargets(ctx.allocator, decl.targets),
-        .uses = try lowerCapabilityUses(ctx.allocator, decl.uses),
-        .generated_functions = try lowerGeneratedFunctions(ctx, decl.name, decl.generated_members),
-        .parameters = try parameters.toOwnedSlice(),
-        .module_path = try ctx.allocator.dupe(u8, module_path),
-        .span = decl.span,
-    };
-}
-
-pub fn lowerCapabilityDecl(ctx: *Context, decl: syntax.ast.CapabilityDecl, module_path: []const u8) !model.CapabilityDecl {
-    return .{
-        .name = try ctx.allocator.dupe(u8, decl.name),
-        .generated_functions = try lowerGeneratedFunctions(ctx, decl.name, decl.generated_members),
-        .module_path = try ctx.allocator.dupe(u8, module_path),
-        .span = decl.span,
-    };
-}
-
-fn lowerAnnotationTargets(allocator: std.mem.Allocator, targets: []const syntax.ast.AnnotationTarget) ![]model.AnnotationTarget {
-    const lowered = try allocator.alloc(model.AnnotationTarget, targets.len);
-    for (targets, 0..) |target, index| {
-        lowered[index] = switch (target) {
-            .class => .class,
-            .struct_decl => .struct_decl,
-            .function => .function,
-            .construct => .construct,
-            .field => .field,
-        };
-    }
-    return lowered;
-}
-
-fn lowerCapabilityUses(allocator: std.mem.Allocator, uses: []const syntax.ast.QualifiedName) ![]const []const u8 {
-    const lowered = try allocator.alloc([]const u8, uses.len);
-    for (uses, 0..) |use_name, index| {
-        lowered[index] = try qualifiedNameLeaf(allocator, use_name);
-    }
-    return lowered;
-}
-
-pub fn lowerGeneratedFunctions(ctx: *Context, source_name: []const u8, members: []const syntax.ast.GeneratedMember) ![]model.GeneratedFunction {
-    var lowered = std.array_list.Managed(model.GeneratedFunction).init(ctx.allocator);
-    for (members) |generated_member| {
-        switch (generated_member.member) {
-            .function_decl => |function_decl| {
-                var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
-                for (function_decl.params) |param| {
-                    if (param.type_expr) |type_expr| {
-                        try params.append(try typeFromSyntax(ctx.allocator, type_expr.*));
-                    } else {
-                        try params.append(.{ .kind = .unknown });
-                    }
-                }
-                try lowered.append(.{
-                    .name = try ctx.allocator.dupe(u8, function_decl.name),
-                    .overridable = generated_member.overridable,
-                    .params = try params.toOwnedSlice(),
-                    .return_type = if (function_decl.return_type) |return_type| try typeFromSyntax(ctx.allocator, return_type.*) else .{ .kind = .unknown },
-                    .source_annotation = try ctx.allocator.dupe(u8, source_name),
-                    .span = generated_member.span,
-                });
-            },
-            else => {
-                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                    .severity = .@"error",
-                    .code = "KSEM070",
-                    .title = "unsupported generated member",
-                    .message = "Generated blocks currently support function members.",
-                    .labels = &.{diagnostics.primaryLabel(generated_member.span, "unsupported generated member")},
-                    .help = "Use `function` inside `generated { ... }`.",
-                });
-                return error.DiagnosticsEmitted;
-            },
-        }
-    }
-    return lowered.toOwnedSlice();
-}
-
-fn isSupportedAnnotationParameterType(ty: model.ResolvedType) bool {
-    return ty.kind == .boolean or ty.kind == .integer or ty.kind == .float or ty.kind == .string;
 }
 
 pub fn canAssign(target: model.ResolvedType, actual: model.ResolvedType) bool {
@@ -334,7 +210,7 @@ pub fn emitTypeMismatch(
     });
 }
 
-fn typeLabel(ty: model.ResolvedType) []const u8 {
+pub fn typeLabel(ty: model.ResolvedType) []const u8 {
     if (ty.kind == .array) return ty.name orelse "[]";
     if (ty.name) |name| return name;
     return switch (ty.kind) {
@@ -670,12 +546,12 @@ fn annotationCountValue(ctx: *Context, expr: *syntax.ast.Expr) !usize {
     };
 }
 
-const CheckedAnnotationValue = struct {
+pub const CheckedAnnotationValue = struct {
     value: model.AnnotationValue,
     ty: model.ResolvedType,
 };
 
-fn annotationValueForParameter(
+pub fn annotationValueForParameter(
     ctx: *Context,
     annotation_name: []const u8,
     parameter_name: []const u8,
@@ -727,7 +603,7 @@ fn annotationValueForParameter(
     };
 }
 
-fn annotationLiteralValue(ctx: *Context, expr: *syntax.ast.Expr) !CheckedAnnotationValue {
+pub fn annotationLiteralValue(ctx: *Context, expr: *syntax.ast.Expr) !CheckedAnnotationValue {
     return switch (expr.*) {
         .integer => |value| .{
             .value = .{ .integer = value.value },
@@ -765,6 +641,9 @@ fn annotationLiteralValue(ctx: *Context, expr: *syntax.ast.Expr) !CheckedAnnotat
 }
 
 pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
+    if (text.len >= 4 and text[0] == '(' and std.mem.indexOf(u8, text, "->") != null) {
+        return .{ .kind = .callback, .name = text };
+    }
     if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
         return .{ .kind = .array, .name = text[1 .. text.len - 1] };
     }
@@ -791,6 +670,12 @@ pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
     return .{ .kind = .named, .name = text };
 }
 
+fn functionTypeTextFromSyntax(allocator: std.mem.Allocator, info: syntax.ast.FunctionTypeExpr) anyerror![]const u8 {
+    var params = std.array_list.Managed(model.ResolvedType).init(allocator);
+    for (info.params) |param| try params.append(try typeFromSyntax(allocator, param.*));
+    return function_types.signatureText(allocator, params.items, try typeFromSyntax(allocator, info.result.*));
+}
+
 fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
     return switch (expr) {
         .integer => |node| node.span,
@@ -799,10 +684,13 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .bool => |node| node.span,
         .identifier => |node| node.span,
         .array => |node| node.span,
+        .callback => |node| node.span,
+        .struct_literal => |node| node.span,
         .unary => |node| node.span,
         .binary => |node| node.span,
         .conditional => |node| node.span,
         .member => |node| node.span,
+        .index => |node| node.span,
         .call => |node| node.span,
     };
 }

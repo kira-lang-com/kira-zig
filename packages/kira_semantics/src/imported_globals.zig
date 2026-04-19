@@ -13,13 +13,23 @@ pub const ImportedFunction = struct {
 
 pub const ImportedType = struct {
     name: []const u8,
+    parents: []const []const u8 = &.{},
     fields: []const ImportedField = &.{},
     ffi: ?model.NamedTypeInfo = null,
 };
 
+pub const ImportedAnnotation = struct {
+    name: []const u8,
+    parameters: []const model.AnnotationParameterDecl = &.{},
+    module_path: []const u8 = "",
+    span: @import("kira_source").Span = .{ .start = 0, .end = 0 },
+};
+
 pub const ImportedField = struct {
     name: []const u8,
+    storage: model.FieldStorage,
     ty: model.ResolvedType,
+    default_value: ?*model.Expr = null,
 };
 
 pub const ImportedGlobals = struct {
@@ -27,6 +37,7 @@ pub const ImportedGlobals = struct {
     callables: []const []const u8 = &.{},
     functions: []const ImportedFunction = &.{},
     types: []const ImportedType = &.{},
+    annotations: []const ImportedAnnotation = &.{},
 
     pub fn hasConstruct(self: ImportedGlobals, name: []const u8) bool {
         return contains(self.constructs, name);
@@ -46,6 +57,13 @@ pub const ImportedGlobals = struct {
     pub fn findType(self: ImportedGlobals, name: []const u8) ?ImportedType {
         for (self.types) |type_decl| {
             if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+        }
+        return null;
+    }
+
+    pub fn findAnnotation(self: ImportedGlobals, name: []const u8) ?ImportedAnnotation {
+        for (self.annotations) |annotation_decl| {
+            if (std.mem.eql(u8, annotation_decl.name, name)) return annotation_decl;
         }
         return null;
     }
