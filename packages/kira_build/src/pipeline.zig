@@ -87,7 +87,17 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
     for (parsed.diagnostics) |diag| try diags.append(diag);
 
     const module_map = try package_manager.loadModuleMapForSource(allocator, parsed.source.path);
-    const merged_program = try buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map);
+    const merged_program = buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map, &diags) catch |err| switch (err) {
+        error.DiagnosticsEmitted => {
+            return .{
+                .source = parsed.source,
+                .diagnostics = try diags.toOwnedSlice(),
+                .ir_program = null,
+                .failure_stage = .parser,
+            };
+        },
+        else => return err,
+    };
 
     validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -289,13 +299,14 @@ fn buildProgramGraph(
     source_path: []const u8,
     root_program: syntax.ast.Program,
     module_map: package_manager.ModuleMap,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !syntax.ast.Program {
     var visited = std.StringHashMap(void).init(allocator);
     var imports = std.array_list.Managed(syntax.ast.ImportDecl).init(allocator);
     var decls = std.array_list.Managed(syntax.ast.Decl).init(allocator);
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
 
-    try appendProgramGraph(allocator, &visited, &imports, &decls, &functions, source_path, root_program, module_map);
+    try appendProgramGraph(allocator, &visited, &imports, &decls, &functions, source_path, root_program, module_map, diags);
 
     return .{
         .imports = try imports.toOwnedSlice(),
@@ -313,6 +324,7 @@ fn appendProgramGraph(
     source_path: []const u8,
     program: syntax.ast.Program,
     module_map: package_manager.ModuleMap,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !void {
     if (visited.contains(source_path)) return;
     try visited.put(try allocator.dupe(u8, source_path), {});
@@ -333,23 +345,33 @@ fn appendProgramGraph(
             const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
             defer allocator.free(module_files);
             for (module_files) |module_path| {
-                const imported_program = try parseModuleProgram(allocator, module_path);
-                try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map);
+                const imported_program = try parseModuleProgram(allocator, module_path, diags);
+                try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map, diags);
             }
             continue;
         }
 
         const module_path = firstExistingCandidate(resolved.candidates) orelse continue;
-        const imported_program = try parseModuleProgram(allocator, module_path);
-        try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map);
+        const imported_program = try parseModuleProgram(allocator, module_path, diags);
+        try appendProgramGraph(allocator, visited, imports, decls, functions, module_path, imported_program, module_map, diags);
     }
 }
 
-fn parseModuleProgram(allocator: std.mem.Allocator, module_path: []const u8) !syntax.ast.Program {
+fn parseModuleProgram(
+    allocator: std.mem.Allocator,
+    module_path: []const u8,
+    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+) !syntax.ast.Program {
     const source = try source_pkg.SourceFile.fromPath(allocator, module_path);
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const tokens = lexer.tokenize(allocator, &source, &diags) catch return error.DiagnosticsEmitted;
-    return parser.parse(allocator, tokens, &diags);
+    var module_diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = lexer.tokenize(allocator, &source, &module_diags) catch {
+        for (module_diags.items) |diag| try out_diagnostics.append(diag);
+        return error.DiagnosticsEmitted;
+    };
+    return parser.parse(allocator, tokens, &module_diags) catch {
+        for (module_diags.items) |diag| try out_diagnostics.append(diag);
+        return error.DiagnosticsEmitted;
+    };
 }
 
 fn validateImports(
@@ -398,6 +420,7 @@ fn collectImportedGlobals(
     var callables = std.array_list.Managed([]const u8).init(allocator);
     var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
     var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
+    var annotations = std.array_list.Managed(semantics.ImportedAnnotation).init(allocator);
 
     for (program.imports) |import_decl| {
         const resolved = try resolveImportPath(allocator, source.path, import_decl.module_name, module_map);
@@ -416,6 +439,7 @@ fn collectImportedGlobals(
                 for (harvested.callables) |name| try callables.append(name);
                 for (harvested.functions) |function_decl| try functions.append(function_decl);
                 for (harvested.types) |type_decl| try types.append(type_decl);
+                for (harvested.annotations) |annotation_decl| try annotations.append(annotation_decl);
             }
             continue;
         }
@@ -426,6 +450,7 @@ fn collectImportedGlobals(
         for (harvested.callables) |name| try callables.append(name);
         for (harvested.functions) |function_decl| try functions.append(function_decl);
         for (harvested.types) |type_decl| try types.append(type_decl);
+        for (harvested.annotations) |annotation_decl| try annotations.append(annotation_decl);
     }
 
     return .{
@@ -433,6 +458,7 @@ fn collectImportedGlobals(
         .callables = try callables.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
+        .annotations = try annotations.toOwnedSlice(),
     };
 }
 
@@ -449,14 +475,15 @@ fn collectModuleGlobals(allocator: std.mem.Allocator, module_path: []const u8) !
         else => return err,
     };
 
-    return harvestProgramGlobals(allocator, program);
+    return harvestProgramGlobals(allocator, program, module_path);
 }
 
-fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Program) !semantics.ImportedGlobals {
+fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Program, module_path: []const u8) !semantics.ImportedGlobals {
     var constructs = std.array_list.Managed([]const u8).init(allocator);
     var callables = std.array_list.Managed([]const u8).init(allocator);
     var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
     var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
+    var annotations = std.array_list.Managed(semantics.ImportedAnnotation).init(allocator);
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     var lowering_ctx = semantics.LoweringContext{
         .allocator = allocator,
@@ -465,6 +492,16 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
 
     for (program.decls) |decl| {
         switch (decl) {
+            .annotation_decl => |annotation_decl| {
+                const lowered = semantics.lowerAnnotationDecl(&lowering_ctx, annotation_decl, module_path) catch continue;
+                try annotations.append(.{
+                    .name = lowered.name,
+                    .parameters = lowered.parameters,
+                    .module_path = lowered.module_path,
+                    .span = lowered.span,
+                });
+            },
+            .capability_decl => {},
             .construct_decl => |construct_decl| try constructs.append(try allocator.dupe(u8, construct_decl.name)),
             .construct_form_decl => |form_decl| try callables.append(try allocator.dupe(u8, form_decl.name)),
             .function_decl => |function_decl| {
@@ -473,7 +510,7 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
                 var params = std.array_list.Managed(semantics.ResolvedType).init(allocator);
                 for (function_decl.params) |param| {
                     if (param.type_expr) |type_expr| {
-                        try params.append(semantics.typeFromSyntax(type_expr.*));
+                        try params.append(try semantics.typeFromSyntax(allocator, type_expr.*));
                     } else {
                         try params.append(.{ .kind = .unknown });
                     }
@@ -481,7 +518,7 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
                 try functions.append(.{
                     .name = try allocator.dupe(u8, function_decl.name),
                     .params = try params.toOwnedSlice(),
-                    .return_type = if (function_decl.return_type) |return_type| semantics.typeFromSyntax(return_type.*) else .{ .kind = .unknown },
+                    .return_type = if (function_decl.return_type) |return_type| try semantics.typeFromSyntax(allocator, return_type.*) else .{ .kind = .unknown },
                     .execution = if (foreign != null) .native else .inherited,
                     .is_extern = foreign != null,
                     .foreign = foreign,
@@ -489,23 +526,58 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
             },
             .type_decl => |type_decl| {
                 try callables.append(try allocator.dupe(u8, type_decl.name));
+                var parents = std.array_list.Managed([]const u8).init(allocator);
+                for (type_decl.parents) |parent_name| {
+                    try parents.append(try allocator.dupe(u8, parent_name.segments[parent_name.segments.len - 1].text));
+                }
+                const ffi_info = semantics.resolveNamedTypeInfo(&lowering_ctx, type_decl.annotations, type_decl.span) catch null;
+                // For @FFI.Alias types, let fields with defaults are enum-style constants
+                // (not instance layout slots). Skip them just as the old static let did.
+                const is_alias = if (ffi_info) |info| info == .alias else false;
                 var fields = std.array_list.Managed(semantics.ImportedField).init(allocator);
                 for (type_decl.members) |member| {
-                    if (member != .field_decl or member.field_decl.is_static) continue;
+                    if (member != .field_decl) continue;
+                    if (is_alias and member.field_decl.storage == .immutable and member.field_decl.value != null) continue;
                     const field_ty: semantics.ResolvedType = if (member.field_decl.type_expr) |type_expr|
-                        semantics.typeFromSyntax(type_expr.*)
+                        try semantics.typeFromSyntax(allocator, type_expr.*)
                     else
                         .{ .kind = .unknown };
                     try fields.append(.{
                         .name = try allocator.dupe(u8, member.field_decl.name),
+                        .storage = @enumFromInt(@intFromEnum(member.field_decl.storage)),
                         .ty = field_ty,
                     });
                 }
                 try types.append(.{
                     .name = try allocator.dupe(u8, type_decl.name),
+                    .parents = try parents.toOwnedSlice(),
                     .fields = try fields.toOwnedSlice(),
-                    .ffi = semantics.resolveNamedTypeInfo(&lowering_ctx, type_decl.annotations, type_decl.span) catch null,
+                    .ffi = ffi_info,
                 });
+                for (type_decl.members) |member| {
+                    if (member != .function_decl) continue;
+                    const function_decl = member.function_decl;
+                    const foreign = semantics.resolveForeignFunction(&lowering_ctx, function_decl.annotations, function_decl.span) catch null;
+                    var params = std.array_list.Managed(semantics.ResolvedType).init(allocator);
+                    try params.append(.{ .kind = .named, .name = type_decl.name });
+                    for (function_decl.params) |param| {
+                        if (param.type_expr) |type_expr| {
+                            try params.append(try semantics.typeFromSyntax(allocator, type_expr.*));
+                        } else {
+                            try params.append(.{ .kind = .unknown });
+                        }
+                    }
+                    const method_name = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ type_decl.name, function_decl.name });
+                    try callables.append(method_name);
+                    try functions.append(.{
+                        .name = method_name,
+                        .params = try params.toOwnedSlice(),
+                        .return_type = if (function_decl.return_type) |return_type| try semantics.typeFromSyntax(allocator, return_type.*) else .{ .kind = .unknown },
+                        .execution = if (foreign != null) .native else .inherited,
+                        .is_extern = foreign != null,
+                        .foreign = foreign,
+                    });
+                }
             },
         }
     }
@@ -515,6 +587,7 @@ fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Progr
         .callables = try callables.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
+        .annotations = try annotations.toOwnedSlice(),
     };
 }
 

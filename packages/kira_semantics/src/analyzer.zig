@@ -150,7 +150,8 @@ test "validates construct-driven requirements" {
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const result = analyzeSource(
         allocator,
-        "construct Widget { annotations { @State; } requires { content; } lifecycle { onAppear() {} } }\n" ++
+        "annotation State { }\n" ++
+            "construct Widget { annotations { @State; } requires { content; } lifecycle { onAppear() {} } }\n" ++
             "Widget Button() { @State let count: Int = 0; }\n" ++
             "@Main function entry() { return; }",
         &diags,
@@ -158,6 +159,231 @@ test "validates construct-driven requirements" {
 
     try std.testing.expectError(error.DiagnosticsEmitted, result);
     try std.testing.expectEqualStrings("missing required content block", diags.items[0].title);
+}
+
+test "validates annotation declarations and fills defaults" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "annotation State { }\n" ++
+            "annotation Attribute { parameters { index: Int } }\n" ++
+            "annotation InputMapping { parameters { priority: Int = 0 blocksLowerPriorityMappings: Bool = false } }\n" ++
+            "construct Widget { annotations { @State; @Attribute; @InputMapping; } requires { content; } }\n" ++
+            "Widget Button() {\n" ++
+            "    @State let isPressed: Bool = false;\n" ++
+            "    @Attribute(0) let position: Float = 0.0;\n" ++
+            "    @InputMapping let mapping: Int = 1;\n" ++
+            "    content { }\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 3), analyzed.annotations.len);
+    try std.testing.expectEqual(@as(usize, 1), analyzed.forms.len);
+    try std.testing.expectEqual(@as(usize, 3), analyzed.forms[0].fields.len);
+    try std.testing.expectEqual(@as(usize, 1), analyzed.forms[0].fields[1].annotations.len);
+    try std.testing.expectEqual(@as(usize, 1), analyzed.forms[0].fields[1].annotations[0].arguments.len);
+    try std.testing.expectEqual(@as(i64, 0), analyzed.forms[0].fields[1].annotations[0].arguments[0].value.integer);
+    try std.testing.expectEqual(@as(usize, 2), analyzed.forms[0].fields[2].annotations[0].arguments.len);
+    try std.testing.expectEqual(@as(i64, 0), analyzed.forms[0].fields[2].annotations[0].arguments[0].value.integer);
+    try std.testing.expectEqual(false, analyzed.forms[0].fields[2].annotations[0].arguments[1].value.boolean);
+}
+
+test "reports annotation schema errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation Attribute { parameters { index: Int } }\n" ++
+                "construct Widget { annotations { @Attribute; } requires { content; } }\n" ++
+                "Widget Button() { @Attribute let position: Float = 0.0; content { } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "missing annotation parameter");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation Attribute { parameters { index: Int } }\n" ++
+                "construct Widget { annotations { @Attribute; } requires { content; } }\n" ++
+                "Widget Button() { @Attribute(\"zero\") let position: Float = 0.0; content { } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "annotation parameter type mismatch");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation State { }\n" ++
+                "construct Widget { annotations { @State; } requires { content; } }\n" ++
+                "Widget Button() { @State(1) let isPressed: Bool = false; content { } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "annotation does not accept parameters");
+    }
+}
+
+test "reports undeclared annotations in construct allowlists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "construct Widget { annotations { @State; } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "unknown annotation");
+}
+
+test "reports duplicate annotation declarations and parameters" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation State { }\n" ++
+                "annotation State { }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "duplicate annotation declaration");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation Attribute { parameters { index: Int index: Int } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "duplicate annotation parameter");
+    }
+}
+
+test "reports invalid annotation parameter defaults" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "annotation Attribute { parameters { index: Int = \"zero\" } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "annotation parameter type mismatch");
+}
+
+test "validates annotation targets capabilities and generated overrides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const analyzed = try analyzeSource(
+            allocator,
+            "capability Labeling { generated { overridable function label(): Int { return 1; } } }\n" ++
+                "annotation Tagged { targets: class uses Labeling }\n" ++
+                "@Tagged class Item { override function label(): Int { return 2; } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+        try std.testing.expectEqual(@as(usize, 1), analyzed.capabilities.len);
+        try std.testing.expectEqual(@as(usize, 1), analyzed.annotations[0].generated_functions.len);
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation StructOnly { targets: struct }\n" ++
+                "@StructOnly class Item {}\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "invalid annotation target");
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "annotation Tagged { targets: class generated { function label(): Int { return 1; } } }\n" ++
+                "@Tagged class Item { override function label(): Int { return 2; } }\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "generated member is not overridable");
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "capability A { generated { function label(): Int { return 1; } } }\n" ++
+                "capability B { generated { function label(): Int { return 2; } } }\n" ++
+                "annotation Tagged { targets: class uses A, B }\n" ++
+                "@Tagged class Item {}\n" ++
+                "@Main function entry() { return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "duplicate generated member");
+    }
+}
+
+test "struct remains value-oriented and rejects methods" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "struct Bad { function nope() { return; } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "struct cannot declare methods");
 }
 
 test "allows imported construct and callable names in the global namespace" {
@@ -192,6 +418,185 @@ test "allows imported construct and callable names in the global namespace" {
     try std.testing.expectEqualStrings("Widget", analyzed.forms[0].construct_name);
 }
 
+test "class methods can read fields through implicit self" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "class Counter { let value: Int = 1; function current(): Int { return value; } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 2), analyzed.functions.len);
+}
+
+test "class methods can call sibling methods through implicit self" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "class Counter { let value: Int = 1; function current(): Int { return value; } function mirror(): Int { return current(); } }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 3), analyzed.functions.len);
+}
+
+test "reports inheritance cycles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Left extends Right {}\n" ++
+            "class Right extends Left {}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "inheritance cycle");
+}
+
+test "reports duplicate direct parents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Base {}\n" ++
+            "class Child extends Base, Base {}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "duplicate parent type");
+}
+
+test "reports ambiguous inherited field lookups" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Left { let value: I64 = 1 }\n" ++
+            "class Right { let value: I64 = 2 }\n" ++
+            "class Child extends Left, Right {\n" ++
+            "    function read(): I64 { return value; }\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "ambiguous inherited field lookup");
+}
+
+test "reports ambiguous inherited method lookups" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Left { function ping(): I64 { return 1; } }\n" ++
+            "class Right { function ping(): I64 { return 2; } }\n" ++
+            "class Child extends Left, Right {\n" ++
+            "    function read(): I64 { return ping(); }\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "ambiguous inherited method lookup");
+}
+
+test "reports invalid parent qualification" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Left { let value: I64 = 1 }\n" ++
+            "class Right { let value: I64 = 2 }\n" ++
+            "class Child extends Left {\n" ++
+            "    function read(): I64 { return Right.value; }\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "invalid parent-qualified member reference");
+}
+
+test "reports override signature mismatches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "class Base { function ping(value: I64): I64 { return value; } }\n" ++
+            "class Child extends Base {\n" ++
+            "    override function ping(): I64 { return 1; }\n" ++
+            "}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "override signature mismatch");
+}
+
+test "field default overrides reuse the inherited slot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "class Base { let value: I64 = 1 }\n" ++
+            "class Child extends Base {\n" ++
+            "    override let value = 2;\n" ++
+            "}\n" ++
+            "@Main function entry() { let child: Child = Child(); return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const child = findTypeDeclByName(analyzed, "Child") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), child.fields.len);
+    try std.testing.expectEqual(@as(u32, 0), child.fields[0].slot_index);
+    try std.testing.expect(child.fields[0].default_value != null);
+    try std.testing.expectEqualStrings("value", child.fields[0].name);
+    try std.testing.expect(child.fields[0].default_value.?.* == .integer);
+    try std.testing.expectEqual(@as(i64, 2), child.fields[0].default_value.?.integer.value);
+}
+
 fn parseSource(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -204,4 +609,16 @@ fn parseSource(
     const source = try source_pkg.SourceFile.initOwned(allocator, "test.kira", text);
     const tokens = try lexer.tokenize(allocator, &source, diags);
     return parser.parse(allocator, tokens, diags);
+}
+
+fn expectFirstDiagnosticTitle(items: []const diagnostics.Diagnostic, expected_title: []const u8) !void {
+    try std.testing.expect(items.len > 0);
+    try std.testing.expectEqualStrings(expected_title, items[0].title);
+}
+
+fn findTypeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl {
+    for (program.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+    }
+    return null;
 }

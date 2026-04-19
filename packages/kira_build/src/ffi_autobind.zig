@@ -471,7 +471,7 @@ fn renderBindings(
     for (sorted_pointers) |name| {
         const target_name = required_pointers.get(name) orelse continue;
         try writer.print("@FFI.Pointer {{ target: {s}; ownership: borrowed; }}\n", .{target_name});
-        try writer.print("type {s} {{}}\n\n", .{name});
+        try writer.print("struct {s} {{}}\n\n", .{name});
     }
 
     if (spec.mode == .all_public and index.macros.count() > 0) {
@@ -495,11 +495,11 @@ fn writeAliasType(allocator: std.mem.Allocator, writer: anytype, typedef_decl: C
                 try kiraTypeName(allocator, typedef_decl.array_element_type orelse return error.InvalidAutobindingDecl),
                 typedef_decl.array_count,
             });
-            try writer.print("type {s} {{}}\n\n", .{typedef_decl.name});
+            try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
         },
         .alias => {
             try writer.print("@FFI.Alias {{ target: {s}; }}\n", .{try kiraTypeName(allocator, typedef_decl.qual_type)});
-            try writer.print("type {s} {{}}\n\n", .{typedef_decl.name});
+            try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
         },
     }
 }
@@ -509,15 +509,15 @@ fn writeSyntheticArrayType(allocator: std.mem.Allocator, writer: anytype, array_
         try kiraTypeName(allocator, array_info.element_type),
         array_info.count,
     });
-    try writer.print("type {s} {{}}\n\n", .{array_info.name});
+    try writer.print("struct {s} {{}}\n\n", .{array_info.name});
 }
 
 fn writeEnumType(allocator: std.mem.Allocator, writer: anytype, enum_decl: CEnum) !void {
     _ = allocator;
     try writer.writeAll("@FFI.Alias { target: U32; }\n");
-    try writer.print("type {s} {{\n", .{enum_decl.name});
+    try writer.print("struct {s} {{\n", .{enum_decl.name});
     for (enum_decl.items) |item| {
-        try writer.print("    static let {s}: U32 = {d}\n", .{ item.name, item.value });
+        try writer.print("    let {s}: U32 = {d}\n", .{ item.name, item.value });
     }
     try writer.writeAll("}\n\n");
 }
@@ -531,7 +531,7 @@ fn writeCallbackType(allocator: std.mem.Allocator, writer: anytype, typedef_decl
     try writer.writeAll("]; result: ");
     try writer.writeAll(try kiraTypeName(allocator, typedef_decl.callback_result orelse "void"));
     try writer.writeAll("; }\n");
-    try writer.print("type {s} {{}}\n\n", .{typedef_decl.name});
+    try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
 }
 
 fn writeStructType(
@@ -543,19 +543,19 @@ fn writeStructType(
 ) !void {
     const record = resolveRecord(name, index) orelse return error.MissingAutobindStruct;
     try writer.writeAll("@FFI.Struct { layout: c; }\n");
-    try writer.print("type {s} {{\n", .{name});
+    try writer.print("struct {s} {{\n", .{name});
     for (record.fields) |field| {
         const type_name = try fieldTypeName(allocator, name, field, inline_callbacks);
-        try writer.print("    let {s}: {s}\n", .{ sanitizeIdentifier(field.name), type_name });
+        try writer.print("    var {s}: {s}\n", .{ sanitizeIdentifier(field.name), type_name });
     }
     try writer.writeAll("}\n\n");
 }
 
 fn writeMacroConstantsType(writer: anytype, library_name: []const u8, macro_names: []const []const u8, index: *const AstIndex) !void {
-    try writer.print("type {s}_constants {{\n", .{library_name});
+    try writer.print("struct {s}_constants {{\n", .{library_name});
     for (macro_names) |name| {
         const macro = index.macros.get(name) orelse continue;
-        try writer.print("    static let {s}: U64 = {s}\n", .{ macro.name, macro.value });
+        try writer.print("    let {s}: U64 = {s}\n", .{ macro.name, macro.value });
     }
     try writer.writeAll("}\n\n");
 }
@@ -866,7 +866,17 @@ fn syntheticArrayTypeName(allocator: std.mem.Allocator, element_text: []const u8
 
 fn sanitizeIdentifier(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "type")) return "type_value";
+    if (std.mem.eql(u8, name, "class")) return "class_value";
+    if (std.mem.eql(u8, name, "struct")) return "struct_value";
+    if (std.mem.eql(u8, name, "annotation")) return "annotation_value";
+    if (std.mem.eql(u8, name, "capability")) return "capability_value";
     if (std.mem.eql(u8, name, "function")) return "function_value";
+    if (std.mem.eql(u8, name, "generated")) return "generated_value";
+    if (std.mem.eql(u8, name, "overridable")) return "overridable_value";
+    if (std.mem.eql(u8, name, "targets")) return "targets_value";
+    if (std.mem.eql(u8, name, "uses")) return "uses_value";
+    if (std.mem.eql(u8, name, "extends")) return "extends_value";
+    if (std.mem.eql(u8, name, "override")) return "override_value";
     if (std.mem.eql(u8, name, "return")) return "return_value";
     if (std.mem.eql(u8, name, "switch")) return "switch_value";
     if (std.mem.eql(u8, name, "for")) return "for_value";

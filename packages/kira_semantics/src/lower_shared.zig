@@ -10,7 +10,15 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
     diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
     imported_globals: ImportedGlobals = .{},
+    annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
+};
+
+pub const AnnotationHeader = struct {
+    index: ?usize = null,
+    decl: model.AnnotationDecl,
+    allows_block: bool = false,
+    compiler_builtin: bool = false,
 };
 
 pub const FunctionHeader = struct {
@@ -28,11 +36,75 @@ pub const ConstructHeader = struct {
     span: source_pkg.Span,
 };
 
+pub const ParentView = struct {
+    type_name: []const u8,
+    offset: u32,
+    span: source_pkg.Span,
+};
+
+pub const MethodMember = struct {
+    name: []const u8,
+    full_name: []const u8,
+    receiver_type_name: []const u8,
+    receiver_offset: u32,
+    generated_by: ?[]const u8 = null,
+    overridable: bool = true,
+    params: []const model.ResolvedType = &.{},
+    return_type: model.ResolvedType,
+    span: source_pkg.Span,
+};
+
 pub const TypeHeader = struct {
+    kind: model.TypeKind = .struct_decl,
     fields: []const model.Field = &.{},
+    methods: []const MethodMember = &.{},
+    parent_views: []const ParentView = &.{},
     ffi: ?model.NamedTypeInfo = null,
     span: source_pkg.Span,
 };
+
+pub const AnnotationPlacement = enum {
+    function_decl,
+    class_decl,
+    struct_decl,
+    construct_decl,
+    construct_form_decl,
+    field_decl,
+    content_section,
+};
+
+pub fn registerBuiltinAnnotationHeaders(
+    allocator: std.mem.Allocator,
+    headers: *std.StringHashMapUnmanaged(AnnotationHeader),
+) !void {
+    try putBuiltinAnnotation(allocator, headers, "Main", false);
+    try putBuiltinAnnotation(allocator, headers, "Native", false);
+    try putBuiltinAnnotation(allocator, headers, "Runtime", false);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Extern", true);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Struct", true);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Pointer", true);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Alias", true);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Array", true);
+    try putBuiltinAnnotation(allocator, headers, "FFI.Callback", true);
+}
+
+fn putBuiltinAnnotation(
+    allocator: std.mem.Allocator,
+    headers: *std.StringHashMapUnmanaged(AnnotationHeader),
+    name: []const u8,
+    allows_block: bool,
+) !void {
+    try headers.put(allocator, name, .{
+        .decl = .{
+            .name = name,
+            .parameters = &.{},
+            .module_path = "kira.compiler",
+            .span = .{ .start = 0, .end = 0 },
+        },
+        .allows_block = allows_block,
+        .compiler_builtin = true,
+    });
+}
 
 pub fn qualifiedNameText(allocator: std.mem.Allocator, name: syntax.ast.QualifiedName) ![]const u8 {
     var builder = std.array_list.Managed(u8).init(allocator);
@@ -47,9 +119,9 @@ pub fn qualifiedNameLeaf(allocator: std.mem.Allocator, name: syntax.ast.Qualifie
     return allocator.dupe(u8, name.segments[name.segments.len - 1].text);
 }
 
-pub fn typeFromSyntax(ty: syntax.ast.TypeExpr) model.ResolvedType {
+pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) !model.ResolvedType {
     return switch (ty) {
-        .array => .{ .kind = .array },
+        .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(allocator, info.element_type.*) },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
             if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
@@ -79,8 +151,163 @@ pub fn typeFromSyntax(ty: syntax.ast.TypeExpr) model.ResolvedType {
     };
 }
 
+pub fn typeTextFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) ![]const u8 {
+    return switch (ty) {
+        .array => |info| std.fmt.allocPrint(allocator, "[{s}]", .{try typeTextFromSyntax(allocator, info.element_type.*)}),
+        .named => |name| allocator.dupe(u8, name.segments[name.segments.len - 1].text),
+    };
+}
+
+pub fn typeTextFromResolved(allocator: std.mem.Allocator, ty: model.ResolvedType) ![]const u8 {
+    return switch (ty.kind) {
+        .void => allocator.dupe(u8, "Void"),
+        .integer => allocator.dupe(u8, ty.name orelse "Int"),
+        .float => allocator.dupe(u8, ty.name orelse "Float"),
+        .boolean => allocator.dupe(u8, ty.name orelse "Bool"),
+        .string => allocator.dupe(u8, "String"),
+        .c_string => allocator.dupe(u8, ty.name orelse "CString"),
+        .raw_ptr => allocator.dupe(u8, ty.name orelse "RawPtr"),
+        .callback, .ffi_struct, .named => allocator.dupe(u8, ty.name orelse "Unknown"),
+        .array => std.fmt.allocPrint(allocator, "[{s}]", .{ty.name orelse ""}),
+        .unknown => allocator.dupe(u8, "Unknown"),
+    };
+}
+
+pub fn lowerAnnotationDecl(ctx: *Context, decl: syntax.ast.AnnotationDecl, module_path: []const u8) !model.AnnotationDecl {
+    var parameter_names = std.StringHashMapUnmanaged(source_pkg.Span){};
+    defer parameter_names.deinit(ctx.allocator);
+    var parameters = std.array_list.Managed(model.AnnotationParameterDecl).init(ctx.allocator);
+
+    for (decl.parameters) |param| {
+        if (parameter_names.get(param.name)) |previous_span| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM061",
+                .title = "duplicate annotation parameter",
+                .message = try std.fmt.allocPrint(ctx.allocator, "The annotation '{s}' declares parameter '{s}' more than once.", .{ decl.name, param.name }),
+                .labels = &.{
+                    diagnostics.primaryLabel(param.span, "duplicate parameter"),
+                    diagnostics.secondaryLabel(previous_span, "first parameter was declared here"),
+                },
+                .help = "Remove or rename one of the parameters.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        try parameter_names.put(ctx.allocator, param.name, param.span);
+
+        const param_type = try typeFromSyntax(ctx.allocator, param.type_expr.*);
+        if (!isSupportedAnnotationParameterType(param_type)) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM062",
+                .title = "unsupported annotation parameter type",
+                .message = try std.fmt.allocPrint(ctx.allocator, "Annotation parameter '{s}' uses unsupported type {s}.", .{ param.name, typeLabel(param_type) }),
+                .labels = &.{diagnostics.primaryLabel(param.span, "unsupported annotation parameter type")},
+                .help = "Use Bool, Int, Float, or String for first-version annotation parameters.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+
+        const default_value = if (param.default_value) |value|
+            (try annotationValueForParameter(ctx, decl.name, param.name, param_type, value, true)).value
+        else
+            null;
+
+        try parameters.append(.{
+            .name = try ctx.allocator.dupe(u8, param.name),
+            .ty = param_type,
+            .default_value = default_value,
+            .span = param.span,
+        });
+    }
+
+    return .{
+        .name = try ctx.allocator.dupe(u8, decl.name),
+        .targets = try lowerAnnotationTargets(ctx.allocator, decl.targets),
+        .uses = try lowerCapabilityUses(ctx.allocator, decl.uses),
+        .generated_functions = try lowerGeneratedFunctions(ctx, decl.name, decl.generated_members),
+        .parameters = try parameters.toOwnedSlice(),
+        .module_path = try ctx.allocator.dupe(u8, module_path),
+        .span = decl.span,
+    };
+}
+
+pub fn lowerCapabilityDecl(ctx: *Context, decl: syntax.ast.CapabilityDecl, module_path: []const u8) !model.CapabilityDecl {
+    return .{
+        .name = try ctx.allocator.dupe(u8, decl.name),
+        .generated_functions = try lowerGeneratedFunctions(ctx, decl.name, decl.generated_members),
+        .module_path = try ctx.allocator.dupe(u8, module_path),
+        .span = decl.span,
+    };
+}
+
+fn lowerAnnotationTargets(allocator: std.mem.Allocator, targets: []const syntax.ast.AnnotationTarget) ![]model.AnnotationTarget {
+    const lowered = try allocator.alloc(model.AnnotationTarget, targets.len);
+    for (targets, 0..) |target, index| {
+        lowered[index] = switch (target) {
+            .class => .class,
+            .struct_decl => .struct_decl,
+            .function => .function,
+            .construct => .construct,
+            .field => .field,
+        };
+    }
+    return lowered;
+}
+
+fn lowerCapabilityUses(allocator: std.mem.Allocator, uses: []const syntax.ast.QualifiedName) ![]const []const u8 {
+    const lowered = try allocator.alloc([]const u8, uses.len);
+    for (uses, 0..) |use_name, index| {
+        lowered[index] = try qualifiedNameLeaf(allocator, use_name);
+    }
+    return lowered;
+}
+
+pub fn lowerGeneratedFunctions(ctx: *Context, source_name: []const u8, members: []const syntax.ast.GeneratedMember) ![]model.GeneratedFunction {
+    var lowered = std.array_list.Managed(model.GeneratedFunction).init(ctx.allocator);
+    for (members) |generated_member| {
+        switch (generated_member.member) {
+            .function_decl => |function_decl| {
+                var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
+                for (function_decl.params) |param| {
+                    if (param.type_expr) |type_expr| {
+                        try params.append(try typeFromSyntax(ctx.allocator, type_expr.*));
+                    } else {
+                        try params.append(.{ .kind = .unknown });
+                    }
+                }
+                try lowered.append(.{
+                    .name = try ctx.allocator.dupe(u8, function_decl.name),
+                    .overridable = generated_member.overridable,
+                    .params = try params.toOwnedSlice(),
+                    .return_type = if (function_decl.return_type) |return_type| try typeFromSyntax(ctx.allocator, return_type.*) else .{ .kind = .unknown },
+                    .source_annotation = try ctx.allocator.dupe(u8, source_name),
+                    .span = generated_member.span,
+                });
+            },
+            else => {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM070",
+                    .title = "unsupported generated member",
+                    .message = "Generated blocks currently support function members.",
+                    .labels = &.{diagnostics.primaryLabel(generated_member.span, "unsupported generated member")},
+                    .help = "Use `function` inside `generated { ... }`.",
+                });
+                return error.DiagnosticsEmitted;
+            },
+        }
+    }
+    return lowered.toOwnedSlice();
+}
+
+fn isSupportedAnnotationParameterType(ty: model.ResolvedType) bool {
+    return ty.kind == .boolean or ty.kind == .integer or ty.kind == .float or ty.kind == .string;
+}
+
 pub fn canAssign(target: model.ResolvedType, actual: model.ResolvedType) bool {
     if (target.eql(actual)) return true;
+    if (target.kind == .array or actual.kind == .array) return false;
     return target.kind == .float and actual.kind == .integer;
 }
 
@@ -108,7 +335,20 @@ pub fn emitTypeMismatch(
 }
 
 fn typeLabel(ty: model.ResolvedType) []const u8 {
-    return ty.name orelse @tagName(ty.kind);
+    if (ty.kind == .array) return ty.name orelse "[]";
+    if (ty.name) |name| return name;
+    return switch (ty.kind) {
+        .void => "Void",
+        .integer => "Int",
+        .float => "Float",
+        .boolean => "Bool",
+        .string => "String",
+        .c_string => "CString",
+        .raw_ptr => "RawPtr",
+        .callback, .ffi_struct, .named => "Unknown",
+        .array => "[]",
+        .unknown => "Unknown",
+    };
 }
 
 pub fn namedTypeInfo(ctx: *const Context, ty: model.ResolvedType) ?model.NamedTypeInfo {
@@ -120,11 +360,16 @@ pub fn namedTypeInfo(ctx: *const Context, ty: model.ResolvedType) ?model.NamedTy
     return null;
 }
 
-pub fn namedTypeFields(ctx: *const Context, ty: model.ResolvedType) []const model.Field {
-    if (ty.kind != .named or ty.name == null) return &.{};
+pub fn namedTypeHeader(ctx: *const Context, ty: model.ResolvedType) ?TypeHeader {
+    if (ty.kind != .named or ty.name == null) return null;
     if (ctx.type_headers) |headers| {
-        if (headers.get(ty.name.?)) |header| return header.fields;
+        if (headers.get(ty.name.?)) |header| return header;
     }
+    return null;
+}
+
+pub fn namedTypeFields(ctx: *const Context, ty: model.ResolvedType) []const model.Field {
+    if (namedTypeHeader(ctx, ty)) |header| return header.fields;
     return &.{};
 }
 
@@ -425,7 +670,104 @@ fn annotationCountValue(ctx: *Context, expr: *syntax.ast.Expr) !usize {
     };
 }
 
-fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
+const CheckedAnnotationValue = struct {
+    value: model.AnnotationValue,
+    ty: model.ResolvedType,
+};
+
+fn annotationValueForParameter(
+    ctx: *Context,
+    annotation_name: []const u8,
+    parameter_name: []const u8,
+    expected_type: model.ResolvedType,
+    expr: *syntax.ast.Expr,
+    is_default: bool,
+) !CheckedAnnotationValue {
+    const literal = annotationLiteralValue(ctx, expr) catch |err| switch (err) {
+        error.InvalidAnnotationValue => {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM070",
+                .title = if (is_default) "invalid annotation parameter default" else "invalid annotation parameter value",
+                .message = "Annotation parameters currently support Bool, Int, Float, and String literal values.",
+                .labels = &.{diagnostics.primaryLabel(exprSpan(expr.*), "unsupported annotation parameter value")},
+                .help = "Use a literal value such as `true`, `0`, `1.5`, or \"text\".",
+            });
+            return error.DiagnosticsEmitted;
+        },
+        else => return err,
+    };
+
+    if (!canAssign(expected_type, literal.ty)) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM071",
+            .title = "annotation parameter type mismatch",
+            .message = try std.fmt.allocPrint(
+                ctx.allocator,
+                "parameter '{s}' for {s} expects {s}, got {s}.",
+                .{ parameter_name, annotation_name, typeLabel(expected_type), typeLabel(literal.ty) },
+            ),
+            .labels = &.{diagnostics.primaryLabel(exprSpan(expr.*), "annotation argument has the wrong type")},
+            .help = "Change the argument value or update the annotation parameter type.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    if (expected_type.kind == .float and literal.ty.kind == .integer) {
+        return .{
+            .value = .{ .float = @floatFromInt(literal.value.integer) },
+            .ty = expected_type,
+        };
+    }
+
+    return .{
+        .value = literal.value,
+        .ty = expected_type,
+    };
+}
+
+fn annotationLiteralValue(ctx: *Context, expr: *syntax.ast.Expr) !CheckedAnnotationValue {
+    return switch (expr.*) {
+        .integer => |value| .{
+            .value = .{ .integer = value.value },
+            .ty = .{ .kind = .integer },
+        },
+        .float => |value| .{
+            .value = .{ .float = value.value },
+            .ty = .{ .kind = .float },
+        },
+        .string => |value| .{
+            .value = .{ .string = value.value },
+            .ty = .{ .kind = .string },
+        },
+        .bool => |value| .{
+            .value = .{ .boolean = value.value },
+            .ty = .{ .kind = .boolean },
+        },
+        .unary => |node| blk: {
+            if (node.op != .negate) return error.InvalidAnnotationValue;
+            const operand = try annotationLiteralValue(ctx, node.operand);
+            break :blk switch (operand.value) {
+                .integer => |value| .{
+                    .value = .{ .integer = -value },
+                    .ty = operand.ty,
+                },
+                .float => |value| .{
+                    .value = .{ .float = -value },
+                    .ty = operand.ty,
+                },
+                else => error.InvalidAnnotationValue,
+            };
+        },
+        else => error.InvalidAnnotationValue,
+    };
+}
+
+pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
+    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
+        return .{ .kind = .array, .name = text[1 .. text.len - 1] };
+    }
     if (std.mem.eql(u8, text, "Void")) return .{ .kind = .void };
     if (std.mem.eql(u8, text, "Int")) return .{ .kind = .integer };
     if (std.mem.eql(u8, text, "Float")) return .{ .kind = .float };
@@ -526,6 +868,190 @@ pub fn isImportedRoot(name: []const u8, imports: []const model.Import) bool {
     return false;
 }
 
+pub fn resolveAnnotationHeader(ctx: *Context, name: syntax.ast.QualifiedName) !AnnotationHeader {
+    const full_name = try qualifiedNameText(ctx.allocator, name);
+    const leaf = name.segments[name.segments.len - 1].text;
+    if (ctx.annotation_headers) |headers| {
+        if (headers.get(full_name)) |header| return header;
+        if (headers.get(leaf)) |header| return header;
+    }
+    if (ctx.imported_globals.findAnnotation(full_name)) |annotation_decl| {
+        return .{
+            .decl = .{
+                .name = annotation_decl.name,
+                .parameters = @constCast(annotation_decl.parameters),
+                .module_path = annotation_decl.module_path,
+                .span = annotation_decl.span,
+            },
+        };
+    }
+    if (ctx.imported_globals.findAnnotation(leaf)) |annotation_decl| {
+        return .{
+            .decl = .{
+                .name = annotation_decl.name,
+                .parameters = @constCast(annotation_decl.parameters),
+                .module_path = annotation_decl.module_path,
+                .span = annotation_decl.span,
+            },
+        };
+    }
+
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM063",
+        .title = "unknown annotation",
+        .message = try std.fmt.allocPrint(ctx.allocator, "unknown annotation @{s}", .{full_name}),
+        .labels = &.{diagnostics.primaryLabel(name.span, "annotation has not been declared")},
+        .help = "Declare the annotation with `annotation Name { }` or import the module that declares it.",
+    });
+    return error.DiagnosticsEmitted;
+}
+
+pub fn lowerAnnotation(ctx: *Context, annotation: syntax.ast.Annotation) !model.Annotation {
+    const header = try resolveAnnotationHeader(ctx, annotation.name);
+    const leaf = try qualifiedNameLeaf(ctx.allocator, annotation.name);
+    const arguments = try lowerAnnotationArguments(ctx, annotation, header);
+    return .{
+        .name = leaf,
+        .is_namespaced = annotation.name.segments.len > 1,
+        .symbol_index = header.index,
+        .arguments = arguments,
+        .span = annotation.span,
+    };
+}
+
+pub fn validateAnnotationUse(ctx: *Context, annotation: syntax.ast.Annotation) !void {
+    _ = try lowerAnnotation(ctx, annotation);
+}
+
+fn lowerAnnotationArguments(ctx: *Context, annotation: syntax.ast.Annotation, header: AnnotationHeader) ![]model.AnnotationArgument {
+    const params = header.decl.parameters;
+    const display_name = try annotationDisplayName(ctx.allocator, annotation.name);
+
+    if (params.len == 0) {
+        if (annotation.args.len != 0 or (annotation.block != null and !header.allows_block)) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM064",
+                .title = "annotation does not accept parameters",
+                .message = try std.fmt.allocPrint(ctx.allocator, "{s} does not accept parameters.", .{display_name}),
+                .labels = &.{diagnostics.primaryLabel(annotation.span, "unexpected annotation parameters")},
+                .help = "Remove the annotation arguments.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        return &.{};
+    }
+
+    if (annotation.block != null) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM065",
+            .title = "annotation parameters require parentheses",
+            .message = try std.fmt.allocPrint(ctx.allocator, "{s} declares parameters and must be applied with parentheses.", .{display_name}),
+            .labels = &.{diagnostics.primaryLabel(annotation.span, "annotation block cannot fill declared parameters")},
+            .help = "Write annotation parameters as `@Name(value)` or `@Name(parameter: value)`.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    var filled = try ctx.allocator.alloc(bool, params.len);
+    @memset(filled, false);
+    var values = try ctx.allocator.alloc(model.AnnotationArgument, params.len);
+    var next_positional: usize = 0;
+
+    for (annotation.args) |arg| {
+        const param_index = if (arg.label) |label|
+            findAnnotationParameter(params, label) orelse {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM066",
+                    .title = "unknown annotation parameter",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "{s} does not declare a parameter named '{s}'.", .{ display_name, label }),
+                    .labels = &.{diagnostics.primaryLabel(arg.span, "unknown annotation parameter")},
+                    .help = "Use one of the parameters declared by the annotation.",
+                });
+                return error.DiagnosticsEmitted;
+            }
+        else blk: {
+            while (next_positional < params.len and filled[next_positional]) next_positional += 1;
+            if (next_positional >= params.len) {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM067",
+                    .title = "too many annotation parameters",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "{s} received more parameters than it declares.", .{display_name}),
+                    .labels = &.{diagnostics.primaryLabel(arg.span, "extra annotation parameter")},
+                    .help = "Remove the extra argument or declare another annotation parameter.",
+                });
+                return error.DiagnosticsEmitted;
+            }
+            const index = next_positional;
+            next_positional += 1;
+            break :blk index;
+        };
+
+        if (filled[param_index]) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM068",
+                .title = "duplicate annotation parameter",
+                .message = try std.fmt.allocPrint(ctx.allocator, "{s} receives parameter '{s}' more than once.", .{ display_name, params[param_index].name }),
+                .labels = &.{diagnostics.primaryLabel(arg.span, "duplicate annotation parameter")},
+                .help = "Pass each annotation parameter once.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+
+        const checked = try annotationValueForParameter(ctx, display_name, params[param_index].name, params[param_index].ty, arg.value, false);
+        values[param_index] = .{
+            .name = params[param_index].name,
+            .value = checked.value,
+            .ty = params[param_index].ty,
+            .span = arg.span,
+        };
+        filled[param_index] = true;
+    }
+
+    for (params, 0..) |param, index| {
+        if (filled[index]) continue;
+        if (param.default_value) |default_value| {
+            values[index] = .{
+                .name = param.name,
+                .value = default_value,
+                .ty = param.ty,
+                .span = param.span,
+            };
+            filled[index] = true;
+            continue;
+        }
+
+        const type_text = try typeTextFromResolved(ctx.allocator, param.ty);
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM069",
+            .title = "missing annotation parameter",
+            .message = try std.fmt.allocPrint(ctx.allocator, "{s} requires parameter '{s}: {s}'.", .{ display_name, param.name, type_text }),
+            .labels = &.{diagnostics.primaryLabel(annotation.span, "required annotation parameter is missing")},
+            .help = "Pass the required parameter or add a default value to the annotation declaration.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    return values;
+}
+
+fn findAnnotationParameter(params: []const model.AnnotationParameterDecl, name: []const u8) ?usize {
+    for (params, 0..) |param, index| {
+        if (std.mem.eql(u8, param.name, name)) return index;
+    }
+    return null;
+}
+
+fn annotationDisplayName(allocator: std.mem.Allocator, name: syntax.ast.QualifiedName) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "@{s}", .{try qualifiedNameText(allocator, name)});
+}
+
 pub fn resolveFunctionAnnotations(ctx: *Context, annotations: []const syntax.ast.Annotation) !struct { annotations: []model.Annotation, is_main: bool, execution: runtime_abi.FunctionExecution } {
     var lowered = std.array_list.Managed(model.Annotation).init(ctx.allocator);
     var is_main = false;
@@ -534,12 +1060,9 @@ pub fn resolveFunctionAnnotations(ctx: *Context, annotations: []const syntax.ast
     var execution_span: ?source_pkg.Span = null;
 
     for (annotations) |annotation| {
-        const name = try qualifiedNameLeaf(ctx.allocator, annotation.name);
-        try lowered.append(.{
-            .name = name,
-            .is_namespaced = annotation.name.segments.len > 1,
-            .span = annotation.span,
-        });
+        const lowered_annotation = try lowerAnnotation(ctx, annotation);
+        const name = lowered_annotation.name;
+        try lowered.append(lowered_annotation);
 
         if (std.mem.eql(u8, name, "Main")) {
             if (is_main) {
@@ -592,11 +1115,7 @@ pub fn resolveFunctionAnnotations(ctx: *Context, annotations: []const syntax.ast
 pub fn lowerAnnotations(ctx: *Context, annotations: []const syntax.ast.Annotation) ![]model.Annotation {
     var lowered = std.array_list.Managed(model.Annotation).init(ctx.allocator);
     for (annotations) |annotation| {
-        try lowered.append(.{
-            .name = try qualifiedNameLeaf(ctx.allocator, annotation.name),
-            .is_namespaced = annotation.name.segments.len > 1,
-            .span = annotation.span,
-        });
+        try lowered.append(try lowerAnnotation(ctx, annotation));
     }
     return lowered.toOwnedSlice();
 }
@@ -604,10 +1123,12 @@ pub fn lowerAnnotations(ctx: *Context, annotations: []const syntax.ast.Annotatio
 pub fn validateAnnotationPlacement(
     ctx: *Context,
     annotations: []const syntax.ast.Annotation,
-    placement: enum { function_decl, type_decl, construct_decl, construct_form_decl, field_decl },
+    placement: AnnotationPlacement,
     construct_model: ?model.Construct,
 ) !void {
     for (annotations) |annotation| {
+        const header = try resolveAnnotationHeader(ctx, annotation.name);
+        _ = try lowerAnnotationArguments(ctx, annotation, header);
         const name = try qualifiedNameLeaf(ctx.allocator, annotation.name);
         const is_execution = std.mem.eql(u8, name, "Main") or std.mem.eql(u8, name, "Native") or std.mem.eql(u8, name, "Runtime");
         if (placement != .function_decl and is_execution) {
@@ -623,9 +1144,20 @@ pub fn validateAnnotationPlacement(
             });
             return error.DiagnosticsEmitted;
         }
-        if (placement == .field_decl) {
+        if (header.decl.targets.len != 0 and !annotationTargetsIncludePlacement(header.decl.targets, placement)) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM071",
+                .title = "invalid annotation target",
+                .message = try std.fmt.allocPrint(ctx.allocator, "The annotation '@{s}' is not valid on this declaration kind.", .{name}),
+                .labels = &.{diagnostics.primaryLabel(annotation.span, "annotation target does not match this declaration")},
+                .help = "Move the annotation to a supported target or update its `targets:` declaration.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        if (placement == .field_decl or placement == .content_section) {
             if (construct_model) |construct_info| {
-                if (!std.mem.eql(u8, name, "Doc") and !containsAnnotationRule(construct_info.allowed_annotations, name)) {
+                if (!containsAnnotationRule(construct_info.allowed_annotations, name)) {
                     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                         .severity = .@"error",
                         .code = "KSEM026",
@@ -641,4 +1173,20 @@ pub fn validateAnnotationPlacement(
             }
         }
     }
+}
+
+fn annotationTargetsIncludePlacement(targets: []const model.AnnotationTarget, placement: AnnotationPlacement) bool {
+    const actual: ?model.AnnotationTarget = switch (placement) {
+        .function_decl => .function,
+        .class_decl => .class,
+        .struct_decl => .struct_decl,
+        .construct_decl => .construct,
+        .field_decl, .content_section => .field,
+        .construct_form_decl => null,
+    };
+    const required = actual orelse return false;
+    for (targets) |target| {
+        if (target == required) return true;
+    }
+    return false;
 }
