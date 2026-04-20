@@ -515,11 +515,7 @@ fn writeSyntheticArrayType(allocator: std.mem.Allocator, writer: anytype, array_
 fn writeEnumType(allocator: std.mem.Allocator, writer: anytype, enum_decl: CEnum) !void {
     _ = allocator;
     try writer.writeAll("@FFI.Alias { target: U32; }\n");
-    try writer.print("struct {s} {{\n", .{enum_decl.name});
-    for (enum_decl.items) |item| {
-        try writer.print("    let {s}: U32 = {d}\n", .{ item.name, item.value });
-    }
-    try writer.writeAll("}\n\n");
+    try writer.print("struct {s} {{}}\n\n", .{enum_decl.name});
 }
 
 fn writeCallbackType(allocator: std.mem.Allocator, writer: anytype, typedef_decl: CTypedef) !void {
@@ -552,12 +548,10 @@ fn writeStructType(
 }
 
 fn writeMacroConstantsType(writer: anytype, library_name: []const u8, macro_names: []const []const u8, index: *const AstIndex) !void {
-    try writer.print("struct {s}_constants {{\n", .{library_name});
-    for (macro_names) |name| {
-        const macro = index.macros.get(name) orelse continue;
-        try writer.print("    let {s}: U64 = {s}\n", .{ macro.name, macro.value });
-    }
-    try writer.writeAll("}\n\n");
+    _ = writer;
+    _ = library_name;
+    _ = macro_names;
+    _ = index;
 }
 
 fn writeFunctionDecl(allocator: std.mem.Allocator, writer: anytype, library_name: []const u8, function_decl: CFunction) !void {

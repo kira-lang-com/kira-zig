@@ -4,17 +4,11 @@ annotation State {
 annotation Binding {
 }
 
-annotation Doc {
-    parameters {
-        text: String
-    }
-}
 
 construct Widget {
     annotations {
         @State;
         @Binding;
-        @Doc;
     }
 
     requires {

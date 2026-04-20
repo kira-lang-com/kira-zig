@@ -1,10 +1,5 @@
 import Foundation
 
-annotation Doc {
-    parameters {
-        text: String
-    }
-}
 
 @Main
 function main() {
@@ -30,41 +25,36 @@ function main() {
 }
 
 
-@Doc("Axis-aligned rectangle in points.
-Use this for widget bounds, clip regions, and draw command geometry.
-The rectangle stores an origin and extent in the same coordinate space.")
+/// Axis-aligned rectangle in points.
+/// Use this for widget bounds, clip regions, and draw command geometry.
+/// The rectangle stores an origin and extent in the same coordinate space.
 struct Rect {
-    @Doc("Left edge in points.")
+    /// Left edge in points.
     var x: Float = 0.0
-    @Doc("Top edge in points.")
+    /// Top edge in points.
     var y: Float = 0.0
-    @Doc("Width in points.")
+    /// Width in points.
     var width: Float = 0.0
-    @Doc("Height in points.")
+    /// Height in points.
     var height: Float = 0.0
 
-    @Doc("Rectangle with zero origin and zero size.
-    Use this as a default before layout places a widget.
-    It is also returned when intersections collapse to an empty area.")
-    let zero: Rect = Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
-
-    @Doc("Return whether the rectangle contains the supplied point.
-    Bounds checks are inclusive on the trailing edges for stable hit testing.
-    Use this when routing pointer or touch events.")
+    /// Return whether the rectangle contains the supplied point.
+    /// Bounds checks are inclusive on the trailing edges for stable hit testing.
+    /// Use this when routing pointer or touch events.
     function contains(point: Point) -> Bool {
         return point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
     }
 
-    @Doc("Return whether this rectangle overlaps another rectangle.
-    The check is axis-aligned and ignores z-order or clipping state.
-    Use this for fast culling and layout overlap tests.")
+    /// Return whether this rectangle overlaps another rectangle.
+    /// The check is axis-aligned and ignores z-order or clipping state.
+    /// Use this for fast culling and layout overlap tests.
     function intersects(other: Rect) -> Bool {
         return x < other.x + other.width && x + width > other.x && y < other.y + other.height && y + height > other.y
     }
 
-    @Doc("Return the overlapping region between this rectangle and another rectangle.
-    When the two rectangles do not overlap, the result is `.zero`.
-    Use this when computing nested clip regions.")
+    /// Return the overlapping region between this rectangle and another rectangle.
+    /// When the two rectangles do not overlap, the result is an empty rectangle literal.
+    /// Use this when computing nested clip regions.
     function intersection(other: Rect) -> Rect {
         let ix = x > other.x ? x : other.x
         let iy = y > other.y ? y : other.y
@@ -73,14 +63,14 @@ struct Rect {
         let iw = rx - ix
         let ih = by - iy
         if iw <= 0.0 || ih <= 0.0 {
-            return Rect.zero
+            return Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
         }
         return Rect { x: ix, y: iy, width: iw, height: ih }
     }
 
-    @Doc("Inset the rectangle by the supplied edge values.
-    Positive insets shrink the interior and move the origin inward.
-    Use this for applying padding before placing children.")
+    /// Inset the rectangle by the supplied edge values.
+    /// Positive insets shrink the interior and move the origin inward.
+    /// Use this for applying padding before placing children.
     function inset(by: EdgeInsets) -> Rect {
         let insetWidth = (width - by.leading) - by.trailing
         let insetHeight = (height - by.top) - by.bottom
@@ -88,23 +78,18 @@ struct Rect {
     }
 }
 
-@Doc("Two-dimensional point in Foundation layout and drawing space.
-Use this for widget origins, hit-testing, and pointer coordinates.
-All values are expressed in points in the current UI coordinate system.")
+/// Two-dimensional point in Foundation layout and drawing space.
+/// Use this for widget origins, hit-testing, and pointer coordinates.
+/// All values are expressed in points in the current UI coordinate system.
 struct Point {
-    @Doc("Horizontal position in points.")
+    /// Horizontal position in points.
     var x: Float = 0.0
-    @Doc("Vertical position in points.")
+    /// Vertical position in points.
     var y: Float = 0.0
 
-    @Doc("The origin point at `(0, 0)`.
-    Use this for default placement before layout has assigned real bounds.
-    It is also useful as a neutral offset in simple geometry code.")
-    let zero: Point = Point { x: 0.0, y: 0.0 }
-
-    @Doc("Compute the Manhattan distance to another point.
-    Use this for simple hit-testing thresholds and gesture heuristics when a scalar distance is sufficient.
-    The returned value is expressed in points.")
+    /// Compute the Manhattan distance to another point.
+    /// Use this for simple hit-testing thresholds and gesture heuristics when a scalar distance is sufficient.
+    /// The returned value is expressed in points.
     function distanceTo(other: Point) -> Float {
         let dx = x - other.x
         let dy = y - other.y
@@ -114,12 +99,12 @@ struct Point {
     }
 }
 
-@Doc("Small composition example that uses the geometry types together.
-This is a frontend-friendly model shape for simple layout metadata.
-It keeps `hello.kira` runnable while still showing how the new types connect.")
+/// Small composition example that uses the geometry types together.
+/// This is a frontend-friendly model shape for simple layout metadata.
+/// It keeps `hello.kira` runnable while still showing how the new types connect.
 struct LayoutSample {
-    @Doc("Anchor point for the sample content.")
+    /// Anchor point for the sample content.
     let anchor: Point
-    @Doc("Bounding rectangle for the sample content.")
+    /// Bounding rectangle for the sample content.
     let frame: Rect
 }

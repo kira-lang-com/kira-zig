@@ -1,16 +1,10 @@
 annotation State {
 }
 
-annotation Doc {
-    parameters {
-        text: String
-    }
-}
 
 construct Widget {
     annotations {
         @State;
-        @Doc;
     }
 
     requires {

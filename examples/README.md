@@ -4,9 +4,8 @@ Each example now lives in its own folder with a root `project.toml`, an `app/mai
 
 Current language-facing examples now prefer:
 
-- `struct` / `class`, not the removed main-Kira `type` form
+- canonical `struct` and `class` declarations
 - brace-style named struct literals such as `Rect { width: 10.0 }`
-- type-qualified constant members such as `Point.zero`
 - struct methods for value types
 
 Backend matrix:

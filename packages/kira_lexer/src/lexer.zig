@@ -13,8 +13,16 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
             ' ', '\t', '\r', '\n' => index += 1,
             '/' => {
                 if (index + 1 < source.text.len and source.text[index + 1] == '/') {
-                    index += 2;
+                    const start = index;
+                    const is_doc_comment = index + 2 < source.text.len and source.text[index + 2] == '/';
+                    index += if (is_doc_comment) 3 else 2;
+                    const content_start = index;
                     while (index < source.text.len and source.text[index] != '\n') : (index += 1) {}
+                    if (is_doc_comment) {
+                        var content = source.text[content_start..index];
+                        if (content.len > 0 and content[0] == ' ') content = content[1..];
+                        try tokens.append(makeToken(.doc_comment, content, start, index));
+                    }
                 } else {
                     try tokens.append(makeToken(.slash, source.text[index .. index + 1], index, index + 1));
                     index += 1;
@@ -291,7 +299,7 @@ test "tokenizes expanded declaration grammar" {
     const source = try source_pkg.SourceFile.initOwned(
         allocator,
         "test.kira",
-        "import UI as Kit\n@Doc(\"entry\")\n@Main\nfunction entry(value: Float): Float { let x: Float = 12; return x; }",
+        "import UI as Kit\n/// entry\n@Main\nfunction entry(value: Float): Float { let x: Float = 12; return x; }",
     );
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const tokens = try tokenize(allocator, &source, &diags);
@@ -299,10 +307,10 @@ test "tokenizes expanded declaration grammar" {
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
     try std.testing.expectEqual(syntax.TokenKind.kw_import, tokens[0].kind);
     try std.testing.expectEqual(syntax.TokenKind.kw_as, tokens[2].kind);
-    try std.testing.expectEqual(syntax.TokenKind.at_sign, tokens[4].kind);
-    try std.testing.expectEqual(syntax.TokenKind.kw_function, tokens[11].kind);
-    try std.testing.expectEqual(syntax.TokenKind.colon, tokens[14].kind);
-    try std.testing.expectEqual(syntax.TokenKind.float, tokens[24].kind);
+    try std.testing.expectEqual(syntax.TokenKind.doc_comment, tokens[4].kind);
+    try std.testing.expectEqual(syntax.TokenKind.kw_function, tokens[7].kind);
+    try std.testing.expectEqual(syntax.TokenKind.colon, tokens[10].kind);
+    try std.testing.expectEqual(syntax.TokenKind.float, tokens[20].kind);
 }
 
 test "tokenizes modern expression and member syntax" {

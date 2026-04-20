@@ -87,7 +87,7 @@ struct kira_i64_callback {}
 function kira_invoke_callback(callback: kira_i64_callback, user_data: RawPtr, value: I64): I64;
 ```
 
-Current generated type shapes:
+Current generated declaration shapes:
 
 - `@FFI.Extern` for native functions
 - `@FFI.Callback` for function-pointer typedefs

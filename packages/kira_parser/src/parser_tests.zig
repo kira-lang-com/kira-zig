@@ -178,7 +178,7 @@ test "reports outdated func and type syntax with migration hints" {
         var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
         const result = parseSource(allocator, "type Old { }", &diags);
         try std.testing.expectError(error.DiagnosticsEmitted, result);
-        try std.testing.expectEqualStrings("outdated type declaration syntax", diags.items[0].title);
+        try std.testing.expectEqualStrings("removed type declaration syntax", diags.items[0].title);
         try std.testing.expect(diags.items[0].help != null);
     }
 }
@@ -239,7 +239,7 @@ test "parses the restored hello example with canonical class/struct syntax" {
     const program = try parseSource(allocator, source_text, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(@as(usize, 5), program.decls.len);
+    try std.testing.expectEqual(@as(usize, 4), program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
 }
 

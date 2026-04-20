@@ -99,6 +99,7 @@ pub const Parser = struct {
                 continue;
             }
 
+            self.consumeDocComments();
             const annotations = self.parseAnnotations() catch |err| switch (err) {
                 error.DiagnosticsEmitted => blk: {
                     had_errors = true;
@@ -213,7 +214,7 @@ pub const Parser = struct {
 
     pub fn consumeFieldTerminator(self: *Parser, fallback_end: usize) !usize {
         if (self.match(.semicolon)) return self.previous().span.end;
-        if (self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_function) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_override) or self.isLifecycleHookStart()) {
+        if (self.at(.r_brace) or self.at(.eof) or self.at(.doc_comment) or self.at(.at_sign) or self.at(.kw_function) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_override) or self.isLifecycleHookStart()) {
             return fallback_end;
         }
         if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "content") and self.peekNext().kind == .l_brace) return fallback_end;
@@ -298,9 +299,13 @@ pub const Parser = struct {
 
     pub fn recoverToTopLevel(self: *Parser) void {
         if (!self.at(.eof)) _ = self.advance();
-        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
+        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
             _ = self.advance();
         }
+    }
+
+    pub fn consumeDocComments(self: *Parser) void {
+        while (self.at(.doc_comment)) _ = self.advance();
     }
 
     pub fn match(self: *Parser, kind: syntax.TokenKind) bool {
@@ -388,6 +393,7 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .integer => "an integer literal",
         .float => "a float literal",
         .string => "a string literal",
+        .doc_comment => "a documentation comment",
         .kw_annotation => "'annotation'",
         .kw_capability => "'capability'",
         .kw_class => "'class'",
@@ -525,7 +531,7 @@ test "parses imports functions and construct declarations" {
     const program = try parseSource(
         allocator,
         "import UI as Kit\n" ++
-            "@Doc(\"demo\")\n" ++
+            "/// demo\n" ++
             "construct Widget { annotations { @State; } requires { content; } lifecycle { onAppear() {} } }\n" ++
             "Widget Button(title: String) { @State let count: Int = 0; content { Text(title) } }\n" ++
             "@Main function entry(): Int { let x: Float = 12; print(x); return 0; }",
@@ -536,6 +542,32 @@ test "parses imports functions and construct declarations" {
     try std.testing.expectEqual(@as(usize, 1), program.imports.len);
     try std.testing.expectEqual(@as(usize, 3), program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
+}
+
+test "reports removed declaration syntax diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = parseSource(allocator, "type OldShape { let value: Int = 0 }", &diags);
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("removed type declaration syntax", diags.items[0].title);
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = parseSource(allocator, "@Doc(\"old\")\nstruct Shape { let value: Int = 0 }", &diags);
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("removed @Doc annotation", diags.items[0].title);
+    }
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = parseSource(allocator, "struct Shape { static let zero: Int = 0 }", &diags);
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("removed static keyword", diags.items[0].title);
+    }
 }
 
 test "parses annotation declarations" {

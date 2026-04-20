@@ -9,18 +9,12 @@ annotation Binding {
 annotation Env {
 }
 
-annotation Doc {
-    parameters {
-        text: String
-    }
-}
 
 construct Widget {
     annotations {
         @State;
         @Binding;
         @Env;
-        @Doc;
     }
 
     requires {
@@ -43,13 +37,13 @@ construct Widget {
 }
 
 struct ThemeConfig {
-    @Doc("Display title used by the dashboard shell")
+    /// Display title used by the dashboard shell
     let title: String = "Operations";
 
     let highlightLevel: Float = 0.8;
 }
 
-@Doc("A richer construct-defined declaration form example")
+/// A richer construct-defined declaration form example
 Widget Dashboard(title: String, theme: ThemeConfig) {
     @State
     let selectedTab: Int = 0;
@@ -57,7 +51,7 @@ Widget Dashboard(title: String, theme: ThemeConfig) {
     @Binding
     let currentTitle: String = "Operations";
 
-    @Doc("The dashboard content is composed structurally.")
+    /// The dashboard content is composed structurally.
     content {
         Kit.Column("Operations") {
             Kit.Text("Operations")

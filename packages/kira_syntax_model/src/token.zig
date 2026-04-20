@@ -6,6 +6,7 @@ pub const TokenKind = enum {
     integer,
     float,
     string,
+    doc_comment,
     kw_annotation,
     kw_capability,
     kw_class,

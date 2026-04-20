@@ -1,6 +1,6 @@
 import UI
 
-@Doc("A small app-side example that imports the stub UI library")
+/// A small app-side example that imports the stub UI library
 Widget DashboardShell() {
     content {
         Card("Operations")

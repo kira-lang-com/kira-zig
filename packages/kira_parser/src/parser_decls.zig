@@ -48,10 +48,19 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
     }
     if (self.at(.kw_type)) {
         try self.emitUnexpectedToken(
-            "outdated type declaration syntax",
+            "removed type declaration syntax",
             self.peek(),
-            "`type` is no longer the canonical declaration keyword",
-            "Use `class` for inheritable declarations with methods or `struct` for simpler value declarations.",
+            "`type` has been removed from Kira",
+            "Use `struct` for value-oriented declarations or `class` for declarations that need inheritance.",
+        );
+        return error.DiagnosticsEmitted;
+    }
+    if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "static")) {
+        try self.emitUnexpectedToken(
+            "removed static keyword",
+            self.peek(),
+            "`static` has been removed and is not valid Kira syntax",
+            "Use `let` for immutable members and `var` for mutable members.",
         );
         return error.DiagnosticsEmitted;
     }
@@ -245,6 +254,15 @@ pub fn parseAnnotations(self: *Parser) ![]syntax.ast.Annotation {
     while (self.match(.at_sign)) {
         const at_token = self.previous();
         const name = try self.parseQualifiedName("expected annotation name after '@'");
+        if (name.segments.len == 1 and std.mem.eql(u8, name.segments[0].text, "Doc")) {
+            try self.emitUnexpectedToken(
+                "removed @Doc annotation",
+                at_token,
+                "`@Doc` has been removed from Kira documentation syntax",
+                "Use consecutive `///` documentation comments immediately above the declaration or member.",
+            );
+            return error.DiagnosticsEmitted;
+        }
         var args = std.array_list.Managed(syntax.ast.AnnotationArg).init(self.allocator);
         var block: ?syntax.ast.AnnotationBlock = null;
         var end = name.span.end;
@@ -411,6 +429,7 @@ pub fn parseTypeDeclWithAnnotations(self: *Parser, annotations: []const syntax.a
     var members = std.array_list.Managed(syntax.ast.BodyMember).init(self.allocator);
 
     while (!self.at(.r_brace) and !self.at(.eof)) {
+        self.consumeDocComments();
         const annotations_inner = try self.parseAnnotations();
         try members.append(try self.parseBodyMember(annotations_inner));
     }
@@ -537,6 +556,7 @@ pub fn parseConstructBody(self: *Parser) !syntax.ast.ConstructBody {
     const open = try self.expect(.l_brace, "expected '{' to start declaration body", "open the declaration body here");
     var members = std.array_list.Managed(syntax.ast.BodyMember).init(self.allocator);
     while (!self.at(.r_brace) and !self.at(.eof)) {
+        self.consumeDocComments();
         const annotations = try self.parseAnnotations();
         try members.append(try self.parseBodyMember(annotations));
     }
@@ -549,6 +569,15 @@ pub fn parseConstructBody(self: *Parser) !syntax.ast.ConstructBody {
 
 pub fn parseBodyMember(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.BodyMember {
     const is_override = self.match(.kw_override);
+    if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "static")) {
+        try self.emitUnexpectedToken(
+            "removed static keyword",
+            self.peek(),
+            "`static` has been removed and is not valid Kira syntax",
+            "Use `let` for immutable members and `var` for mutable members.",
+        );
+        return error.DiagnosticsEmitted;
+    }
     if (self.at(.kw_let) or self.at(.kw_var)) return .{ .field_decl = try self.parseFieldDecl(annotations, is_override) };
     if (self.at(.kw_function)) return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, is_override) };
     if (is_override) {

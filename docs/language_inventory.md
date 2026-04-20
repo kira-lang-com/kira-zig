@@ -5,14 +5,15 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 ## Implemented Frontend Surface
 
 - Top-level declarations: `import`, `construct`, `class`, `struct`, `annotation`, `capability`, `function`, and construct-defined declaration forms such as `Widget Button(...) { ... }`
-- Annotation syntax: bare annotations, namespaced annotations, annotation arguments, and block-form annotations such as `@Doc { ... }`
+- Documentation comments: consecutive `///` lines immediately preceding a declaration or member
+- Annotation syntax: bare annotations, namespaced annotations, annotation arguments, and block-form annotations
 - Annotation declarations: parameter schemas, `targets: ...`, `uses CapabilityName`, and explicit `generated { ... }` function members
 - Capability declarations: reusable generated function members composed into annotations
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
 - FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`
 - Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`, expression statements, `return`, calls, typed locals, local inference, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
 - Class inheritance: comma-separated `extends` lists, inherited field/method lookup, parent-qualified member access, exact-signature method overrides, and inherited field-default overrides
-- Struct declarations: non-inheriting value shapes with stored members, default values, constant members, and methods
+- Struct declarations: non-inheriting value shapes with stored members, default values, and methods
 - Expressions: integer, float, string, boolean, arrays, named/nested struct literals, unary operators, binary operators, grouped expressions, member access, namespaced references, indexing, call syntax, named function references, inline callback values, and callable-value invocations
 - Conditional expressions `condition ? then : else`
 - Control flow syntax: `if`, `else if`, `for`, `while`, `break`, `continue`, and `switch` in statement position, plus `if`/`else if`, `for`, and `switch` in builder/content contexts
@@ -20,7 +21,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Builder/content blocks with sequential composition, control-flow builder items, and preserved nested trailing-builder child trees on call expressions
 - Lifecycle hook forms such as `onAppear()`, `onDisappear()`, and `onChange(of: value) { ... }`
 - Type inference and explicit-coercion rules for declarations
-- Migration diagnostics for removed `func` and old surface `type` declaration syntax
+- Migration diagnostics for removed legacy declaration and documentation syntax
 - Construct-driven semantic checks for declared annotations, lifecycle hooks, and required `content { ... }`
 
 ## Current Executable Lowering Boundary
@@ -48,7 +49,7 @@ The frontend and semantic model understand the broader language surface above. T
 - direct function calls with arguments and results in the lowered scalar/pointer subset
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
-- lowered named-struct construction, field access, type-qualified constant member lookup, and struct methods on the VM executable path
+- lowered named-struct construction, field access, and struct methods on the VM executable path
 - lowered inheritance dispatch across `vm`, `llvm`, and `hybrid`, including multiple parents, imported parents, parent-qualified field/method access, inherited method calls, and inherited field-default overrides
 - explicit FFI extern declarations
 - callback-typed arguments targeting native/external functions
