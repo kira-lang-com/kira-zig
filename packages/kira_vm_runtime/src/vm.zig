@@ -340,17 +340,27 @@ pub const Vm = struct {
         };
         const fields = try self.allocator.alloc(runtime_abi.Value, type_decl.fields.len);
         for (type_decl.fields, 0..) |field_decl, index| {
-            if (field_decl.ty.kind == .ffi_struct) {
-                const nested_name = field_decl.ty.name orelse {
+            fields[index] = try self.zeroValueForType(module, field_decl.ty);
+        }
+        return @intFromPtr(fields.ptr);
+    }
+
+    fn zeroValueForType(self: *Vm, module: *const bytecode.Module, value_type: bytecode.TypeRef) anyerror!runtime_abi.Value {
+        return switch (value_type.kind) {
+            .void => .{ .void = {} },
+            .integer => .{ .integer = 0 },
+            .float => .{ .float = 0.0 },
+            .string => .{ .string = "" },
+            .boolean => .{ .boolean = false },
+            .array, .raw_ptr => .{ .raw_ptr = 0 },
+            .ffi_struct => blk: {
+                const nested_name = value_type.name orelse {
                     self.rememberError("struct field type is missing a name");
                     return error.RuntimeFailure;
                 };
-                fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-            } else {
-                fields[index] = .{ .void = {} };
-            }
-        }
-        return @intFromPtr(fields.ptr);
+                break :blk .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+            },
+        };
     }
 
     fn allocateArray(self: *Vm, len: usize) !usize {

@@ -1,0 +1,9 @@
+@Main
+function entry() {
+    var inferred = "abc"
+    var text: String
+    var amount: Float
+    var precise: Float = 0.0
+    return
+}
+

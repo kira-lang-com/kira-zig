@@ -1,4 +1,5 @@
 const std = @import("std");
+const source_pkg = @import("kira_source");
 const ResolvedType = @import("types.zig").ResolvedType;
 const FieldStorage = @import("hir.zig").FieldStorage;
 
@@ -6,6 +7,8 @@ pub const LocalBinding = struct {
     id: u32,
     ty: ResolvedType,
     storage: FieldStorage,
+    initialized: bool = true,
+    decl_span: source_pkg.Span,
 };
 
 pub const Scope = struct {

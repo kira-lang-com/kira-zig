@@ -1,0 +1,11 @@
+@FFI.Struct { layout: c; }
+struct Example {
+    var a: U8
+}
+
+@Main
+function entry() {
+    var value: Example
+    print(value.a)
+    return
+}

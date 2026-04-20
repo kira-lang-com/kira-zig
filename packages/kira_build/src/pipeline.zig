@@ -833,8 +833,40 @@ fn firstExistingCandidate(candidates: [][]u8) ?[]const u8 {
 
 fn collectPackageModuleFiles(allocator: std.mem.Allocator, source_root: []const u8) ![][]u8 {
     var files = std.array_list.Managed([]u8).init(allocator);
-    try appendPackageModuleFiles(allocator, &files, source_root, source_root);
+    if (std.mem.eql(u8, std.fs.path.basename(source_root), "app")) {
+        if (std.fs.path.dirname(source_root)) |package_root| {
+            try appendPackageRootModuleFiles(allocator, &files, package_root);
+        }
+        try appendPackageModuleFiles(allocator, &files, source_root, source_root);
+        return files.toOwnedSlice();
+    }
+
+    try appendPackageRootModuleFiles(allocator, &files, source_root);
+
+    const app_root = try appendAppRoot(allocator, source_root);
+    defer allocator.free(app_root);
+    if (dirExists(app_root)) {
+        try appendPackageModuleFiles(allocator, &files, app_root, app_root);
+    }
     return files.toOwnedSlice();
+}
+
+fn appendPackageRootModuleFiles(
+    allocator: std.mem.Allocator,
+    files: *std.array_list.Managed([]u8),
+    source_root: []const u8,
+) !void {
+    var dir = try std.fs.openDirAbsolute(source_root, .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.eql(u8, std.fs.path.extension(entry.name), ".kira")) continue;
+
+        const child_path = try std.fs.path.join(allocator, &.{ source_root, entry.name });
+        try files.append(child_path);
+    }
 }
 
 fn appendPackageModuleFiles(
@@ -863,6 +895,12 @@ fn appendPackageModuleFiles(
 
 fn fileExists(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn dirExists(path: []const u8) bool {
+    var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
+    dir.close();
     return true;
 }
 

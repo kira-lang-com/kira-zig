@@ -1,0 +1,20 @@
+@FFI.Struct { layout: c; }
+struct Example {
+    var a: U8
+    var b: U8
+    var c: U8
+}
+
+@Main
+function entry() {
+    let built = Example { b: 7 }
+    print(built.a)
+    print(built.b)
+    print(built.c)
+
+    let blank = Example()
+    print(blank.a)
+    print(blank.b)
+    print(blank.c)
+    return
+}

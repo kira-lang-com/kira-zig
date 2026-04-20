@@ -96,6 +96,9 @@ pub fn markReachableExpr(
     expr: *model.Expr,
 ) anyerror!void {
     switch (expr.*) {
+        .construct => |node| {
+            for (node.fields) |field| try markReachableExpr(allocator, program, reachable, field.value);
+        },
         .call => |node| {
             if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
             for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);

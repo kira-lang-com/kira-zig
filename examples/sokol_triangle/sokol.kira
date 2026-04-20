@@ -85,148 +85,112 @@ struct uintmax_t {}
 struct va_list {}
 
 @FFI.Alias { target: U32; }
-struct sapp_android_tooltype {
-}
+struct sapp_android_tooltype {}
 
 @FFI.Alias { target: U32; }
-struct sapp_event_type {
-}
+struct sapp_event_type {}
 
 @FFI.Alias { target: U32; }
-struct sapp_html5_fetch_error {
-}
+struct sapp_html5_fetch_error {}
 
 @FFI.Alias { target: U32; }
-struct sapp_keycode {
-}
+struct sapp_keycode {}
 
 @FFI.Alias { target: U32; }
-struct sapp_log_item {
-}
+struct sapp_log_item {}
 
 @FFI.Alias { target: U32; }
-struct sapp_mouse_cursor {
-}
+struct sapp_mouse_cursor {}
 
 @FFI.Alias { target: U32; }
-struct sapp_mousebutton {
-}
+struct sapp_mousebutton {}
 
 @FFI.Alias { target: U32; }
-struct sapp_pixel_format {
-}
+struct sapp_pixel_format {}
 
 @FFI.Alias { target: U32; }
-struct sg_backend {
-}
+struct sg_backend {}
 
 @FFI.Alias { target: U32; }
-struct sg_blend_factor {
-}
+struct sg_blend_factor {}
 
 @FFI.Alias { target: U32; }
-struct sg_blend_op {
-}
+struct sg_blend_op {}
 
 @FFI.Alias { target: U32; }
-struct sg_border_color {
-}
+struct sg_border_color {}
 
 @FFI.Alias { target: U32; }
-struct sg_color_mask {
-}
+struct sg_color_mask {}
 
 @FFI.Alias { target: U32; }
-struct sg_compare_func {
-}
+struct sg_compare_func {}
 
 @FFI.Alias { target: U32; }
-struct sg_cull_mode {
-}
+struct sg_cull_mode {}
 
 @FFI.Alias { target: U32; }
-struct sg_face_winding {
-}
+struct sg_face_winding {}
 
 @FFI.Alias { target: U32; }
-struct sg_filter {
-}
+struct sg_filter {}
 
 @FFI.Alias { target: U32; }
-struct sg_image_sample_type {
-}
+struct sg_image_sample_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_image_type {
-}
+struct sg_image_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_index_type {
-}
+struct sg_index_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_load_action {
-}
+struct sg_load_action {}
 
 @FFI.Alias { target: U32; }
-struct sg_log_item {
-}
+struct sg_log_item {}
 
 @FFI.Alias { target: U32; }
-struct sg_pixel_format {
-}
+struct sg_pixel_format {}
 
 @FFI.Alias { target: U32; }
-struct sg_primitive_type {
-}
+struct sg_primitive_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_resource_state {
-}
+struct sg_resource_state {}
 
 @FFI.Alias { target: U32; }
-struct sg_sampler_type {
-}
+struct sg_sampler_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_shader_attr_base_type {
-}
+struct sg_shader_attr_base_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_shader_stage {
-}
+struct sg_shader_stage {}
 
 @FFI.Alias { target: U32; }
-struct sg_stencil_op {
-}
+struct sg_stencil_op {}
 
 @FFI.Alias { target: U32; }
-struct sg_store_action {
-}
+struct sg_store_action {}
 
 @FFI.Alias { target: U32; }
-struct sg_uniform_layout {
-}
+struct sg_uniform_layout {}
 
 @FFI.Alias { target: U32; }
-struct sg_uniform_type {
-}
+struct sg_uniform_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_vertex_format {
-}
+struct sg_vertex_format {}
 
 @FFI.Alias { target: U32; }
-struct sg_vertex_step {
-}
+struct sg_vertex_step {}
 
 @FFI.Alias { target: U32; }
-struct sg_view_type {
-}
+struct sg_view_type {}
 
 @FFI.Alias { target: U32; }
-struct sg_wrap {
-}
+struct sg_wrap {}
 
 @FFI.Callback { abi: c; params: [U64, RawPtr]; result: RawPtr; }
 struct sapp_allocator_alloc_fn_callback {}
@@ -518,1375 +482,1375 @@ struct sg_view_array_8 {}
 
 @FFI.Struct { layout: c; }
 struct sapp_allocator {
-    let alloc_fn: sapp_allocator_alloc_fn_callback
-    let free_fn: sapp_allocator_free_fn_callback
-    let user_data: RawPtr
+    var alloc_fn: sapp_allocator_alloc_fn_callback
+    var free_fn: sapp_allocator_free_fn_callback
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_d3d11_environment {
-    let device: RawPtr
-    let device_context: RawPtr
+    var device: RawPtr
+    var device_context: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_d3d11_swapchain {
-    let render_view: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_view: RawPtr
+    var render_view: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_view: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_desc {
-    let init_cb: sapp_desc_init_cb_callback
-    let frame_cb: sapp_desc_frame_cb_callback
-    let cleanup_cb: sapp_desc_cleanup_cb_callback
-    let event_cb: sapp_desc_event_cb_callback
-    let user_data: RawPtr
-    let init_userdata_cb: sapp_desc_init_userdata_cb_callback
-    let frame_userdata_cb: sapp_desc_frame_userdata_cb_callback
-    let cleanup_userdata_cb: sapp_desc_cleanup_userdata_cb_callback
-    let event_userdata_cb: sapp_desc_event_userdata_cb_callback
-    let width: I32
-    let height: I32
-    let sample_count: I32
-    let swap_interval: I32
-    let high_dpi: CBool
-    let fullscreen: CBool
-    let alpha: CBool
-    let window_title: CString
-    let enable_clipboard: CBool
-    let clipboard_size: I32
-    let enable_dragndrop: CBool
-    let max_dropped_files: I32
-    let max_dropped_file_path_length: I32
-    let icon: sapp_icon_desc
-    let allocator: sapp_allocator
-    let logger: sapp_logger
-    let gl: sapp_gl_desc
-    let win32: sapp_win32_desc
-    let html5: sapp_html5_desc
-    let ios: sapp_ios_desc
+    var init_cb: sapp_desc_init_cb_callback
+    var frame_cb: sapp_desc_frame_cb_callback
+    var cleanup_cb: sapp_desc_cleanup_cb_callback
+    var event_cb: sapp_desc_event_cb_callback
+    var user_data: RawPtr
+    var init_userdata_cb: sapp_desc_init_userdata_cb_callback
+    var frame_userdata_cb: sapp_desc_frame_userdata_cb_callback
+    var cleanup_userdata_cb: sapp_desc_cleanup_userdata_cb_callback
+    var event_userdata_cb: sapp_desc_event_userdata_cb_callback
+    var width: I32
+    var height: I32
+    var sample_count: I32
+    var swap_interval: I32
+    var high_dpi: CBool
+    var fullscreen: CBool
+    var alpha: CBool
+    var window_title: CString
+    var enable_clipboard: CBool
+    var clipboard_size: I32
+    var enable_dragndrop: CBool
+    var max_dropped_files: I32
+    var max_dropped_file_path_length: I32
+    var icon: sapp_icon_desc
+    var allocator: sapp_allocator
+    var logger: sapp_logger
+    var gl: sapp_gl_desc
+    var win32: sapp_win32_desc
+    var html5: sapp_html5_desc
+    var ios: sapp_ios_desc
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_environment {
-    let defaults: sapp_environment_defaults
-    let metal: sapp_metal_environment
-    let d3d11: sapp_d3d11_environment
-    let wgpu: sapp_wgpu_environment
-    let vulkan: sapp_vulkan_environment
+    var defaults: sapp_environment_defaults
+    var metal: sapp_metal_environment
+    var d3d11: sapp_d3d11_environment
+    var wgpu: sapp_wgpu_environment
+    var vulkan: sapp_vulkan_environment
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_environment_defaults {
-    let color_format: sapp_pixel_format
-    let depth_format: sapp_pixel_format
-    let sample_count: I32
+    var color_format: sapp_pixel_format
+    var depth_format: sapp_pixel_format
+    var sample_count: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_event {
-    let frame_count: U64
-    let type_value: sapp_event_type
-    let key_code: sapp_keycode
-    let char_code: U32
-    let key_repeat: CBool
-    let modifiers: U32
-    let mouse_button: sapp_mousebutton
-    let mouse_x: F32
-    let mouse_y: F32
-    let mouse_dx: F32
-    let mouse_dy: F32
-    let scroll_x: F32
-    let scroll_y: F32
-    let num_touches: I32
-    let touches: sapp_touchpoint_array_8
-    let window_width: I32
-    let window_height: I32
-    let framebuffer_width: I32
-    let framebuffer_height: I32
+    var frame_count: U64
+    var type_value: sapp_event_type
+    var key_code: sapp_keycode
+    var char_code: U32
+    var key_repeat: CBool
+    var modifiers: U32
+    var mouse_button: sapp_mousebutton
+    var mouse_x: F32
+    var mouse_y: F32
+    var mouse_dx: F32
+    var mouse_dy: F32
+    var scroll_x: F32
+    var scroll_y: F32
+    var num_touches: I32
+    var touches: sapp_touchpoint_array_8
+    var window_width: I32
+    var window_height: I32
+    var framebuffer_width: I32
+    var framebuffer_height: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_gl_desc {
-    let major_version: I32
-    let minor_version: I32
+    var major_version: I32
+    var minor_version: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_gl_swapchain {
-    let framebuffer: U32
+    var framebuffer: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_html5_desc {
-    let canvas_selector: CString
-    let canvas_resize: CBool
-    let preserve_drawing_buffer: CBool
-    let premultiplied_alpha: CBool
-    let ask_leave_site: CBool
-    let update_document_title: CBool
-    let bubble_mouse_events: CBool
-    let bubble_touch_events: CBool
-    let bubble_wheel_events: CBool
-    let bubble_key_events: CBool
-    let bubble_char_events: CBool
-    let use_emsc_set_main_loop: CBool
-    let emsc_set_main_loop_simulate_infinite_loop: CBool
+    var canvas_selector: CString
+    var canvas_resize: CBool
+    var preserve_drawing_buffer: CBool
+    var premultiplied_alpha: CBool
+    var ask_leave_site: CBool
+    var update_document_title: CBool
+    var bubble_mouse_events: CBool
+    var bubble_touch_events: CBool
+    var bubble_wheel_events: CBool
+    var bubble_key_events: CBool
+    var bubble_char_events: CBool
+    var use_emsc_set_main_loop: CBool
+    var emsc_set_main_loop_simulate_infinite_loop: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_html5_fetch_request {
-    let dropped_file_index: I32
-    let callback: sapp_html5_fetch_request_callback_callback
-    let buffer: sapp_range
-    let user_data: RawPtr
+    var dropped_file_index: I32
+    var callback: sapp_html5_fetch_request_callback_callback
+    var buffer: sapp_range
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_html5_fetch_response {
-    let succeeded: CBool
-    let error_code: sapp_html5_fetch_error
-    let file_index: I32
-    let data: sapp_range
-    let buffer: sapp_range
-    let user_data: RawPtr
+    var succeeded: CBool
+    var error_code: sapp_html5_fetch_error
+    var file_index: I32
+    var data: sapp_range
+    var buffer: sapp_range
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_icon_desc {
-    let sokol_default: CBool
-    let images: sapp_image_desc_array_8
+    var sokol_default: CBool
+    var images: sapp_image_desc_array_8
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_image_desc {
-    let width: I32
-    let height: I32
-    let cursor_hotspot_x: I32
-    let cursor_hotspot_y: I32
-    let pixels: sapp_range
+    var width: I32
+    var height: I32
+    var cursor_hotspot_x: I32
+    var cursor_hotspot_y: I32
+    var pixels: sapp_range
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_ios_desc {
-    let keyboard_resizes_canvas: CBool
+    var keyboard_resizes_canvas: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_logger {
-    let func: sapp_logger_func_callback
-    let user_data: RawPtr
+    var func: sapp_logger_func_callback
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_metal_environment {
-    let device: RawPtr
+    var device: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_metal_swapchain {
-    let current_drawable: RawPtr
-    let depth_stencil_texture: RawPtr
-    let msaa_color_texture: RawPtr
+    var current_drawable: RawPtr
+    var depth_stencil_texture: RawPtr
+    var msaa_color_texture: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_range {
-    let ptr: RawPtr
-    let size: U64
+    var ptr: RawPtr
+    var size: U64
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_swapchain {
-    let width: I32
-    let height: I32
-    let sample_count: I32
-    let color_format: sapp_pixel_format
-    let depth_format: sapp_pixel_format
-    let metal: sapp_metal_swapchain
-    let d3d11: sapp_d3d11_swapchain
-    let wgpu: sapp_wgpu_swapchain
-    let vulkan: sapp_vulkan_swapchain
-    let gl: sapp_gl_swapchain
+    var width: I32
+    var height: I32
+    var sample_count: I32
+    var color_format: sapp_pixel_format
+    var depth_format: sapp_pixel_format
+    var metal: sapp_metal_swapchain
+    var d3d11: sapp_d3d11_swapchain
+    var wgpu: sapp_wgpu_swapchain
+    var vulkan: sapp_vulkan_swapchain
+    var gl: sapp_gl_swapchain
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_touchpoint {
-    let identifier: U64
-    let pos_x: F32
-    let pos_y: F32
-    let android_tooltype: sapp_android_tooltype
-    let changed: CBool
+    var identifier: U64
+    var pos_x: F32
+    var pos_y: F32
+    var android_tooltype: sapp_android_tooltype
+    var changed: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_vulkan_environment {
-    let instance: RawPtr
-    let physical_device: RawPtr
-    let device: RawPtr
-    let queue: RawPtr
-    let queue_family_index: U32
+    var instance: RawPtr
+    var physical_device: RawPtr
+    var device: RawPtr
+    var queue: RawPtr
+    var queue_family_index: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_vulkan_swapchain {
-    let render_image: RawPtr
-    let render_view: RawPtr
-    let resolve_image: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_image: RawPtr
-    let depth_stencil_view: RawPtr
-    let render_finished_semaphore: RawPtr
-    let present_complete_semaphore: RawPtr
+    var render_image: RawPtr
+    var render_view: RawPtr
+    var resolve_image: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_image: RawPtr
+    var depth_stencil_view: RawPtr
+    var render_finished_semaphore: RawPtr
+    var present_complete_semaphore: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_wgpu_environment {
-    let device: RawPtr
+    var device: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_wgpu_swapchain {
-    let render_view: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_view: RawPtr
+    var render_view: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_view: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sapp_win32_desc {
-    let console_utf8: CBool
-    let console_create: CBool
-    let console_attach: CBool
+    var console_utf8: CBool
+    var console_create: CBool
+    var console_attach: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_allocator {
-    let alloc_fn: sg_allocator_alloc_fn_callback
-    let free_fn: sg_allocator_free_fn_callback
-    let user_data: RawPtr
+    var alloc_fn: sg_allocator_alloc_fn_callback
+    var free_fn: sg_allocator_free_fn_callback
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_attachments {
-    let colors: sg_view_array_8
-    let resolves: sg_view_array_8
-    let depth_stencil: sg_view
+    var colors: sg_view_array_8
+    var resolves: sg_view_array_8
+    var depth_stencil: sg_view
 }
 
 @FFI.Struct { layout: c; }
 struct sg_bindings {
-    let _start_canary: U32
-    let vertex_buffers: sg_buffer_array_8
-    let vertex_buffer_offsets: I32_array_8
-    let index_buffer: sg_buffer
-    let index_buffer_offset: I32
-    let views: sg_view_array_32
-    let samplers: sg_sampler_array_12
-    let _end_canary: U32
+    var _start_canary: U32
+    var vertex_buffers: sg_buffer_array_8
+    var vertex_buffer_offsets: I32_array_8
+    var index_buffer: sg_buffer
+    var index_buffer_offset: I32
+    var views: sg_view_array_32
+    var samplers: sg_sampler_array_12
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_blend_state {
-    let enabled: CBool
-    let src_factor_rgb: sg_blend_factor
-    let dst_factor_rgb: sg_blend_factor
-    let op_rgb: sg_blend_op
-    let src_factor_alpha: sg_blend_factor
-    let dst_factor_alpha: sg_blend_factor
-    let op_alpha: sg_blend_op
+    var enabled: CBool
+    var src_factor_rgb: sg_blend_factor
+    var dst_factor_rgb: sg_blend_factor
+    var op_rgb: sg_blend_op
+    var src_factor_alpha: sg_blend_factor
+    var dst_factor_alpha: sg_blend_factor
+    var op_alpha: sg_blend_op
 }
 
 @FFI.Struct { layout: c; }
 struct sg_buffer {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_buffer_desc {
-    let _start_canary: U32
-    let size: U64
-    let usage: sg_buffer_usage
-    let data: sg_range
-    let label: CString
-    let gl_buffers: U32_array_2
-    let mtl_buffers: RawPtr_array_2
-    let d3d11_buffer: RawPtr
-    let wgpu_buffer: RawPtr
-    let _end_canary: U32
+    var _start_canary: U32
+    var size: U64
+    var usage: sg_buffer_usage
+    var data: sg_range
+    var label: CString
+    var gl_buffers: U32_array_2
+    var mtl_buffers: RawPtr_array_2
+    var d3d11_buffer: RawPtr
+    var wgpu_buffer: RawPtr
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_buffer_info {
-    let slot: sg_slot_info
-    let update_frame_index: U32
-    let append_frame_index: U32
-    let append_pos: I32
-    let append_overflow: CBool
-    let num_slots: I32
-    let active_slot: I32
+    var slot: sg_slot_info
+    var update_frame_index: U32
+    var append_frame_index: U32
+    var append_pos: I32
+    var append_overflow: CBool
+    var num_slots: I32
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_buffer_usage {
-    let vertex_buffer: CBool
-    let index_buffer: CBool
-    let storage_buffer: CBool
-    let immutable: CBool
-    let dynamic_update: CBool
-    let stream_update: CBool
+    var vertex_buffer: CBool
+    var index_buffer: CBool
+    var storage_buffer: CBool
+    var immutable: CBool
+    var dynamic_update: CBool
+    var stream_update: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_buffer_view_desc {
-    let buffer: sg_buffer
-    let offset: I32
+    var buffer: sg_buffer
+    var offset: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_color {
-    let r: F32
-    let g: F32
-    let b: F32
-    let a: F32
+    var r: F32
+    var g: F32
+    var b: F32
+    var a: F32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_color_attachment_action {
-    let load_action: sg_load_action
-    let store_action: sg_store_action
-    let clear_value: sg_color
+    var load_action: sg_load_action
+    var store_action: sg_store_action
+    var clear_value: sg_color
 }
 
 @FFI.Struct { layout: c; }
 struct sg_color_target_state {
-    let pixel_format: sg_pixel_format
-    let write_mask: sg_color_mask
-    let blend: sg_blend_state
+    var pixel_format: sg_pixel_format
+    var write_mask: sg_color_mask
+    var blend: sg_blend_state
 }
 
 @FFI.Struct { layout: c; }
 struct sg_commit_listener {
-    let func: sg_commit_listener_func_callback
-    let user_data: RawPtr
+    var func: sg_commit_listener_func_callback
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_buffer_info {
-    let buf: RawPtr
+    var buf: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_desc {
-    let shader_debugging: CBool
+    var shader_debugging: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_environment {
-    let device: RawPtr
-    let device_context: RawPtr
+    var device: RawPtr
+    var device_context: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_image_info {
-    let tex2d: RawPtr
-    let tex3d: RawPtr
-    let res: RawPtr
+    var tex2d: RawPtr
+    var tex3d: RawPtr
+    var res: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_pipeline_info {
-    let il: RawPtr
-    let rs: RawPtr
-    let dss: RawPtr
-    let bs: RawPtr
+    var il: RawPtr
+    var rs: RawPtr
+    var dss: RawPtr
+    var bs: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_sampler_info {
-    let smp: RawPtr
+    var smp: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_shader_info {
-    let cbufs: RawPtr_array_8
-    let vs: RawPtr
-    let fs: RawPtr
+    var cbufs: RawPtr_array_8
+    var vs: RawPtr
+    var fs: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_swapchain {
-    let render_view: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_view: RawPtr
+    var render_view: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_view: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_d3d11_view_info {
-    let srv: RawPtr
-    let uav: RawPtr
-    let rtv: RawPtr
-    let dsv: RawPtr
+    var srv: RawPtr
+    var uav: RawPtr
+    var rtv: RawPtr
+    var dsv: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_depth_attachment_action {
-    let load_action: sg_load_action
-    let store_action: sg_store_action
-    let clear_value: F32
+    var load_action: sg_load_action
+    var store_action: sg_store_action
+    var clear_value: F32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_depth_state {
-    let pixel_format: sg_pixel_format
-    let compare: sg_compare_func
-    let write_enabled: CBool
-    let bias: F32
-    let bias_slope_scale: F32
-    let bias_clamp: F32
+    var pixel_format: sg_pixel_format
+    var compare: sg_compare_func
+    var write_enabled: CBool
+    var bias: F32
+    var bias_slope_scale: F32
+    var bias_clamp: F32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_desc {
-    let _start_canary: U32
-    let buffer_pool_size: I32
-    let image_pool_size: I32
-    let sampler_pool_size: I32
-    let shader_pool_size: I32
-    let pipeline_pool_size: I32
-    let view_pool_size: I32
-    let uniform_buffer_size: I32
-    let max_commit_listeners: I32
-    let disable_validation: CBool
-    let enforce_portable_limits: CBool
-    let d3d11: sg_d3d11_desc
-    let metal: sg_metal_desc
-    let wgpu: sg_wgpu_desc
-    let vulkan: sg_vulkan_desc
-    let allocator: sg_allocator
-    let logger: sg_logger
-    let environment: sg_environment
-    let _end_canary: U32
+    var _start_canary: U32
+    var buffer_pool_size: I32
+    var image_pool_size: I32
+    var sampler_pool_size: I32
+    var shader_pool_size: I32
+    var pipeline_pool_size: I32
+    var view_pool_size: I32
+    var uniform_buffer_size: I32
+    var max_commit_listeners: I32
+    var disable_validation: CBool
+    var enforce_portable_limits: CBool
+    var d3d11: sg_d3d11_desc
+    var metal: sg_metal_desc
+    var wgpu: sg_wgpu_desc
+    var vulkan: sg_vulkan_desc
+    var allocator: sg_allocator
+    var logger: sg_logger
+    var environment: sg_environment
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_environment {
-    let defaults: sg_environment_defaults
-    let metal: sg_metal_environment
-    let d3d11: sg_d3d11_environment
-    let wgpu: sg_wgpu_environment
-    let vulkan: sg_vulkan_environment
+    var defaults: sg_environment_defaults
+    var metal: sg_metal_environment
+    var d3d11: sg_d3d11_environment
+    var wgpu: sg_wgpu_environment
+    var vulkan: sg_vulkan_environment
 }
 
 @FFI.Struct { layout: c; }
 struct sg_environment_defaults {
-    let color_format: sg_pixel_format
-    let depth_format: sg_pixel_format
-    let sample_count: I32
+    var color_format: sg_pixel_format
+    var depth_format: sg_pixel_format
+    var sample_count: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_features {
-    let origin_top_left: CBool
-    let image_clamp_to_border: CBool
-    let mrt_independent_blend_state: CBool
-    let mrt_independent_write_mask: CBool
-    let compute: CBool
-    let msaa_texture_bindings: CBool
-    let separate_buffer_types: CBool
-    let draw_base_vertex: CBool
-    let draw_base_instance: CBool
-    let dual_source_blending: CBool
-    let vertexformat_int10_n2: CBool
-    let gl_texture_views: CBool
+    var origin_top_left: CBool
+    var image_clamp_to_border: CBool
+    var mrt_independent_blend_state: CBool
+    var mrt_independent_write_mask: CBool
+    var compute: CBool
+    var msaa_texture_bindings: CBool
+    var separate_buffer_types: CBool
+    var draw_base_vertex: CBool
+    var draw_base_instance: CBool
+    var dual_source_blending: CBool
+    var vertexformat_int10_n2: CBool
+    var gl_texture_views: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_resource_stats {
-    let allocated: U32
-    let deallocated: U32
-    let inited: U32
-    let uninited: U32
+    var allocated: U32
+    var deallocated: U32
+    var inited: U32
+    var uninited: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats {
-    let frame_index: U32
-    let num_passes: U32
-    let num_apply_viewport: U32
-    let num_apply_scissor_rect: U32
-    let num_apply_pipeline: U32
-    let num_apply_bindings: U32
-    let num_apply_uniforms: U32
-    let num_draw: U32
-    let num_draw_ex: U32
-    let num_dispatch: U32
-    let num_update_buffer: U32
-    let num_append_buffer: U32
-    let num_update_image: U32
-    let size_apply_uniforms: U32
-    let size_update_buffer: U32
-    let size_append_buffer: U32
-    let size_update_image: U32
-    let buffers: sg_frame_resource_stats
-    let images: sg_frame_resource_stats
-    let samplers: sg_frame_resource_stats
-    let views: sg_frame_resource_stats
-    let shaders: sg_frame_resource_stats
-    let pipelines: sg_frame_resource_stats
-    let gl: sg_frame_stats_gl
-    let d3d11: sg_frame_stats_d3d11
-    let metal: sg_frame_stats_metal
-    let wgpu: sg_frame_stats_wgpu
-    let vk: sg_frame_stats_vk
+    var frame_index: U32
+    var num_passes: U32
+    var num_apply_viewport: U32
+    var num_apply_scissor_rect: U32
+    var num_apply_pipeline: U32
+    var num_apply_bindings: U32
+    var num_apply_uniforms: U32
+    var num_draw: U32
+    var num_draw_ex: U32
+    var num_dispatch: U32
+    var num_update_buffer: U32
+    var num_append_buffer: U32
+    var num_update_image: U32
+    var size_apply_uniforms: U32
+    var size_update_buffer: U32
+    var size_append_buffer: U32
+    var size_update_image: U32
+    var buffers: sg_frame_resource_stats
+    var images: sg_frame_resource_stats
+    var samplers: sg_frame_resource_stats
+    var views: sg_frame_resource_stats
+    var shaders: sg_frame_resource_stats
+    var pipelines: sg_frame_resource_stats
+    var gl: sg_frame_stats_gl
+    var d3d11: sg_frame_stats_d3d11
+    var metal: sg_frame_stats_metal
+    var wgpu: sg_frame_stats_wgpu
+    var vk: sg_frame_stats_vk
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11 {
-    let pass: sg_frame_stats_d3d11_pass
-    let pipeline: sg_frame_stats_d3d11_pipeline
-    let bindings: sg_frame_stats_d3d11_bindings
-    let uniforms: sg_frame_stats_d3d11_uniforms
-    let draw: sg_frame_stats_d3d11_draw
-    let num_map: U32
-    let num_unmap: U32
+    var pass: sg_frame_stats_d3d11_pass
+    var pipeline: sg_frame_stats_d3d11_pipeline
+    var bindings: sg_frame_stats_d3d11_bindings
+    var uniforms: sg_frame_stats_d3d11_uniforms
+    var draw: sg_frame_stats_d3d11_draw
+    var num_map: U32
+    var num_unmap: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11_bindings {
-    let num_ia_set_vertex_buffers: U32
-    let num_ia_set_index_buffer: U32
-    let num_vs_set_shader_resources: U32
-    let num_vs_set_samplers: U32
-    let num_ps_set_shader_resources: U32
-    let num_ps_set_samplers: U32
-    let num_cs_set_shader_resources: U32
-    let num_cs_set_samplers: U32
-    let num_cs_set_unordered_access_views: U32
+    var num_ia_set_vertex_buffers: U32
+    var num_ia_set_index_buffer: U32
+    var num_vs_set_shader_resources: U32
+    var num_vs_set_samplers: U32
+    var num_ps_set_shader_resources: U32
+    var num_ps_set_samplers: U32
+    var num_cs_set_shader_resources: U32
+    var num_cs_set_samplers: U32
+    var num_cs_set_unordered_access_views: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11_draw {
-    let num_draw_indexed_instanced: U32
-    let num_draw_indexed: U32
-    let num_draw_instanced: U32
-    let num_draw: U32
+    var num_draw_indexed_instanced: U32
+    var num_draw_indexed: U32
+    var num_draw_instanced: U32
+    var num_draw: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11_pass {
-    let num_om_set_render_targets: U32
-    let num_clear_render_target_view: U32
-    let num_clear_depth_stencil_view: U32
-    let num_resolve_subresource: U32
+    var num_om_set_render_targets: U32
+    var num_clear_render_target_view: U32
+    var num_clear_depth_stencil_view: U32
+    var num_resolve_subresource: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11_pipeline {
-    let num_rs_set_state: U32
-    let num_om_set_depth_stencil_state: U32
-    let num_om_set_blend_state: U32
-    let num_ia_set_primitive_topology: U32
-    let num_ia_set_input_layout: U32
-    let num_vs_set_shader: U32
-    let num_vs_set_constant_buffers: U32
-    let num_ps_set_shader: U32
-    let num_ps_set_constant_buffers: U32
-    let num_cs_set_shader: U32
-    let num_cs_set_constant_buffers: U32
+    var num_rs_set_state: U32
+    var num_om_set_depth_stencil_state: U32
+    var num_om_set_blend_state: U32
+    var num_ia_set_primitive_topology: U32
+    var num_ia_set_input_layout: U32
+    var num_vs_set_shader: U32
+    var num_vs_set_constant_buffers: U32
+    var num_ps_set_shader: U32
+    var num_ps_set_constant_buffers: U32
+    var num_cs_set_shader: U32
+    var num_cs_set_constant_buffers: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_d3d11_uniforms {
-    let num_update_subresource: U32
+    var num_update_subresource: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_gl {
-    let num_bind_buffer: U32
-    let num_active_texture: U32
-    let num_bind_texture: U32
-    let num_bind_sampler: U32
-    let num_bind_image_texture: U32
-    let num_use_program: U32
-    let num_render_state: U32
-    let num_vertex_attrib_pointer: U32
-    let num_vertex_attrib_divisor: U32
-    let num_enable_vertex_attrib_array: U32
-    let num_disable_vertex_attrib_array: U32
-    let num_uniform: U32
-    let num_memory_barriers: U32
+    var num_bind_buffer: U32
+    var num_active_texture: U32
+    var num_bind_texture: U32
+    var num_bind_sampler: U32
+    var num_bind_image_texture: U32
+    var num_use_program: U32
+    var num_render_state: U32
+    var num_vertex_attrib_pointer: U32
+    var num_vertex_attrib_divisor: U32
+    var num_enable_vertex_attrib_array: U32
+    var num_disable_vertex_attrib_array: U32
+    var num_uniform: U32
+    var num_memory_barriers: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_metal {
-    let idpool: sg_frame_stats_metal_idpool
-    let pipeline: sg_frame_stats_metal_pipeline
-    let bindings: sg_frame_stats_metal_bindings
-    let uniforms: sg_frame_stats_metal_uniforms
+    var idpool: sg_frame_stats_metal_idpool
+    var pipeline: sg_frame_stats_metal_pipeline
+    var bindings: sg_frame_stats_metal_bindings
+    var uniforms: sg_frame_stats_metal_uniforms
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_metal_bindings {
-    let num_set_vertex_buffer: U32
-    let num_set_vertex_buffer_offset: U32
-    let num_skip_redundant_vertex_buffer: U32
-    let num_set_vertex_texture: U32
-    let num_skip_redundant_vertex_texture: U32
-    let num_set_vertex_sampler_state: U32
-    let num_skip_redundant_vertex_sampler_state: U32
-    let num_set_fragment_buffer: U32
-    let num_set_fragment_buffer_offset: U32
-    let num_skip_redundant_fragment_buffer: U32
-    let num_set_fragment_texture: U32
-    let num_skip_redundant_fragment_texture: U32
-    let num_set_fragment_sampler_state: U32
-    let num_skip_redundant_fragment_sampler_state: U32
-    let num_set_compute_buffer: U32
-    let num_set_compute_buffer_offset: U32
-    let num_skip_redundant_compute_buffer: U32
-    let num_set_compute_texture: U32
-    let num_skip_redundant_compute_texture: U32
-    let num_set_compute_sampler_state: U32
-    let num_skip_redundant_compute_sampler_state: U32
+    var num_set_vertex_buffer: U32
+    var num_set_vertex_buffer_offset: U32
+    var num_skip_redundant_vertex_buffer: U32
+    var num_set_vertex_texture: U32
+    var num_skip_redundant_vertex_texture: U32
+    var num_set_vertex_sampler_state: U32
+    var num_skip_redundant_vertex_sampler_state: U32
+    var num_set_fragment_buffer: U32
+    var num_set_fragment_buffer_offset: U32
+    var num_skip_redundant_fragment_buffer: U32
+    var num_set_fragment_texture: U32
+    var num_skip_redundant_fragment_texture: U32
+    var num_set_fragment_sampler_state: U32
+    var num_skip_redundant_fragment_sampler_state: U32
+    var num_set_compute_buffer: U32
+    var num_set_compute_buffer_offset: U32
+    var num_skip_redundant_compute_buffer: U32
+    var num_set_compute_texture: U32
+    var num_skip_redundant_compute_texture: U32
+    var num_set_compute_sampler_state: U32
+    var num_skip_redundant_compute_sampler_state: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_metal_idpool {
-    let num_added: U32
-    let num_released: U32
-    let num_garbage_collected: U32
+    var num_added: U32
+    var num_released: U32
+    var num_garbage_collected: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_metal_pipeline {
-    let num_set_blend_color: U32
-    let num_set_cull_mode: U32
-    let num_set_front_facing_winding: U32
-    let num_set_stencil_reference_value: U32
-    let num_set_depth_bias: U32
-    let num_set_render_pipeline_state: U32
-    let num_set_depth_stencil_state: U32
+    var num_set_blend_color: U32
+    var num_set_cull_mode: U32
+    var num_set_front_facing_winding: U32
+    var num_set_stencil_reference_value: U32
+    var num_set_depth_bias: U32
+    var num_set_render_pipeline_state: U32
+    var num_set_depth_stencil_state: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_metal_uniforms {
-    let num_set_vertex_buffer_offset: U32
-    let num_set_fragment_buffer_offset: U32
-    let num_set_compute_buffer_offset: U32
+    var num_set_vertex_buffer_offset: U32
+    var num_set_fragment_buffer_offset: U32
+    var num_set_compute_buffer_offset: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_vk {
-    let num_cmd_pipeline_barrier: U32
-    let num_allocate_memory: U32
-    let num_free_memory: U32
-    let size_allocate_memory: U32
-    let num_delete_queue_added: U32
-    let num_delete_queue_collected: U32
-    let num_cmd_copy_buffer: U32
-    let num_cmd_copy_buffer_to_image: U32
-    let num_cmd_set_descriptor_buffer_offsets: U32
-    let size_descriptor_buffer_writes: U32
+    var num_cmd_pipeline_barrier: U32
+    var num_allocate_memory: U32
+    var num_free_memory: U32
+    var size_allocate_memory: U32
+    var num_delete_queue_added: U32
+    var num_delete_queue_collected: U32
+    var num_cmd_copy_buffer: U32
+    var num_cmd_copy_buffer_to_image: U32
+    var num_cmd_set_descriptor_buffer_offsets: U32
+    var size_descriptor_buffer_writes: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_wgpu {
-    let uniforms: sg_frame_stats_wgpu_uniforms
-    let bindings: sg_frame_stats_wgpu_bindings
+    var uniforms: sg_frame_stats_wgpu_uniforms
+    var bindings: sg_frame_stats_wgpu_bindings
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_wgpu_bindings {
-    let num_set_vertex_buffer: U32
-    let num_skip_redundant_vertex_buffer: U32
-    let num_set_index_buffer: U32
-    let num_skip_redundant_index_buffer: U32
-    let num_create_bindgroup: U32
-    let num_discard_bindgroup: U32
-    let num_set_bindgroup: U32
-    let num_skip_redundant_bindgroup: U32
-    let num_bindgroup_cache_hits: U32
-    let num_bindgroup_cache_misses: U32
-    let num_bindgroup_cache_collisions: U32
-    let num_bindgroup_cache_invalidates: U32
-    let num_bindgroup_cache_hash_vs_key_mismatch: U32
+    var num_set_vertex_buffer: U32
+    var num_skip_redundant_vertex_buffer: U32
+    var num_set_index_buffer: U32
+    var num_skip_redundant_index_buffer: U32
+    var num_create_bindgroup: U32
+    var num_discard_bindgroup: U32
+    var num_set_bindgroup: U32
+    var num_skip_redundant_bindgroup: U32
+    var num_bindgroup_cache_hits: U32
+    var num_bindgroup_cache_misses: U32
+    var num_bindgroup_cache_collisions: U32
+    var num_bindgroup_cache_invalidates: U32
+    var num_bindgroup_cache_hash_vs_key_mismatch: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_frame_stats_wgpu_uniforms {
-    let num_set_bindgroup: U32
-    let size_write_buffer: U32
+    var num_set_bindgroup: U32
+    var size_write_buffer: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_buffer_info {
-    let buf: U32_array_2
-    let active_slot: I32
+    var buf: U32_array_2
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_image_info {
-    let tex: U32_array_2
-    let tex_target: U32
-    let active_slot: I32
+    var tex: U32_array_2
+    var tex_target: U32
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_sampler_info {
-    let smp: U32
+    var smp: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_shader_info {
-    let prog: U32
+    var prog: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_swapchain {
-    let framebuffer: U32
+    var framebuffer: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_gl_view_info {
-    let tex_view: U32_array_2
-    let msaa_render_buffer: U32
-    let msaa_resolve_frame_buffer: U32
+    var tex_view: U32_array_2
+    var msaa_render_buffer: U32
+    var msaa_resolve_frame_buffer: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_glsl_shader_uniform {
-    let type_value: sg_uniform_type
-    let array_count: U16
-    let glsl_name: CString
+    var type_value: sg_uniform_type
+    var array_count: U16
+    var glsl_name: CString
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image_data {
-    let mip_levels: sg_range_array_16
+    var mip_levels: sg_range_array_16
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image_desc {
-    let _start_canary: U32
-    let type_value: sg_image_type
-    let usage: sg_image_usage
-    let width: I32
-    let height: I32
-    let num_slices: I32
-    let num_mipmaps: I32
-    let pixel_format: sg_pixel_format
-    let sample_count: I32
-    let data: sg_image_data
-    let label: CString
-    let gl_textures: U32_array_2
-    let gl_texture_target: U32
-    let mtl_textures: RawPtr_array_2
-    let d3d11_texture: RawPtr
-    let wgpu_texture: RawPtr
-    let _end_canary: U32
+    var _start_canary: U32
+    var type_value: sg_image_type
+    var usage: sg_image_usage
+    var width: I32
+    var height: I32
+    var num_slices: I32
+    var num_mipmaps: I32
+    var pixel_format: sg_pixel_format
+    var sample_count: I32
+    var data: sg_image_data
+    var label: CString
+    var gl_textures: U32_array_2
+    var gl_texture_target: U32
+    var mtl_textures: RawPtr_array_2
+    var d3d11_texture: RawPtr
+    var wgpu_texture: RawPtr
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image_info {
-    let slot: sg_slot_info
-    let upd_frame_index: U32
-    let num_slots: I32
-    let active_slot: I32
+    var slot: sg_slot_info
+    var upd_frame_index: U32
+    var num_slots: I32
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image_usage {
-    let storage_image: CBool
-    let color_attachment: CBool
-    let resolve_attachment: CBool
-    let depth_stencil_attachment: CBool
-    let immutable: CBool
-    let dynamic_update: CBool
-    let stream_update: CBool
+    var storage_image: CBool
+    var color_attachment: CBool
+    var resolve_attachment: CBool
+    var depth_stencil_attachment: CBool
+    var immutable: CBool
+    var dynamic_update: CBool
+    var stream_update: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_image_view_desc {
-    let image: sg_image
-    let mip_level: I32
-    let slice: I32
+    var image: sg_image
+    var mip_level: I32
+    var slice: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_limits {
-    let max_image_size_2d: I32
-    let max_image_size_cube: I32
-    let max_image_size_3d: I32
-    let max_image_size_array: I32
-    let max_image_array_layers: I32
-    let max_vertex_attrs: I32
-    let max_color_attachments: I32
-    let max_texture_bindings_per_stage: I32
-    let max_storage_buffer_bindings_per_stage: I32
-    let max_storage_image_bindings_per_stage: I32
-    let gl_max_vertex_uniform_components: I32
-    let gl_max_combined_texture_image_units: I32
-    let d3d11_max_unordered_access_views: I32
-    let vk_min_uniform_buffer_offset_alignment: I32
+    var max_image_size_2d: I32
+    var max_image_size_cube: I32
+    var max_image_size_3d: I32
+    var max_image_size_array: I32
+    var max_image_array_layers: I32
+    var max_vertex_attrs: I32
+    var max_color_attachments: I32
+    var max_texture_bindings_per_stage: I32
+    var max_storage_buffer_bindings_per_stage: I32
+    var max_storage_image_bindings_per_stage: I32
+    var gl_max_vertex_uniform_components: I32
+    var gl_max_combined_texture_image_units: I32
+    var d3d11_max_unordered_access_views: I32
+    var vk_min_uniform_buffer_offset_alignment: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_logger {
-    let func: sg_logger_func_callback
-    let user_data: RawPtr
+    var func: sg_logger_func_callback
+    var user_data: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_metal_desc {
-    let force_managed_storage_mode: CBool
-    let use_command_buffer_with_retained_references: CBool
+    var force_managed_storage_mode: CBool
+    var use_command_buffer_with_retained_references: CBool
 }
 
 @FFI.Struct { layout: c; }
 struct sg_metal_environment {
-    let device: RawPtr
+    var device: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_metal_swapchain {
-    let current_drawable: RawPtr
-    let depth_stencil_texture: RawPtr
-    let msaa_color_texture: RawPtr
+    var current_drawable: RawPtr
+    var depth_stencil_texture: RawPtr
+    var msaa_color_texture: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_buffer_info {
-    let buf: RawPtr_array_2
-    let active_slot: I32
+    var buf: RawPtr_array_2
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_image_info {
-    let tex: RawPtr_array_2
-    let active_slot: I32
+    var tex: RawPtr_array_2
+    var active_slot: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_pipeline_info {
-    let rps: RawPtr
-    let dss: RawPtr
+    var rps: RawPtr
+    var dss: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_sampler_info {
-    let smp: RawPtr
+    var smp: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_shader_info {
-    let vertex_lib: RawPtr
-    let fragment_lib: RawPtr
-    let vertex_func: RawPtr
-    let fragment_func: RawPtr
+    var vertex_lib: RawPtr
+    var fragment_lib: RawPtr
+    var vertex_func: RawPtr
+    var fragment_func: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_mtl_shader_threads_per_threadgroup {
-    let x: I32
-    let y: I32
-    let z: I32
+    var x: I32
+    var y: I32
+    var z: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pass {
-    let _start_canary: U32
-    let compute: CBool
-    let action: sg_pass_action
-    let attachments: sg_attachments
-    let swapchain: sg_swapchain
-    let label: CString
-    let _end_canary: U32
+    var _start_canary: U32
+    var compute: CBool
+    var action: sg_pass_action
+    var attachments: sg_attachments
+    var swapchain: sg_swapchain
+    var label: CString
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pass_action {
-    let colors: sg_color_attachment_action_array_8
-    let depth: sg_depth_attachment_action
-    let stencil: sg_stencil_attachment_action
+    var colors: sg_color_attachment_action_array_8
+    var depth: sg_depth_attachment_action
+    var stencil: sg_stencil_attachment_action
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pipeline {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pipeline_desc {
-    let _start_canary: U32
-    let compute: CBool
-    let shader: sg_shader
-    let layout: sg_vertex_layout_state
-    let depth: sg_depth_state
-    let stencil: sg_stencil_state
-    let color_count: I32
-    let colors: sg_color_target_state_array_8
-    let primitive_type: sg_primitive_type
-    let index_type: sg_index_type
-    let cull_mode: sg_cull_mode
-    let face_winding: sg_face_winding
-    let sample_count: I32
-    let blend_color: sg_color
-    let alpha_to_coverage_enabled: CBool
-    let label: CString
-    let _end_canary: U32
+    var _start_canary: U32
+    var compute: CBool
+    var shader: sg_shader
+    var layout: sg_vertex_layout_state
+    var depth: sg_depth_state
+    var stencil: sg_stencil_state
+    var color_count: I32
+    var colors: sg_color_target_state_array_8
+    var primitive_type: sg_primitive_type
+    var index_type: sg_index_type
+    var cull_mode: sg_cull_mode
+    var face_winding: sg_face_winding
+    var sample_count: I32
+    var blend_color: sg_color
+    var alpha_to_coverage_enabled: CBool
+    var label: CString
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pipeline_info {
-    let slot: sg_slot_info
+    var slot: sg_slot_info
 }
 
 @FFI.Struct { layout: c; }
 struct sg_pixelformat_info {
-    let sample: CBool
-    let filter: CBool
-    let render: CBool
-    let blend: CBool
-    let msaa: CBool
-    let depth: CBool
-    let compressed: CBool
-    let read: CBool
-    let write: CBool
-    let bytes_per_pixel: I32
+    var sample: CBool
+    var filter: CBool
+    var render: CBool
+    var blend: CBool
+    var msaa: CBool
+    var depth: CBool
+    var compressed: CBool
+    var read: CBool
+    var write: CBool
+    var bytes_per_pixel: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_range {
-    let ptr: RawPtr
-    let size: U64
+    var ptr: RawPtr
+    var size: U64
 }
 
 @FFI.Struct { layout: c; }
 struct sg_sampler {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_sampler_desc {
-    let _start_canary: U32
-    let min_filter: sg_filter
-    let mag_filter: sg_filter
-    let mipmap_filter: sg_filter
-    let wrap_u: sg_wrap
-    let wrap_v: sg_wrap
-    let wrap_w: sg_wrap
-    let min_lod: F32
-    let max_lod: F32
-    let border_color: sg_border_color
-    let compare: sg_compare_func
-    let max_anisotropy: U32
-    let label: CString
-    let gl_sampler: U32
-    let mtl_sampler: RawPtr
-    let d3d11_sampler: RawPtr
-    let wgpu_sampler: RawPtr
-    let _end_canary: U32
+    var _start_canary: U32
+    var min_filter: sg_filter
+    var mag_filter: sg_filter
+    var mipmap_filter: sg_filter
+    var wrap_u: sg_wrap
+    var wrap_v: sg_wrap
+    var wrap_w: sg_wrap
+    var min_lod: F32
+    var max_lod: F32
+    var border_color: sg_border_color
+    var compare: sg_compare_func
+    var max_anisotropy: U32
+    var label: CString
+    var gl_sampler: U32
+    var mtl_sampler: RawPtr
+    var d3d11_sampler: RawPtr
+    var wgpu_sampler: RawPtr
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_sampler_info {
-    let slot: sg_slot_info
+    var slot: sg_slot_info
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_desc {
-    let _start_canary: U32
-    let vertex_func: sg_shader_function
-    let fragment_func: sg_shader_function
-    let compute_func: sg_shader_function
-    let attrs: sg_shader_vertex_attr_array_16
-    let uniform_blocks: sg_shader_uniform_block_array_8
-    let views: sg_shader_view_array_32
-    let samplers: sg_shader_sampler_array_12
-    let texture_sampler_pairs: sg_shader_texture_sampler_pair_array_32
-    let mtl_threads_per_threadgroup: sg_mtl_shader_threads_per_threadgroup
-    let label: CString
-    let _end_canary: U32
+    var _start_canary: U32
+    var vertex_func: sg_shader_function
+    var fragment_func: sg_shader_function
+    var compute_func: sg_shader_function
+    var attrs: sg_shader_vertex_attr_array_16
+    var uniform_blocks: sg_shader_uniform_block_array_8
+    var views: sg_shader_view_array_32
+    var samplers: sg_shader_sampler_array_12
+    var texture_sampler_pairs: sg_shader_texture_sampler_pair_array_32
+    var mtl_threads_per_threadgroup: sg_mtl_shader_threads_per_threadgroup
+    var label: CString
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_function {
-    let source: CString
-    let bytecode: sg_range
-    let entry: CString
-    let d3d11_target: CString
-    let d3d11_filepath: CString
+    var source: CString
+    var bytecode: sg_range
+    var entry: CString
+    var d3d11_target: CString
+    var d3d11_filepath: CString
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_info {
-    let slot: sg_slot_info
+    var slot: sg_slot_info
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_sampler {
-    let stage: sg_shader_stage
-    let sampler_type: sg_sampler_type
-    let hlsl_register_s_n: U8
-    let msl_sampler_n: U8
-    let wgsl_group1_binding_n: U8
-    let spirv_set1_binding_n: U8
+    var stage: sg_shader_stage
+    var sampler_type: sg_sampler_type
+    var hlsl_register_s_n: U8
+    var msl_sampler_n: U8
+    var wgsl_group1_binding_n: U8
+    var spirv_set1_binding_n: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_storage_buffer_view {
-    let stage: sg_shader_stage
-    let readonly: CBool
-    let hlsl_register_t_n: U8
-    let hlsl_register_u_n: U8
-    let msl_buffer_n: U8
-    let wgsl_group1_binding_n: U8
-    let spirv_set1_binding_n: U8
-    let glsl_binding_n: U8
+    var stage: sg_shader_stage
+    var readonly: CBool
+    var hlsl_register_t_n: U8
+    var hlsl_register_u_n: U8
+    var msl_buffer_n: U8
+    var wgsl_group1_binding_n: U8
+    var spirv_set1_binding_n: U8
+    var glsl_binding_n: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_storage_image_view {
-    let stage: sg_shader_stage
-    let image_type: sg_image_type
-    let access_format: sg_pixel_format
-    let writeonly: CBool
-    let hlsl_register_u_n: U8
-    let msl_texture_n: U8
-    let wgsl_group1_binding_n: U8
-    let spirv_set1_binding_n: U8
-    let glsl_binding_n: U8
+    var stage: sg_shader_stage
+    var image_type: sg_image_type
+    var access_format: sg_pixel_format
+    var writeonly: CBool
+    var hlsl_register_u_n: U8
+    var msl_texture_n: U8
+    var wgsl_group1_binding_n: U8
+    var spirv_set1_binding_n: U8
+    var glsl_binding_n: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_texture_sampler_pair {
-    let stage: sg_shader_stage
-    let view_slot: U8
-    let sampler_slot: U8
-    let glsl_name: CString
+    var stage: sg_shader_stage
+    var view_slot: U8
+    var sampler_slot: U8
+    var glsl_name: CString
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_texture_view {
-    let stage: sg_shader_stage
-    let image_type: sg_image_type
-    let sample_type: sg_image_sample_type
-    let multisampled: CBool
-    let hlsl_register_t_n: U8
-    let msl_texture_n: U8
-    let wgsl_group1_binding_n: U8
-    let spirv_set1_binding_n: U8
+    var stage: sg_shader_stage
+    var image_type: sg_image_type
+    var sample_type: sg_image_sample_type
+    var multisampled: CBool
+    var hlsl_register_t_n: U8
+    var msl_texture_n: U8
+    var wgsl_group1_binding_n: U8
+    var spirv_set1_binding_n: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_uniform_block {
-    let stage: sg_shader_stage
-    let size: U32
-    let hlsl_register_b_n: U8
-    let msl_buffer_n: U8
-    let wgsl_group0_binding_n: U8
-    let spirv_set0_binding_n: U8
-    let layout: sg_uniform_layout
-    let glsl_uniforms: sg_glsl_shader_uniform_array_16
+    var stage: sg_shader_stage
+    var size: U32
+    var hlsl_register_b_n: U8
+    var msl_buffer_n: U8
+    var wgsl_group0_binding_n: U8
+    var spirv_set0_binding_n: U8
+    var layout: sg_uniform_layout
+    var glsl_uniforms: sg_glsl_shader_uniform_array_16
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_vertex_attr {
-    let base_type: sg_shader_attr_base_type
-    let glsl_name: CString
-    let hlsl_sem_name: CString
-    let hlsl_sem_index: U8
+    var base_type: sg_shader_attr_base_type
+    var glsl_name: CString
+    var hlsl_sem_name: CString
+    var hlsl_sem_index: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_shader_view {
-    let texture: sg_shader_texture_view
-    let storage_buffer: sg_shader_storage_buffer_view
-    let storage_image: sg_shader_storage_image_view
+    var texture: sg_shader_texture_view
+    var storage_buffer: sg_shader_storage_buffer_view
+    var storage_image: sg_shader_storage_image_view
 }
 
 @FFI.Struct { layout: c; }
 struct sg_slot_info {
-    let state: sg_resource_state
-    let res_id: U32
-    let uninit_count: U32
+    var state: sg_resource_state
+    var res_id: U32
+    var uninit_count: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_stats {
-    let prev_frame: sg_frame_stats
-    let cur_frame: sg_frame_stats
-    let total: sg_total_stats
+    var prev_frame: sg_frame_stats
+    var cur_frame: sg_frame_stats
+    var total: sg_total_stats
 }
 
 @FFI.Struct { layout: c; }
 struct sg_stencil_attachment_action {
-    let load_action: sg_load_action
-    let store_action: sg_store_action
-    let clear_value: U8
+    var load_action: sg_load_action
+    var store_action: sg_store_action
+    var clear_value: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_stencil_face_state {
-    let compare: sg_compare_func
-    let fail_op: sg_stencil_op
-    let depth_fail_op: sg_stencil_op
-    let pass_op: sg_stencil_op
+    var compare: sg_compare_func
+    var fail_op: sg_stencil_op
+    var depth_fail_op: sg_stencil_op
+    var pass_op: sg_stencil_op
 }
 
 @FFI.Struct { layout: c; }
 struct sg_stencil_state {
-    let enabled: CBool
-    let front: sg_stencil_face_state
-    let back: sg_stencil_face_state
-    let read_mask: U8
-    let write_mask: U8
-    let ref: U8
+    var enabled: CBool
+    var front: sg_stencil_face_state
+    var back: sg_stencil_face_state
+    var read_mask: U8
+    var write_mask: U8
+    var ref: U8
 }
 
 @FFI.Struct { layout: c; }
 struct sg_swapchain {
-    let width: I32
-    let height: I32
-    let sample_count: I32
-    let color_format: sg_pixel_format
-    let depth_format: sg_pixel_format
-    let metal: sg_metal_swapchain
-    let d3d11: sg_d3d11_swapchain
-    let wgpu: sg_wgpu_swapchain
-    let vulkan: sg_vulkan_swapchain
-    let gl: sg_gl_swapchain
+    var width: I32
+    var height: I32
+    var sample_count: I32
+    var color_format: sg_pixel_format
+    var depth_format: sg_pixel_format
+    var metal: sg_metal_swapchain
+    var d3d11: sg_d3d11_swapchain
+    var wgpu: sg_wgpu_swapchain
+    var vulkan: sg_vulkan_swapchain
+    var gl: sg_gl_swapchain
 }
 
 @FFI.Struct { layout: c; }
 struct sg_texture_view_desc {
-    let image: sg_image
-    let mip_levels: sg_texture_view_range
-    let slices: sg_texture_view_range
+    var image: sg_image
+    var mip_levels: sg_texture_view_range
+    var slices: sg_texture_view_range
 }
 
 @FFI.Struct { layout: c; }
 struct sg_texture_view_range {
-    let base: I32
-    let count: I32
+    var base: I32
+    var count: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_total_resource_stats {
-    let alive: U32
-    let free: U32
-    let allocated: U32
-    let deallocated: U32
-    let inited: U32
-    let uninited: U32
+    var alive: U32
+    var free: U32
+    var allocated: U32
+    var deallocated: U32
+    var inited: U32
+    var uninited: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_total_stats {
-    let buffers: sg_total_resource_stats
-    let images: sg_total_resource_stats
-    let samplers: sg_total_resource_stats
-    let views: sg_total_resource_stats
-    let shaders: sg_total_resource_stats
-    let pipelines: sg_total_resource_stats
+    var buffers: sg_total_resource_stats
+    var images: sg_total_resource_stats
+    var samplers: sg_total_resource_stats
+    var views: sg_total_resource_stats
+    var shaders: sg_total_resource_stats
+    var pipelines: sg_total_resource_stats
 }
 
 @FFI.Struct { layout: c; }
 struct sg_trace_hooks {
-    let user_data: RawPtr
-    let reset_state_cache: sg_trace_hooks_reset_state_cache_callback
-    let make_buffer: sg_trace_hooks_make_buffer_callback
-    let make_image: sg_trace_hooks_make_image_callback
-    let make_sampler: sg_trace_hooks_make_sampler_callback
-    let make_shader: sg_trace_hooks_make_shader_callback
-    let make_pipeline: sg_trace_hooks_make_pipeline_callback
-    let make_view: sg_trace_hooks_make_view_callback
-    let destroy_buffer: sg_trace_hooks_destroy_buffer_callback
-    let destroy_image: sg_trace_hooks_destroy_image_callback
-    let destroy_sampler: sg_trace_hooks_destroy_sampler_callback
-    let destroy_shader: sg_trace_hooks_destroy_shader_callback
-    let destroy_pipeline: sg_trace_hooks_destroy_pipeline_callback
-    let destroy_view: sg_trace_hooks_destroy_view_callback
-    let update_buffer: sg_trace_hooks_update_buffer_callback
-    let update_image: sg_trace_hooks_update_image_callback
-    let append_buffer: sg_trace_hooks_append_buffer_callback
-    let begin_pass: sg_trace_hooks_begin_pass_callback
-    let apply_viewport: sg_trace_hooks_apply_viewport_callback
-    let apply_scissor_rect: sg_trace_hooks_apply_scissor_rect_callback
-    let apply_pipeline: sg_trace_hooks_apply_pipeline_callback
-    let apply_bindings: sg_trace_hooks_apply_bindings_callback
-    let apply_uniforms: sg_trace_hooks_apply_uniforms_callback
-    let draw: sg_trace_hooks_draw_callback
-    let draw_ex: sg_trace_hooks_draw_ex_callback
-    let dispatch: sg_trace_hooks_dispatch_callback
-    let end_pass: sg_trace_hooks_end_pass_callback
-    let commit: sg_trace_hooks_commit_callback
-    let alloc_buffer: sg_trace_hooks_alloc_buffer_callback
-    let alloc_image: sg_trace_hooks_alloc_image_callback
-    let alloc_sampler: sg_trace_hooks_alloc_sampler_callback
-    let alloc_shader: sg_trace_hooks_alloc_shader_callback
-    let alloc_pipeline: sg_trace_hooks_alloc_pipeline_callback
-    let alloc_view: sg_trace_hooks_alloc_view_callback
-    let dealloc_buffer: sg_trace_hooks_dealloc_buffer_callback
-    let dealloc_image: sg_trace_hooks_dealloc_image_callback
-    let dealloc_sampler: sg_trace_hooks_dealloc_sampler_callback
-    let dealloc_shader: sg_trace_hooks_dealloc_shader_callback
-    let dealloc_pipeline: sg_trace_hooks_dealloc_pipeline_callback
-    let dealloc_view: sg_trace_hooks_dealloc_view_callback
-    let init_buffer: sg_trace_hooks_init_buffer_callback
-    let init_image: sg_trace_hooks_init_image_callback
-    let init_sampler: sg_trace_hooks_init_sampler_callback
-    let init_shader: sg_trace_hooks_init_shader_callback
-    let init_pipeline: sg_trace_hooks_init_pipeline_callback
-    let init_view: sg_trace_hooks_init_view_callback
-    let uninit_buffer: sg_trace_hooks_uninit_buffer_callback
-    let uninit_image: sg_trace_hooks_uninit_image_callback
-    let uninit_sampler: sg_trace_hooks_uninit_sampler_callback
-    let uninit_shader: sg_trace_hooks_uninit_shader_callback
-    let uninit_pipeline: sg_trace_hooks_uninit_pipeline_callback
-    let uninit_view: sg_trace_hooks_uninit_view_callback
-    let fail_buffer: sg_trace_hooks_fail_buffer_callback
-    let fail_image: sg_trace_hooks_fail_image_callback
-    let fail_sampler: sg_trace_hooks_fail_sampler_callback
-    let fail_shader: sg_trace_hooks_fail_shader_callback
-    let fail_pipeline: sg_trace_hooks_fail_pipeline_callback
-    let fail_view: sg_trace_hooks_fail_view_callback
-    let push_debug_group: sg_trace_hooks_push_debug_group_callback
-    let pop_debug_group: sg_trace_hooks_pop_debug_group_callback
+    var user_data: RawPtr
+    var reset_state_cache: sg_trace_hooks_reset_state_cache_callback
+    var make_buffer: sg_trace_hooks_make_buffer_callback
+    var make_image: sg_trace_hooks_make_image_callback
+    var make_sampler: sg_trace_hooks_make_sampler_callback
+    var make_shader: sg_trace_hooks_make_shader_callback
+    var make_pipeline: sg_trace_hooks_make_pipeline_callback
+    var make_view: sg_trace_hooks_make_view_callback
+    var destroy_buffer: sg_trace_hooks_destroy_buffer_callback
+    var destroy_image: sg_trace_hooks_destroy_image_callback
+    var destroy_sampler: sg_trace_hooks_destroy_sampler_callback
+    var destroy_shader: sg_trace_hooks_destroy_shader_callback
+    var destroy_pipeline: sg_trace_hooks_destroy_pipeline_callback
+    var destroy_view: sg_trace_hooks_destroy_view_callback
+    var update_buffer: sg_trace_hooks_update_buffer_callback
+    var update_image: sg_trace_hooks_update_image_callback
+    var append_buffer: sg_trace_hooks_append_buffer_callback
+    var begin_pass: sg_trace_hooks_begin_pass_callback
+    var apply_viewport: sg_trace_hooks_apply_viewport_callback
+    var apply_scissor_rect: sg_trace_hooks_apply_scissor_rect_callback
+    var apply_pipeline: sg_trace_hooks_apply_pipeline_callback
+    var apply_bindings: sg_trace_hooks_apply_bindings_callback
+    var apply_uniforms: sg_trace_hooks_apply_uniforms_callback
+    var draw: sg_trace_hooks_draw_callback
+    var draw_ex: sg_trace_hooks_draw_ex_callback
+    var dispatch: sg_trace_hooks_dispatch_callback
+    var end_pass: sg_trace_hooks_end_pass_callback
+    var commit: sg_trace_hooks_commit_callback
+    var alloc_buffer: sg_trace_hooks_alloc_buffer_callback
+    var alloc_image: sg_trace_hooks_alloc_image_callback
+    var alloc_sampler: sg_trace_hooks_alloc_sampler_callback
+    var alloc_shader: sg_trace_hooks_alloc_shader_callback
+    var alloc_pipeline: sg_trace_hooks_alloc_pipeline_callback
+    var alloc_view: sg_trace_hooks_alloc_view_callback
+    var dealloc_buffer: sg_trace_hooks_dealloc_buffer_callback
+    var dealloc_image: sg_trace_hooks_dealloc_image_callback
+    var dealloc_sampler: sg_trace_hooks_dealloc_sampler_callback
+    var dealloc_shader: sg_trace_hooks_dealloc_shader_callback
+    var dealloc_pipeline: sg_trace_hooks_dealloc_pipeline_callback
+    var dealloc_view: sg_trace_hooks_dealloc_view_callback
+    var init_buffer: sg_trace_hooks_init_buffer_callback
+    var init_image: sg_trace_hooks_init_image_callback
+    var init_sampler: sg_trace_hooks_init_sampler_callback
+    var init_shader: sg_trace_hooks_init_shader_callback
+    var init_pipeline: sg_trace_hooks_init_pipeline_callback
+    var init_view: sg_trace_hooks_init_view_callback
+    var uninit_buffer: sg_trace_hooks_uninit_buffer_callback
+    var uninit_image: sg_trace_hooks_uninit_image_callback
+    var uninit_sampler: sg_trace_hooks_uninit_sampler_callback
+    var uninit_shader: sg_trace_hooks_uninit_shader_callback
+    var uninit_pipeline: sg_trace_hooks_uninit_pipeline_callback
+    var uninit_view: sg_trace_hooks_uninit_view_callback
+    var fail_buffer: sg_trace_hooks_fail_buffer_callback
+    var fail_image: sg_trace_hooks_fail_image_callback
+    var fail_sampler: sg_trace_hooks_fail_sampler_callback
+    var fail_shader: sg_trace_hooks_fail_shader_callback
+    var fail_pipeline: sg_trace_hooks_fail_pipeline_callback
+    var fail_view: sg_trace_hooks_fail_view_callback
+    var push_debug_group: sg_trace_hooks_push_debug_group_callback
+    var pop_debug_group: sg_trace_hooks_pop_debug_group_callback
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vertex_attr_state {
-    let buffer_index: I32
-    let offset: I32
-    let format: sg_vertex_format
+    var buffer_index: I32
+    var offset: I32
+    var format: sg_vertex_format
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vertex_buffer_layout_state {
-    let stride: I32
-    let step_func: sg_vertex_step
-    let step_rate: I32
+    var stride: I32
+    var step_func: sg_vertex_step
+    var step_rate: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vertex_layout_state {
-    let buffers: sg_vertex_buffer_layout_state_array_8
-    let attrs: sg_vertex_attr_state_array_16
+    var buffers: sg_vertex_buffer_layout_state_array_8
+    var attrs: sg_vertex_attr_state_array_16
 }
 
 @FFI.Struct { layout: c; }
 struct sg_view {
-    let id: U32
+    var id: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_view_desc {
-    let _start_canary: U32
-    let texture: sg_texture_view_desc
-    let storage_buffer: sg_buffer_view_desc
-    let storage_image: sg_image_view_desc
-    let color_attachment: sg_image_view_desc
-    let resolve_attachment: sg_image_view_desc
-    let depth_stencil_attachment: sg_image_view_desc
-    let label: CString
-    let _end_canary: U32
+    var _start_canary: U32
+    var texture: sg_texture_view_desc
+    var storage_buffer: sg_buffer_view_desc
+    var storage_image: sg_image_view_desc
+    var color_attachment: sg_image_view_desc
+    var resolve_attachment: sg_image_view_desc
+    var depth_stencil_attachment: sg_image_view_desc
+    var label: CString
+    var _end_canary: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_view_info {
-    let slot: sg_slot_info
+    var slot: sg_slot_info
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vulkan_desc {
-    let copy_staging_buffer_size: I32
-    let stream_staging_buffer_size: I32
-    let descriptor_buffer_size: I32
+    var copy_staging_buffer_size: I32
+    var stream_staging_buffer_size: I32
+    var descriptor_buffer_size: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vulkan_environment {
-    let instance: RawPtr
-    let physical_device: RawPtr
-    let device: RawPtr
-    let queue: RawPtr
-    let queue_family_index: U32
+    var instance: RawPtr
+    var physical_device: RawPtr
+    var device: RawPtr
+    var queue: RawPtr
+    var queue_family_index: U32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_vulkan_swapchain {
-    let render_image: RawPtr
-    let render_view: RawPtr
-    let resolve_image: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_image: RawPtr
-    let depth_stencil_view: RawPtr
-    let render_finished_semaphore: RawPtr
-    let present_complete_semaphore: RawPtr
+    var render_image: RawPtr
+    var render_view: RawPtr
+    var resolve_image: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_image: RawPtr
+    var depth_stencil_view: RawPtr
+    var render_finished_semaphore: RawPtr
+    var present_complete_semaphore: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_buffer_info {
-    let buf: RawPtr
+    var buf: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_desc {
-    let disable_bindgroups_cache: CBool
-    let bindgroups_cache_size: I32
+    var disable_bindgroups_cache: CBool
+    var bindgroups_cache_size: I32
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_environment {
-    let device: RawPtr
+    var device: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_image_info {
-    let tex: RawPtr
+    var tex: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_pipeline_info {
-    let render_pipeline: RawPtr
-    let compute_pipeline: RawPtr
+    var render_pipeline: RawPtr
+    var compute_pipeline: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_sampler_info {
-    let smp: RawPtr
+    var smp: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_shader_info {
-    let vs_mod: RawPtr
-    let fs_mod: RawPtr
-    let bgl: RawPtr
+    var vs_mod: RawPtr
+    var fs_mod: RawPtr
+    var bgl: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_swapchain {
-    let render_view: RawPtr
-    let resolve_view: RawPtr
-    let depth_stencil_view: RawPtr
+    var render_view: RawPtr
+    var resolve_view: RawPtr
+    var depth_stencil_view: RawPtr
 }
 
 @FFI.Struct { layout: c; }
 struct sg_wgpu_view_info {
-    let view: RawPtr
+    var view: RawPtr
 }
 
 @FFI.Pointer { target: char; ownership: borrowed; }
@@ -1945,9 +1909,6 @@ struct sg_trace_hooks_ptr {}
 
 @FFI.Pointer { target: sg_view_desc; ownership: borrowed; }
 struct sg_view_desc_ptr {}
-
-struct sokol_constants {
-}
 
 @FFI.Extern { library: sokol; symbol: sapp_android_get_native_activity; abi: c; }
 function sapp_android_get_native_activity(): RawPtr;

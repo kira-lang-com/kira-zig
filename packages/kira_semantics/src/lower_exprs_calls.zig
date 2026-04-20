@@ -66,9 +66,13 @@ pub fn lowerTypeConstruction(
     }
 
     const field_count: usize = if (type_header) |header| header.fields.len else imported_type.?.fields.len;
+    const is_ffi_struct = if (type_header) |header|
+        header.ffi != null and header.ffi.? == .ffi_struct
+    else
+        imported_type.?.ffi != null and imported_type.?.ffi.? == .ffi_struct;
     var filled = try ctx.allocator.alloc(bool, field_count);
     @memset(filled, false);
-    var args = try ctx.allocator.alloc(*model.Expr, field_count);
+    var fields = std.array_list.Managed(model.ConstructFieldInit).init(ctx.allocator);
     var required_missing = false;
 
     if (call_args) |items| {
@@ -115,10 +119,17 @@ pub fn lowerTypeConstruction(
                 return error.DiagnosticsEmitted;
             }
             const field_ty = if (type_header) |header| header.fields[field_index].ty else imported_type.?.fields[field_index].ty;
-            args[field_index] = if (function_headers) |headers|
+            const field_value = if (function_headers) |headers|
                 try lowerExpectedValue(ctx, arg.value, field_ty, imports, scope, headers, arg.span)
             else
                 try lowerExpr(ctx, arg.value, imports, scope, function_headers);
+            const field_name = if (type_header) |header| header.fields[field_index].name else imported_type.?.fields[field_index].name;
+            try fields.append(.{
+                .field_name = try ctx.allocator.dupe(u8, field_name),
+                .field_index = @as(u32, @intCast(field_index)),
+                .value = field_value,
+                .span = arg.span,
+            });
             filled[field_index] = true;
         }
     } else {
@@ -136,27 +147,44 @@ pub fn lowerTypeConstruction(
                 return error.DiagnosticsEmitted;
             }
             const field_ty = if (type_header) |header| header.fields[field_index].ty else imported_type.?.fields[field_index].ty;
-            args[field_index] = if (function_headers) |headers|
+            const field_value = if (function_headers) |headers|
                 try lowerExpectedValue(ctx, field.value, field_ty, imports, scope, headers, field.span)
             else
                 try lowerExpr(ctx, field.value, imports, scope, function_headers);
+            try fields.append(.{
+                .field_name = try ctx.allocator.dupe(u8, field.name),
+                .field_index = @as(u32, @intCast(field_index)),
+                .value = field_value,
+                .span = field.span,
+            });
             filled[field_index] = true;
         }
     }
 
     for (0..field_count) |index| {
         if (filled[index]) continue;
+        if (is_ffi_struct) continue;
         if (type_header) |header| {
             if (isTypeConstantField(header.fields[index].ty, header.fields[index].storage, callee_leaf)) {
                 continue;
             }
             if (header.fields[index].default_value) |default_value| {
-                args[index] = default_value;
+                try fields.append(.{
+                    .field_name = try ctx.allocator.dupe(u8, header.fields[index].name),
+                    .field_index = @as(u32, @intCast(index)),
+                    .value = default_value,
+                    .span = span,
+                });
                 filled[index] = true;
                 continue;
             }
         } else if (imported_type.?.fields[index].default_value) |default_value| {
-            args[index] = default_value;
+            try fields.append(.{
+                .field_name = try ctx.allocator.dupe(u8, imported_type.?.fields[index].name),
+                .field_index = @as(u32, @intCast(index)),
+                .value = default_value,
+                .span = span,
+            });
             filled[index] = true;
             continue;
         }
@@ -174,17 +202,10 @@ pub fn lowerTypeConstruction(
     }
     if (required_missing) return error.DiagnosticsEmitted;
 
-    var arg_len = field_count;
-    while (arg_len > 0 and !filled[arg_len - 1]) arg_len -= 1;
-    for (0..arg_len) |index| {
-        if (filled[index]) continue;
-        return error.UnsupportedExecutableFeature;
-    }
-
-    return .{ .call = .{
-        .callee_name = callee_name,
-        .function_id = null,
-        .args = args[0..arg_len],
+    return .{ .construct = .{
+        .type_name = try ctx.allocator.dupe(u8, callee_leaf),
+        .fields = try fields.toOwnedSlice(),
+        .fill_mode = if (is_ffi_struct) .zeroed_ffi_c_layout else .defaults,
         .ty = .{ .kind = .named, .name = try ctx.allocator.dupe(u8, callee_leaf) },
         .span = span,
     } };

@@ -10,8 +10,8 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Annotation declarations: parameter schemas, `targets: ...`, `uses CapabilityName`, and explicit `generated { ... }` function members
 - Capability declarations: reusable generated function members composed into annotations
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
-- FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`
-- Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`, expression statements, `return`, calls, typed locals, local inference, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
+- FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`, plus zero-filled explicit construction for `@FFI.Struct { layout: c; }` values
+- Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`/`var`, inferred local declarations, explicit typed local declarations with or without initializer expressions, strict declared-type matching for annotated initializers, expression statements, `return`, calls, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
 - Class inheritance: comma-separated `extends` lists, inherited field/method lookup, parent-qualified member access, exact-signature method overrides, and inherited field-default overrides
 - Struct declarations: non-inheriting value shapes with stored members, default values, and methods
 - Expressions: integer, float, string, boolean, arrays, named/nested struct literals, unary operators, binary operators, grouped expressions, member access, namespaced references, indexing, call syntax, named function references, inline callback values, and callable-value invocations
@@ -20,7 +20,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Construct sections: `annotations`, `modifiers`, `requires`, `lifecycle`, `builder`, `representation`, plus custom sections preserved structurally
 - Builder/content blocks with sequential composition, control-flow builder items, and preserved nested trailing-builder child trees on call expressions
 - Lifecycle hook forms such as `onAppear()`, `onDisappear()`, and `onChange(of: value) { ... }`
-- Type inference and explicit-coercion rules for declarations
+- Type inference plus explicit uninitialized declarations and strict annotated-initializer matching
 - Migration diagnostics for removed legacy declaration and documentation syntax
 - Construct-driven semantic checks for declared annotations, lifecycle hooks, and required `content { ... }`
 
@@ -50,6 +50,7 @@ The frontend and semantic model understand the broader language surface above. T
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
 - lowered named-struct construction, field access, and struct methods on the VM executable path
+- lowered zero-filled `@FFI.Struct { layout: c; }` construction through both `Type()` and `Type { ... }`, with omitted C-layout fields preserved as zero
 - lowered inheritance dispatch across `vm`, `llvm`, and `hybrid`, including multiple parents, imported parents, parent-qualified field/method access, inherited method calls, and inherited field-default overrides
 - explicit FFI extern declarations
 - callback-typed arguments targeting native/external functions

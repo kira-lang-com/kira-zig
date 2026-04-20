@@ -1,0 +1,5 @@
+mode = "fail"
+diagnostic_code = "KSEM086"
+diagnostic_title = "local is not initialized"
+stage = "semantics"
+

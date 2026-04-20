@@ -433,7 +433,13 @@ pub fn lowerFunction(
         }
 
         const param_type = try shared.typeFromSyntax(ctx.allocator, param.type_expr.?.*);
-        try scope.put(ctx.allocator, param.name, .{ .id = next_local_id, .ty = param_type, .storage = .immutable });
+        try scope.put(ctx.allocator, param.name, .{
+            .id = next_local_id,
+            .ty = param_type,
+            .storage = .immutable,
+            .initialized = true,
+            .decl_span = param.span,
+        });
         try params.append(.{
             .id = next_local_id,
             .name = try ctx.allocator.dupe(u8, param.name),
@@ -567,12 +573,19 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
             } };
         },
         .struct_literal => |node| blk: {
-            var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.fields) |field| try args.append(try lowerFieldDefaultExpr(ctx, field.value));
-            break :blk .{ .call = .{
-                .callee_name = try shared.qualifiedNameText(ctx.allocator, node.type_name),
-                .function_id = null,
-                .args = try args.toOwnedSlice(),
+            var fields = std.array_list.Managed(model.ConstructFieldInit).init(ctx.allocator);
+            for (node.fields) |field| {
+                try fields.append(.{
+                    .field_name = try ctx.allocator.dupe(u8, field.name),
+                    .field_index = null,
+                    .value = try lowerFieldDefaultExpr(ctx, field.value),
+                    .span = field.span,
+                });
+            }
+            break :blk .{ .construct = .{
+                .type_name = try shared.qualifiedNameLeaf(ctx.allocator, node.type_name),
+                .fields = try fields.toOwnedSlice(),
+                .fill_mode = .defaults,
                 .ty = .{ .kind = .named, .name = try shared.qualifiedNameLeaf(ctx.allocator, node.type_name) },
                 .span = node.span,
             } };
@@ -593,12 +606,19 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
                     return error.DiagnosticsEmitted;
                 },
             };
-            var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.args) |arg| try args.append(try lowerFieldDefaultExpr(ctx, arg.value));
-            break :blk .{ .call = .{
-                .callee_name = callee_name,
-                .function_id = null,
-                .args = try args.toOwnedSlice(),
+            var fields = std.array_list.Managed(model.ConstructFieldInit).init(ctx.allocator);
+            for (node.args) |arg| {
+                try fields.append(.{
+                    .field_name = if (arg.label) |label| try ctx.allocator.dupe(u8, label) else null,
+                    .field_index = null,
+                    .value = try lowerFieldDefaultExpr(ctx, arg.value),
+                    .span = arg.span,
+                });
+            }
+            break :blk .{ .construct = .{
+                .type_name = try ctx.allocator.dupe(u8, qualifiedLeafText(callee_name)),
+                .fields = try fields.toOwnedSlice(),
+                .fill_mode = .defaults,
                 .ty = .{ .kind = .named, .name = try ctx.allocator.dupe(u8, qualifiedLeafText(callee_name)) },
                 .span = node.span,
             } };

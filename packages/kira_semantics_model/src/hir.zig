@@ -298,6 +298,7 @@ pub const Expr = union(enum) {
     binary: BinaryExpr,
     unary: UnaryExpr,
     conditional: ConditionalExpr,
+    construct: ConstructExpr,
     call: CallExpr,
     call_value: CallValueExpr,
     array: ArrayExpr,
@@ -401,6 +402,26 @@ pub const ConditionalExpr = struct {
     span: source_pkg.Span,
 };
 
+pub const ConstructExpr = struct {
+    type_name: []const u8,
+    fields: []ConstructFieldInit,
+    fill_mode: ConstructFillMode,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const ConstructFieldInit = struct {
+    field_name: ?[]const u8 = null,
+    field_index: ?u32 = null,
+    value: *Expr,
+    span: source_pkg.Span,
+};
+
+pub const ConstructFillMode = enum {
+    defaults,
+    zeroed_ffi_c_layout,
+};
+
 pub const CallExpr = struct {
     callee_name: []const u8,
     function_id: ?u32,
@@ -482,6 +503,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .binary => |node| node.ty,
         .unary => |node| node.ty,
         .conditional => |node| node.ty,
+        .construct => |node| node.ty,
         .call => |node| node.ty,
         .call_value => |node| node.ty,
         .array => |node| node.ty,

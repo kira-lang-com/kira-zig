@@ -114,7 +114,7 @@ test "requires explicit parameter types" {
     try std.testing.expectEqualStrings("parameter type is required", diags.items[0].title);
 }
 
-test "allows explicit literal coercion but rejects ambiguous inference" {
+test "enforces declaration typing and initialization rules" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -124,10 +124,32 @@ test "allows explicit literal coercion but rejects ambiguous inference" {
         var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
         _ = try analyzeSource(
             allocator,
-            "@Main\nfunction entry() { let value: Float = 12; return; }",
+            "@Main\nfunction entry() { var text: String; var value: Float = 12.0; value = 13.0; return; }",
             &diags,
         );
         try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "@Main\nfunction entry() { var value: Float = 12; return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("initializer does not match declared type", diags.items[0].title);
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "@Main\nfunction entry() { var value: String; print(value); return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try std.testing.expectEqualStrings("local is not initialized", diags.items[0].title);
     }
 
     {
@@ -182,6 +204,39 @@ test "allows struct methods and constant members" {
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
     try std.testing.expectEqual(@as(usize, 2), analyzed.functions.len);
     try std.testing.expectEqualStrings("Point.distanceTo", analyzed.functions[0].name);
+}
+
+test "lowers sparse FFI struct construction as zero-filled construction" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "@FFI.Struct { layout: c; }\n" ++
+            "struct Example {\n" ++
+            "    var a: U8\n" ++
+            "    var b: U8\n" ++
+            "    var c: U8\n" ++
+            "}\n" ++
+            "@Main function entry() {\n" ++
+            "    let first = Example();\n" ++
+            "    let second = Example { b: 7 };\n" ++
+            "    return;\n" ++
+            "}",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const entry = analyzed.functions[0];
+    try std.testing.expect(entry.body[0].let_stmt.value.?.* == .construct);
+    try std.testing.expectEqual(model.ConstructFillMode.zeroed_ffi_c_layout, entry.body[0].let_stmt.value.?.construct.fill_mode);
+    try std.testing.expectEqual(@as(usize, 0), entry.body[0].let_stmt.value.?.construct.fields.len);
+    try std.testing.expect(entry.body[1].let_stmt.value.?.* == .construct);
+    try std.testing.expectEqual(model.ConstructFillMode.zeroed_ffi_c_layout, entry.body[1].let_stmt.value.?.construct.fill_mode);
+    try std.testing.expectEqual(@as(usize, 1), entry.body[1].let_stmt.value.?.construct.fields.len);
+    try std.testing.expectEqual(@as(u32, 1), entry.body[1].let_stmt.value.?.construct.fields[0].field_index.?);
 }
 
 test "reports loop control outside loops" {

@@ -84,6 +84,29 @@ test "parses builder calls with arguments and trailing content" {
     try std.testing.expectEqual(@as(usize, 1), call_expr.call.trailing_builder.?.items.len);
 }
 
+test "parses inferred and explicit local declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "@Main function entry() { var text = \"abc\"; var pending: String; var amount: Float = 0.0; return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const statements = program.functions[0].body.?.statements;
+    try std.testing.expectEqual(@as(usize, 4), statements.len);
+    try std.testing.expect(statements[0].let_stmt.type_expr == null);
+    try std.testing.expect(statements[0].let_stmt.value.?.* == .string);
+    try std.testing.expect(statements[1].let_stmt.type_expr != null);
+    try std.testing.expect(statements[1].let_stmt.value == null);
+    try std.testing.expect(statements[2].let_stmt.type_expr != null);
+    try std.testing.expect(statements[2].let_stmt.value.?.* == .float);
+}
+
 test "parses inheritance declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

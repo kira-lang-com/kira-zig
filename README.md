@@ -192,6 +192,40 @@ function entry() {
 }
 ```
 
+## Local Declarations
+
+Local declarations now use an explicit three-form model:
+
+- inferred declaration: `var name = expression`
+- explicit typed declaration without an initializer expression: `var name: SomeType`
+- explicit typed declaration with an initializer expression: `var name: SomeType = expression`
+
+`let` follows the same type-checking rules, but keeps the binding immutable after it has a value.
+
+Important semantics:
+
+- `var name: SomeType` declares an uninitialized local of the declared type; Kira does not invent a default value for it
+- an explicit typed declaration checks the initializer expression against the declared type strictly
+- `var value: Float = 0.0` is valid
+- `var value: Float = 0` is rejected because Kira does not implicitly convert an integer literal in an explicit typed declaration
+
+## FFI C-Struct Construction
+
+For `@FFI.Struct { layout: c; }`, explicit construction starts from a zeroed C-layout value and then applies the fields you provide:
+
+```kira
+let desc = sapp_desc {
+    init_userdata_cb: init
+    frame_userdata_cb: frame
+    cleanup_userdata_cb: cleanup
+    width: 640
+    height: 480
+    window_title: "Triangle"
+}
+```
+
+`sapp_desc()` and `sapp_desc { ... }` both zero-fill omitted fields for C-layout FFI structs. This behavior belongs to construction only. A declaration such as `var desc: sapp_desc` remains an uninitialized local until some later assignment gives it a value.
+
 ## Classes, Structs, and Generated Members
 
 Kira's canonical declaration surface now distinguishes richer inheritable classes from simpler value-oriented structs:

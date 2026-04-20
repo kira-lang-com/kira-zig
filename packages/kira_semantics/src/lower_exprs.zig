@@ -95,35 +95,34 @@ pub fn lowerStatement(
     return switch (statement) {
         .let_stmt => |node| blk: {
             try shared.validateAnnotationPlacement(ctx, node.annotations, .field_decl, null);
-            const explicit_type = if (node.type_expr) |type_expr| try shared.typeFromSyntax(ctx.allocator, type_expr.*) else null;
-            const value = if (node.value) |expr|
-                if (explicit_type) |expected_type|
-                    try lowerExpectedValue(ctx, expr, expected_type, imports, scope, function_headers, node.span)
-                else
-                    try lowerExpr(ctx, expr, imports, scope, function_headers)
-            else
-                null;
-            const ty = try resolveLoweredValueType(ctx, node.type_expr, value, node.span);
+            const declaration = try types.lowerLocalDeclaration(ctx, node, imports, scope, function_headers);
             const local_id = next_local_id.*;
             next_local_id.* += 1;
-            try scope.put(ctx.allocator, node.name, .{ .id = local_id, .ty = ty, .storage = @enumFromInt(@intFromEnum(node.storage)) });
+            try scope.put(ctx.allocator, node.name, .{
+                .id = local_id,
+                .ty = declaration.ty,
+                .storage = @enumFromInt(@intFromEnum(node.storage)),
+                .initialized = declaration.initialized,
+                .decl_span = node.span,
+            });
             try locals.append(.{
                 .id = local_id,
                 .name = try ctx.allocator.dupe(u8, node.name),
-                .ty = ty,
+                .ty = declaration.ty,
                 .span = node.span,
             });
             break :blk .{ .let_stmt = .{
                 .local_id = local_id,
-                .ty = ty,
+                .ty = declaration.ty,
                 .explicit_type = node.type_expr != null,
-                .value = value,
+                .value = declaration.value,
                 .span = node.span,
             } };
         },
         .assign_stmt => |node| blk: {
             const target = try lowerAssignmentTarget(ctx, node.target, imports, scope, function_headers);
             const value = try lowerExpectedValue(ctx, node.value, model.hir.exprType(target.*), imports, scope, function_headers, node.span);
+            try markInitializedFromAssignment(scope, target.*);
             break :blk .{ .assign_stmt = .{
                 .target = target,
                 .value = value,
@@ -134,36 +133,56 @@ pub fn lowerStatement(
             .expr = try lowerExpr(ctx, node.expr, imports, scope, function_headers),
             .span = node.span,
         } },
-        .if_stmt => |node| .{ .if_stmt = .{
-            .condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers),
-            .then_body = try lowerBlockStatements(ctx, node.then_block, imports, scope, locals, next_local_id, function_headers, loop_depth),
-            .else_body = if (node.else_block) |else_block| try lowerBlockStatements(ctx, else_block, imports, scope, locals, next_local_id, function_headers, loop_depth) else null,
-            .span = node.span,
-        } },
+        .if_stmt => |node| blk: {
+            const condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers);
+            var then_scope = try cloneScope(ctx.allocator, scope.*);
+            defer then_scope.deinit(ctx.allocator);
+            const then_body = try lowerBlockStatements(ctx, node.then_block, imports, &then_scope, locals, next_local_id, function_headers, loop_depth);
+
+            var else_scope: ?model.Scope = null;
+            defer if (else_scope) |*value| value.deinit(ctx.allocator);
+            const else_body = if (node.else_block) |else_block| else_body: {
+                var branch_scope = try cloneScope(ctx.allocator, scope.*);
+                const lowered_else = try lowerBlockStatements(ctx, else_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth);
+                else_scope = branch_scope;
+                break :else_body lowered_else;
+            } else null;
+
+            mergeIfInitialization(scope, then_scope, else_scope);
+            break :blk .{ .if_stmt = .{
+                .condition = condition,
+                .then_body = then_body,
+                .else_body = else_body,
+                .span = node.span,
+            } };
+        },
         .for_stmt => |node| blk: {
             const iterator = try lowerExpr(ctx, node.iterator, imports, scope, function_headers);
             const binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), node.span);
             if (iterator.* == .array and iterator.array.elements.len == 0 and binding_ty.kind == .unknown) {
+                var empty_body_scope = try cloneScope(ctx.allocator, scope.*);
+                defer empty_body_scope.deinit(ctx.allocator);
                 break :blk .{ .for_stmt = .{
                     .binding_name = try ctx.allocator.dupe(u8, node.binding_name),
                     .binding_local_id = 0,
                     .binding_ty = binding_ty,
                     .iterator = iterator,
-                    .body = try lowerBlockStatements(ctx, node.body, imports, scope, locals, next_local_id, function_headers, loop_depth + 1),
+                    .body = try lowerBlockStatements(ctx, node.body, imports, &empty_body_scope, locals, next_local_id, function_headers, loop_depth + 1),
                     .span = node.span,
                 } };
             }
             const local_id = next_local_id.*;
             next_local_id.* += 1;
-            const previous_binding = scope.get(node.binding_name);
-            try scope.put(ctx.allocator, node.binding_name, .{ .id = local_id, .ty = binding_ty, .storage = .immutable });
-            defer {
-                if (previous_binding) |binding| {
-                    scope.put(ctx.allocator, node.binding_name, binding) catch {};
-                } else {
-                    _ = scope.entries.remove(node.binding_name);
-                }
-            }
+
+            var body_scope = try cloneScope(ctx.allocator, scope.*);
+            defer body_scope.deinit(ctx.allocator);
+            try body_scope.put(ctx.allocator, node.binding_name, .{
+                .id = local_id,
+                .ty = binding_ty,
+                .storage = .immutable,
+                .initialized = true,
+                .decl_span = node.span,
+            });
             try locals.append(.{
                 .id = local_id,
                 .name = try ctx.allocator.dupe(u8, node.binding_name),
@@ -175,15 +194,19 @@ pub fn lowerStatement(
                 .binding_local_id = local_id,
                 .binding_ty = binding_ty,
                 .iterator = iterator,
-                .body = try lowerBlockStatements(ctx, node.body, imports, scope, locals, next_local_id, function_headers, loop_depth + 1),
+                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1),
                 .span = node.span,
             } };
         },
-        .while_stmt => |node| .{ .while_stmt = .{
-            .condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers),
-            .body = try lowerBlockStatements(ctx, node.body, imports, scope, locals, next_local_id, function_headers, loop_depth + 1),
-            .span = node.span,
-        } },
+        .while_stmt => |node| blk: {
+            var body_scope = try cloneScope(ctx.allocator, scope.*);
+            defer body_scope.deinit(ctx.allocator);
+            break :blk .{ .while_stmt = .{
+                .condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers),
+                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1),
+                .span = node.span,
+            } };
+        },
         .break_stmt => |node| blk: {
             if (loop_depth == 0) {
                 try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
@@ -213,18 +236,35 @@ pub fn lowerStatement(
             break :blk .{ .continue_stmt = .{ .span = node.span } };
         },
         .switch_stmt => |node| blk: {
+            const subject = try lowerExpr(ctx, node.subject, imports, scope, function_headers);
             var cases = std.array_list.Managed(model.SwitchCase).init(ctx.allocator);
+            var case_scopes = std.array_list.Managed(model.Scope).init(ctx.allocator);
+            defer {
+                for (case_scopes.items) |*case_scope| case_scope.deinit(ctx.allocator);
+                case_scopes.deinit();
+            }
             for (node.cases) |case_node| {
+                var case_scope = try cloneScope(ctx.allocator, scope.*);
                 try cases.append(.{
                     .pattern = try lowerExpr(ctx, case_node.pattern, imports, scope, function_headers),
-                    .body = try lowerBlockStatements(ctx, case_node.body, imports, scope, locals, next_local_id, function_headers, loop_depth),
+                    .body = try lowerBlockStatements(ctx, case_node.body, imports, &case_scope, locals, next_local_id, function_headers, loop_depth),
                     .span = case_node.span,
                 });
+                try case_scopes.append(case_scope);
             }
+            var default_scope: ?model.Scope = null;
+            defer if (default_scope) |*value| value.deinit(ctx.allocator);
+            const default_body = if (node.default_block) |default_block| default_body: {
+                var branch_scope = try cloneScope(ctx.allocator, scope.*);
+                const lowered_default = try lowerBlockStatements(ctx, default_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth);
+                default_scope = branch_scope;
+                break :default_body lowered_default;
+            } else null;
+            mergeSwitchInitialization(scope, case_scopes.items, default_scope);
             break :blk .{ .switch_stmt = .{
-                .subject = try lowerExpr(ctx, node.subject, imports, scope, function_headers),
+                .subject = subject,
                 .cases = try cases.toOwnedSlice(),
-                .default_body = if (node.default_block) |default_block| try lowerBlockStatements(ctx, default_block, imports, scope, locals, next_local_id, function_headers, loop_depth) else null,
+                .default_body = default_body,
                 .span = node.span,
             } };
         },
@@ -233,6 +273,92 @@ pub fn lowerStatement(
             .span = node.span,
         } },
     };
+}
+
+fn markInitializedFromAssignment(scope: *model.Scope, target: model.Expr) !void {
+    switch (target) {
+        .local => |node| {
+            var iterator = scope.entries.iterator();
+            while (iterator.next()) |entry| {
+                if (entry.value_ptr.id != node.local_id) continue;
+                entry.value_ptr.initialized = true;
+                return;
+            }
+        },
+        else => {},
+    }
+}
+
+fn cloneScope(allocator: std.mem.Allocator, scope: model.Scope) !model.Scope {
+    var cloned = model.Scope{};
+    var iterator = scope.entries.iterator();
+    while (iterator.next()) |entry| {
+        try cloned.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return cloned;
+}
+
+fn mergeIfInitialization(scope: *model.Scope, then_scope: model.Scope, else_scope: ?model.Scope) void {
+    const resolved_else = else_scope orelse return;
+    var iterator = scope.entries.iterator();
+    while (iterator.next()) |entry| {
+        const then_binding = then_scope.get(entry.key_ptr.*) orelse continue;
+        const else_binding = resolved_else.get(entry.key_ptr.*) orelse continue;
+        if (then_binding.id != entry.value_ptr.id or else_binding.id != entry.value_ptr.id) continue;
+        entry.value_ptr.initialized = entry.value_ptr.initialized or (then_binding.initialized and else_binding.initialized);
+    }
+}
+
+fn mergeSwitchInitialization(scope: *model.Scope, case_scopes: []const model.Scope, default_scope: ?model.Scope) void {
+    const resolved_default = default_scope orelse return;
+    var iterator = scope.entries.iterator();
+    while (iterator.next()) |entry| {
+        const default_binding = resolved_default.get(entry.key_ptr.*) orelse continue;
+        if (default_binding.id != entry.value_ptr.id or !default_binding.initialized) continue;
+
+        var initialized_in_all_cases = true;
+        for (case_scopes) |case_scope| {
+            const case_binding = case_scope.get(entry.key_ptr.*) orelse {
+                initialized_in_all_cases = false;
+                break;
+            };
+            if (case_binding.id != entry.value_ptr.id or !case_binding.initialized) {
+                initialized_in_all_cases = false;
+                break;
+            }
+        }
+        if (initialized_in_all_cases) entry.value_ptr.initialized = true;
+    }
+}
+
+fn emitUnknownLocalName(ctx: *shared.Context, name: []const u8, span: source_pkg.Span) !void {
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM012",
+        .title = "unknown local name",
+        .message = try std.fmt.allocPrint(ctx.allocator, "Kira could not find a local binding named '{s}'.", .{name}),
+        .labels = &.{diagnostics.primaryLabel(span, "unknown local name")},
+        .help = "Declare the value before using it, or qualify imported names.",
+    });
+}
+
+fn emitUninitializedLocalUse(
+    ctx: *shared.Context,
+    name: []const u8,
+    use_span: source_pkg.Span,
+    decl_span: source_pkg.Span,
+) !void {
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM086",
+        .title = "local is not initialized",
+        .message = try std.fmt.allocPrint(ctx.allocator, "The local declaration '{s}' does not have a value yet.", .{name}),
+        .labels = &.{
+            diagnostics.primaryLabel(use_span, "local is read before it has been initialized"),
+            diagnostics.secondaryLabel(decl_span, "declaration appears here"),
+        },
+        .help = "Assign to the local before reading it, or add an initializer expression to the declaration.",
+    });
 }
 
 pub fn lowerBuilderBlock(
@@ -330,6 +456,10 @@ pub fn lowerExpr(
         .identifier => |node| {
             const name = node.name.segments[0].text;
             if (scope.get(name)) |binding| {
+                if (!binding.initialized) {
+                    try emitUninitializedLocalUse(ctx, name, node.span, binding.decl_span);
+                    return error.DiagnosticsEmitted;
+                }
                 lowered.* = .{ .local = .{
                     .local_id = binding.id,
                     .name = try ctx.allocator.dupe(u8, name),
@@ -363,31 +493,13 @@ pub fn lowerExpr(
                 } else if (try lowerImplicitSelfFieldExpr(ctx, scope, name, node.span)) |field_expr| {
                     lowered.* = field_expr;
                 } else {
-                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                        .severity = .@"error",
-                        .code = "KSEM012",
-                        .title = "unknown local name",
-                        .message = try std.fmt.allocPrint(ctx.allocator, "Kira could not find a local binding named '{s}'.", .{name}),
-                        .labels = &.{
-                            diagnostics.primaryLabel(node.span, "unknown local name"),
-                        },
-                        .help = "Declare the value with `let` before using it, or qualify imported names.",
-                    });
+                    try emitUnknownLocalName(ctx, name, node.span);
                     return error.DiagnosticsEmitted;
                 }
             } else if (try lowerImplicitSelfFieldExpr(ctx, scope, name, node.span)) |field_expr| {
                 lowered.* = field_expr;
             } else {
-                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                    .severity = .@"error",
-                    .code = "KSEM012",
-                    .title = "unknown local name",
-                    .message = try std.fmt.allocPrint(ctx.allocator, "Kira could not find a local binding named '{s}'.", .{name}),
-                    .labels = &.{
-                        diagnostics.primaryLabel(node.span, "unknown local name"),
-                    },
-                    .help = "Declare the value with `let` before using it, or qualify imported names.",
-                });
+                try emitUnknownLocalName(ctx, name, node.span);
                 return error.DiagnosticsEmitted;
             }
         },

@@ -691,49 +691,89 @@ pub const Lowerer = struct {
                 try instructions.append(.{ .const_string = .{ .dst = dst, .value = node.value } });
                 break :blk dst;
             },
-            .call => |node| blk: {
-                if (node.function_id == null) {
-                    if (node.ty.kind != .named or node.ty.name == null) return error.UnsupportedExecutableFeature;
-                    const type_decl = findTypeDeclByName(self.program, node.ty.name.?) orelse return error.UnsupportedExecutableFeature;
-                    const dst = self.freshRegister();
-                    try instructions.append(.{ .alloc_struct = .{
-                        .dst = dst,
-                        .type_name = type_decl.name,
+            .construct => |node| blk: {
+                const type_decl = findTypeDeclByName(self.program, node.ty.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
+                const dst = self.freshRegister();
+                try instructions.append(.{ .alloc_struct = .{
+                    .dst = dst,
+                    .type_name = type_decl.name,
+                } });
+
+                var filled = try self.allocator.alloc(bool, type_decl.fields.len);
+                defer self.allocator.free(filled);
+                @memset(filled, false);
+                var next_index: usize = 0;
+
+                for (node.fields) |field_init| {
+                    const field_index = try resolveConstructFieldIndex(type_decl, filled, &next_index, field_init);
+                    if (field_index >= type_decl.fields.len) return error.UnsupportedExecutableFeature;
+                    if (filled[field_index]) return error.UnsupportedExecutableFeature;
+
+                    const field_decl = type_decl.fields[field_index];
+                    const field_value = try self.lowerExpr(instructions, field_init.value);
+                    const ptr_reg = self.freshRegister();
+                    const field_ty = try lowerResolvedType(self.program, field_decl.ty);
+                    try instructions.append(.{ .field_ptr = .{
+                        .dst = ptr_reg,
+                        .base = dst,
+                        .base_type_name = type_decl.name,
+                        .field_index = @as(u32, @intCast(field_index)),
+                        .field_ty = field_ty,
                     } });
-                    for (type_decl.fields, 0..) |field_decl, index| {
-                        if (fieldDeclIsTypeConstant(field_decl, type_decl.name) and index >= node.args.len) continue;
-                        if (index >= type_decl.fields.len) return error.UnsupportedExecutableFeature;
-                        const field_value = if (index < node.args.len)
-                            try self.lowerExpr(instructions, node.args[index])
-                        else if (field_decl.default_value) |default_value|
-                            try self.lowerExpr(instructions, default_value)
-                        else
-                            continue;
-                        const ptr_reg = self.freshRegister();
-                        const field_ty = try lowerResolvedType(self.program, field_decl.ty);
-                        try instructions.append(.{ .field_ptr = .{
-                            .dst = ptr_reg,
-                            .base = dst,
-                            .base_type_name = type_decl.name,
-                            .field_index = @as(u32, @intCast(index)),
-                            .field_ty = field_ty,
+                    if (field_ty.kind == .ffi_struct) {
+                        try instructions.append(.{ .copy_indirect = .{
+                            .dst_ptr = ptr_reg,
+                            .src_ptr = field_value,
+                            .type_name = field_ty.name orelse return error.UnsupportedExecutableFeature,
                         } });
-                        if (field_ty.kind == .ffi_struct) {
-                            try instructions.append(.{ .copy_indirect = .{
-                                .dst_ptr = ptr_reg,
-                                .src_ptr = field_value,
-                                .type_name = field_ty.name orelse return error.UnsupportedExecutableFeature,
-                            } });
-                        } else {
-                            try instructions.append(.{ .store_indirect = .{
-                                .ptr = ptr_reg,
-                                .src = field_value,
-                                .ty = field_ty,
-                            } });
-                        }
+                    } else {
+                        try instructions.append(.{ .store_indirect = .{
+                            .ptr = ptr_reg,
+                            .src = field_value,
+                            .ty = field_ty,
+                        } });
                     }
-                    break :blk dst;
+                    filled[field_index] = true;
                 }
+
+                switch (node.fill_mode) {
+                    .defaults => {
+                        for (type_decl.fields, 0..) |field_decl, index| {
+                            if (filled[index]) continue;
+                            if (fieldDeclIsTypeConstant(field_decl, type_decl.name)) continue;
+                            const default_value = field_decl.default_value orelse return error.UnsupportedExecutableFeature;
+                            const field_value = try self.lowerExpr(instructions, default_value);
+                            const ptr_reg = self.freshRegister();
+                            const field_ty = try lowerResolvedType(self.program, field_decl.ty);
+                            try instructions.append(.{ .field_ptr = .{
+                                .dst = ptr_reg,
+                                .base = dst,
+                                .base_type_name = type_decl.name,
+                                .field_index = @as(u32, @intCast(index)),
+                                .field_ty = field_ty,
+                            } });
+                            if (field_ty.kind == .ffi_struct) {
+                                try instructions.append(.{ .copy_indirect = .{
+                                    .dst_ptr = ptr_reg,
+                                    .src_ptr = field_value,
+                                    .type_name = field_ty.name orelse return error.UnsupportedExecutableFeature,
+                                } });
+                            } else {
+                                try instructions.append(.{ .store_indirect = .{
+                                    .ptr = ptr_reg,
+                                    .src = field_value,
+                                    .ty = field_ty,
+                                } });
+                            }
+                        }
+                    },
+                    .zeroed_ffi_c_layout => {},
+                }
+
+                break :blk dst;
+            },
+            .call => |node| blk: {
+                if (node.function_id == null) return error.UnsupportedExecutableFeature;
                 if (node.ty.kind == .void) return error.UnsupportedExecutableFeature;
                 var args = std.array_list.Managed(u32).init(self.allocator);
                 defer args.deinit();
@@ -987,4 +1027,109 @@ fn findTypeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl 
         if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
     }
     return null;
+}
+
+fn resolveConstructFieldIndex(
+    type_decl: model.TypeDecl,
+    filled: []bool,
+    next_index: *usize,
+    field_init: model.hir.ConstructFieldInit,
+) !usize {
+    if (field_init.field_index) |field_index| return field_index;
+    if (field_init.field_name) |field_name| {
+        return fieldIndexByName(type_decl, field_name) orelse return error.UnsupportedExecutableFeature;
+    }
+
+    while (next_index.* < filled.len and filled[next_index.*]) next_index.* += 1;
+    if (next_index.* >= filled.len) return error.UnsupportedExecutableFeature;
+    const resolved = next_index.*;
+    next_index.* += 1;
+    return resolved;
+}
+
+fn fieldIndexByName(type_decl: model.TypeDecl, field_name: []const u8) ?usize {
+    for (type_decl.fields, 0..) |field_decl, index| {
+        if (std.mem.eql(u8, field_decl.name, field_name)) return index;
+    }
+    return null;
+}
+
+test "lowers sparse FFI construction by zero-filling omitted fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    const field_value = try allocator.create(model.Expr);
+    field_value.* = .{ .integer = .{
+        .value = 7,
+        .span = .{ .start = 0, .end = 0 },
+    } };
+
+    const construct_value = try allocator.create(model.Expr);
+    construct_value.* = .{ .construct = .{
+        .type_name = "Example",
+        .fields = &.{.{
+            .field_name = "b",
+            .field_index = 1,
+            .value = field_value,
+            .span = .{ .start = 0, .end = 0 },
+        }},
+        .fill_mode = .zeroed_ffi_c_layout,
+        .ty = .{ .kind = .named, .name = "Example" },
+        .span = .{ .start = 0, .end = 0 },
+    } };
+
+    const program = model.Program{
+        .imports = &.{},
+        .annotations = &.{},
+        .capabilities = &.{},
+        .constructs = &.{},
+        .types = &.{.{
+            .name = "Example",
+            .fields = &.{
+                .{ .name = "a", .owner_type_name = "Example", .storage = .mutable, .slot_index = 0, .ty = .{ .kind = .integer, .name = "U8" }, .explicit_type = true, .default_value = null, .annotations = &.{}, .span = .{ .start = 0, .end = 0 } },
+                .{ .name = "b", .owner_type_name = "Example", .storage = .mutable, .slot_index = 1, .ty = .{ .kind = .integer, .name = "U8" }, .explicit_type = true, .default_value = null, .annotations = &.{}, .span = .{ .start = 0, .end = 0 } },
+                .{ .name = "c", .owner_type_name = "Example", .storage = .mutable, .slot_index = 2, .ty = .{ .kind = .integer, .name = "U8" }, .explicit_type = true, .default_value = null, .annotations = &.{}, .span = .{ .start = 0, .end = 0 } },
+            },
+            .ffi = .{ .ffi_struct = .{ .layout = "c", .span = .{ .start = 0, .end = 0 } } },
+            .span = .{ .start = 0, .end = 0 },
+        }},
+        .forms = &.{},
+        .functions = &.{.{
+            .id = 0,
+            .name = "entry",
+            .is_main = true,
+            .execution = .runtime,
+            .is_extern = false,
+            .foreign = null,
+            .annotations = &.{},
+            .params = &.{},
+            .locals = &.{.{ .id = 0, .name = "value", .ty = .{ .kind = .named, .name = "Example" }, .span = .{ .start = 0, .end = 0 } }},
+            .return_type = .{ .kind = .void },
+            .body = &.{
+                .{ .let_stmt = .{ .local_id = 0, .ty = .{ .kind = .named, .name = "Example" }, .explicit_type = false, .value = construct_value, .span = .{ .start = 0, .end = 0 } } },
+                .{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+            },
+            .span = .{ .start = 0, .end = 0 },
+        }},
+        .entry_index = 0,
+    };
+
+    const lowered = try lowerProgram(allocator, program);
+    const instructions = lowered.functions[0].instructions;
+
+    var saw_field_b = false;
+    var touched_other_field = false;
+    for (instructions) |instruction| {
+        if (instruction != .field_ptr) continue;
+        if (instruction.field_ptr.field_index == 1) {
+            saw_field_b = true;
+        } else {
+            touched_other_field = true;
+        }
+    }
+
+    try std.testing.expect(saw_field_b);
+    try std.testing.expect(!touched_other_field);
 }

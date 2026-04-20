@@ -1,0 +1,5 @@
+mode = "fail"
+diagnostic_code = "KSEM085"
+diagnostic_title = "initializer does not match declared type"
+stage = "semantics"
+

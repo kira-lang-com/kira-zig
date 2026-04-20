@@ -98,6 +98,24 @@ Current generated declaration shapes:
 
 The emitted files are normal Kira source, so imports, linting, navigation, and diagnostics see them as ordinary modules.
 
+## C-Layout Struct Construction
+
+`@FFI.Struct { layout: c; }` uses construction-time zero fill for omitted fields:
+
+```kira
+let desc = sapp_desc {
+    init_userdata_cb: init
+    frame_userdata_cb: frame
+    cleanup_userdata_cb: cleanup
+    user_data: state
+    width: 640
+    height: 480
+    window_title: "Kira Sokol Triangle"
+}
+```
+
+The same rule applies to `sapp_desc()`: Kira constructs a zeroed C-layout value first, then applies explicit field initializers. This does not change declaration semantics. `var desc: sapp_desc` is still just an uninitialized local declaration.
+
 ## Callbacks
 
 Callbacks are explicit in this first version:

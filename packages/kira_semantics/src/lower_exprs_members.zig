@@ -567,6 +567,8 @@ pub fn lowerCallbackBlockValue(
             .id = next_local_id,
             .ty = param_ty,
             .storage = .immutable,
+            .initialized = true,
+            .decl_span = param.span,
         });
         try lowered_params.append(.{
             .id = next_local_id,

@@ -8,6 +8,13 @@ const function_types = @import("function_types.zig");
 const parent = @import("lower_exprs.zig");
 const lowerCallbackBlockValue = parent.lowerCallbackBlockValue;
 const lowerExpr = parent.lowerExpr;
+const lowerImplicitSelfFieldExpr = parent.lowerImplicitSelfFieldExpr;
+pub const LoweredLocalDeclaration = struct {
+    ty: model.ResolvedType,
+    value: ?*model.Expr,
+    initialized: bool,
+};
+
 pub fn functionTypeFromResolvedSignature(
     allocator: std.mem.Allocator,
     params: []const model.ResolvedType,
@@ -41,6 +48,53 @@ pub fn lowerCallArgument(
     call_span: source_pkg.Span,
 ) !*model.Expr {
     return lowerExpectedValue(ctx, syntax_arg, expected_type, imports, scope, function_headers, call_span);
+}
+
+pub fn lowerLocalDeclaration(
+    ctx: *shared.Context,
+    node: syntax.ast.LetStatement,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !LoweredLocalDeclaration {
+    const explicit_type = if (node.type_expr) |type_expr| try shared.typeFromSyntax(ctx.allocator, type_expr.*) else null;
+
+    if (node.value) |value_expr| {
+        const lowered_value = if (explicit_type) |declared_type|
+            try lowerExpectedValue(ctx, value_expr, declared_type, imports, scope, function_headers, exprSpan(value_expr.*))
+        else
+            try lowerExpr(ctx, value_expr, imports, scope, function_headers);
+
+        if (explicit_type) |declared_type| {
+            const actual_type = model.hir.exprType(lowered_value.*);
+            if (!canInitializeDeclaredType(ctx, declared_type, actual_type)) {
+                try emitDeclaredInitializerMismatch(ctx, exprSpan(value_expr.*), declared_type, actual_type);
+                return error.DiagnosticsEmitted;
+            }
+            return .{
+                .ty = declared_type,
+                .value = lowered_value,
+                .initialized = true,
+            };
+        }
+
+        return .{
+            .ty = model.hir.exprType(lowered_value.*),
+            .value = lowered_value,
+            .initialized = true,
+        };
+    }
+
+    if (explicit_type) |declared_type| {
+        return .{
+            .ty = declared_type,
+            .value = null,
+            .initialized = false,
+        };
+    }
+
+    try shared.emitAmbiguousInference(ctx.allocator, ctx.diagnostics, node.span);
+    return error.DiagnosticsEmitted;
 }
 
 pub fn lowerExpectedValue(
@@ -94,24 +148,67 @@ pub fn lowerAssignmentTarget(
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
     return switch (expr.*) {
-        .identifier, .member, .index => blk: {
+        .identifier => |node| blk: {
+            const name = node.name.segments[0].text;
+            if (scope.get(name)) |binding| {
+                const target = try ctx.allocator.create(model.Expr);
+                target.* = .{ .local = .{
+                    .local_id = binding.id,
+                    .name = try ctx.allocator.dupe(u8, name),
+                    .ty = binding.ty,
+                    .storage = binding.storage,
+                    .span = node.span,
+                } };
+                if (binding.storage == .immutable) {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM050",
+                        .title = "cannot assign to immutable binding",
+                        .message = "This assignment targets a `let` binding, which is immutable.",
+                        .labels = &.{
+                            diagnostics.primaryLabel(exprSpan(expr.*), "immutable binding cannot appear on the left side of '='"),
+                        },
+                        .help = "Use `var` for mutable bindings, or assign to a mutable field instead.",
+                    });
+                    break :blk error.DiagnosticsEmitted;
+                }
+                break :blk target;
+            }
+
+            if (try lowerImplicitSelfFieldExpr(ctx, scope, name, node.span)) |field_expr| {
+                const target = try ctx.allocator.create(model.Expr);
+                target.* = field_expr;
+                if (field_expr.field.storage == .immutable) {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM050",
+                        .title = "cannot assign to immutable binding",
+                        .message = "This assignment targets a `let` field, which is immutable.",
+                        .labels = &.{
+                            diagnostics.primaryLabel(exprSpan(expr.*), "immutable field cannot appear on the left side of '='"),
+                        },
+                        .help = "Declare the field with `var` if mutation is intended.",
+                    });
+                    break :blk error.DiagnosticsEmitted;
+                }
+                break :blk target;
+            }
+
+            {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM012",
+                    .title = "unknown local name",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "Kira could not find a local binding named '{s}'.", .{name}),
+                    .labels = &.{diagnostics.primaryLabel(exprSpan(expr.*), "unknown local name")},
+                    .help = "Declare the value before assigning to it.",
+                });
+                return error.DiagnosticsEmitted;
+            }
+        },
+        .member, .index => blk: {
             const target = try lowerExpr(ctx, expr, imports, scope, function_headers);
             switch (target.*) {
-                .local => |node| {
-                    if (node.storage == .immutable) {
-                        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                            .severity = .@"error",
-                            .code = "KSEM050",
-                            .title = "cannot assign to immutable binding",
-                            .message = "This assignment targets a `let` binding, which is immutable.",
-                            .labels = &.{
-                                diagnostics.primaryLabel(exprSpan(expr.*), "immutable binding cannot appear on the left side of '='"),
-                            },
-                            .help = "Use `var` for mutable bindings, or assign to a mutable field instead.",
-                        });
-                        break :blk error.DiagnosticsEmitted;
-                    }
-                },
                 .field => |node| {
                     if (node.storage == .immutable) {
                         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
@@ -224,32 +321,12 @@ pub fn lowerCallbackArgument(
     return lowered;
 }
 
+pub fn canInitializeDeclaredType(ctx: *const shared.Context, expected: model.ResolvedType, actual: model.ResolvedType) bool {
+    return typesCompatibleForContext(ctx, expected, actual, false);
+}
+
 pub fn canPassArgument(ctx: *const shared.Context, expected: model.ResolvedType, actual: model.ResolvedType) bool {
-    if (shared.canAssign(expected, actual)) return true;
-    if (expected.kind == .callback and actual.kind == .callback) {
-        return callbackTypesCompatible(expected, actual);
-    }
-    if (expected.kind == .c_string and actual.kind == .string) return true;
-    if (shared.isPointerLike(ctx, expected) and actual.kind == .raw_ptr) return true;
-    if (expected.kind == .raw_ptr and actual.kind == .named) {
-        if (shared.namedTypeInfo(ctx, actual)) |info| {
-            return switch (info) {
-                .ffi_struct => true,
-                .alias => |value| canPassArgument(ctx, expected, value.target),
-                else => false,
-            };
-        }
-    }
-    if (expected.kind == .named and actual.kind == .named) {
-        if (shared.namedTypeInfo(ctx, expected)) |info| {
-            return switch (info) {
-                .alias => |value| canPassArgument(ctx, value.target, actual),
-                .pointer => |value| std.mem.eql(u8, value.target_name, actual.name orelse ""),
-                else => false,
-            };
-        }
-    }
-    return false;
+    return typesCompatibleForContext(ctx, expected, actual, true);
 }
 
 pub fn callbackTypesCompatible(expected: model.ResolvedType, actual: model.ResolvedType) bool {
@@ -547,6 +624,69 @@ pub fn resolveConditionalType(
         .help = "Make both branches the same type, or use an explicit coercion target that both branches can satisfy.",
     });
     return error.DiagnosticsEmitted;
+}
+
+fn typesCompatibleForContext(
+    ctx: *const shared.Context,
+    expected: model.ResolvedType,
+    actual: model.ResolvedType,
+    allow_numeric_widening: bool,
+) bool {
+    if (allow_numeric_widening) {
+        if (shared.canAssign(expected, actual)) return true;
+    } else if (shared.canAssignExactly(expected, actual)) {
+        return true;
+    }
+
+    if (expected.kind == .callback and actual.kind == .callback) {
+        return callbackTypesCompatible(expected, actual);
+    }
+    if (expected.kind == .c_string and actual.kind == .string) return true;
+    if (shared.isPointerLike(ctx, expected) and actual.kind == .raw_ptr) return true;
+    if (expected.kind == .raw_ptr and actual.kind == .named) {
+        if (shared.namedTypeInfo(ctx, actual)) |info| {
+            return switch (info) {
+                .ffi_struct => true,
+                .alias => |value| typesCompatibleForContext(ctx, expected, value.target, allow_numeric_widening),
+                else => false,
+            };
+        }
+    }
+    if (expected.kind == .named and actual.kind == .named) {
+        if (shared.namedTypeInfo(ctx, expected)) |info| {
+            return switch (info) {
+                .alias => |value| typesCompatibleForContext(ctx, value.target, actual, allow_numeric_widening),
+                .pointer => |value| std.mem.eql(u8, value.target_name, actual.name orelse ""),
+                else => false,
+            };
+        }
+    }
+    return false;
+}
+
+fn emitDeclaredInitializerMismatch(
+    ctx: *shared.Context,
+    initializer_span: source_pkg.Span,
+    declared_type: model.ResolvedType,
+    actual_type: model.ResolvedType,
+) !void {
+    const help = if (declared_type.kind == .float and actual_type.kind == .integer)
+        "Use a floating-point initializer expression such as `0.0`. Kira does not implicitly convert integer literals in an explicit typed declaration."
+    else
+        "Change the initializer expression so it already has the declared type, or remove the explicit type annotation and let Kira infer the declaration.";
+
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM085",
+        .title = "initializer does not match declared type",
+        .message = try std.fmt.allocPrint(
+            ctx.allocator,
+            "This declaration annotates {s}, but the initializer expression resolves to {s}.",
+            .{ shared.typeLabel(declared_type), shared.typeLabel(actual_type) },
+        ),
+        .labels = &.{diagnostics.primaryLabel(initializer_span, "initializer expression does not match the declared type")},
+        .help = help,
+    });
 }
 
 pub fn resolveArrayLiteralType(ctx: *shared.Context, elements: []const *model.Expr, span: source_pkg.Span) !model.ResolvedType {
