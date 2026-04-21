@@ -1,16 +1,38 @@
-import callbacks as callbacks
+import callbacks as cb
+
+struct CounterState {
+    var count: Int
+    var total: Int
+}
 
 @Main
-@Native
 function main() {
     print("callbacks")
-    let result: I64 = callbacks.kira_invoke_callback(add_two, 0, 5)
-    print(result)
+
+    var state = nativeState(CounterState {
+        count: 0
+        total: 0
+    })
+    var token = nativeUserData(state)
+
+    print(run_native(token, 5))
+    print(run_native(token, 7))
+
+    var recovered = nativeRecover<CounterState>(token)
+    print(recovered.count)
+    print(recovered.total)
     return
 }
 
 @Native
-function add_two(value: I64, user_data: RawPtr): I64 {
-    let sum: I64 = value + 2
-    return sum
+function run_native(user_data: RawPtr, value: I64) -> I64 {
+    return cb.kira_invoke_callback(add_and_track, user_data, value)
+}
+
+@Native
+function add_and_track(value: I64, user_data: RawPtr) -> I64 {
+    var state = nativeRecover<CounterState>(user_data)
+    state.count = state.count + 1
+    state.total = state.total + value
+    return value + state.count
 }

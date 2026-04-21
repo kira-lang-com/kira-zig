@@ -22,6 +22,7 @@ const llvmLocalStorageTypeText = parent.llvmLocalStorageTypeText;
 const writeLlvmSymbol = parent.writeLlvmSymbol;
 const inferRegisterTypes = parent.inferRegisterTypes;
 const functionById = parent.functionById;
+const findTypeDecl = parent.findTypeDecl;
 const typeRefName = parent.typeRefName;
 const appendStringGlobals = parent.appendStringGlobals;
 const writePrintInstruction = parent.writePrintInstruction;
@@ -109,6 +110,9 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("declare i64 @\"kira_array_len\"(ptr)\n");
     try writer.writeAll("declare void @\"kira_array_store\"(ptr, i64, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_load\"(ptr, i64, ptr)\n");
+    try writer.writeAll("declare ptr @\"kira_native_state_alloc\"(i64, i64)\n");
+    try writer.writeAll("declare ptr @\"kira_native_state_payload\"(ptr)\n");
+    try writer.writeAll("declare ptr @\"kira_native_state_recover\"(ptr, i64)\n");
     try writer.writeAll("declare ptr @malloc(i64)\n");
     if (request.mode == .hybrid) {
         try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32, ptr, i32, ptr)\n");
@@ -261,6 +265,148 @@ pub fn buildTextFunctionBody(
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" to i64\n");
             },
+            .alloc_native_state => |value| {
+                const type_decl = findTypeDecl(request.program, value.type_name) orelse return error.UnsupportedExecutableFeature;
+                const struct_type_name = typeRefName(value.type_name);
+                try writer.print("  %native.state.size.ptr.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr null, i32 1\n", .{
+                    value.dst,
+                    type_decl.fields.len,
+                });
+                try writer.print("  %native.state.size.{d} = ptrtoint ptr %native.state.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
+                try writer.print("  %native.state.box.{d} = call ptr @\"kira_native_state_alloc\"(i64 {d}, i64 %native.state.size.{d})\n", .{
+                    value.dst,
+                    value.type_id,
+                    value.dst,
+                });
+                try writer.print("  %native.state.payload.{d} = call ptr @\"kira_native_state_payload\"(ptr %native.state.box.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  %native.state.src.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.src });
+                for (type_decl.fields, 0..) |field_decl, index| {
+                    const field_abi = try llvmIndirectLoadTypeText(allocator, request.program, field_decl.ty);
+                    try writer.print("  %native.state.src.field.ptr.{d}.{d} = getelementptr inbounds {s}, ptr %native.state.src.{d}, i32 0, i32 {d}\n", .{
+                        value.dst, index, struct_type_name, value.dst, index,
+                    });
+                    try writer.print("  %native.state.slot.ptr.{d}.{d} = getelementptr inbounds %kira.bridge.value, ptr %native.state.payload.{d}, i64 {d}\n", .{
+                        value.dst, index, value.dst, index,
+                    });
+                    try writer.print("  %native.state.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{
+                        value.dst, index, bridgeTagValue(field_decl.ty),
+                    });
+                    switch (field_decl.ty.kind) {
+                        .integer => {
+                            try writer.print("  %native.state.load.int.{d}.{d} = load {s}, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, field_abi, value.dst, index,
+                            });
+                            if (std.mem.eql(u8, field_abi, "i64")) {
+                                try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.int.{d}.{d}, 2\n", .{
+                                    value.dst, index, value.dst, index, value.dst, index,
+                                });
+                            } else {
+                                try writer.print("  %native.state.load.int.ext.{d}.{d} = sext {s} %native.state.load.int.{d}.{d} to i64\n", .{
+                                    value.dst, index, field_abi, value.dst, index,
+                                });
+                                try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.int.ext.{d}.{d}, 2\n", .{
+                                    value.dst, index, value.dst, index, value.dst, index,
+                                });
+                            }
+                        },
+                        .float => {
+                            try writer.print("  %native.state.load.float.{d}.{d} = load {s}, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, field_abi, value.dst, index,
+                            });
+                            if (std.mem.eql(u8, field_abi, "float")) {
+                                try writer.print("  %native.state.load.float64.{d}.{d} = fpext float %native.state.load.float.{d}.{d} to double\n", .{
+                                    value.dst, index, value.dst, index,
+                                });
+                                try writer.print("  %native.state.load.float.bits.{d}.{d} = bitcast double %native.state.load.float64.{d}.{d} to i64\n", .{
+                                    value.dst, index, value.dst, index,
+                                });
+                            } else {
+                                try writer.print("  %native.state.load.float.bits.{d}.{d} = bitcast double %native.state.load.float.{d}.{d} to i64\n", .{
+                                    value.dst, index, value.dst, index,
+                                });
+                            }
+                            try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.float.bits.{d}.{d}, 2\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                        },
+                        .boolean => {
+                            try writer.print("  %native.state.load.bool.{d}.{d} = load i8, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.bool.word.{d}.{d} = zext i8 %native.state.load.bool.{d}.{d} to i64\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.bool.word.{d}.{d}, 2\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                        },
+                        .raw_ptr, .array => {
+                            try writer.print("  %native.state.load.ptr.{d}.{d} = load ptr, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.ptrint.{d}.{d} = ptrtoint ptr %native.state.load.ptr.{d}.{d} to i64\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.ptrint.{d}.{d}, 2\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                        },
+                        .string => {
+                            try writer.print("  %native.state.load.str.{d}.{d} = load %kira.string, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.str.ptr.{d}.{d} = extractvalue %kira.string %native.state.load.str.{d}.{d}, 0\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.str.ptrint.{d}.{d} = ptrtoint ptr %native.state.load.str.ptr.{d}.{d} to i64\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.str.len.{d}.{d} = extractvalue %kira.string %native.state.load.str.{d}.{d}, 1\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.str.ptrint.{d}.{d}, 2\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.1, i64 %native.state.load.str.len.{d}.{d}, 3\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                        },
+                        .ffi_struct => {
+                            const field_struct_name = typeRefName(field_decl.ty.name orelse return error.UnsupportedExecutableFeature);
+                            try writer.print("  %native.state.load.struct.{d}.{d} = load {s}, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
+                                value.dst, index, field_struct_name, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.struct.size.ptr.{d}.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{
+                                value.dst, index, field_struct_name,
+                            });
+                            try writer.print("  %native.state.load.struct.size.{d}.{d} = ptrtoint ptr %native.state.load.struct.size.ptr.{d}.{d} to i64\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.struct.copy.{d}.{d} = call ptr @malloc(i64 %native.state.load.struct.size.{d}.{d})\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  store {s} %native.state.load.struct.{d}.{d}, ptr %native.state.load.struct.copy.{d}.{d}\n", .{
+                                field_struct_name, value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.load.struct.ptrint.{d}.{d} = ptrtoint ptr %native.state.load.struct.copy.{d}.{d} to i64\n", .{
+                                value.dst, index, value.dst, index,
+                            });
+                            try writer.print("  %native.state.pack.{d}.{d} = insertvalue %kira.bridge.value %native.state.pack.{d}.{d}.0, i64 %native.state.load.struct.ptrint.{d}.{d}, 2\n", .{
+                                value.dst, index, value.dst, index, value.dst, index,
+                            });
+                        },
+                        .void => return error.UnsupportedExecutableFeature,
+                    }
+                    try writer.print("  store %kira.bridge.value %native.state.pack.{d}.{d}, ptr %native.state.slot.ptr.{d}.{d}\n", .{
+                        value.dst, index, value.dst, index,
+                    });
+                }
+                try writer.writeAll("  %r");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" = ptrtoint ptr %native.state.box.");
+                try writer.print("{d}", .{value.dst});
+                try writer.writeAll(" to i64\n");
+            },
             .alloc_array => |value| {
                 try writer.print("  %alloc.array.ptr.{d} = call ptr @\"kira_array_alloc\"(i64 %r{d})\n", .{ value.dst, value.len });
                 try writer.print("  %r{d} = ptrtoint ptr %alloc.array.ptr.{d} to i64\n", .{ value.dst, value.dst });
@@ -410,6 +556,118 @@ pub fn buildTextFunctionBody(
                 try writer.writeAll(" = ptrtoint ptr %field.ptr.");
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" to i64\n");
+            },
+            .recover_native_state => |value| {
+                try writer.print("  %native.recover.state.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.state });
+                try writer.print("  %native.recover.payload.{d} = call ptr @\"kira_native_state_recover\"(ptr %native.recover.state.{d}, i64 {d})\n", .{
+                    value.dst,
+                    value.dst,
+                    value.type_id,
+                });
+                try writer.print("  %r{d} = ptrtoint ptr %native.recover.payload.{d} to i64\n", .{ value.dst, value.dst });
+            },
+            .native_state_field_get => |value| {
+                const temp_index = temp_counter;
+                temp_counter += 1;
+                try writer.print("  %native.state.get.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.state });
+                try writer.print("  %native.state.get.slot.{d} = getelementptr inbounds %kira.bridge.value, ptr %native.state.get.ptr.{d}, i64 {d}\n", .{
+                    value.dst,
+                    value.dst,
+                    value.field_index,
+                });
+                try writer.print("  %native.state.get.val.{d} = load %kira.bridge.value, ptr %native.state.get.slot.{d}\n", .{ temp_index, value.dst });
+                switch (value.field_ty.kind) {
+                    .integer, .raw_ptr, .ffi_struct, .array => {
+                        try writer.writeAll("  %r");
+                        try writer.print("{d}", .{value.dst});
+                        try writer.print(" = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{temp_index});
+                    },
+                    .float => {
+                        try writer.print("  %native.state.get.bits.{d} = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{ temp_index, temp_index });
+                        if (value.field_ty.name != null and std.mem.eql(u8, value.field_ty.name.?, "F32")) {
+                            try writer.print("  %native.state.get.float64.{d} = bitcast i64 %native.state.get.bits.{d} to double\n", .{ temp_index, temp_index });
+                            try writer.writeAll("  %r");
+                            try writer.print("{d}", .{value.dst});
+                            try writer.print(" = fptrunc double %native.state.get.float64.{d} to float\n", .{temp_index});
+                        } else {
+                            try writer.writeAll("  %r");
+                            try writer.print("{d}", .{value.dst});
+                            try writer.print(" = bitcast i64 %native.state.get.bits.{d} to double\n", .{temp_index});
+                        }
+                    },
+                    .boolean => {
+                        try writer.print("  %native.state.get.word.{d} = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{ temp_index, temp_index });
+                        try writer.writeAll("  %r");
+                        try writer.print("{d}", .{value.dst});
+                        try writer.print(" = trunc i64 %native.state.get.word.{d} to i1\n", .{temp_index});
+                    },
+                    .string => {
+                        try writer.print("  %native.state.get.ptrint.{d} = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{ temp_index, temp_index });
+                        try writer.print("  %native.state.get.len.{d} = extractvalue %kira.bridge.value %native.state.get.val.{d}, 3\n", .{ temp_index, temp_index });
+                        try writer.print("  %native.state.get.ptrcast.{d} = inttoptr i64 %native.state.get.ptrint.{d} to ptr\n", .{ temp_index, temp_index });
+                        try writer.writeAll("  %r");
+                        try writer.print("{d}", .{value.dst});
+                        try writer.print(".0 = insertvalue %kira.string zeroinitializer, ptr %native.state.get.ptrcast.{d}, 0\n", .{temp_index});
+                        try writer.writeAll("  %r");
+                        try writer.print("{d}", .{value.dst});
+                        try writer.print(" = insertvalue %kira.string %r{d}.0, i64 %native.state.get.len.{d}, 1\n", .{ value.dst, temp_index });
+                    },
+                    .void => return error.UnsupportedExecutableFeature,
+                }
+            },
+            .native_state_field_set => |value| {
+                const temp_index = temp_counter;
+                temp_counter += 1;
+                try writer.print("  %native.state.set.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.state });
+                try writer.print("  %native.state.set.slot.{d} = getelementptr inbounds %kira.bridge.value, ptr %native.state.set.ptr.{d}, i64 {d}\n", .{
+                    value.src,
+                    value.src,
+                    value.field_index,
+                });
+                try writer.print("  %native.state.set.pack.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{
+                    temp_index,
+                    bridgeTagValue(register_types[value.src]),
+                });
+                switch (register_types[value.src].kind) {
+                    .integer, .raw_ptr, .ffi_struct, .array => {
+                        try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %r{d}, 2\n", .{
+                            temp_index, temp_index, value.src,
+                        });
+                    },
+                    .float => {
+                        if (register_types[value.src].name != null and std.mem.eql(u8, register_types[value.src].name.?, "F32")) {
+                            try writer.print("  %native.state.set.float.ext.{d} = fpext float %r{d} to double\n", .{ temp_index, value.src });
+                            try writer.print("  %native.state.set.float.bits.{d} = bitcast double %native.state.set.float.ext.{d} to i64\n", .{ temp_index, temp_index });
+                        } else {
+                            try writer.print("  %native.state.set.float.bits.{d} = bitcast double %r{d} to i64\n", .{ temp_index, value.src });
+                        }
+                        try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %native.state.set.float.bits.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .boolean => {
+                        try writer.print("  %native.state.set.bool.{d} = zext i1 %r{d} to i64\n", .{ temp_index, value.src });
+                        try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %native.state.set.bool.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .string => {
+                        try writer.print("  %native.state.set.str.ptr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ temp_index, value.src });
+                        try writer.print("  %native.state.set.str.ptrint.{d} = ptrtoint ptr %native.state.set.str.ptr.{d} to i64\n", .{ temp_index, temp_index });
+                        try writer.print("  %native.state.set.str.len.{d} = extractvalue %kira.string %r{d}, 1\n", .{ temp_index, value.src });
+                        try writer.print("  %native.state.set.pack.{d}.1 = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %native.state.set.str.ptrint.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                        try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.1, i64 %native.state.set.str.len.{d}, 3\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .void => return error.UnsupportedExecutableFeature,
+                }
+                try writer.print("  store %kira.bridge.value %native.state.set.pack.{d}, ptr %native.state.set.slot.{d}\n", .{
+                    temp_index,
+                    value.src,
+                });
             },
             .array_len => |value| {
                 try writer.print("  %array.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.array });
@@ -687,4 +945,46 @@ pub fn buildTextMainBody(
     try writeLlvmSymbol(writer, entry_function_name);
     try writer.writeAll("()\n  ret i32 0\n}\n");
     return body.toOwnedSlice();
+}
+
+test "emits native state helper calls in text llvm ir" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var program = ir.Program{
+        .types = &.{.{
+            .name = "CounterState",
+            .fields = &.{.{ .name = "count", .ty = .{ .kind = .integer, .name = "I64" } }},
+        }},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .execution = .native,
+            .param_types = &.{},
+            .return_type = .{ .kind = .void },
+            .register_count = 3,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
+                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 77 } },
+                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 77 } },
+                .{ .ret = .{ .src = null } },
+            },
+        }},
+        .entry_index = 0,
+    };
+    const request = backend_api.CompileRequest{
+        .mode = .llvm_native,
+        .program = &program,
+        .module_name = "native_state_test",
+        .emit = .{
+            .object_path = "dummy.obj",
+        },
+    };
+
+    const text = try buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
+    try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_alloc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_recover") != null);
 }

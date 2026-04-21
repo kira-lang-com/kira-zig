@@ -126,10 +126,58 @@ Callbacks are explicit in this first version:
 - `void*`/context parameters are passed explicitly as `RawPtr`
 - no captured-closure magic crosses the ABI boundary
 
-The callback proof path lives in:
+## Opaque Native Callback State
+
+Kira now has a first-class opaque callback-state model for native APIs that carry `void*` userdata:
+
+```kira
+struct CounterState {
+    var count: Int
+    var total: Int
+}
+
+var state = nativeState(CounterState {
+    count: 0
+    total: 0
+})
+
+var token = nativeUserData(state)
+
+@Native
+function onValue(value: I64, user_data: RawPtr) -> I64 {
+    var state = nativeRecover<CounterState>(user_data)
+    state.count = state.count + 1
+    state.total = state.total + value
+    return value + state.count
+}
+```
+
+The important distinction is:
+
+- `nativeState(...)` boxes and copies a Kira-owned value into stable callback-state storage
+- `nativeUserData(...)` exports the opaque userdata token that native code can carry and hand back later
+- `nativeRecover<T>(...)` re-enters that boxed storage as typed mutable Kira access
+- this is not a C-layout promise for ordinary Kira structs
+- this is not a general-purpose raw-pointer reinterpret cast
+- this avoids forcing globals for callback-oriented native APIs
+
+Current lifetime model:
+
+- native callback state lives in Kira-managed heap storage
+- the boxed state currently survives for the lifetime of the process
+- multiple `nativeUserData(state)` calls on the same handle return the same opaque token
+- recovery returns mutable access to the original stored state, not a copy
+
+`@FFI.Struct { layout: c; }` remains a separate feature:
+
+- use `@FFI.Struct { layout: c; }` when native code must read or write the struct fields directly by C layout
+- use `nativeState` / `nativeUserData` / `nativeRecover<T>` when native code should only store and return an opaque token
+
+The callback proof paths now live in:
 
 - [tests/pass/run/ffi_callback_native/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_native/main.kira)
 - [tests/pass/run/ffi_callback_hybrid/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_hybrid/main.kira)
+- [tests/pass/run/ffi_callback_state_parity/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_state_parity/main.kira)
 
 ## Hybrid Support
 
@@ -144,6 +192,7 @@ The current bridge value set matches the executable subset:
 
 - `void`
 - integer
+- float
 - string
 - boolean
 - raw pointer

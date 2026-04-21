@@ -39,3 +39,9 @@ kira shader check examples/shaders/textured_quad.ksl
 kira shader build examples/shaders/lit_surface.ksl
 kira shader build
 ```
+
+The `callbacks/` example now demonstrates Kira-owned persistent callback state with:
+
+- `nativeState(...)` to box ordinary Kira state
+- `nativeUserData(...)` to hand an opaque token to native code
+- `nativeRecover<T>(...)` inside the callback to mutate the original state across repeated invocations

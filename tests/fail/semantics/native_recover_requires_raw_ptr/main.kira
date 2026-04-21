@@ -1,0 +1,9 @@
+struct CounterState {
+    var count: Int
+}
+
+@Main
+function entry() {
+    var state = nativeRecover<CounterState>(0)
+    return
+}

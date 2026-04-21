@@ -295,6 +295,9 @@ pub const Expr = union(enum) {
     namespace_ref: NamespaceRefExpr,
     parent_view: ParentViewExpr,
     field: FieldExpr,
+    native_state: NativeStateExpr,
+    native_user_data: NativeUserDataExpr,
+    native_recover: NativeRecoverExpr,
     binary: BinaryExpr,
     unary: UnaryExpr,
     conditional: ConditionalExpr,
@@ -376,6 +379,24 @@ pub const FieldExpr = struct {
     field_index: u32,
     ty: ResolvedType,
     storage: FieldStorage,
+    span: source_pkg.Span,
+};
+
+pub const NativeStateExpr = struct {
+    value: *Expr,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const NativeUserDataExpr = struct {
+    state: *Expr,
+    ty: ResolvedType = .{ .kind = .raw_ptr, .name = "RawPtr" },
+    span: source_pkg.Span,
+};
+
+pub const NativeRecoverExpr = struct {
+    value: *Expr,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -500,6 +521,9 @@ pub fn exprType(expr: Expr) ResolvedType {
         .namespace_ref => |node| node.ty,
         .parent_view => |node| node.ty,
         .field => |node| node.ty,
+        .native_state => |node| node.ty,
+        .native_user_data => |node| node.ty,
+        .native_recover => |node| node.ty,
         .binary => |node| node.ty,
         .unary => |node| node.ty,
         .conditional => |node| node.ty,

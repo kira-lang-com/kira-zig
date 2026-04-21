@@ -390,6 +390,10 @@ pub fn resolveFieldType(
 
 pub fn resolveFieldContainerType(ctx: *shared.Context, ty: model.ResolvedType) ?model.ResolvedType {
     return switch (ty.kind) {
+        .native_state_view => if (ty.name) |name|
+            .{ .kind = .named, .name = name }
+        else
+            null,
         .named => if (shared.namedTypeInfo(ctx, ty)) |info|
             switch (info) {
                 .ffi_struct => ty,
@@ -422,6 +426,9 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .array => |node| node.span,
         .callback => |node| node.span,
         .struct_literal => |node| node.span,
+        .native_state => |node| node.span,
+        .native_user_data => |node| node.span,
+        .native_recover => |node| node.span,
         .unary => |node| node.span,
         .binary => |node| node.span,
         .conditional => |node| node.span,
@@ -445,6 +452,21 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
         .array => |node| try resolveSyntaxArrayLiteralType(ctx, node.elements, node.span),
         .callback => .{ .kind = .unknown },
         .struct_literal => |node| try shared.typeFromSyntax(ctx.allocator, .{ .named = node.type_name }),
+        .native_state => |node| blk: {
+            const value_ty = try resolveSyntaxExprType(ctx, node.value, span);
+            break :blk if (value_ty.kind == .named and value_ty.name != null)
+                .{ .kind = .native_state, .name = value_ty.name }
+            else
+                .{ .kind = .unknown };
+        },
+        .native_user_data => .{ .kind = .raw_ptr, .name = "RawPtr" },
+        .native_recover => |node| blk: {
+            const recovered_ty = try shared.typeFromSyntax(ctx.allocator, node.state_type.*);
+            break :blk if (recovered_ty.kind == .named and recovered_ty.name != null)
+                .{ .kind = .native_state_view, .name = recovered_ty.name }
+            else
+                .{ .kind = .unknown };
+        },
         .call => |node| {
             if (node.callee.* == .identifier) {
                 const name = node.callee.identifier.name.segments[0].text;

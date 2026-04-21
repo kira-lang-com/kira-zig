@@ -26,7 +26,7 @@ pub fn loadProjectFromPath(allocator: std.mem.Allocator, path: []const u8) !Reso
     const root_path = try resolveRootPath(allocator, path);
     const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
 
-    const entrypoint_path = try std.fs.path.join(allocator, &.{ root_path, entrypoint_rel_path });
+    const entrypoint_path = try std.fs.path.join(allocator, &.{ root_path, "app", "main.kira" });
     if (!fileExists(entrypoint_path)) return error.ProjectEntrypointNotFound;
 
     return .{

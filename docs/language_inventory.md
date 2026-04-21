@@ -11,6 +11,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Capability declarations: reusable generated function members composed into annotations
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
 - FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`, plus zero-filled explicit construction for `@FFI.Struct { layout: c; }` values
+- Native callback-state expressions with compiler semantics: `nativeState(value)`, `nativeUserData(state)`, and `nativeRecover<Type>(raw_ptr)`
 - Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`/`var`, inferred local declarations, explicit typed local declarations with or without initializer expressions, strict declared-type matching for annotated initializers, expression statements, `return`, calls, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
 - Class inheritance: comma-separated `extends` lists, inherited field/method lookup, parent-qualified member access, exact-signature method overrides, and inherited field-default overrides
 - Struct declarations: non-inheriting value shapes with stored members, default values, and methods
@@ -55,6 +56,7 @@ The frontend and semantic model understand the broader language surface above. T
 - explicit FFI extern declarations
 - callback-typed arguments targeting native/external functions
 - `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
+- boxed callback-state handles for Kira-owned native userdata transport, with typed field-oriented recovery across `llvm` and `hybrid`
 - function types, named function references, non-capturing inline callback literals, direct trailing callbacks, and callable-value invocations through locals and fields across the shared executable backends
 
 `kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset. The broadest runtime-value printing support currently lives on the VM/default execution path.

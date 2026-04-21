@@ -87,6 +87,7 @@ pub const Instruction = union(enum) {
     const_null_ptr: ConstNullPtr,
     const_function: ConstFunction,
     alloc_struct: AllocStruct,
+    alloc_native_state: AllocNativeState,
     alloc_array: AllocArray,
     add: Binary,
     subtract: Binary,
@@ -99,6 +100,9 @@ pub const Instruction = union(enum) {
     load_local: LoadLocal,
     subobject_ptr: SubobjectPtr,
     field_ptr: FieldPtr,
+    recover_native_state: RecoverNativeState,
+    native_state_field_get: NativeStateFieldGet,
+    native_state_field_set: NativeStateFieldSet,
     array_len: ArrayLen,
     array_get: ArrayGet,
     array_set: ArraySet,
@@ -152,6 +156,13 @@ pub const FunctionConstRepresentation = enum {
 pub const AllocStruct = struct {
     dst: u32,
     type_name: []const u8,
+};
+
+pub const AllocNativeState = struct {
+    dst: u32,
+    src: u32,
+    type_name: []const u8,
+    type_id: u64,
 };
 
 pub const AllocArray = struct {
@@ -213,6 +224,27 @@ pub const FieldPtr = struct {
     base: u32,
     base_type_name: []const u8,
     field_index: u32,
+    field_ty: ValueType,
+};
+
+pub const RecoverNativeState = struct {
+    dst: u32,
+    state: u32,
+    type_name: []const u8,
+    type_id: u64,
+};
+
+pub const NativeStateFieldGet = struct {
+    dst: u32,
+    state: u32,
+    field_index: u32,
+    field_ty: ValueType,
+};
+
+pub const NativeStateFieldSet = struct {
+    state: u32,
+    field_index: u32,
+    src: u32,
     field_ty: ValueType,
 };
 

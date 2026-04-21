@@ -1,0 +1,21 @@
+[library]
+name = "callbacks"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "callbacks.h"
+
+[autobinding]
+module = "callbacks"
+output = "../callbacks.kira"
+headers = ["callbacks.h"]
+
+[bindings]
+mode = "all_public"
+
+[build]
+sources = ["callbacks.c"]
+
+[target.x86_64-windows-msvc]
+static_lib = "../generated/native/x86_64-windows-msvc/callbacks.lib"

@@ -1,0 +1,3 @@
+mode = "run"
+backends = ["llvm", "hybrid"]
+stdout = "6\n9\n2\n12\n"

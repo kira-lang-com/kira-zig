@@ -49,6 +49,12 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .representation = @enumFromInt(@intFromEnum(value.representation)),
                 } }),
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
+                .alloc_native_state => |value| try instructions.append(.{ .alloc_native_state = .{
+                    .dst = value.dst,
+                    .src = value.src,
+                    .type_name = value.type_name,
+                    .type_id = value.type_id,
+                } }),
                 .subtract => |value| try instructions.append(.{ .subtract = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .multiply => |value| try instructions.append(.{ .multiply = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .divide => |value| try instructions.append(.{ .divide = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
@@ -76,6 +82,24 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .base = value.base,
                     .base_type_name = value.base_type_name,
                     .field_index = value.field_index,
+                    .field_ty = lowerTypeRef(value.field_ty),
+                } }),
+                .recover_native_state => |value| try instructions.append(.{ .recover_native_state = .{
+                    .dst = value.dst,
+                    .state = value.state,
+                    .type_name = value.type_name,
+                    .type_id = value.type_id,
+                } }),
+                .native_state_field_get => |value| try instructions.append(.{ .native_state_field_get = .{
+                    .dst = value.dst,
+                    .state = value.state,
+                    .field_index = value.field_index,
+                    .field_ty = lowerTypeRef(value.field_ty),
+                } }),
+                .native_state_field_set => |value| try instructions.append(.{ .native_state_field_set = .{
+                    .state = value.state,
+                    .field_index = value.field_index,
+                    .src = value.src,
                     .field_ty = lowerTypeRef(value.field_ty),
                 } }),
                 .array_len => |value| try instructions.append(.{ .array_len = .{ .dst = value.dst, .array = value.array } }),
@@ -283,4 +307,39 @@ test "preserves function constants in bytecode" {
     const module = try compileProgram(arena.allocator(), program, .vm);
     try std.testing.expect(module.functions[0].instructions[0] == .const_function);
     try std.testing.expectEqual(@as(u32, 1), module.functions[0].instructions[0].const_function.function_id);
+}
+
+test "preserves native state instructions in bytecode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = ir_pkg.Program{
+        .types = &.{.{
+            .name = "CounterState",
+            .fields = &.{.{ .name = "count", .ty = .{ .kind = .integer, .name = "I64" } }},
+        }},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .execution = .runtime,
+            .param_types = &.{},
+            .return_type = .{ .kind = .void },
+            .register_count = 3,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
+                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 123 } },
+                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 123 } },
+                .{ .ret = .{ .src = null } },
+            },
+        }},
+        .entry_index = 0,
+    };
+
+    const module = try compileProgram(arena.allocator(), program, .vm);
+    try std.testing.expect(module.functions[0].instructions[1] == .alloc_native_state);
+    try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[1].alloc_native_state.type_id);
+    try std.testing.expect(module.functions[0].instructions[2] == .recover_native_state);
+    try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[2].recover_native_state.type_id);
 }

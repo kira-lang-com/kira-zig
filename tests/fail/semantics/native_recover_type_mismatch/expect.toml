@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM091"
+diagnostic_title = "native state type mismatch"
+stage = "semantics"

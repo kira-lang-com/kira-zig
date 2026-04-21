@@ -99,6 +99,9 @@ pub fn markReachableExpr(
         .construct => |node| {
             for (node.fields) |field| try markReachableExpr(allocator, program, reachable, field.value);
         },
+        .native_state => |node| try markReachableExpr(allocator, program, reachable, node.value),
+        .native_user_data => |node| try markReachableExpr(allocator, program, reachable, node.state),
+        .native_recover => |node| try markReachableExpr(allocator, program, reachable, node.value),
         .call => |node| {
             if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
             for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
@@ -138,8 +141,10 @@ pub fn markReferencedType(
     referenced: *std.StringHashMapUnmanaged(void),
     ty: model.ResolvedType,
 ) !void {
-    if (ty.kind != .named or ty.name == null) return;
-    const name = ty.name.?;
+    const name = switch (ty.kind) {
+        .named, .native_state, .native_state_view => ty.name orelse return,
+        else => return,
+    };
     if (referenced.contains(name)) return;
     try referenced.put(allocator, name, {});
 
@@ -218,6 +223,15 @@ pub fn lowerAssignmentStatement(
         .field => |target| {
             const base_reg = try lowerer.lowerExpr(instructions, target.object);
             const target_ty = try lowerResolvedType(program, target.ty);
+            if (model.hir.exprType(target.object.*).kind == .native_state_view) {
+                try instructions.append(.{ .native_state_field_set = .{
+                    .state = base_reg,
+                    .field_index = target.field_index,
+                    .src = value_reg,
+                    .field_ty = target_ty,
+                } });
+                return;
+            }
             const ptr_reg = lowerer.freshRegister();
             try instructions.append(.{ .field_ptr = .{
                 .dst = ptr_reg,
@@ -326,4 +340,46 @@ test "lowers zero-argument expression-statement calls even when return type is n
     const lowered = try lowerProgram(allocator, program);
     try std.testing.expectEqual(@as(usize, 2), lowered.functions.len);
     try std.testing.expect(lowered.functions[0].instructions[0] == .call);
+}
+
+test "lowers native callback state into dedicated IR instructions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(@import("kira_diagnostics").Diagnostic).init(allocator);
+    const source_pkg = @import("kira_source");
+    const lexer = @import("kira_lexer");
+    const parser = @import("kira_parser");
+    const semantics = @import("kira_semantics");
+
+    const source = try source_pkg.SourceFile.initOwned(
+        allocator,
+        "test.kira",
+        "struct CounterState { var count: Int }\n" ++
+            "@Native function onTick(data: RawPtr) { var state = nativeRecover<CounterState>(data); state.count = state.count + 1; return; }\n" ++
+            "@Main function entry() { var state = nativeState(CounterState { count: 0 }); var token = nativeUserData(state); return; }",
+    );
+    const tokens = try lexer.tokenize(allocator, &source, &diags);
+    const parsed = try parser.parse(allocator, tokens, &diags);
+    const analyzed = try semantics.analyze(allocator, parsed, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+
+    const lowered = try lowerProgram(allocator, analyzed);
+    const callback = blk: {
+        for (lowered.functions) |function_decl| {
+            if (std.mem.eql(u8, function_decl.name, "onTick")) break :blk function_decl;
+        }
+        return error.TestUnexpectedResult;
+    };
+    const entry = blk: {
+        for (lowered.functions) |function_decl| {
+            if (std.mem.eql(u8, function_decl.name, "entry")) break :blk function_decl;
+        }
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(entry.instructions[0] == .alloc_struct);
+    try std.testing.expect(entry.instructions[1] == .alloc_native_state);
+    try std.testing.expect(callback.instructions[1] == .recover_native_state);
 }

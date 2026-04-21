@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM088"
+diagnostic_title = "nativeUserData requires native state"
+stage = "semantics"

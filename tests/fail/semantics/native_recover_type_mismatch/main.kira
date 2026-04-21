@@ -1,0 +1,14 @@
+struct LeftState {
+    var count: Int
+}
+
+struct RightState {
+    var total: Int
+}
+
+@Main
+function entry() {
+    var state = nativeState(LeftState { count: 0 })
+    var value = nativeRecover<RightState>(nativeUserData(state))
+    return
+}

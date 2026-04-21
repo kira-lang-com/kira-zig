@@ -69,6 +69,46 @@ pub fn makeIdentifierExpr(self: *Parser, token: syntax.Token) !*syntax.ast.Expr 
     return expr;
 }
 
+fn parseNativeStateBuiltin(self: *Parser, token: syntax.Token) anyerror!*syntax.ast.Expr {
+    _ = try self.expect(.l_paren, "expected '(' after nativeState", "open the native state expression here");
+    const value = try self.parseExpression();
+    const close = try self.expect(.r_paren, "expected ')' after nativeState value", "close the native state expression here");
+    const expr = try self.allocator.create(syntax.ast.Expr);
+    expr.* = .{ .native_state = .{
+        .value = value,
+        .span = source_pkg.Span.init(token.span.start, close.span.end),
+    } };
+    return expr;
+}
+
+fn parseNativeUserDataBuiltin(self: *Parser, token: syntax.Token) anyerror!*syntax.ast.Expr {
+    _ = try self.expect(.l_paren, "expected '(' after nativeUserData", "open the native userdata expression here");
+    const state = try self.parseExpression();
+    const close = try self.expect(.r_paren, "expected ')' after nativeUserData value", "close the native userdata expression here");
+    const expr = try self.allocator.create(syntax.ast.Expr);
+    expr.* = .{ .native_user_data = .{
+        .state = state,
+        .span = source_pkg.Span.init(token.span.start, close.span.end),
+    } };
+    return expr;
+}
+
+fn parseNativeRecoverBuiltin(self: *Parser, token: syntax.Token) anyerror!*syntax.ast.Expr {
+    _ = try self.expect(.less, "expected '<' after nativeRecover", "write the recovered type here");
+    const state_type = try self.parseTypeExpr();
+    _ = try self.expect(.greater, "expected '>' after nativeRecover type", "close the recovered type here");
+    _ = try self.expect(.l_paren, "expected '(' after nativeRecover type", "open the native recover expression here");
+    const value = try self.parseExpression();
+    const close = try self.expect(.r_paren, "expected ')' after nativeRecover value", "close the native recover expression here");
+    const expr = try self.allocator.create(syntax.ast.Expr);
+    expr.* = .{ .native_recover = .{
+        .state_type = state_type,
+        .value = value,
+        .span = source_pkg.Span.init(token.span.start, close.span.end),
+    } };
+    return expr;
+}
+
 pub fn looksLikeStructLiteral(self: *Parser) bool {
     if (!self.at(.l_brace)) return false;
     const next = self.peekNext().kind;
@@ -389,6 +429,15 @@ pub fn parsePrimary(self: *Parser) anyerror!*syntax.ast.Expr {
     }
     if (self.match(.identifier)) {
         const token = self.previous();
+        if (std.mem.eql(u8, token.lexeme, "nativeState") and self.at(.l_paren)) {
+            return parseNativeStateBuiltin(self, token);
+        }
+        if (std.mem.eql(u8, token.lexeme, "nativeUserData") and self.at(.l_paren)) {
+            return parseNativeUserDataBuiltin(self, token);
+        }
+        if (std.mem.eql(u8, token.lexeme, "nativeRecover") and self.at(.less)) {
+            return parseNativeRecoverBuiltin(self, token);
+        }
         return try self.makeIdentifierExpr(token);
     }
     if (self.match(.l_paren)) {

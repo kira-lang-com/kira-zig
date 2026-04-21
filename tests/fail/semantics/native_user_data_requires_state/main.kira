@@ -1,0 +1,10 @@
+struct CounterState {
+    var count: Int
+}
+
+@Main
+function entry() {
+    var value = CounterState { count: 0 }
+    var token = nativeUserData(value)
+    return
+}
