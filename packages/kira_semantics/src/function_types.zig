@@ -41,6 +41,8 @@ fn typeText(ty: model.ResolvedType) []const u8 {
         .ffi_struct => "Struct",
         .named => "Type",
         .array => "[]",
+        .native_state => "NativeState",
+        .native_state_view => "NativeStateView",
         .unknown => "Unknown",
     };
 }

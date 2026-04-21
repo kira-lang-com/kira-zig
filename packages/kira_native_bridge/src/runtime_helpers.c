@@ -43,6 +43,11 @@ typedef struct {
     KiraBridgeValue *items;
 } KiraArray;
 
+typedef struct {
+    uint64_t type_id;
+    void *payload;
+} KiraNativeState;
+
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
 
 KIRA_BRIDGE_EXPORT void kira_native_print_i64(int64_t value) {
@@ -88,6 +93,37 @@ KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, K
         return;
     }
     *out_value = array->items[index];
+}
+
+KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, int64_t payload_size) {
+    if (payload_size < 0) return NULL;
+    KiraNativeState *state = (KiraNativeState *)calloc(1, sizeof(KiraNativeState));
+    if (state == NULL) return NULL;
+    state->type_id = type_id;
+    state->payload = payload_size == 0 ? NULL : calloc(1, (size_t)payload_size);
+    if (payload_size != 0 && state->payload == NULL) {
+        free(state);
+        return NULL;
+    }
+    return state;
+}
+
+KIRA_BRIDGE_EXPORT void *kira_native_state_payload(KiraNativeState *state) {
+    if (state == NULL) return NULL;
+    return state->payload;
+}
+
+KIRA_BRIDGE_EXPORT void *kira_native_state_recover(void *user_data, uint64_t expected_type_id) {
+    KiraNativeState *state = (KiraNativeState *)user_data;
+    if (state == NULL) {
+        fprintf(stderr, "kira native state recovery failed: userdata was null\n");
+        abort();
+    }
+    if (state->type_id != expected_type_id) {
+        fprintf(stderr, "kira native state recovery failed: userdata type mismatch\n");
+        abort();
+    }
+    return state->payload;
 }
 
 KIRA_BRIDGE_EXPORT void kira_hybrid_install_runtime_invoker(void (*invoker)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *)) {

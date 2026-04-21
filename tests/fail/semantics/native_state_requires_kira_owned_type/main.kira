@@ -1,0 +1,10 @@
+@FFI.Struct { layout: c; }
+struct CState {
+    var count: Int
+}
+
+@Main
+function entry() {
+    var state = nativeState(CState { count: 0 })
+    return
+}

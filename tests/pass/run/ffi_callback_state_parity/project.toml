@@ -1,0 +1,8 @@
+[project]
+name = "ffi_callback_state_parity"
+version = "0.1.0"
+native_libraries = ["NativeLibs/callbacks.toml"]
+
+[defaults]
+execution_mode = "llvm"
+build_target = "host"

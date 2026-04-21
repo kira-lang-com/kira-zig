@@ -3,6 +3,7 @@ const ir = @import("ir.zig");
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const program_impl = @import("lower_from_hir_program.zig");
+const type_impl = @import("lower_from_hir_types.zig");
 
 pub const lowerTypeDecls = program_impl.lowerTypeDecls;
 pub const markReachableFunction = program_impl.markReachableFunction;
@@ -14,6 +15,17 @@ pub const lowerFfiTypeInfo = program_impl.lowerFfiTypeInfo;
 pub const lowerAssignmentStatement = program_impl.lowerAssignmentStatement;
 pub const findTypeFieldDefaultExpr = program_impl.findTypeFieldDefaultExpr;
 pub const fieldDeclIsTypeConstant = program_impl.fieldDeclIsTypeConstant;
+pub const lowerResolvedType = type_impl.lowerResolvedType;
+pub const lowerNamedType = type_impl.lowerNamedType;
+pub const lowerExecutableCompareOperandType = type_impl.lowerExecutableCompareOperandType;
+pub const lowerExecutableIntegerType = type_impl.lowerExecutableIntegerType;
+pub const lowerExecutableNumericType = type_impl.lowerExecutableNumericType;
+pub const lowerExecutableBooleanType = type_impl.lowerExecutableBooleanType;
+pub const valueTypesEqual = type_impl.valueTypesEqual;
+pub const findTypeDeclByName = type_impl.findTypeDeclByName;
+pub const resolveConstructFieldIndex = type_impl.resolveConstructFieldIndex;
+pub const fieldIndexByName = type_impl.fieldIndexByName;
+pub const nativeStateTypeId = type_impl.nativeStateTypeId;
 
 pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Program {
     var reachable = std.AutoHashMapUnmanaged(u32, void){};
@@ -185,42 +197,7 @@ fn lowerParamTypes(allocator: std.mem.Allocator, program: model.Program, params:
     return lowered;
 }
 
-fn lowerResolvedTypeSlice(allocator: std.mem.Allocator, program: model.Program, types: []const model.ResolvedType) ![]ir.ValueType {
-    const lowered = try allocator.alloc(ir.ValueType, types.len);
-    for (types, 0..) |ty, index| lowered[index] = try lowerResolvedType(program, ty);
-    return lowered;
-}
-
-pub fn lowerResolvedType(program: model.Program, ty: model.ResolvedType) !ir.ValueType {
-    return switch (ty.kind) {
-        .void => .{ .kind = .void },
-        .integer => .{ .kind = .integer, .name = ty.name },
-        .float => .{ .kind = .float, .name = ty.name },
-        .string => .{ .kind = .string },
-        .boolean => .{ .kind = .boolean, .name = ty.name },
-        .array => .{ .kind = .array, .name = ty.name },
-        .raw_ptr, .c_string, .callback => .{ .kind = .raw_ptr, .name = ty.name },
-        .named => if (ty.name) |name| lowerNamedType(program, name) else return error.UnsupportedType,
-        .ffi_struct, .unknown => return error.UnsupportedType,
-    };
-}
-
-fn lowerNamedType(program: model.Program, name: []const u8) anyerror!ir.ValueType {
-    for (program.types) |type_decl| {
-        if (!std.mem.eql(u8, type_decl.name, name)) continue;
-        if (type_decl.ffi) |ffi_info| {
-            return switch (ffi_info) {
-                .pointer, .callback => .{ .kind = .raw_ptr, .name = name },
-                .alias => |value| lowerResolvedType(program, value.target),
-                .ffi_struct => .{ .kind = .ffi_struct, .name = name },
-                .array => .{ .kind = .raw_ptr, .name = name },
-            };
-        }
-        return .{ .kind = .ffi_struct, .name = name };
-    }
-    if (std.mem.endsWith(u8, name, "_ptr")) return .{ .kind = .raw_ptr, .name = name };
-    return error.UnsupportedType;
-}
+const lowerResolvedTypeSlice = type_impl.lowerResolvedTypeSlice;
 
 fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
     switch (expr.*) {
@@ -650,6 +627,33 @@ pub const Lowerer = struct {
                 }
                 break :blk dst;
             },
+            .native_state => |node| blk: {
+                const type_name = node.ty.name orelse return error.UnsupportedExecutableFeature;
+                const src = try self.lowerExpr(instructions, node.value);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .alloc_native_state = .{
+                    .dst = dst,
+                    .src = src,
+                    .type_name = type_name,
+                    .type_id = nativeStateTypeId(type_name),
+                } });
+                break :blk dst;
+            },
+            .native_user_data => |node| blk: {
+                break :blk try self.lowerExpr(instructions, node.state);
+            },
+            .native_recover => |node| blk: {
+                const state = try self.lowerExpr(instructions, node.value);
+                const type_name = node.ty.name orelse return error.UnsupportedExecutableFeature;
+                const dst = self.freshRegister();
+                try instructions.append(.{ .recover_native_state = .{
+                    .dst = dst,
+                    .state = state,
+                    .type_name = type_name,
+                    .type_id = nativeStateTypeId(type_name),
+                } });
+                break :blk dst;
+            },
             .index => |node| blk: {
                 const array_reg = try self.lowerExpr(instructions, node.object);
                 const index_reg = try self.lowerExpr(instructions, node.index);
@@ -805,6 +809,16 @@ pub const Lowerer = struct {
             .field => |node| blk: {
                 const object_reg = try self.lowerExpr(instructions, node.object);
                 const field_ty = try lowerResolvedType(self.program, node.ty);
+                if (model.hir.exprType(node.object.*).kind == .native_state_view) {
+                    const dst = self.freshRegister();
+                    try instructions.append(.{ .native_state_field_get = .{
+                        .dst = dst,
+                        .state = object_reg,
+                        .field_index = node.field_index,
+                        .field_ty = field_ty,
+                    } });
+                    break :blk dst;
+                }
                 const field_ptr = self.freshRegister();
                 try instructions.append(.{ .field_ptr = .{
                     .dst = field_ptr,
@@ -976,82 +990,6 @@ fn lowerCompareOp(op: model.hir.BinaryOp) ir.CompareOp {
         .greater_equal => .greater_equal,
         else => unreachable,
     };
-}
-
-fn lowerExecutableCompareOperandType(program: model.Program, ty: model.ResolvedType, op: model.hir.BinaryOp) !ir.ValueType {
-    const lowered = try lowerResolvedType(program, ty);
-    return switch (lowered.kind) {
-        .integer => lowered,
-        .float => lowered,
-        .boolean => switch (op) {
-            .equal, .not_equal => lowered,
-            else => error.UnsupportedExecutableFeature,
-        },
-        .raw_ptr, .ffi_struct => switch (op) {
-            .equal, .not_equal => lowered,
-            else => error.UnsupportedExecutableFeature,
-        },
-        else => error.UnsupportedExecutableFeature,
-    };
-}
-
-fn lowerExecutableIntegerType(program: model.Program, ty: model.ResolvedType) !ir.ValueType {
-    const lowered = try lowerResolvedType(program, ty);
-    if (lowered.kind != .integer) return error.UnsupportedExecutableFeature;
-    return lowered;
-}
-
-fn lowerExecutableNumericType(program: model.Program, ty: model.ResolvedType) !ir.ValueType {
-    const lowered = try lowerResolvedType(program, ty);
-    return switch (lowered.kind) {
-        .integer, .float => lowered,
-        else => error.UnsupportedExecutableFeature,
-    };
-}
-
-fn lowerExecutableBooleanType(program: model.Program, ty: model.ResolvedType) !ir.ValueType {
-    const lowered = try lowerResolvedType(program, ty);
-    if (lowered.kind != .boolean) return error.UnsupportedExecutableFeature;
-    return lowered;
-}
-
-fn valueTypesEqual(lhs: ir.ValueType, rhs: ir.ValueType) bool {
-    if (lhs.kind != rhs.kind) return false;
-    if (lhs.name == null and rhs.name == null) return true;
-    if (lhs.name == null or rhs.name == null) return false;
-    return std.mem.eql(u8, lhs.name.?, rhs.name.?);
-}
-
-fn findTypeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl {
-    for (program.types) |type_decl| {
-        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
-    }
-    return null;
-}
-
-fn resolveConstructFieldIndex(
-    type_decl: model.TypeDecl,
-    filled: []bool,
-    next_index: *usize,
-    field_init: model.hir.ConstructFieldInit,
-) !usize {
-    if (field_init.field_index) |field_index| return field_index;
-    if (field_init.field_name) |field_name| {
-        return fieldIndexByName(type_decl, field_name) orelse return error.UnsupportedExecutableFeature;
-    }
-
-    while (next_index.* < filled.len and filled[next_index.*]) next_index.* += 1;
-    if (next_index.* >= filled.len) return error.UnsupportedExecutableFeature;
-    const resolved = next_index.*;
-    next_index.* += 1;
-    return resolved;
-}
-
-fn fieldIndexByName(type_decl: model.TypeDecl, field_name: []const u8) ?usize {
-    for (type_decl.fields, 0..) |field_decl, index| {
-        if (std.mem.eql(u8, field_decl.name, field_name)) return index;
-    }
-    return null;
 }
 
 test "lowers sparse FFI construction by zero-filling omitted fields" {

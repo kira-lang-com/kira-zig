@@ -103,6 +103,12 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.type_name);
                 },
+                .alloc_native_state => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writeString(writer, value.type_name);
+                    try writer.writeInt(u64, value.type_id, .little);
+                },
                 .alloc_array => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.len, .little);
@@ -161,6 +167,24 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.base, .little);
                     try writeString(writer, value.base_type_name);
                     try writer.writeInt(u32, value.field_index, .little);
+                    try writeTypeRef(writer, value.field_ty);
+                },
+                .recover_native_state => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.state, .little);
+                    try writeString(writer, value.type_name);
+                    try writer.writeInt(u64, value.type_id, .little);
+                },
+                .native_state_field_get => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.state, .little);
+                    try writer.writeInt(u32, value.field_index, .little);
+                    try writeTypeRef(writer, value.field_ty);
+                },
+                .native_state_field_set => |value| {
+                    try writer.writeInt(u32, value.state, .little);
+                    try writer.writeInt(u32, value.field_index, .little);
+                    try writer.writeInt(u32, value.src, .little);
                     try writeTypeRef(writer, value.field_ty);
                 },
                 .array_len => |value| {
@@ -286,6 +310,12 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.readInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                 } }),
+                .alloc_native_state => try instructions.append(.{ .alloc_native_state = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .src = try reader.readInt(u32, .little),
+                    .type_name = try readString(allocator, reader),
+                    .type_id = try reader.readInt(u64, .little),
+                } }),
                 .alloc_array => try instructions.append(.{ .alloc_array = .{
                     .dst = try reader.readInt(u32, .little),
                     .len = try reader.readInt(u32, .little),
@@ -344,6 +374,24 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .base = try reader.readInt(u32, .little),
                     .base_type_name = try readString(allocator, reader),
                     .field_index = try reader.readInt(u32, .little),
+                    .field_ty = try readTypeRef(allocator, reader),
+                } }),
+                .recover_native_state => try instructions.append(.{ .recover_native_state = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .state = try reader.readInt(u32, .little),
+                    .type_name = try readString(allocator, reader),
+                    .type_id = try reader.readInt(u64, .little),
+                } }),
+                .native_state_field_get => try instructions.append(.{ .native_state_field_get = .{
+                    .dst = try reader.readInt(u32, .little),
+                    .state = try reader.readInt(u32, .little),
+                    .field_index = try reader.readInt(u32, .little),
+                    .field_ty = try readTypeRef(allocator, reader),
+                } }),
+                .native_state_field_set => try instructions.append(.{ .native_state_field_set = .{
+                    .state = try reader.readInt(u32, .little),
+                    .field_index = try reader.readInt(u32, .little),
+                    .src = try reader.readInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
                 } }),
                 .array_len => try instructions.append(.{ .array_len = .{

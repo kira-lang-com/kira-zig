@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM087"
+diagnostic_title = "native state requires a Kira-owned type"
+stage = "semantics"

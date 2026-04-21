@@ -381,6 +381,9 @@ pub const Expr = union(enum) {
     array: ArrayExpr,
     callback: CallbackBlock,
     struct_literal: StructLiteralExpr,
+    native_state: NativeStateExpr,
+    native_user_data: NativeUserDataExpr,
+    native_recover: NativeRecoverExpr,
     unary: UnaryExpr,
     binary: BinaryExpr,
     conditional: ConditionalExpr,
@@ -427,6 +430,22 @@ pub const StructLiteralExpr = struct {
 
 pub const StructLiteralField = struct {
     name: []const u8,
+    value: *Expr,
+    span: Span,
+};
+
+pub const NativeStateExpr = struct {
+    value: *Expr,
+    span: Span,
+};
+
+pub const NativeUserDataExpr = struct {
+    state: *Expr,
+    span: Span,
+};
+
+pub const NativeRecoverExpr = struct {
+    state_type: *TypeExpr,
     value: *Expr,
     span: Span,
 };
@@ -757,6 +776,23 @@ fn dumpExpr(writer: anytype, expr: Expr, depth: usize) anyerror!void {
                 try dumpExpr(writer, field.value.*, depth + 2);
             }
         },
+        .native_state => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("NativeState\n");
+            try dumpExpr(writer, value.value.*, depth + 1);
+        },
+        .native_user_data => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("NativeUserData\n");
+            try dumpExpr(writer, value.state.*, depth + 1);
+        },
+        .native_recover => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("NativeRecover\n");
+            try indent(writer, depth + 1);
+            try writer.print("Type {s}\n", .{typeExprText(value.state_type.*)});
+            try dumpExpr(writer, value.value.*, depth + 1);
+        },
         .unary => |value| {
             try indent(writer, depth);
             try writer.print("Unary {s}\n", .{@tagName(value.op)});
@@ -799,6 +835,14 @@ fn dumpExpr(writer: anytype, expr: Expr, depth: usize) anyerror!void {
             }
         },
     }
+}
+
+fn typeExprText(ty: TypeExpr) []const u8 {
+    return switch (ty) {
+        .named => |value| qualifiedNameText(value),
+        .array => "Array",
+        .function => "Function",
+    };
 }
 
 fn qualifiedNameText(name: QualifiedName) []const u8 {

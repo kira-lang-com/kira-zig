@@ -107,6 +107,28 @@ test "parses inferred and explicit local declarations" {
     try std.testing.expect(statements[2].let_stmt.value.?.* == .float);
 }
 
+test "parses native callback state builtins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "struct CounterState { var count: Int }\n" ++
+            "@Native function onTick(data: RawPtr) { var state = nativeRecover<CounterState>(data); return; }\n" ++
+            "@Main function entry() { var state = nativeState(CounterState { count: 0 }); var token = nativeUserData(state); return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const callback_statements = program.functions[0].body.?.statements;
+    try std.testing.expect(callback_statements[0].let_stmt.value.?.* == .native_recover);
+    const entry_statements = program.functions[1].body.?.statements;
+    try std.testing.expect(entry_statements[0].let_stmt.value.?.* == .native_state);
+    try std.testing.expect(entry_statements[1].let_stmt.value.?.* == .native_user_data);
+}
+
 test "parses inheritance declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

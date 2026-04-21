@@ -7,6 +7,7 @@ const shared = @import("lower_shared.zig");
 const function_types = @import("function_types.zig");
 const calls = @import("lower_exprs_calls.zig");
 const members = @import("lower_exprs_members.zig");
+const native_state = @import("lower_exprs_native_state.zig");
 const types = @import("lower_exprs_types.zig");
 
 pub const lowerStructLiteralExpr = calls.lowerStructLiteralExpr;
@@ -14,6 +15,9 @@ pub const lowerTypeConstruction = calls.lowerTypeConstruction;
 pub const isTypeConstantField = calls.isTypeConstantField;
 pub const resolveTypeConstructionFieldIndex = calls.resolveTypeConstructionFieldIndex;
 pub const lowerCallExpr = calls.lowerCallExpr;
+pub const lowerNativeStateExpr = native_state.lowerNativeStateExpr;
+pub const lowerNativeUserDataExpr = native_state.lowerNativeUserDataExpr;
+pub const lowerNativeRecoverExpr = native_state.lowerNativeRecoverExpr;
 
 pub const lowerImplicitSelfFieldExpr = members.lowerImplicitSelfFieldExpr;
 pub const lowerImplicitSelfMethodCall = members.lowerImplicitSelfMethodCall;
@@ -452,6 +456,15 @@ pub fn lowerExpr(
         },
         .struct_literal => |node| {
             lowered.* = try lowerStructLiteralExpr(ctx, node, imports, scope, function_headers);
+        },
+        .native_state => |node| {
+            lowered.* = try lowerNativeStateExpr(ctx, node, imports, scope, function_headers);
+        },
+        .native_user_data => |node| {
+            lowered.* = try lowerNativeUserDataExpr(ctx, node, imports, scope, function_headers);
+        },
+        .native_recover => |node| {
+            lowered.* = try lowerNativeRecoverExpr(ctx, node, imports, scope, function_headers);
         },
         .identifier => |node| {
             const name = node.name.segments[0].text;

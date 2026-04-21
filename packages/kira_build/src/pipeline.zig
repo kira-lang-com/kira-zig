@@ -326,8 +326,11 @@ fn appendProgramGraph(
     module_map: package_manager.ModuleMap,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !void {
-    if (visited.contains(source_path)) return;
-    try visited.put(try allocator.dupe(u8, source_path), {});
+    const visited_key = try canonicalizeExistingPath(allocator, source_path);
+    defer allocator.free(visited_key);
+
+    if (visited.contains(visited_key)) return;
+    try visited.put(try allocator.dupe(u8, visited_key), {});
 
     for (program.imports) |import_decl| try imports.append(import_decl);
     for (program.decls) |decl| try decls.append(decl);
@@ -793,6 +796,15 @@ fn appendAppRoot(allocator: std.mem.Allocator, source_root: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ source_root, "app" });
 }
 
+fn canonicalizeExistingPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        var dir = std.fs.openDirAbsolute(std.fs.path.dirname(path) orelse ".", .{}) catch return allocator.dupe(u8, path);
+        defer dir.close();
+        return dir.realpathAlloc(allocator, std.fs.path.basename(path));
+    }
+    return std.fs.cwd().realpathAlloc(allocator, path);
+}
+
 fn absolutizePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     return std.fs.cwd().realpathAlloc(allocator, path);
@@ -1092,4 +1104,53 @@ test "current library root import exposes declarations from every library file" 
     const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/UILibrary/app/main.kira");
     const result = try checkFile(arena.allocator(), source_path);
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "compile frontend deduplicates mixed-separator paths while walking current package imports" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("Workspace/callbacks/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/callbacks/project.toml",
+        .data =
+        \\[project]
+        \\name = "callbacks"
+        \\version = "0.1.0"
+        \\
+        \\[defaults]
+        \\execution_mode = "llvm"
+        \\build_target = "host"
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/callbacks/app/main.kira",
+        .data =
+        \\import callbacks as cb
+        \\
+        \\@Main
+        \\function main() {
+        \\    cb.hello()
+        \\    return
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "Workspace/callbacks/callbacks.kira",
+        .data =
+        \\function hello() {
+        \\    return
+        \\}
+        ,
+    });
+
+    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/callbacks/app");
+    const mixed_source_path = try std.fmt.allocPrint(arena.allocator(), "{s}/main.kira", .{app_root});
+    const result = try compileFileToIr(arena.allocator(), mixed_source_path);
+
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expect(result.ir_program != null);
 }

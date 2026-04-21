@@ -685,6 +685,90 @@ test "supports function types trailing callbacks and callable values" {
     try std.testing.expect(entry.body[2].expr_stmt.expr.* == .call_value);
 }
 
+test "supports native callback state handles and recovered access" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "struct CounterState { var count: Int }\n" ++
+            "@Native function onTick(data: RawPtr) { var state = nativeRecover<CounterState>(data); state.count = state.count + 1; return; }\n" ++
+            "@Main function entry() { var state = nativeState(CounterState { count: 0 }); var token = nativeUserData(state); var recovered = nativeRecover<CounterState>(token); recovered.count = recovered.count + 1; return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+
+    const callback_recover = analyzed.functions[0].body[0].let_stmt.value.?.native_recover;
+    try std.testing.expectEqual(model.Type.native_state_view, callback_recover.ty.kind);
+    try std.testing.expectEqualStrings("CounterState", callback_recover.ty.name.?);
+
+    const entry = analyzed.functions[1];
+    try std.testing.expectEqual(model.Type.native_state, entry.body[0].let_stmt.ty.kind);
+    try std.testing.expect(entry.body[1].let_stmt.value.?.* == .native_user_data);
+    try std.testing.expectEqual(model.Type.native_state_view, entry.body[2].let_stmt.ty.kind);
+    try std.testing.expect(entry.body[2].let_stmt.value.?.* == .native_recover);
+}
+
+test "rejects native callback state misuse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "struct CounterState { var count: Int }\n" ++
+                "@Main function entry() { var value = CounterState { count: 0 }; var token = nativeUserData(value); return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "nativeUserData requires native state");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "struct CounterState { var count: Int }\n" ++
+                "@Main function entry() { var state = nativeRecover<CounterState>(0); return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "nativeRecover requires RawPtr");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "struct LeftState { var count: Int }\n" ++
+                "struct RightState { var total: Int }\n" ++
+                "@Main function entry() { var state = nativeState(LeftState { count: 0 }); var value = nativeRecover<RightState>(nativeUserData(state)); return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "native state type mismatch");
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            "@FFI.Struct { layout: c; }\n" ++
+                "struct CState { var count: Int }\n" ++
+                "@Main function entry() { var state = nativeState(CState { count: 0 }); return; }",
+            &diags,
+        );
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "native state requires a Kira-owned type");
+    }
+}
+
 test "preserves trailing builder trees on call expressions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

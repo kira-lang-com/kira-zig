@@ -12,6 +12,8 @@ pub const Type = enum {
     ffi_struct,
     named,
     array,
+    native_state,
+    native_state_view,
     unknown,
 };
 

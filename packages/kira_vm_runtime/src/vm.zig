@@ -8,6 +8,11 @@ const ArrayObject = extern struct {
     items: [*]runtime_abi.BridgeValue,
 };
 
+const NativeStateBox = extern struct {
+    type_id: u64,
+    payload: usize,
+};
+
 pub const NativeCallHook = *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value;
 pub const ResolveFunctionHook = *const fn (?*anyopaque, u32) anyerror!usize;
 
@@ -122,6 +127,14 @@ pub const Vm = struct {
                         value.function_id,
                 } },
                 .alloc_struct => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateStruct(module, value.type_name) },
+                .alloc_native_state => |value| {
+                    const src_value = registers[value.src];
+                    if (src_value != .raw_ptr or src_value.raw_ptr == 0) {
+                        self.rememberError("nativeState requires a valid Kira struct value");
+                        return error.RuntimeFailure;
+                    }
+                    registers[value.dst] = .{ .raw_ptr = try self.allocateNativeState(module, value.type_name, value.type_id, src_value.raw_ptr) };
+                },
                 .alloc_array => |value| {
                     const len_value = registers[value.len];
                     if (len_value != .integer or len_value.integer < 0) {
@@ -190,6 +203,35 @@ pub const Vm = struct {
                     } else {
                         registers[value.dst] = .{ .raw_ptr = @intFromPtr(slot_ptr) };
                     }
+                },
+                .recover_native_state => |value| {
+                    const state_value = registers[value.state];
+                    if (state_value != .raw_ptr or state_value.raw_ptr == 0) {
+                        self.rememberError("nativeRecover requires a valid native state token");
+                        return error.RuntimeFailure;
+                    }
+                    registers[value.dst] = .{ .raw_ptr = try self.recoverNativeState(state_value.raw_ptr, value.type_id) };
+                    _ = value.type_name;
+                },
+                .native_state_field_get => |value| {
+                    const state_value = registers[value.state];
+                    if (state_value != .raw_ptr or state_value.raw_ptr == 0) {
+                        self.rememberError("native state field read requires a valid recovered state");
+                        return error.RuntimeFailure;
+                    }
+                    const payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(state_value.raw_ptr);
+                    registers[value.dst] = runtime_abi.bridgeValueToValue(payload[@intCast(value.field_index)]);
+                    _ = value.field_ty;
+                },
+                .native_state_field_set => |value| {
+                    const state_value = registers[value.state];
+                    if (state_value != .raw_ptr or state_value.raw_ptr == 0) {
+                        self.rememberError("native state field write requires a valid recovered state");
+                        return error.RuntimeFailure;
+                    }
+                    const payload: [*]runtime_abi.BridgeValue = @ptrFromInt(state_value.raw_ptr);
+                    payload[@intCast(value.field_index)] = runtime_abi.bridgeValueFromValue(registers[value.src]);
+                    _ = value.field_ty;
                 },
                 .array_len => |value| {
                     const array_value = registers[value.array];
@@ -343,6 +385,34 @@ pub const Vm = struct {
             fields[index] = try self.zeroValueForType(module, field_decl.ty);
         }
         return @intFromPtr(fields.ptr);
+    }
+
+    fn allocateNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, type_id: u64, src_payload: usize) !usize {
+        const type_decl = findType(module, type_name) orelse {
+            self.rememberError("native state type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const src_ptr: [*]runtime_abi.Value = @ptrFromInt(src_payload);
+        const payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+        for (type_decl.fields, 0..) |_, index| {
+            payload[index] = runtime_abi.bridgeValueFromValue(src_ptr[index]);
+        }
+
+        const box = try self.allocator.create(NativeStateBox);
+        box.* = .{
+            .type_id = type_id,
+            .payload = @intFromPtr(payload.ptr),
+        };
+        return @intFromPtr(box);
+    }
+
+    fn recoverNativeState(self: *Vm, state_token: usize, expected_type_id: u64) !usize {
+        const box: *NativeStateBox = @ptrFromInt(state_token);
+        if (box.type_id != expected_type_id or box.payload == 0) {
+            self.rememberError("nativeRecover used a userdata token for the wrong state type");
+            return error.RuntimeFailure;
+        }
+        return box.payload;
     }
 
     fn zeroValueForType(self: *Vm, module: *const bytecode.Module, value_type: bytecode.TypeRef) anyerror!runtime_abi.Value {
@@ -864,4 +934,72 @@ test "copies struct arguments by value for runtime calls" {
 
     const result = try vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{});
     try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "native state recovery mutates persistent payload" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const module = bytecode.Module{
+        .types = &.{.{
+            .name = "CounterState",
+            .fields = &.{.{ .name = "count", .ty = .{ .kind = .integer, .name = "I64" } }},
+        }},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .param_count = 0,
+            .register_count = 9,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
+                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 77 } },
+                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 77 } },
+                .{ .field_ptr = .{ .dst = 3, .base = 2, .base_type_name = "CounterState", .field_index = 0, .field_ty = .{ .kind = .integer, .name = "I64" } } },
+                .{ .const_int = .{ .dst = 4, .value = 9 } },
+                .{ .store_indirect = .{ .ptr = 3, .src = 4, .ty = .{ .kind = .integer, .name = "I64" } } },
+                .{ .recover_native_state = .{ .dst = 5, .state = 1, .type_name = "CounterState", .type_id = 77 } },
+                .{ .field_ptr = .{ .dst = 6, .base = 5, .base_type_name = "CounterState", .field_index = 0, .field_ty = .{ .kind = .integer, .name = "I64" } } },
+                .{ .load_indirect = .{ .dst = 7, .ptr = 6, .ty = .{ .kind = .integer, .name = "I64" } } },
+                .{ .ret = .{ .src = 7 } },
+            },
+        }},
+        .entry_function_id = 0,
+    };
+
+    const result = try vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{});
+    try std.testing.expectEqual(@as(i64, 9), result.integer);
+}
+
+test "native state recovery validates the expected type id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const module = bytecode.Module{
+        .types = &.{.{
+            .name = "CounterState",
+            .fields = &.{.{ .name = "count", .ty = .{ .kind = .integer, .name = "I64" } }},
+        }},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .param_count = 0,
+            .register_count = 3,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
+                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 77 } },
+                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 88 } },
+                .{ .ret = .{ .src = null } },
+            },
+        }},
+        .entry_function_id = 0,
+    };
+
+    try std.testing.expectError(error.RuntimeFailure, vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{}));
+    try std.testing.expect(std.mem.indexOf(u8, vm.lastError().?, "wrong state type") != null);
 }
