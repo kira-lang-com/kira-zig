@@ -78,6 +78,15 @@ struct Rect {
     }
 }
 
+/// Insets around a rectangle in points.
+/// Use this to shrink layout bounds before placing child content.
+struct EdgeInsets {
+    var top: Float = 0.0
+    var trailing: Float = 0.0
+    var bottom: Float = 0.0
+    var leading: Float = 0.0
+}
+
 /// Two-dimensional point in Foundation layout and drawing space.
 /// Use this for widget origins, hit-testing, and pointer coordinates.
 /// All values are expressed in points in the current UI coordinate system.
