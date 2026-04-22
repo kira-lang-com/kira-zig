@@ -629,9 +629,34 @@ pub fn buildTextFunctionBody(
                     bridgeTagValue(register_types[value.src]),
                 });
                 switch (register_types[value.src].kind) {
-                    .integer, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .raw_ptr, .array => {
                         try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %r{d}, 2\n", .{
                             temp_index, temp_index, value.src,
+                        });
+                    },
+                    .ffi_struct => {
+                        const field_struct_name = typeRefName(register_types[value.src].name orelse return error.UnsupportedExecutableFeature);
+                        try writer.print("  %native.state.set.struct.src.{d} = inttoptr i64 %r{d} to ptr\n", .{ temp_index, value.src });
+                        try writer.print("  %native.state.set.struct.value.{d} = load {s}, ptr %native.state.set.struct.src.{d}\n", .{
+                            temp_index, field_struct_name, temp_index,
+                        });
+                        try writer.print("  %native.state.set.struct.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{
+                            temp_index, field_struct_name,
+                        });
+                        try writer.print("  %native.state.set.struct.size.{d} = ptrtoint ptr %native.state.set.struct.size.ptr.{d} to i64\n", .{
+                            temp_index, temp_index,
+                        });
+                        try writer.print("  %native.state.set.struct.copy.{d} = call ptr @malloc(i64 %native.state.set.struct.size.{d})\n", .{
+                            temp_index, temp_index,
+                        });
+                        try writer.print("  store {s} %native.state.set.struct.value.{d}, ptr %native.state.set.struct.copy.{d}\n", .{
+                            field_struct_name, temp_index, temp_index,
+                        });
+                        try writer.print("  %native.state.set.struct.ptrint.{d} = ptrtoint ptr %native.state.set.struct.copy.{d} to i64\n", .{
+                            temp_index, temp_index,
+                        });
+                        try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %native.state.set.struct.ptrint.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
                         });
                     },
                     .float => {
@@ -987,4 +1012,60 @@ test "emits native state helper calls in text llvm ir" {
     const text = try buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
     try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_alloc") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_recover") != null);
+}
+
+test "native state ffi struct field writes copy assigned values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var program = ir.Program{
+        .types = &.{
+            .{
+                .name = "Handle",
+                .fields = &.{.{ .name = "id", .ty = .{ .kind = .integer, .name = "I32" } }},
+                .ffi = .ffi_struct,
+            },
+            .{
+                .name = "AppState",
+                .fields = &.{.{ .name = "handle", .ty = .{ .kind = .ffi_struct, .name = "Handle" } }},
+            },
+        },
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .execution = .native,
+            .param_types = &.{},
+            .return_type = .{ .kind = .void },
+            .register_count = 4,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "AppState" } },
+                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "AppState", .type_id = 77 } },
+                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "AppState", .type_id = 77 } },
+                .{ .alloc_struct = .{ .dst = 3, .type_name = "Handle" } },
+                .{ .native_state_field_set = .{
+                    .state = 2,
+                    .field_index = 0,
+                    .src = 3,
+                    .field_ty = .{ .kind = .ffi_struct, .name = "Handle" },
+                } },
+                .{ .ret = .{ .src = null } },
+            },
+        }},
+        .entry_index = 0,
+    };
+    const request = backend_api.CompileRequest{
+        .mode = .llvm_native,
+        .program = &program,
+        .module_name = "native_state_ffi_set_test",
+        .emit = .{
+            .object_path = "dummy.obj",
+        },
+    };
+
+    const text = try buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
+    try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.copy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.ptrint") != null);
 }
