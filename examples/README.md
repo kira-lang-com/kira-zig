@@ -40,8 +40,10 @@ kira shader build examples/shaders/lit_surface.ksl
 kira shader build
 ```
 
-The `callbacks/` example now demonstrates Kira-owned persistent callback state with:
+The `callbacks/`, `sokol_triangle/`, and `sokol_runtime_entry/` examples demonstrate Kira-owned persistent callback state with:
 
 - `nativeState(...)` to box ordinary Kira state
 - `nativeUserData(...)` to hand an opaque token to native code
 - `nativeRecover<T>(...)` inside the callback to mutate the original state across repeated invocations
+
+For Sokol examples, descriptor values such as `sapp_desc`, `sg_desc`, `sg_shader_desc`, `sg_pipeline_desc`, and `sg_pass` remain C-layout FFI structs because Sokol reads those fields directly. App callback state is ordinary Kira state boxed with `nativeState`; Sokol only carries the opaque `RawPtr` from `nativeUserData(state)` through `user_data` and never depends on the Kira state layout.

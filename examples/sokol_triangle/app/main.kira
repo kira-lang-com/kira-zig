@@ -1,30 +1,28 @@
 import sokol as sokol
 
-@FFI.Struct { layout: c; }
-struct app_state {
+struct AppState {
     var shader: sokol.sg_shader
     var pipeline: sokol.sg_pipeline
     var viewport_width: I32
     var viewport_height: I32
 }
 
-@FFI.Pointer { target: app_state; ownership: borrowed; }
-struct app_state_ptr {}
-
 @Main
 @Native
 function main() {
-    let state = app_state {
+    var state = nativeState(AppState {
+        shader: sokol.sg_shader()
+        pipeline: sokol.sg_pipeline()
         viewport_width: 128
         viewport_height: 128
-    }
+    })
 
     let desc = sokol.sapp_desc {
         init_userdata_cb: init
         frame_userdata_cb: frame
         cleanup_userdata_cb: cleanup
         event_userdata_cb: event
-        user_data: state
+        user_data: nativeUserData(state)
         width: 640
         height: 480
         window_title: "Kira Sokol Triangle"
@@ -35,7 +33,7 @@ function main() {
 
 @Native
 function init(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state = nativeRecover<AppState>(user_data)
     state.viewport_width = sokol.sapp_width()
     state.viewport_height = sokol.sapp_height()
 
@@ -83,7 +81,7 @@ void main() {
 
 @Native
 function frame(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state = nativeRecover<AppState>(user_data)
     state.viewport_width = sokol.sapp_width()
     state.viewport_height = sokol.sapp_height()
 
@@ -102,7 +100,7 @@ function frame(user_data: RawPtr): Void {
 
 @Native
 function event(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state = nativeRecover<AppState>(user_data)
     state.viewport_width = event.framebuffer_width
     state.viewport_height = event.framebuffer_height
     return
@@ -110,7 +108,7 @@ function event(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
 
 @Native
 function cleanup(user_data: RawPtr): Void {
-    let state: app_state_ptr = user_data
+    var state = nativeRecover<AppState>(user_data)
     sokol.sg_destroy_pipeline(state.pipeline)
     sokol.sg_destroy_shader(state.shader)
     sokol.sg_shutdown()
