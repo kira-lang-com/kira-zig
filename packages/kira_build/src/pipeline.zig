@@ -7,6 +7,9 @@ const semantics = @import("kira_semantics");
 const syntax = @import("kira_syntax_model");
 const ir = @import("kira_ir");
 const bytecode = @import("kira_bytecode");
+const build_def = @import("kira_build_definition");
+const llvm_backend = @import("kira_llvm_backend");
+const native = @import("kira_native_lib_definition");
 const ffi_support = @import("ffi_support.zig");
 const package_manager = @import("kira_package_manager");
 const program_graph = @import("kira_program_graph");
@@ -14,8 +17,10 @@ const program_graph = @import("kira_program_graph");
 pub const FrontendStage = enum {
     lexer,
     parser,
+    graph,
     semantics,
     ir,
+    backend_prepare,
 };
 
 pub const LexPipelineResult = struct {
@@ -33,6 +38,7 @@ pub const ParsePipelineResult = struct {
     source: source_pkg.SourceFile,
     diagnostics: []const diagnostics.Diagnostic,
     program: ?syntax.ast.Program,
+    native_libraries: []const native.ResolvedNativeLibrary = &.{},
     failure_stage: ?FrontendStage = null,
 
     pub fn failed(self: ParsePipelineResult) bool {
@@ -54,6 +60,7 @@ pub const FrontendPipelineResult = struct {
     source: source_pkg.SourceFile,
     diagnostics: []const diagnostics.Diagnostic,
     ir_program: ?ir.Program,
+    native_libraries: []const native.ResolvedNativeLibrary = &.{},
     failure_stage: ?FrontendStage = null,
 
     pub fn failed(self: FrontendPipelineResult) bool {
@@ -66,10 +73,24 @@ pub const VmPipelineResult = struct {
     diagnostics: []const diagnostics.Diagnostic,
     ir_program: ?ir.Program,
     bytecode_module: ?bytecode.Module,
+    native_libraries: []const native.ResolvedNativeLibrary = &.{},
     failure_stage: ?FrontendStage = null,
 
     pub fn failed(self: VmPipelineResult) bool {
         return self.bytecode_module == null;
+    }
+};
+
+pub const ExecutablePipelineResult = struct {
+    source: source_pkg.SourceFile,
+    diagnostics: []const diagnostics.Diagnostic,
+    ir_program: ?ir.Program,
+    bytecode_module: ?bytecode.Module = null,
+    native_libraries: []const native.ResolvedNativeLibrary = &.{},
+    failure_stage: ?FrontendStage = null,
+
+    pub fn failed(self: ExecutablePipelineResult) bool {
+        return self.ir_program == null or diagnostics.hasErrors(self.diagnostics);
     }
 };
 
@@ -80,6 +101,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
             .source = parsed.source,
             .diagnostics = parsed.diagnostics,
             .ir_program = null,
+            .native_libraries = parsed.native_libraries,
             .failure_stage = parsed.failure_stage,
         };
     }
@@ -94,7 +116,8 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
                 .ir_program = null,
-                .failure_stage = .parser,
+                .native_libraries = parsed.native_libraries,
+                .failure_stage = .graph,
             };
         },
         else => return err,
@@ -106,6 +129,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
                 .ir_program = null,
+                .native_libraries = parsed.native_libraries,
                 .failure_stage = .semantics,
             };
         },
@@ -118,6 +142,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
                 .ir_program = null,
+                .native_libraries = parsed.native_libraries,
                 .failure_stage = .semantics,
             };
         },
@@ -137,6 +162,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
                 .ir_program = null,
+                .native_libraries = parsed.native_libraries,
                 .failure_stage = .ir,
             };
         },
@@ -146,53 +172,227 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         .source = parsed.source,
         .diagnostics = try diags.toOwnedSlice(),
         .ir_program = ir_program,
+        .native_libraries = parsed.native_libraries,
     };
 }
 
 pub fn compileFileToBytecode(allocator: std.mem.Allocator, path: []const u8) !VmPipelineResult {
+    const prepared = try compileFileForBackend(allocator, path, .vm, &.{});
+    return .{
+        .source = prepared.source,
+        .diagnostics = prepared.diagnostics,
+        .ir_program = prepared.ir_program,
+        .bytecode_module = prepared.bytecode_module,
+        .native_libraries = prepared.native_libraries,
+        .failure_stage = prepared.failure_stage,
+    };
+}
+
+pub fn compileFileForBackend(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    target: build_def.ExecutionTarget,
+    explicit_native_libraries: []const native.ResolvedNativeLibrary,
+) !ExecutablePipelineResult {
     const frontend = try compileFileToIr(allocator, path);
-    if (frontend.ir_program == null) {
+    if (frontend.ir_program == null or diagnostics.hasErrors(frontend.diagnostics)) {
         return .{
             .source = frontend.source,
             .diagnostics = frontend.diagnostics,
             .ir_program = null,
             .bytecode_module = null,
+            .native_libraries = frontend.native_libraries,
             .failure_stage = frontend.failure_stage,
         };
     }
 
-    const module = bytecode.compileProgram(allocator, frontend.ir_program.?, .vm) catch |err| switch (err) {
-        error.NativeFunctionInVmBuild => {
-            var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-            for (frontend.diagnostics) |diag| try diags.append(diag);
-            try diags.append(.{
-                .severity = .@"error",
-                .code = "KBUILD001",
-                .title = "native code requires a native-capable backend",
-                .message = "This program contains @Native functions, but the VM backend only supports runtime execution.",
-                .help = try std.fmt.allocPrint(
-                    allocator,
-                    "Use `kira run --backend hybrid {s}` for mixed @Runtime/@Native programs, or `kira run --backend llvm {s}` for fully native execution.",
-                    .{ path, path },
-                ),
-            });
+    const ir_program = frontend.ir_program.?;
+    const merged_native_libraries = try mergeNativeLibraries(allocator, explicit_native_libraries, frontend.native_libraries);
+
+    switch (target) {
+        .vm => {
+            const module = bytecode.compileProgram(allocator, ir_program, .vm) catch |err| {
+                const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                return .{
+                    .source = frontend.source,
+                    .diagnostics = backend_diagnostics,
+                    .ir_program = ir_program,
+                    .bytecode_module = null,
+                    .native_libraries = merged_native_libraries,
+                    .failure_stage = .backend_prepare,
+                };
+            };
             return .{
                 .source = frontend.source,
-                .diagnostics = try diags.toOwnedSlice(),
-                .ir_program = frontend.ir_program,
-                .bytecode_module = null,
-                .failure_stage = .ir,
+                .diagnostics = frontend.diagnostics,
+                .ir_program = ir_program,
+                .bytecode_module = module,
+                .native_libraries = merged_native_libraries,
+                .failure_stage = frontend.failure_stage,
             };
         },
-        else => return err,
-    };
+        .llvm_native => {
+            llvm_backend.validate(allocator, .{
+                .mode = .llvm_native,
+                .program = &ir_program,
+                .module_name = std.fs.path.stem(path),
+                .emit = dummyNativeEmitOptions(),
+                .resolved_native_libraries = merged_native_libraries,
+            }) catch |err| {
+                const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                return .{
+                    .source = frontend.source,
+                    .diagnostics = backend_diagnostics,
+                    .ir_program = ir_program,
+                    .bytecode_module = null,
+                    .native_libraries = merged_native_libraries,
+                    .failure_stage = .backend_prepare,
+                };
+            };
+            return .{
+                .source = frontend.source,
+                .diagnostics = frontend.diagnostics,
+                .ir_program = ir_program,
+                .bytecode_module = null,
+                .native_libraries = merged_native_libraries,
+                .failure_stage = frontend.failure_stage,
+            };
+        },
+        .hybrid => {
+            const module = bytecode.compileProgram(allocator, ir_program, .hybrid_runtime) catch |err| {
+                const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                return .{
+                    .source = frontend.source,
+                    .diagnostics = backend_diagnostics,
+                    .ir_program = ir_program,
+                    .bytecode_module = null,
+                    .native_libraries = merged_native_libraries,
+                    .failure_stage = .backend_prepare,
+                };
+            };
+            llvm_backend.validate(allocator, .{
+                .mode = .hybrid,
+                .program = &ir_program,
+                .module_name = std.fs.path.stem(path),
+                .emit = dummyNativeEmitOptions(),
+                .resolved_native_libraries = merged_native_libraries,
+            }) catch |err| {
+                const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                return .{
+                    .source = frontend.source,
+                    .diagnostics = backend_diagnostics,
+                    .ir_program = ir_program,
+                    .bytecode_module = null,
+                    .native_libraries = merged_native_libraries,
+                    .failure_stage = .backend_prepare,
+                };
+            };
+            return .{
+                .source = frontend.source,
+                .diagnostics = frontend.diagnostics,
+                .ir_program = ir_program,
+                .bytecode_module = module,
+                .native_libraries = merged_native_libraries,
+                .failure_stage = frontend.failure_stage,
+            };
+        },
+    }
+}
+
+pub fn checkFileForBackend(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    target: build_def.ExecutionTarget,
+) !CheckPipelineResult {
+    const prepared = try compileFileForBackend(allocator, path, target, &.{});
     return .{
-        .source = frontend.source,
-        .diagnostics = frontend.diagnostics,
-        .ir_program = frontend.ir_program,
-        .bytecode_module = module,
-        .failure_stage = frontend.failure_stage,
+        .source = prepared.source,
+        .diagnostics = prepared.diagnostics,
+        .failure_stage = prepared.failure_stage,
     };
+}
+
+fn dummyNativeEmitOptions() @import("kira_backend_api").NativeEmitOptions {
+    return .{
+        .object_path = "__kira_check__.o",
+        .executable_path = "__kira_check__",
+        .shared_library_path = "__kira_check__.so",
+    };
+}
+
+fn mergeNativeLibraries(
+    allocator: std.mem.Allocator,
+    explicit: []const native.ResolvedNativeLibrary,
+    discovered: []const native.ResolvedNativeLibrary,
+) ![]const native.ResolvedNativeLibrary {
+    const merged = try allocator.alloc(native.ResolvedNativeLibrary, explicit.len + discovered.len);
+    @memcpy(merged[0..explicit.len], explicit);
+    @memcpy(merged[explicit.len..], discovered);
+    return merged;
+}
+
+pub fn backendDiagnostic(allocator: std.mem.Allocator, source_path: []const u8, err: anyerror) !diagnostics.Diagnostic {
+    return switch (err) {
+        error.NativeFunctionInVmBuild => .{
+            .severity = .@"error",
+            .code = "KBUILD001",
+            .title = "native code requires a native-capable backend",
+            .message = "This program contains @Native functions, but the selected backend only supports runtime execution.",
+            .help = try std.fmt.allocPrint(
+                allocator,
+                "Use `kira build --backend hybrid {s}` for mixed @Runtime/@Native programs, or `kira build --backend llvm {s}` for fully native output.",
+                .{ source_path, source_path },
+            ),
+        },
+        error.LlvmBackendUnavailable => .{
+            .severity = .@"error",
+            .code = "KBUILD002",
+            .title = "LLVM backend is unavailable",
+            .message = "Kira could not start the native toolchain because LLVM is not available in this build.",
+            .help = "Set KIRA_LLVM_HOME or run `zig build fetch-llvm` to install the pinned LLVM toolchain.",
+        },
+        error.RuntimeEntrypointInNativeBuild => .{
+            .severity = .@"error",
+            .code = "KBUILD003",
+            .title = "native build cannot start from a runtime entrypoint",
+            .message = "The selected native backend needs a native entrypoint, but @Main resolves to runtime execution.",
+            .help = "Use the VM or hybrid backend, or mark the entry function with @Native.",
+        },
+        error.RuntimeCallInNativeBuild => .{
+            .severity = .@"error",
+            .code = "KBUILD004",
+            .title = "native build depends on runtime-only code",
+            .message = "The selected native backend encountered a call that still requires the runtime.",
+            .help = "Use the hybrid backend for mixed execution, or move the called function to @Native.",
+        },
+        error.HybridBuildRequiresExplicitExecution => .{
+            .severity = .@"error",
+            .code = "KBUILD005",
+            .title = "hybrid build needs explicit execution annotations",
+            .message = "A hybrid build can only package functions that are explicitly marked with @Runtime or @Native.",
+            .help = "Annotate each reachable function with @Runtime or @Native.",
+        },
+        error.UnsupportedExecutableFeature, error.UnsupportedType => .{
+            .severity = .@"error",
+            .code = "KIR001",
+            .title = "feature is not executable in the current backend pipeline",
+            .message = "This program uses language constructs that are not yet supported by the selected backend preparation stage.",
+            .help = "Use a different backend if available, or stay within the currently executable subset for `check`, `build`, and `run`.",
+        },
+        else => .{
+            .severity = .@"error",
+            .code = "KBUILD999",
+            .title = "toolchain build failed",
+            .message = try std.fmt.allocPrint(allocator, "Kira hit a toolchain failure while preparing this program ({s}).", .{@errorName(err)}),
+            .help = "Check the toolchain setup and try the command again.",
+        },
+    };
+}
+
+pub fn backendDiagnostics(allocator: std.mem.Allocator, source_path: []const u8, err: anyerror) ![]diagnostics.Diagnostic {
+    const items = try allocator.alloc(diagnostics.Diagnostic, 1);
+    items[0] = try backendDiagnostic(allocator, source_path, err);
+    return items;
 }
 
 pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResult {
@@ -243,56 +443,18 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineR
         else => return err,
     };
 
-    _ = try ffi_support.prepareNativeLibraries(allocator, path, program.imports);
+    const native_libraries = try ffi_support.prepareNativeLibraries(allocator, path, program.imports);
 
     return .{
         .source = lexed.source,
         .diagnostics = try diags.toOwnedSlice(),
         .program = program,
+        .native_libraries = native_libraries,
     };
 }
 
 pub fn checkFile(allocator: std.mem.Allocator, path: []const u8) !CheckPipelineResult {
-    const parsed = try parseFile(allocator, path);
-    if (parsed.program == null) {
-        return .{
-            .source = parsed.source,
-            .diagnostics = parsed.diagnostics,
-            .failure_stage = parsed.failure_stage,
-        };
-    }
-
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    for (parsed.diagnostics) |diag| try diags.append(diag);
-
-    validateImports(allocator, &parsed.source, parsed.program.?, &diags) catch |err| switch (err) {
-        error.DiagnosticsEmitted => {
-            return .{
-                .source = parsed.source,
-                .diagnostics = try diags.toOwnedSlice(),
-                .failure_stage = .semantics,
-            };
-        },
-        else => return err,
-    };
-
-    const imported_globals = try collectImportedGlobals(allocator, &parsed.source, parsed.program.?);
-    _ = semantics.analyzeWithImports(allocator, parsed.program.?, imported_globals, &diags) catch |err| switch (err) {
-        error.DiagnosticsEmitted => {
-            return .{
-                .source = parsed.source,
-                .diagnostics = try diags.toOwnedSlice(),
-                .failure_stage = .semantics,
-            };
-        },
-        else => return err,
-    };
-
-    return .{
-        .source = parsed.source,
-        .diagnostics = try diags.toOwnedSlice(),
-        .failure_stage = null,
-    };
+    return checkFileForBackend(allocator, path, .vm);
 }
 
 pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !CheckPipelineResult {
@@ -322,7 +484,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
             return .{
                 .source = source,
                 .diagnostics = try diags.toOwnedSlice(),
-                .failure_stage = .parser,
+                .failure_stage = .graph,
             };
         },
         else => return err,
@@ -412,189 +574,82 @@ fn validateImports(
     }
 }
 
-fn collectImportedGlobals(
-    allocator: std.mem.Allocator,
-    source: *const source_pkg.SourceFile,
-    program: syntax.ast.Program,
-) !semantics.ImportedGlobals {
-    const module_map = try package_manager.loadModuleMapForSource(allocator, source.path);
-    var constructs = std.array_list.Managed([]const u8).init(allocator);
-    var callables = std.array_list.Managed([]const u8).init(allocator);
-    var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
-    var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
-    var annotations = std.array_list.Managed(semantics.ImportedAnnotation).init(allocator);
+test "check and build stop points share imported graph diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
-    for (program.imports) |import_decl| {
-        if (program_graph.packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
-            const module_files = try program_graph.collectPackageModuleFiles(allocator, owner.source_root);
-            defer {
-                for (module_files) |module_file| allocator.free(module_file);
-                allocator.free(module_files);
-            }
-            for (module_files) |module_path| {
-                const harvested = try collectModuleGlobals(allocator, module_path);
-                for (harvested.constructs) |name| try constructs.append(name);
-                for (harvested.callables) |name| try callables.append(name);
-                for (harvested.functions) |function_decl| try functions.append(function_decl);
-                for (harvested.types) |type_decl| try types.append(type_decl);
-                for (harvested.annotations) |annotation_decl| try annotations.append(annotation_decl);
-            }
-            continue;
-        }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-        const resolved = try program_graph.resolveImportPath(allocator, source.path, import_decl.module_name, module_map);
-        defer allocator.free(resolved.display_name);
-        defer {
-            for (resolved.candidates) |candidate| allocator.free(candidate);
-            allocator.free(resolved.candidates);
-        }
+    try tmp.dir.makePath("App/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "App/project.toml",
+        .data =
+        \\[project]
+        \\name = "App"
+        \\version = "0.1.0"
+        \\
+        \\[defaults]
+        \\execution_mode = "vm"
+        \\build_target = "host"
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "App/app/main.kira",
+        .data =
+        \\import support as Support
+        \\
+        \\@Main
+        \\function main() {
+        \\    return;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "App/app/support.kira",
+        .data = "function helper( { return; }\n",
+    });
 
-        const module_path = program_graph.firstExistingCandidate(resolved.candidates) orelse continue;
-        const harvested = try collectModuleGlobals(allocator, module_path);
-        for (harvested.constructs) |name| try constructs.append(name);
-        for (harvested.callables) |name| try callables.append(name);
-        for (harvested.functions) |function_decl| try functions.append(function_decl);
-        for (harvested.types) |type_decl| try types.append(type_decl);
-        for (harvested.annotations) |annotation_decl| try annotations.append(annotation_decl);
-    }
+    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "App/app/main.kira");
+    const checked = try checkFileForBackend(arena.allocator(), source_path, .vm);
+    const built = try compileFileForBackend(arena.allocator(), source_path, .vm, &.{});
 
-    return .{
-        .constructs = try constructs.toOwnedSlice(),
-        .callables = try callables.toOwnedSlice(),
-        .functions = try functions.toOwnedSlice(),
-        .types = try types.toOwnedSlice(),
-        .annotations = try annotations.toOwnedSlice(),
-    };
+    try std.testing.expectEqual(FrontendStage.graph, checked.failure_stage.?);
+    try std.testing.expectEqual(FrontendStage.graph, built.failure_stage.?);
+    try std.testing.expectEqualStrings(checked.diagnostics[0].code.?, built.diagnostics[0].code.?);
+    try std.testing.expectEqualStrings(checked.diagnostics[0].title, built.diagnostics[0].title);
 }
 
-fn collectModuleGlobals(allocator: std.mem.Allocator, module_path: []const u8) !semantics.ImportedGlobals {
-    const source = try source_pkg.SourceFile.fromPath(allocator, module_path);
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+test "check reaches backend preparation for selected backend" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
-    const tokens = lexer.tokenize(allocator, &source, &diags) catch |err| switch (err) {
-        error.DiagnosticsEmitted => return .{},
-        else => return err,
-    };
-    const program = parser.parse(allocator, tokens, &diags) catch |err| switch (err) {
-        error.DiagnosticsEmitted => return .{},
-        else => return err,
-    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    return harvestProgramGlobals(allocator, program, module_path);
-}
+    try tmp.dir.makePath("App/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "App/app/main.kira",
+        .data =
+        \\@Main
+        \\function main() {
+        \\    nativeHelper();
+        \\    return;
+        \\}
+        \\
+        \\@Native
+        \\function nativeHelper() {
+        \\    return;
+        \\}
+        ,
+    });
 
-fn harvestProgramGlobals(allocator: std.mem.Allocator, program: syntax.ast.Program, module_path: []const u8) !semantics.ImportedGlobals {
-    var constructs = std.array_list.Managed([]const u8).init(allocator);
-    var callables = std.array_list.Managed([]const u8).init(allocator);
-    var functions = std.array_list.Managed(semantics.ImportedFunction).init(allocator);
-    var types = std.array_list.Managed(semantics.ImportedType).init(allocator);
-    var annotations = std.array_list.Managed(semantics.ImportedAnnotation).init(allocator);
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    var lowering_ctx = semantics.LoweringContext{
-        .allocator = allocator,
-        .diagnostics = &diags,
-    };
+    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "App/app/main.kira");
+    const result = try checkFileForBackend(arena.allocator(), source_path, .vm);
 
-    for (program.decls) |decl| {
-        switch (decl) {
-            .annotation_decl => |annotation_decl| {
-                const lowered = semantics.lowerAnnotationDecl(&lowering_ctx, annotation_decl, module_path) catch continue;
-                try annotations.append(.{
-                    .name = lowered.name,
-                    .parameters = lowered.parameters,
-                    .module_path = lowered.module_path,
-                    .span = lowered.span,
-                });
-            },
-            .capability_decl => {},
-            .construct_decl => |construct_decl| try constructs.append(try allocator.dupe(u8, construct_decl.name)),
-            .construct_form_decl => |form_decl| try callables.append(try allocator.dupe(u8, form_decl.name)),
-            .function_decl => |function_decl| {
-                try callables.append(try allocator.dupe(u8, function_decl.name));
-                const foreign = semantics.resolveForeignFunction(&lowering_ctx, function_decl.annotations, function_decl.span) catch null;
-                var params = std.array_list.Managed(semantics.ResolvedType).init(allocator);
-                for (function_decl.params) |param| {
-                    if (param.type_expr) |type_expr| {
-                        try params.append(try semantics.typeFromSyntax(allocator, type_expr.*));
-                    } else {
-                        try params.append(.{ .kind = .unknown });
-                    }
-                }
-                try functions.append(.{
-                    .name = try allocator.dupe(u8, function_decl.name),
-                    .params = try params.toOwnedSlice(),
-                    .return_type = if (function_decl.return_type) |return_type| try semantics.typeFromSyntax(allocator, return_type.*) else .{ .kind = .unknown },
-                    .execution = if (foreign != null) .native else .inherited,
-                    .is_extern = foreign != null,
-                    .foreign = foreign,
-                });
-            },
-            .type_decl => |type_decl| {
-                try callables.append(try allocator.dupe(u8, type_decl.name));
-                var parents = std.array_list.Managed([]const u8).init(allocator);
-                for (type_decl.parents) |parent_name| {
-                    try parents.append(try allocator.dupe(u8, parent_name.segments[parent_name.segments.len - 1].text));
-                }
-                const ffi_info = semantics.resolveNamedTypeInfo(&lowering_ctx, type_decl.annotations, type_decl.span) catch null;
-                // For @FFI.Alias types, let fields with defaults are enum-style constants
-                // (not instance layout slots). Skip them just as the old static let did.
-                const is_alias = if (ffi_info) |info| info == .alias else false;
-                var fields = std.array_list.Managed(semantics.ImportedField).init(allocator);
-                for (type_decl.members) |member| {
-                    if (member != .field_decl) continue;
-                    if (is_alias and member.field_decl.storage == .immutable and member.field_decl.value != null) continue;
-                    const field_ty: semantics.ResolvedType = if (member.field_decl.type_expr) |type_expr|
-                        try semantics.typeFromSyntax(allocator, type_expr.*)
-                    else
-                        .{ .kind = .unknown };
-                    try fields.append(.{
-                        .name = try allocator.dupe(u8, member.field_decl.name),
-                        .storage = @enumFromInt(@intFromEnum(member.field_decl.storage)),
-                        .ty = field_ty,
-                        .default_value = if (member.field_decl.value) |value| try semantics.lowerFieldDefaultExpr(&lowering_ctx, value) else null,
-                    });
-                }
-                try types.append(.{
-                    .name = try allocator.dupe(u8, type_decl.name),
-                    .parents = try parents.toOwnedSlice(),
-                    .fields = try fields.toOwnedSlice(),
-                    .ffi = ffi_info,
-                });
-                for (type_decl.members) |member| {
-                    if (member != .function_decl) continue;
-                    const function_decl = member.function_decl;
-                    const foreign = semantics.resolveForeignFunction(&lowering_ctx, function_decl.annotations, function_decl.span) catch null;
-                    var params = std.array_list.Managed(semantics.ResolvedType).init(allocator);
-                    try params.append(.{ .kind = .named, .name = type_decl.name });
-                    for (function_decl.params) |param| {
-                        if (param.type_expr) |type_expr| {
-                            try params.append(try semantics.typeFromSyntax(allocator, type_expr.*));
-                        } else {
-                            try params.append(.{ .kind = .unknown });
-                        }
-                    }
-                    const method_name = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ type_decl.name, function_decl.name });
-                    try callables.append(method_name);
-                    try functions.append(.{
-                        .name = method_name,
-                        .params = try params.toOwnedSlice(),
-                        .return_type = if (function_decl.return_type) |return_type| try semantics.typeFromSyntax(allocator, return_type.*) else .{ .kind = .unknown },
-                        .execution = if (foreign != null) .native else .inherited,
-                        .is_extern = foreign != null,
-                        .foreign = foreign,
-                    });
-                }
-            },
-        }
-    }
-
-    return .{
-        .constructs = try constructs.toOwnedSlice(),
-        .callables = try callables.toOwnedSlice(),
-        .functions = try functions.toOwnedSlice(),
-        .types = try types.toOwnedSlice(),
-        .annotations = try annotations.toOwnedSlice(),
-    };
+    try std.testing.expect(result.failed());
+    try std.testing.expectEqual(FrontendStage.backend_prepare, result.failure_stage.?);
+    try std.testing.expectEqualStrings("KBUILD001", result.diagnostics[0].code.?);
 }
 
 test "built-in Foundation resolves before installed package conflicts" {

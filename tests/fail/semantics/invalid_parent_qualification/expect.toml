@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM061"
 diagnostic_title = "invalid parent-qualified member reference"
 stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

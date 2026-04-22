@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM026"
 diagnostic_title = "annotation is not allowed in this construct"
 stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

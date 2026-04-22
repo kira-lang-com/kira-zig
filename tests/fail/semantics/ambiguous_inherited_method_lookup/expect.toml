@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM056"
 diagnostic_title = "ambiguous inherited method lookup"
 stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

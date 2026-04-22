@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM071"
 diagnostic_title = "annotation parameter type mismatch"
 stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

@@ -29,73 +29,38 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 
     try support.logFrontendStarted(stderr, "run", input.source_path);
     var system = build.BuildSystem.init(allocator);
+    const output_root = try support.outputRoot(allocator, input.project_root);
+    defer allocator.free(output_root);
+    try support.ensurePath(output_root);
+    const stem = input.project_name orelse std.fs.path.stem(input.source_path);
+    const output_path = try runOutputPath(allocator, output_root, stem, backend);
+    const result = try system.build(.{
+        .source_path = input.source_path,
+        .output_path = output_path,
+        .target = .{ .execution = backend },
+    });
+    if (result.failed()) {
+        try support.logBuildAborted(stderr, "run", result.failure_kind.?, input.source_path);
+        if (result.source) |source| {
+            try support.renderDiagnostics(stderr, &source, result.diagnostics);
+        }
+        return error.CommandFailed;
+    }
+
     switch (backend) {
         .vm => {
-            const result = try system.compileVm(input.source_path);
-            if (result.failed()) {
-                if (result.failure_stage == .ir) {
-                    try support.logBuildAborted(stderr, "run", .build, input.source_path);
-                } else {
-                    try support.logFrontendFailed(stderr, result.failure_stage, input.source_path, result.diagnostics.len);
-                }
-                try support.renderDiagnostics(stderr, &result.source, result.diagnostics);
-                return error.CommandFailed;
-            }
-
+            const bytecode_artifact = findBytecode(result.artifacts) orelse return error.MissingBytecodeArtifact;
+            const module = try system.readBytecode(bytecode_artifact.path);
             var vm = vm_runtime.Vm.init(allocator);
-            const module = result.bytecode_module.?;
             try vm.runMain(&module, stdout);
         },
         .llvm_native => {
-            const output_root = try support.outputRoot(allocator, input.project_root);
-            defer allocator.free(output_root);
-            try support.ensurePath(output_root);
-            const stem = input.project_name orelse std.fs.path.stem(input.source_path);
-            const executable_path = try std.fmt.allocPrint(
-                allocator,
-                "{s}/{s}.run{s}",
-                .{ output_root, stem, build.executableExtension() },
-            );
-            const result = try system.buildNativeArtifact(.{
-                .source_path = input.source_path,
-                .output_path = executable_path,
-                .target = .{ .execution = .llvm_native },
-            });
-            if (result.failed()) {
-                try support.logBuildAborted(stderr, "run", result.failure_kind.?, input.source_path);
-                if (result.source) |source| {
-                    try support.renderDiagnostics(stderr, &source, result.diagnostics);
-                }
-                return error.CommandFailed;
-            }
-
             const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
             try runExecutable(allocator, executable.path, input.project_root, stdout, stderr);
         },
         .hybrid => {
-            const output_root = try support.outputRoot(allocator, input.project_root);
-            defer allocator.free(output_root);
-            try support.ensurePath(output_root);
-            const stem = input.project_name orelse std.fs.path.stem(input.source_path);
-            const manifest_path = try std.fmt.allocPrint(
-                allocator,
-                "{s}/{s}.run.khm",
-                .{ output_root, stem },
-            );
-            const result = try system.buildHybridArtifact(.{
-                .source_path = input.source_path,
-                .output_path = manifest_path,
-                .target = .{ .execution = .hybrid },
-            });
-            if (result.failed()) {
-                try support.logBuildAborted(stderr, "run", result.failure_kind.?, input.source_path);
-                if (result.source) |source| {
-                    try support.renderDiagnostics(stderr, &source, result.diagnostics);
-                }
-                return error.CommandFailed;
-            }
-
-            const manifest = try hybrid_runtime.loadHybridModule(allocator, manifest_path);
+            const manifest_artifact = findHybridManifest(result.artifacts) orelse return error.MissingHybridManifestArtifact;
+            const manifest = try hybrid_runtime.loadHybridModule(allocator, manifest_artifact.path);
             var runtime = try hybrid_runtime.HybridRuntime.init(allocator, manifest);
             defer runtime.deinit();
             try runtime.run();
@@ -157,6 +122,28 @@ fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
         if (artifact.kind == .executable) return artifact;
     }
     return null;
+}
+
+fn findBytecode(artifacts: []const build_def.Artifact) ?build_def.Artifact {
+    for (artifacts) |artifact| {
+        if (artifact.kind == .bytecode) return artifact;
+    }
+    return null;
+}
+
+fn findHybridManifest(artifacts: []const build_def.Artifact) ?build_def.Artifact {
+    for (artifacts) |artifact| {
+        if (artifact.kind == .hybrid_manifest) return artifact;
+    }
+    return null;
+}
+
+fn runOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: []const u8, backend: build_def.ExecutionTarget) ![]const u8 {
+    return switch (backend) {
+        .vm => std.fmt.allocPrint(allocator, "{s}/{s}.run.kbc", .{ output_root, stem }),
+        .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}.run{s}", .{ output_root, stem, build.executableExtension() }),
+        .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.run.khm", .{ output_root, stem }),
+    };
 }
 
 fn runExecutable(

@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM031"
 diagnostic_title = "type mismatch"
 stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

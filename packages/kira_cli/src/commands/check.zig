@@ -1,5 +1,6 @@
 const std = @import("std");
 const build = @import("kira_build");
+const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
 const package_manager = @import("kira_package_manager");
 const support = @import("../support.zig");
@@ -19,7 +20,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     const result = switch (input) {
         .application => |app| blk: {
             try support.logFrontendStarted(stderr, "check", app.source_path);
-            break :blk try build.checkFile(allocator, app.source_path);
+            const backend = parsed.backend orelse app.default_backend orelse .vm;
+            break :blk try build.checkFileForBackend(allocator, app.source_path, backend);
         },
         .library => |library| blk: {
             try support.logFrontendStarted(stderr, "check", library.source_root);
@@ -59,6 +61,7 @@ fn syncProject(
 }
 
 const ParsedArgs = struct {
+    backend: ?build_def.ExecutionTarget = null,
     offline: bool = false,
     locked: bool = false,
     input_path: []const u8,
@@ -69,7 +72,16 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var locked = false;
     var input_path: ?[]const u8 = null;
 
-    for (args) |arg| {
+    var backend: ?build_def.ExecutionTarget = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--backend")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            backend = parseBackend(args[index]) orelse return error.InvalidArguments;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--offline")) {
             offline = true;
             continue;
@@ -83,8 +95,16 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     }
 
     return .{
+        .backend = backend,
         .offline = offline,
         .locked = locked,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
+}
+
+fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
+    if (std.mem.eql(u8, arg, "vm")) return .vm;
+    if (std.mem.eql(u8, arg, "llvm")) return .llvm_native;
+    if (std.mem.eql(u8, arg, "hybrid")) return .hybrid;
+    return null;
 }

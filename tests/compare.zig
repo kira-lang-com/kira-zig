@@ -63,7 +63,9 @@ fn fromBuildStage(stage: build.FrontendStage) discovery.Stage {
     return switch (stage) {
         .lexer => .lexer,
         .parser => .parser,
+        .graph => .graph,
         .semantics => .semantics,
         .ir => .ir,
+        .backend_prepare => .backend_prepare,
     };
 }

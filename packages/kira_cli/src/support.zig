@@ -225,8 +225,10 @@ fn frontendStageName(stage: ?build.FrontendStage) []const u8 {
     return switch (stage orelse .ir) {
         .lexer => "lexer",
         .parser => "parser",
+        .graph => "graph",
         .semantics => "semantics",
         .ir => "ir",
+        .backend_prepare => "backend_prepare",
     };
 }
 

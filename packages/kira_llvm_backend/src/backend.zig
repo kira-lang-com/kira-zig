@@ -130,6 +130,16 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
     return .{ .artifacts = try artifacts.toOwnedSlice() };
 }
 
+pub fn validate(allocator: std.mem.Allocator, request: backend_api.CompileRequest) !void {
+    if (request.mode != .llvm_native and request.mode != .hybrid) return error.UnsupportedBackendMode;
+
+    const triple = try hostTargetTriple(allocator);
+    defer allocator.free(triple);
+
+    const ir_text = try buildTextLlvmIr(allocator, request, triple);
+    allocator.free(ir_text);
+}
+
 fn compileViaTextIr(
     allocator: std.mem.Allocator,
     request: backend_api.CompileRequest,

@@ -1,4 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KPAR001"
 diagnostic_title = "expected ';' after annotation spec"
 stage = "parser"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

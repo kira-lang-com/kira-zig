@@ -1,5 +1,13 @@
-mode = "fail"
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
 diagnostic_code = "KSEM086"
 diagnostic_title = "local is not initialized"
 stage = "semantics"
 
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

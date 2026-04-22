@@ -1,3 +1,11 @@
-mode = "run"
-backends = ["vm", "llvm", "hybrid"]
+backends = ["hybrid", "vm", "llvm"]
+
+[phases.check]
+result = "pass"
+
+[phases.build]
+result = "pass"
+
+[phases.run]
+result = "pass"
 stdout = "5\n16\n4\n2\n-5\n"

@@ -1,5 +1,11 @@
-mode = "fail"
-backends = ["vm"]
-diagnostic_code = "KBUILD001"
-diagnostic_title = "native code requires a native-capable backend"
-stage = "ir"
+backends = ["hybrid", "llvm"]
+
+[phases.check]
+result = "pass"
+
+[phases.build]
+result = "pass"
+
+[phases.run]
+result = "pass"
+stdout = "native main\n"

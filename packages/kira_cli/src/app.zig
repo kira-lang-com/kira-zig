@@ -103,7 +103,7 @@ fn printUsage(writer: anytype) !void {
         \\  shader check <file.ksl>
         \\  shader ast <file.ksl>
         \\  shader build [<file.ksl>|Shaders] [--out-dir <dir>]
-        \\  check [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
+        \\  check [--backend vm|llvm|hybrid] [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
         \\  tokens [<project-dir|kira.toml|project.toml>]
         \\  ast [<project-dir|kira.toml|project.toml>]
         \\  sync [--offline] [--locked] [<project-dir|kira.toml|project.toml>]
@@ -286,4 +286,47 @@ test "run defaults to project.toml in the current directory" {
     try std.testing.expectEqual(@as(u8, 1), exit_code);
     try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "invalid Kira input") == null);
+}
+
+test "vm run launches bytecode produced by the build pipeline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("DemoApp/app");
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/project.toml",
+        .data = "[project]\n" ++
+            "name = \"DemoApp\"\n" ++
+            "version = \"0.1.0\"\n\n" ++
+            "[defaults]\n" ++
+            "execution_mode = \"vm\"\n" ++
+            "build_target = \"host\"\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "DemoApp/app/main.kira",
+        .data = "@Main\nfunction main() { print(\"ok\"); return; }\n",
+    });
+    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stdout = std.io.fixedBufferStream(&stdout_buffer);
+    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+
+    const exit_code = try runWithWriters(
+        arena.allocator(),
+        &.{ "kirac", "run", "--backend", "vm", path },
+        stdout.writer(),
+        stderr.writer(),
+    );
+
+    const artifact_path = try std.fs.path.join(arena.allocator(), &.{ path, "generated", "DemoApp.run.kbc" });
+    var artifact = try std.fs.openFileAbsolute(artifact_path, .{});
+    artifact.close();
+
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.getWritten(), "ok") != null);
 }

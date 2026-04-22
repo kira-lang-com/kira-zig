@@ -1,6 +1,7 @@
 const std = @import("std");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
+const diagnostics = @import("kira_diagnostics");
 const hybrid_runtime = @import("kira_hybrid_runtime");
 const vm_runtime = @import("kira_vm_runtime");
 const compare = @import("compare.zig");
@@ -12,145 +13,234 @@ pub const Options = struct {
 
 pub fn runCase(allocator: std.mem.Allocator, case: discovery.Case, reporter: anytype, options: Options) !void {
     var system = build.BuildSystem.init(allocator);
-    switch (case.expectation.mode) {
-        .check => try runCheck(allocator, &system, case, reporter),
-        .run => try runExecutable(allocator, &system, case, reporter, options),
-        .fail => try runFailure(allocator, &system, case, reporter),
+    for (case.expectation.backends) |backend| {
+        try runBackendMatrix(allocator, &system, case, backend, reporter, options);
     }
 }
 
-fn runCheck(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case, reporter: anytype) !void {
-    _ = allocator;
-    const result = system.check(case.source_path) catch |err| {
-        reporter.fail(case.name, err);
-        return err;
-    };
-    compare.expectNoDiagnostics(result) catch |err| {
-        reporter.fail(case.name, err);
-        return err;
-    };
-    reporter.pass(case.name);
-}
-
-fn runExecutable(
+fn runBackendMatrix(
     allocator: std.mem.Allocator,
     system: *build.BuildSystem,
     case: discovery.Case,
+    backend: discovery.Backend,
     reporter: anytype,
     options: Options,
 ) !void {
-    if (case.expectation.backends.len == 0) return error.MissingBackendMatrix;
-    const expected_stdout = case.expectation.stdout orelse return error.MissingStdoutExpectation;
-    var baseline_stdout: ?[]u8 = null;
-    defer if (baseline_stdout) |stdout| allocator.free(stdout);
-
-    for (case.expectation.backends) |backend| {
-        const label = try backendLabel(allocator, case.name, backend);
-        const actual_stdout = switch (backend) {
-            .vm => runVm(allocator, system, case) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-            .llvm => runLlvm(allocator, system, case) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-            .hybrid => runHybrid(allocator, system, case, options) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-        };
-        const keep_stdout = baseline_stdout == null;
-        defer if (!keep_stdout) allocator.free(actual_stdout);
-
-        compare.expectStdout(allocator, actual_stdout, expected_stdout) catch |err| {
-            reporter.fail(label, err);
-            return err;
-        };
-
-        if (baseline_stdout) |baseline| {
-            compare.expectStdout(allocator, actual_stdout, baseline) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            };
-        } else {
-            baseline_stdout = actual_stdout;
-        }
-        reporter.pass(label);
-    }
+    var stopped = false;
+    try runExpectedPhase(allocator, system, case, backend, .check, case.expectation.check, &stopped, reporter, options);
+    try runExpectedPhase(allocator, system, case, backend, .build, case.expectation.build, &stopped, reporter, options);
+    try runExpectedPhase(allocator, system, case, backend, .run, case.expectation.run, &stopped, reporter, options);
 }
 
-fn runFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case, reporter: anytype) !void {
-    if (case.expectation.backends.len == 0) {
-        const result = build.checkFile(allocator, case.source_path) catch |err| {
-            reporter.fail(case.name, err);
-            return err;
-        };
-        compare.expectDiagnostic(
-            result.diagnostics,
-            case.expectation.diagnostic_code orelse return error.MissingDiagnosticExpectation,
-            case.expectation.diagnostic_title orelse return error.MissingDiagnosticExpectation,
-        ) catch |err| {
-            reporter.fail(case.name, err);
-            return err;
-        };
-        if (case.expectation.stage) |stage| {
-            compare.expectStage(result.failure_stage, stage) catch |err| {
-                reporter.fail(case.name, err);
-                return err;
-            };
+fn runExpectedPhase(
+    allocator: std.mem.Allocator,
+    system: *build.BuildSystem,
+    case: discovery.Case,
+    backend: discovery.Backend,
+    phase: discovery.Phase,
+    expected: discovery.PhaseExpectation,
+    stopped: *bool,
+    reporter: anytype,
+    options: Options,
+) !void {
+    if (expected.result == .blocked) {
+        const label = try matrixLabel(allocator, case.name, backend, phase);
+        if (!stopped.*) {
+            const detail = try std.fmt.allocPrint(
+                allocator,
+                "{s} expected blocked, actual reachable",
+                .{label},
+            );
+            reporter.fail(detail, error.ExpectationFailed);
+            return error.ExpectationFailed;
         }
-        reporter.pass(case.name);
+        reporter.pass(label);
         return;
     }
 
-    for (case.expectation.backends) |backend| {
-        const label = try backendLabel(allocator, case.name, backend);
-        switch (backend) {
-            .vm => runVmFailure(allocator, system, case) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-            .llvm => runLlvmFailure(allocator, system, case) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-            .hybrid => runHybridFailure(allocator, system, case) catch |err| {
-                reporter.fail(label, err);
-                return err;
-            },
-        }
-        reporter.pass(label);
+    if (stopped.*) {
+        const label = try matrixLabel(allocator, case.name, backend, phase);
+        const detail = try std.fmt.allocPrint(
+            allocator,
+            "{s} expected {s}, actual blocked by an earlier phase",
+            .{ label, expectedResultName(expected.result) },
+        );
+        reporter.fail(detail, error.ExpectationFailed);
+        return error.ExpectationFailed;
     }
+
+    const actual = runPhase(allocator, system, case, backend, phase, options) catch |err| {
+        const label = try matrixLabel(allocator, case.name, backend, phase);
+        reporter.fail(label, err);
+        return err;
+    };
+    if (actual.result == .fail) stopped.* = true;
+
+    comparePhase(allocator, case.name, backend, phase, expected, actual, reporter) catch |err| {
+        return err;
+    };
 }
 
-fn runVm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) ![]u8 {
+const PhaseActual = struct {
+    result: discovery.ExpectedResult,
+    stdout: ?[]const u8 = null,
+    diagnostics: []const diagnostics.Diagnostic = &.{},
+    stage: ?discovery.Stage = null,
+};
+
+fn runPhase(
+    allocator: std.mem.Allocator,
+    system: *build.BuildSystem,
+    case: discovery.Case,
+    backend: discovery.Backend,
+    phase: discovery.Phase,
+    options: Options,
+) !PhaseActual {
+    return switch (phase) {
+        .check => runCheckPhase(allocator, case, backend),
+        .build => runBuildPhase(allocator, system, case, backend),
+        .run => runRunPhase(allocator, system, case, backend, options),
+    };
+}
+
+fn runCheckPhase(
+    allocator: std.mem.Allocator,
+    case: discovery.Case,
+    backend: discovery.Backend,
+) !PhaseActual {
+    const result = try build.checkFileForBackend(allocator, case.source_path, executionTarget(backend));
+    return .{
+        .result = if (result.failed()) .fail else .pass,
+        .diagnostics = result.diagnostics,
+        .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+    };
+}
+
+fn runBuildPhase(
+    allocator: std.mem.Allocator,
+    system: *build.BuildSystem,
+    case: discovery.Case,
+    backend: discovery.Backend,
+) !PhaseActual {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const output_path = try buildOutputPath(allocator, tmp, backend);
+    const result = try system.build(.{
+        .source_path = case.source_path,
+        .output_path = output_path,
+        .target = .{ .execution = executionTarget(backend) },
+    });
+    return .{
+        .result = if (result.failed()) .fail else .pass,
+        .diagnostics = result.diagnostics,
+        .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+    };
+}
+
+fn runRunPhase(
+    allocator: std.mem.Allocator,
+    system: *build.BuildSystem,
+    case: discovery.Case,
+    backend: discovery.Backend,
+    options: Options,
+) !PhaseActual {
+    return switch (backend) {
+        .vm => runVmPhase(allocator, system, case),
+        .llvm => runLlvmPhase(allocator, system, case),
+        .hybrid => runHybridPhase(allocator, system, case, options),
+    };
+}
+
+fn comparePhase(
+    allocator: std.mem.Allocator,
+    case_name: []const u8,
+    backend: discovery.Backend,
+    phase: discovery.Phase,
+    expected: discovery.PhaseExpectation,
+    actual: PhaseActual,
+    reporter: anytype,
+) !void {
+    const label = try matrixLabel(allocator, case_name, backend, phase);
+    if (actual.result != expected.result) {
+        const detail = try std.fmt.allocPrint(
+            allocator,
+            "{s} expected {s}, actual {s}",
+            .{ label, expectedResultName(expected.result), expectedResultName(actual.result) },
+        );
+        reporter.fail(detail, error.ExpectationFailed);
+        return error.ExpectationFailed;
+    }
+
+    switch (expected.result) {
+        .pass => {
+            if (phase == .run) {
+                compare.expectStdout(allocator, actual.stdout orelse "", expected.stdout orelse "") catch |err| {
+                    const detail = try std.fmt.allocPrint(allocator, "{s} expected pass, actual stdout mismatch", .{label});
+                    reporter.fail(detail, err);
+                    return err;
+                };
+            }
+        },
+        .fail => {
+            compare.expectDiagnostic(
+                actual.diagnostics,
+                expected.diagnostic_code orelse return error.MissingDiagnosticExpectation,
+                expected.diagnostic_title orelse return error.MissingDiagnosticExpectation,
+            ) catch |err| {
+                const actual_diag = firstDiagnostic(actual.diagnostics);
+                const detail = try std.fmt.allocPrint(
+                    allocator,
+                    "{s} expected fail {s}/{s}, actual fail {s}/{s}",
+                    .{
+                        label,
+                        expected.diagnostic_code orelse "",
+                        expected.diagnostic_title orelse "",
+                        actual_diag.code,
+                        actual_diag.title,
+                    },
+                );
+                reporter.fail(detail, err);
+                return err;
+            };
+            if (expected.stage) |stage| {
+                if (actual.stage == null or actual.stage.? != stage) {
+                    const detail = try std.fmt.allocPrint(
+                        allocator,
+                        "{s} expected fail at {s}, actual fail at {s}",
+                        .{ label, stageName(stage), if (actual.stage) |actual_stage| stageName(actual_stage) else "unknown" },
+                    );
+                    reporter.fail(detail, error.ExpectationFailed);
+                    return error.ExpectationFailed;
+                }
+            }
+        },
+        .blocked => unreachable,
+    }
+    reporter.pass(label);
+}
+
+fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
     const result = try system.compileVm(case.source_path);
-    try std.testing.expect(!result.failed());
-    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    if (result.failed() or result.diagnostics.len != 0) {
+        return .{
+            .result = .fail,
+            .diagnostics = result.diagnostics,
+            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+        };
+    }
 
     var output = std.array_list.Managed(u8).init(allocator);
 
     var vm = vm_runtime.Vm.init(allocator);
     try vm.runMain(&result.bytecode_module.?, output.writer());
-    return output.toOwnedSlice();
+    return .{
+        .result = .pass,
+        .stdout = try output.toOwnedSlice(),
+    };
 }
 
-fn runVmFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {
-    const result = try system.compileVm(case.source_path);
-    try std.testing.expect(result.failed());
-    try compare.expectDiagnostic(
-        result.diagnostics,
-        case.expectation.diagnostic_code orelse return error.MissingDiagnosticExpectation,
-        case.expectation.diagnostic_title orelse return error.MissingDiagnosticExpectation,
-    );
-    if (case.expectation.stage) |stage| {
-        try compare.expectStage(result.failure_stage, stage);
-    }
-    _ = allocator;
-}
-
-fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) ![]u8 {
+fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -160,8 +250,13 @@ fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: disco
         .output_path = output_path,
         .target = .{ .execution = .llvm_native },
     });
-    try std.testing.expect(!result.failed());
-    try std.testing.expect(result.diagnostics.len == 0);
+    if (result.failed() or result.diagnostics.len != 0) {
+        return .{
+            .result = .fail,
+            .diagnostics = result.diagnostics,
+            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+        };
+    }
 
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
     const child = try std.process.Child.run(.{
@@ -171,33 +266,18 @@ fn runLlvm(allocator: std.mem.Allocator, system: *build.BuildSystem, case: disco
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
     try compare.expectEmptyText(allocator, child.stderr);
-    return child.stdout;
+    return .{
+        .result = .pass,
+        .stdout = child.stdout,
+    };
 }
 
-fn runLlvmFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const output_path = try makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension());
-    const result = try system.buildNativeArtifact(.{
-        .source_path = case.source_path,
-        .output_path = output_path,
-        .target = .{ .execution = .llvm_native },
-    });
-    try std.testing.expect(result.failed());
-    try compare.expectDiagnostic(
-        result.diagnostics,
-        case.expectation.diagnostic_code orelse return error.MissingDiagnosticExpectation,
-        case.expectation.diagnostic_title orelse return error.MissingDiagnosticExpectation,
-    );
-}
-
-fn runHybrid(
+fn runHybridPhase(
     allocator: std.mem.Allocator,
     system: *build.BuildSystem,
     case: discovery.Case,
     options: Options,
-) ![]u8 {
+) !PhaseActual {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -207,8 +287,13 @@ fn runHybrid(
         .output_path = manifest_path,
         .target = .{ .execution = .hybrid },
     });
-    try std.testing.expect(!result.failed());
-    try std.testing.expect(result.diagnostics.len == 0);
+    if (result.failed() or result.diagnostics.len != 0) {
+        return .{
+            .result = .fail,
+            .diagnostics = result.diagnostics,
+            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+        };
+    }
 
     const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
     const child = try std.process.Child.run(.{
@@ -218,25 +303,10 @@ fn runHybrid(
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
     try compare.expectEmptyText(allocator, child.stderr);
-    return child.stdout;
-}
-
-fn runHybridFailure(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !void {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const manifest_path = try makeBackendOutputPath(allocator, tmp, "hybrid", ".khm");
-    const result = try system.buildHybridArtifact(.{
-        .source_path = case.source_path,
-        .output_path = manifest_path,
-        .target = .{ .execution = .hybrid },
-    });
-    try std.testing.expect(result.failed());
-    try compare.expectDiagnostic(
-        result.diagnostics,
-        case.expectation.diagnostic_code orelse return error.MissingDiagnosticExpectation,
-        case.expectation.diagnostic_title orelse return error.MissingDiagnosticExpectation,
-    );
+    return .{
+        .result = .pass,
+        .stdout = child.stdout,
+    };
 }
 
 fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
@@ -244,6 +314,14 @@ fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
         if (artifact.kind == .executable) return artifact;
     }
     return null;
+}
+
+fn buildOutputPath(allocator: std.mem.Allocator, tmp: std.testing.TmpDir, backend: discovery.Backend) ![]const u8 {
+    return switch (backend) {
+        .vm => makeBackendOutputPath(allocator, tmp, "vm", ".kbc"),
+        .llvm => makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension()),
+        .hybrid => makeBackendOutputPath(allocator, tmp, "hybrid", ".khm"),
+    };
 }
 
 fn makeBackendOutputPath(
@@ -265,8 +343,13 @@ fn expectExitedZero(term: std.process.Child.Term) !void {
     }
 }
 
-fn backendLabel(allocator: std.mem.Allocator, case_name: []const u8, backend: discovery.Backend) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "{s} [{s}]", .{ case_name, backendName(backend) });
+fn matrixLabel(
+    allocator: std.mem.Allocator,
+    case_name: []const u8,
+    backend: discovery.Backend,
+    phase: discovery.Phase,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s} [{s} {s}]", .{ case_name, backendName(backend), phaseName(phase) });
 }
 
 fn backendName(backend: discovery.Backend) []const u8 {
@@ -276,3 +359,92 @@ fn backendName(backend: discovery.Backend) []const u8 {
         .hybrid => "hybrid",
     };
 }
+
+fn phaseName(phase: discovery.Phase) []const u8 {
+    return switch (phase) {
+        .check => "check",
+        .build => "build",
+        .run => "run",
+    };
+}
+
+fn expectedResultName(result: discovery.ExpectedResult) []const u8 {
+    return switch (result) {
+        .pass => "pass",
+        .fail => "fail",
+        .blocked => "blocked",
+    };
+}
+
+fn stageName(stage: discovery.Stage) []const u8 {
+    return switch (stage) {
+        .lexer => "lexer",
+        .parser => "parser",
+        .graph => "graph",
+        .semantics => "semantics",
+        .ir => "ir",
+        .backend_prepare => "backend_prepare",
+    };
+}
+
+fn executionTarget(backend: discovery.Backend) build_def.ExecutionTarget {
+    return switch (backend) {
+        .vm => .vm,
+        .llvm => .llvm_native,
+        .hybrid => .hybrid,
+    };
+}
+
+fn fromBuildStage(stage: build.FrontendStage) discovery.Stage {
+    return switch (stage) {
+        .lexer => .lexer,
+        .parser => .parser,
+        .graph => .graph,
+        .semantics => .semantics,
+        .ir => .ir,
+        .backend_prepare => .backend_prepare,
+    };
+}
+
+const DiagnosticSummary = struct {
+    code: []const u8,
+    title: []const u8,
+};
+
+fn firstDiagnostic(items: []const diagnostics.Diagnostic) DiagnosticSummary {
+    if (items.len == 0) return .{ .code = "<none>", .title = "<none>" };
+    return .{
+        .code = items[0].code orelse "<none>",
+        .title = items[0].title,
+    };
+}
+
+test "phase comparison catches unexpected run failure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var reporter = TestReporter{};
+    try std.testing.expectError(error.ExpectationFailed, comparePhase(
+        arena.allocator(),
+        "tests/pass/run/example",
+        .hybrid,
+        .run,
+        .{ .result = .pass, .stdout = "ok\n" },
+        .{ .result = .fail },
+        &reporter,
+    ));
+    try std.testing.expectEqual(@as(usize, 1), reporter.failed);
+}
+
+const TestReporter = struct {
+    passed: usize = 0,
+    failed: usize = 0,
+
+    pub fn pass(self: *TestReporter, _: []const u8) void {
+        self.passed += 1;
+    }
+
+    pub fn fail(self: *TestReporter, _: []const u8, _: anyerror) void {
+        self.failed += 1;
+    }
+};
