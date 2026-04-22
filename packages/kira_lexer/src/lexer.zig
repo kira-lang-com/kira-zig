@@ -194,7 +194,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                     });
                     return error.DiagnosticsEmitted;
                 }
-                const contents = source.text[start + 1 .. index];
+                const contents = try unescapeStringLiteral(allocator, source.text[start + 1 .. index]);
                 index += 1;
                 try tokens.append(makeToken(.string, contents, start, index));
             },
@@ -285,6 +285,32 @@ fn makeToken(kind: syntax.TokenKind, lexeme: []const u8, start: usize, end: usiz
         .lexeme = lexeme,
         .span = source_pkg.Span.init(start, end),
     };
+}
+
+fn unescapeStringLiteral(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+
+    var out = std.array_list.Managed(u8).init(allocator);
+    var index: usize = 0;
+    while (index < raw.len) : (index += 1) {
+        const byte = raw[index];
+        if (byte != '\\' or index + 1 >= raw.len) {
+            try out.append(byte);
+            continue;
+        }
+
+        index += 1;
+        try out.append(switch (raw[index]) {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '0' => 0,
+            '"' => '"',
+            '\\' => '\\',
+            else => raw[index],
+        });
+    }
+    return out.toOwnedSlice();
 }
 
 fn readRepoFileForTest(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -390,6 +416,18 @@ test "reports unterminated string literals as diagnostics" {
     try std.testing.expectError(error.DiagnosticsEmitted, result);
     try std.testing.expectEqual(@as(usize, 1), diags.items.len);
     try std.testing.expectEqualStrings("unterminated string literal", diags.items[0].title);
+}
+
+test "unescapes common string literal escapes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(allocator, "strings.kira", "\"a\\n\\t\\\"b\\\\\"");
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = try tokenize(allocator, &source, &diags);
+
+    try std.testing.expectEqualStrings("a\n\t\"b\\", tokens[0].lexeme);
 }
 
 test "reports unexpected characters as diagnostics" {

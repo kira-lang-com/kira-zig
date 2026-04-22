@@ -1,0 +1,38 @@
+struct Application {
+    var width: Int = 800
+    var height: Int = 600
+}
+
+struct Float4 {
+    var x: Float = 0.0
+    var y: Float = 0.0
+    var z: Float = 0.0
+    var w: Float = 1.0
+}
+
+struct CallbackState {
+    var callback: (RawPtr) -> Void = probeNoop
+}
+
+@Native
+function probeNoop(data: RawPtr) {
+    return
+}
+
+@Native
+function onEvent(data: RawPtr) {
+    var state = nativeRecover<CallbackState>(data)
+    state.callback(data)
+    return
+}
+
+@Main
+function main() {
+    var app = Application()
+    var color = Float4 {}
+    var state = nativeState(CallbackState())
+    var data = nativeUserData(state)
+    onEvent(data)
+    return
+}
+

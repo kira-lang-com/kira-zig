@@ -1,0 +1,11 @@
+struct Box {
+    var value: Int
+}
+
+@Main
+function main() {
+    var box = Box { value: 1 }
+    box.value[0] = 2
+    return
+}
+

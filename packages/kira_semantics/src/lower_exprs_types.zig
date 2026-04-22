@@ -485,7 +485,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
         },
         .index => |node| blk: {
             const object_ty = try resolveSyntaxExprType(ctx, node.object, span);
-            break :blk try resolveArrayElementType(ctx, object_ty, node.span);
+            break :blk try resolveIndexElementType(ctx, object_ty, node.span);
         },
         else => .{ .kind = .unknown },
     };
@@ -513,6 +513,7 @@ pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.T
         const explicit_type = try shared.typeFromSyntax(ctx.allocator, type_expr.*);
         if (value_expr) |expr| {
             const inferred = try resolveSyntaxExprType(ctx, expr, span);
+            if (explicit_type.kind == .callback and inferred.kind == .unknown and isFunctionNameExpr(expr.*)) return explicit_type;
             if (inferred.kind == .unknown and syntaxExprMatchesExplicitType(expr, explicit_type)) return explicit_type;
             if (!(shared.canAssign(explicit_type, inferred) or canPassArgument(ctx, explicit_type, inferred))) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, explicit_type, inferred);
@@ -686,6 +687,13 @@ fn typesCompatibleForContext(
     return false;
 }
 
+fn isFunctionNameExpr(expr: syntax.ast.Expr) bool {
+    return switch (expr) {
+        .identifier, .member => true,
+        else => false,
+    };
+}
+
 fn emitDeclaredInitializerMismatch(
     ctx: *shared.Context,
     initializer_span: source_pkg.Span,
@@ -764,16 +772,60 @@ pub fn resolveSyntaxArrayLiteralType(ctx: *shared.Context, elements: []const *sy
 }
 
 pub fn resolveArrayElementType(ctx: *shared.Context, array_ty: model.ResolvedType, span: source_pkg.Span) !model.ResolvedType {
+    return resolveElementType(ctx, array_ty, span, .for_loop);
+}
+
+pub fn resolveIndexElementType(ctx: *shared.Context, array_ty: model.ResolvedType, span: source_pkg.Span) !model.ResolvedType {
+    return resolveElementType(ctx, array_ty, span, .index);
+}
+
+const ElementUse = enum {
+    for_loop,
+    index,
+};
+
+fn resolveElementType(
+    ctx: *shared.Context,
+    array_ty: model.ResolvedType,
+    span: source_pkg.Span,
+    use: ElementUse,
+) !model.ResolvedType {
+    if (array_ty.kind == .named) {
+        if (shared.namedTypeInfo(ctx, array_ty)) |info| {
+            switch (info) {
+                .array => |value| return value.element,
+                .alias => |value| return resolveElementType(ctx, value.target, span, use),
+                else => {},
+            }
+        }
+    }
+
     if (array_ty.kind != .array) {
+        const title = switch (use) {
+            .for_loop => "for loop requires an array iterator",
+            .index => "indexing requires an array value",
+        };
+        const message = switch (use) {
+            .for_loop => "Executable `for` loops currently iterate over array values.",
+            .index => "Index expressions can only select elements from array values.",
+        };
+        const label_text = switch (use) {
+            .for_loop => "iterator is not an array value",
+            .index => "indexed value is not an array",
+        };
+        const help = switch (use) {
+            .for_loop => "Use an array value in the `for ... in ...` position.",
+            .index => "Use `value[index]` only when `value` has an array or fixed-array FFI type.",
+        };
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
             .code = "KSEM051",
-            .title = "for loop requires an array iterator",
-            .message = "Executable `for` loops currently iterate over array values.",
+            .title = title,
+            .message = message,
             .labels = &.{
-                diagnostics.primaryLabel(span, "iterator is not an array value"),
+                diagnostics.primaryLabel(span, label_text),
             },
-            .help = "Use an array value in the `for ... in ...` position.",
+            .help = help,
         });
         return error.DiagnosticsEmitted;
     }

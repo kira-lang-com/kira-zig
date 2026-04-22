@@ -66,6 +66,12 @@ fn executeCommand(allocator: std.mem.Allocator, _: []const u8, args: []const []c
             if (run_err == error.InvalidArguments) try printUsage(err);
             return 1;
         }
+        if (run_err == error.ProjectEntrypointNotFound) {
+            try err.writeAll("error[KPROJECT001]: project entrypoint not found\n");
+            try err.writeAll("  This project root does not contain `app/main.kira`, so it cannot be checked, built, or run as an application entrypoint yet.\n");
+            try err.writeAll("  help: Point the command at an application package or source file with an @Main entrypoint. Library-root checking is not supported yet.\n");
+            return 1;
+        }
         if (run_err == error.UnsupportedTarget) {
             try err.writeAll("error[KBUILD002]: unsupported host target\n");
             try err.print(

@@ -1,0 +1,5 @@
+mode = "fail"
+diagnostic_code = "KSEM051"
+diagnostic_title = "indexing requires an array value"
+stage = "semantics"
+

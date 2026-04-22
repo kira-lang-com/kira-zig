@@ -1,0 +1,27 @@
+@FFI.Struct { layout: c; }
+struct ColorAction {
+    var load_action: I32
+}
+
+@FFI.Array { element: ColorAction; count: 4; }
+struct ColorActionArray4 {}
+
+@FFI.Struct { layout: c; }
+struct PassAction {
+    var colors: ColorActionArray4
+}
+
+@FFI.Struct { layout: c; }
+struct Pass {
+    var action: PassAction
+}
+
+@Main
+@Native
+function main() {
+    var pass = Pass {}
+    var colorAction = ColorAction {}
+    pass.action.colors[0] = colorAction
+    return
+}
+

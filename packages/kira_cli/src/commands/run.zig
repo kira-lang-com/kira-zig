@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
@@ -69,7 +70,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             }
 
             const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
-            try runExecutable(allocator, executable.path);
+            try runExecutable(allocator, executable.path, input.project_root, stdout, stderr);
         },
         .hybrid => {
             const output_root = try support.outputRoot(allocator, input.project_root);
@@ -158,11 +159,52 @@ fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
     return null;
 }
 
-fn runExecutable(allocator: std.mem.Allocator, path: []const u8) !void {
-    var child = std.process.Child.init(&.{path}, allocator);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
-    if (term != .Exited or term.Exited != 0) return error.NativeRunFailed;
+fn runExecutable(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    project_root: ?[]const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !void {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{path},
+        .cwd = project_root,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.stdout.len > 0) try stdout.writeAll(result.stdout);
+    if (result.term == .Exited and result.term.Exited == 0) {
+        if (result.stderr.len > 0) try stderr.writeAll(result.stderr);
+        return;
+    }
+
+    try stderr.print("native executable failed: {s}\n", .{path});
+    switch (result.term) {
+        .Exited => |code| try stderr.print("  exit code: {d}\n", .{code}),
+        .Signal => |signal| try stderr.print("  signal: {d}\n", .{signal}),
+        .Stopped => |signal| try stderr.print("  stopped by signal: {d}\n", .{signal}),
+        .Unknown => |code| try stderr.print("  status: {d}\n", .{code}),
+    }
+    if (result.stderr.len > 0) {
+        try stderr.writeAll("  stderr:\n");
+        try stderr.writeAll(result.stderr);
+        if (result.stderr[result.stderr.len - 1] != '\n') try stderr.writeAll("\n");
+    } else {
+        try stderr.writeAll("  stderr: <empty>\n");
+    }
+    if (result.stdout.len > 0) {
+        try stderr.writeAll("  stdout:\n");
+        try stderr.writeAll(result.stdout);
+        if (result.stdout[result.stdout.len - 1] != '\n') try stderr.writeAll("\n");
+    }
+    if (project_root) |cwd| {
+        try stderr.print("  cwd: {s}\n", .{cwd});
+    }
+    try stderr.print("  command: {s}\n", .{path});
+    if (builtin.os.tag == .windows and result.term == .Exited and result.term.Exited == 9) {
+        try stderr.writeAll("  note: Windows may report native fail-fast statuses through the low exit byte; running the executable directly can reveal the full NTSTATUS.\n");
+    }
+    return error.NativeRunFailed;
 }

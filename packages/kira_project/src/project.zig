@@ -10,3 +10,11 @@ pub const ResolvedProject = struct {
     entrypoint_path: []const u8,
     project: Project,
 };
+
+pub const ResolvedPackageRoot = struct {
+    root_path: []const u8,
+    manifest_path: []const u8,
+    entrypoint_path: ?[]const u8 = null,
+    module_source_root: []const u8,
+    project: Project,
+};

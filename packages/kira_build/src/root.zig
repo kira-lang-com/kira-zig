@@ -16,6 +16,7 @@ pub const compileFileToBytecode = @import("pipeline.zig").compileFileToBytecode;
 pub const lexFile = @import("pipeline.zig").lexFile;
 pub const parseFile = @import("pipeline.zig").parseFile;
 pub const checkFile = @import("pipeline.zig").checkFile;
+pub const checkPackageRoot = @import("pipeline.zig").checkPackageRoot;
 pub const resolveNativeManifestFile = @import("native_lib_resolver.zig").resolveNativeManifestFile;
 pub const ShaderFrontendStage = @import("shader/pipeline.zig").ShaderFrontendStage;
 pub const ShaderLexResult = @import("shader/pipeline.zig").ShaderLexResult;

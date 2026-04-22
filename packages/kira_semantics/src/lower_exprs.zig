@@ -616,7 +616,7 @@ pub fn lowerExpr(
                 });
                 return error.DiagnosticsEmitted;
             }
-            const element_ty = try resolveArrayElementType(ctx, model.hir.exprType(object.*), node.span);
+            const element_ty = try types.resolveIndexElementType(ctx, model.hir.exprType(object.*), node.span);
             lowered.* = .{ .index = .{
                 .object = object,
                 .index = index,

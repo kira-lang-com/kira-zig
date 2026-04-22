@@ -42,15 +42,18 @@ Layer 5:
 - `kira_build_definition`
 
 Layer 6:
-- `kira_build`
+- `kira_program_graph`
 
 Layer 7:
+- `kira_build`
+
+Layer 8:
 - `kira_linter`
 - `kira_doc`
 - `kira_app_generation`
 
-Layer 8:
+Layer 9:
 - `kira_cli`
 
-Layer 9:
+Layer 10:
 - `kira_main`

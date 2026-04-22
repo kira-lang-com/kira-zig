@@ -39,6 +39,10 @@ pub const BuildSystem = struct {
         return result.diagnostics;
     }
 
+    pub fn checkPackageRoot(self: BuildSystem, source_root: []const u8) !pipeline.CheckPipelineResult {
+        return pipeline.checkPackageRoot(self.allocator, source_root);
+    }
+
     pub fn compileVm(self: BuildSystem, path: []const u8) !pipeline.VmPipelineResult {
         return pipeline.compileFileToBytecode(self.allocator, path);
     }

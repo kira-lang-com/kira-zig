@@ -18,6 +18,7 @@ pub const Context = struct {
     imported_globals: ImportedGlobals = .{},
     annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
+    function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
 };
 
 pub const AnnotationHeader = struct {

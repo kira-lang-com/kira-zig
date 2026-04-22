@@ -44,6 +44,10 @@ pub const ResolvedFieldOverride = struct {
 
 pub const ResolvedMethodMember = shared.MethodMember;
 
+pub const AnalysisOptions = struct {
+    require_main: bool = true,
+};
+
 pub const TypeSource = union(enum) {
     local: syntax.ast.TypeDecl,
     imported: @import("imported_globals.zig").ImportedType,
@@ -62,6 +66,16 @@ pub fn lowerProgram(
     imported_globals: ImportedGlobals,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !model.Program {
+    return lowerProgramWithOptions(allocator, program, imported_globals, .{}, out_diagnostics);
+}
+
+pub fn lowerProgramWithOptions(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    imported_globals: ImportedGlobals,
+    options: AnalysisOptions,
+    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+) !model.Program {
     var ctx = shared.Context{
         .allocator = allocator,
         .diagnostics = out_diagnostics,
@@ -78,6 +92,7 @@ pub fn lowerProgram(
     defer construct_headers.deinit(allocator);
     var function_headers = std.StringHashMapUnmanaged(shared.FunctionHeader){};
     defer function_headers.deinit(allocator);
+    ctx.function_headers = &function_headers;
     var type_headers = std.StringHashMapUnmanaged(shared.TypeHeader){};
     defer type_headers.deinit(allocator);
     ctx.type_headers = &type_headers;
@@ -285,7 +300,7 @@ pub fn lowerProgram(
         }
     }
 
-    if (main_index == null) {
+    if (main_index == null and options.require_main) {
         try diagnostics.appendOwned(allocator, out_diagnostics, .{
             .severity = .@"error",
             .code = "KSEM001",
@@ -306,7 +321,7 @@ pub fn lowerProgram(
         .types = try types.toOwnedSlice(),
         .forms = try forms.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
-        .entry_index = main_index.?,
+        .entry_index = main_index orelse 0,
     };
 }
 
@@ -524,7 +539,11 @@ pub fn lowerFunction(
     };
 }
 
-pub fn lowerField(ctx: *shared.Context, field_decl: syntax.ast.FieldDecl, construct_model: ?model.Construct) !model.Field {
+pub fn lowerField(
+    ctx: *shared.Context,
+    field_decl: syntax.ast.FieldDecl,
+    construct_model: ?model.Construct,
+) !model.Field {
     try shared.validateAnnotationPlacement(ctx, field_decl.annotations, .field_decl, construct_model);
     const field_type = try exprs.resolveValueType(ctx, field_decl.type_expr, field_decl.value, field_decl.span);
     return .{
@@ -534,13 +553,22 @@ pub fn lowerField(ctx: *shared.Context, field_decl: syntax.ast.FieldDecl, constr
         .slot_index = 0,
         .ty = field_type,
         .explicit_type = field_decl.type_expr != null,
-        .default_value = if (field_decl.value) |value| try lowerFieldDefaultExpr(ctx, value) else null,
+        .default_value = if (field_decl.value) |value| try lowerFieldDefaultExprExpected(ctx, value, field_type, ctx.function_headers) else null,
         .annotations = try shared.lowerAnnotations(ctx, field_decl.annotations),
         .span = field_decl.span,
     };
 }
 
 pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*model.Expr {
+    return lowerFieldDefaultExprExpected(ctx, expr, .{ .kind = .unknown }, null);
+}
+
+pub fn lowerFieldDefaultExprExpected(
+    ctx: *shared.Context,
+    expr: *syntax.ast.Expr,
+    expected_type: model.ResolvedType,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !*model.Expr {
     const lowered = try ctx.allocator.create(model.Expr);
     lowered.* = switch (expr.*) {
         .integer => |node| .{ .integer = .{
@@ -565,7 +593,7 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
         } },
         .array => |node| blk: {
             var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.elements) |element| try elements.append(try lowerFieldDefaultExpr(ctx, element));
+            for (node.elements) |element| try elements.append(try lowerFieldDefaultExprExpected(ctx, element, .{ .kind = .unknown }, function_headers));
             break :blk .{ .array = .{
                 .elements = try elements.toOwnedSlice(),
                 .ty = .{ .kind = .array },
@@ -578,7 +606,7 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
                 try fields.append(.{
                     .field_name = try ctx.allocator.dupe(u8, field.name),
                     .field_index = null,
-                    .value = try lowerFieldDefaultExpr(ctx, field.value),
+                    .value = try lowerFieldDefaultExprExpected(ctx, field.value, .{ .kind = .unknown }, function_headers),
                     .span = field.span,
                 });
             }
@@ -611,7 +639,7 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
                 try fields.append(.{
                     .field_name = if (arg.label) |label| try ctx.allocator.dupe(u8, label) else null,
                     .field_index = null,
-                    .value = try lowerFieldDefaultExpr(ctx, arg.value),
+                    .value = try lowerFieldDefaultExprExpected(ctx, arg.value, .{ .kind = .unknown }, function_headers),
                     .span = arg.span,
                 });
             }
@@ -635,6 +663,31 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
             .ty = .{ .kind = .unknown },
             .span = node.span,
         } },
+        .identifier => |node| blk: {
+            if (expected_type.kind == .callback) {
+                if (function_headers) |headers| {
+                    const name = try shared.qualifiedNameText(ctx.allocator, node.name);
+                    if (headers.get(name)) |header| {
+                        break :blk .{ .function_ref = .{
+                            .representation = .callable_value,
+                            .function_id = header.id,
+                            .name = name,
+                            .ty = expected_type,
+                            .span = node.span,
+                        } };
+                    }
+                }
+            }
+            try diagnostics.Emitter.init(ctx.allocator, ctx.diagnostics).err(.{
+                .code = "KSEM049",
+                .title = "unsupported field default value",
+                .message = "Field defaults can only use a bare function name when the field has an explicit function type.",
+                .span = defaultExprSpan(expr.*),
+                .label = "unsupported field default value",
+                .help = "Add an explicit function type to the field or use a literal/constructor default.",
+            });
+            return error.DiagnosticsEmitted;
+        },
         .callback => {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
@@ -647,7 +700,7 @@ pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*mod
             return error.DiagnosticsEmitted;
         },
         .unary => |node| blk: {
-            const operand = try lowerFieldDefaultExpr(ctx, node.operand);
+            const operand = try lowerFieldDefaultExprExpected(ctx, node.operand, .{ .kind = .unknown }, function_headers);
             break :blk .{ .unary = .{
                 .operand = operand,
                 .op = @enumFromInt(@intFromEnum(node.op)),

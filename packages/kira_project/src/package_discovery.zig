@@ -2,6 +2,7 @@ const std = @import("std");
 const manifest = @import("kira_manifest");
 const Project = @import("project.zig").Project;
 const ResolvedProject = @import("project.zig").ResolvedProject;
+const ResolvedPackageRoot = @import("project.zig").ResolvedPackageRoot;
 
 pub const preferred_manifest_file_name = "kira.toml";
 pub const legacy_manifest_file_name = "project.toml";
@@ -33,6 +34,21 @@ pub fn loadProjectFromPath(allocator: std.mem.Allocator, path: []const u8) !Reso
         .root_path = root_path,
         .manifest_path = manifest_path,
         .entrypoint_path = entrypoint_path,
+        .project = try loadProjectFromFile(allocator, manifest_path),
+    };
+}
+
+pub fn loadPackageRootFromPath(allocator: std.mem.Allocator, path: []const u8) !ResolvedPackageRoot {
+    const root_path = try resolveRootPath(allocator, path);
+    const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
+    const entrypoint_path = try std.fs.path.join(allocator, &.{ root_path, "app", "main.kira" });
+    const module_source_root = try moduleSourceRoot(allocator, root_path);
+
+    return .{
+        .root_path = root_path,
+        .manifest_path = manifest_path,
+        .entrypoint_path = if (fileExists(entrypoint_path)) entrypoint_path else null,
+        .module_source_root = module_source_root,
         .project = try loadProjectFromFile(allocator, manifest_path),
     };
 }
@@ -70,6 +86,10 @@ fn isManifestPath(path: []const u8) bool {
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     return std.fs.cwd().realpathAlloc(allocator, path);
+}
+
+fn moduleSourceRoot(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ root_path, "app" });
 }
 
 fn fileExists(path: []const u8) bool {

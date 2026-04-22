@@ -145,6 +145,16 @@ pub const ResolvedCommandInput = struct {
     default_backend: ?build_def.ExecutionTarget = null,
 };
 
+pub const ResolvedCheckInput = union(enum) {
+    application: ResolvedCommandInput,
+    library: struct {
+        root_path: []const u8,
+        source_root: []const u8,
+        project_name: []const u8,
+        default_backend: ?build_def.ExecutionTarget = null,
+    },
+};
+
 pub fn defaultCommandInputPath() []const u8 {
     return ".";
 }
@@ -163,6 +173,33 @@ pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !Reso
             .project_name = resolved.project.manifest.name,
             .default_backend = try parseExecutionTarget(resolved.project.manifest.execution_mode),
         };
+    }
+
+    return error.InvalidArguments;
+}
+
+pub fn resolveCheckInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedCheckInput {
+    const base = std.fs.path.basename(path);
+    if (std.mem.eql(u8, base, kira_project.preferred_manifest_file_name) or
+        std.mem.eql(u8, base, kira_project.legacy_manifest_file_name) or
+        std.mem.eql(u8, base, "Kira.toml") or
+        directoryExists(path))
+    {
+        const resolved = try kira_project.loadPackageRootFromPath(allocator, path);
+        if (resolved.entrypoint_path) |entrypoint_path| {
+            return .{ .application = .{
+                .source_path = entrypoint_path,
+                .project_root = resolved.root_path,
+                .project_name = resolved.project.manifest.name,
+                .default_backend = try parseExecutionTarget(resolved.project.manifest.execution_mode),
+            } };
+        }
+        return .{ .library = .{
+            .root_path = resolved.root_path,
+            .source_root = resolved.module_source_root,
+            .project_name = resolved.project.manifest.name,
+            .default_backend = try parseExecutionTarget(resolved.project.manifest.execution_mode),
+        } };
     }
 
     return error.InvalidArguments;

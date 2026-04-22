@@ -6,31 +6,56 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
-    const input = try support.resolveCommandInput(allocator, parsed.input_path);
+    const input = try support.resolveCheckInput(allocator, parsed.input_path);
 
-    if (input.project_root) |project_root| {
-        var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        _ = package_manager.syncProject(allocator, project_root, support.versionString(), .{
-            .offline = parsed.offline,
-            .locked = parsed.locked,
-        }, &package_diagnostics) catch |err| {
-            if (err == error.DiagnosticsEmitted) {
-                try support.renderStandaloneDiagnostics(stderr, package_diagnostics.items);
-                return error.CommandFailed;
-            }
-            return err;
-        };
+    const project_root = switch (input) {
+        .application => |app| app.project_root,
+        .library => |library| library.root_path,
+    };
+    if (project_root) |root| {
+        try syncProject(allocator, root, parsed, stderr);
     }
 
-    try support.logFrontendStarted(stderr, "check", input.source_path);
-    const result = try build.checkFile(allocator, input.source_path);
+    const result = switch (input) {
+        .application => |app| blk: {
+            try support.logFrontendStarted(stderr, "check", app.source_path);
+            break :blk try build.checkFile(allocator, app.source_path);
+        },
+        .library => |library| blk: {
+            try support.logFrontendStarted(stderr, "check", library.source_root);
+            break :blk try build.checkPackageRoot(allocator, library.source_root);
+        },
+    };
     if (!diagnostics.hasErrors(result.diagnostics)) {
         try stdout.writeAll("check passed\n");
         return;
     }
-    try support.logFrontendFailed(stderr, result.failure_stage, input.source_path, result.diagnostics.len);
+    const display_path = switch (input) {
+        .application => |app| app.source_path,
+        .library => |library| library.source_root,
+    };
+    try support.logFrontendFailed(stderr, result.failure_stage, display_path, result.diagnostics.len);
     try support.renderDiagnostics(stderr, &result.source, result.diagnostics);
     return error.CommandFailed;
+}
+
+fn syncProject(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    parsed: ParsedArgs,
+    stderr: anytype,
+) !void {
+    var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    _ = package_manager.syncProject(allocator, project_root, support.versionString(), .{
+        .offline = parsed.offline,
+        .locked = parsed.locked,
+    }, &package_diagnostics) catch |err| {
+        if (err == error.DiagnosticsEmitted) {
+            try support.renderStandaloneDiagnostics(stderr, package_diagnostics.items);
+            return error.CommandFailed;
+        }
+        return err;
+    };
 }
 
 const ParsedArgs = struct {

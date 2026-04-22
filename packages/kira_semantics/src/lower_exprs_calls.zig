@@ -265,21 +265,12 @@ pub fn lowerCallExpr(
         } else {
             const object = try lowerExpr(ctx, member.object, imports, scope, function_headers);
             const object_type = model.hir.exprType(object.*);
-            if (object_type.kind == .native_state_view) {
-                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                    .severity = .@"error",
-                    .code = "KSEM092",
-                    .title = "native recovered state does not support methods",
-                    .message = "Recovered native callback state currently exposes typed field access only.",
-                    .labels = &.{diagnostics.primaryLabel(node.span, "method calls on recovered native state are not supported here")},
-                    .help = "Read or write the recovered fields directly, or copy the state into a regular Kira value before calling methods.",
-                });
-                return error.DiagnosticsEmitted;
-            }
-            if (try resolveMethodMemberOrNull(ctx, object_type, member.member, node.span)) |resolved_method| {
-                const receiver = try adjustMethodReceiver(ctx, object, object_type, resolved_method, node.span);
-                try lowerResolvedMethodCall(ctx, lowered, resolved_method, receiver, node, imports, scope, function_headers);
-                return;
+            if (object_type.kind != .native_state_view) {
+                if (try resolveMethodMemberOrNull(ctx, object_type, member.member, node.span)) |resolved_method| {
+                    const receiver = try adjustMethodReceiver(ctx, object, object_type, resolved_method, node.span);
+                    try lowerResolvedMethodCall(ctx, lowered, resolved_method, receiver, node, imports, scope, function_headers);
+                    return;
+                }
             }
         }
     }
@@ -444,6 +435,17 @@ pub fn lowerCallExpr(
                 .span = node.span,
             } };
             return;
+        }
+        if (node.callee.* == .member) {
+            try diagnostics.Emitter.init(ctx.allocator, ctx.diagnostics).err(.{
+                .code = "KSEM092",
+                .title = "member is not callable",
+                .message = "This member access resolves to a field, but the field does not have a function type.",
+                .span = node.span,
+                .label = "member call target is not a function-typed field",
+                .help = "Call only methods or fields declared with a function type such as `(RawPtr) -> Void`.",
+            });
+            return error.DiagnosticsEmitted;
         }
     }
 

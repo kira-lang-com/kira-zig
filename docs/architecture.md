@@ -7,9 +7,12 @@ The shared compiler pipeline is:
 1. `kira_source` loads source text and spans
 2. `kira_lexer` tokenizes
 3. `kira_parser` builds AST
-4. `kira_semantics` validates exactly one `@Main` function, resolves locals, and lowers to HIR
-5. `kira_ir` lowers HIR into backend-facing IR
-6. backend selection happens in `kira_build`
+4. `kira_program_graph` resolves imports and builds the package-rooted source graph from canonical `app/` source roots only
+5. `kira_semantics` validates exactly one `@Main` function, resolves locals, and lowers to HIR
+6. `kira_ir` lowers HIR into backend-facing IR
+7. backend selection happens in `kira_build`
+
+Project roots remain metadata roots for manifests, lockfiles, native-library configuration, generated asset metadata, and build/install state. They are not Kira source roots. Source graph construction only admits files from the target package's `app/` directory and the `app/` directories of declared dependency packages.
 
 The VM backend path is:
 

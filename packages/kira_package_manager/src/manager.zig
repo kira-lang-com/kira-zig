@@ -530,10 +530,19 @@ fn loadLockfileIfPresent(allocator: std.mem.Allocator, lockfile_path: []const u8
 }
 
 fn discoverProjectRootFromSource(allocator: std.mem.Allocator, source_path: []const u8) !?[]u8 {
-    var current = try absolutize(allocator, std.fs.path.dirname(source_path) orelse ".");
+    const source_dir = try absolutize(allocator, std.fs.path.dirname(source_path) orelse ".");
+    defer allocator.free(source_dir);
+    const canonical_source = try absolutize(allocator, source_path);
+    defer allocator.free(canonical_source);
+
+    var current = try allocator.dupe(u8, source_dir);
     errdefer allocator.free(current);
     while (true) {
-        if ((try discoverManifestPath(allocator, current)) != null) return current;
+        if ((try discoverManifestPath(allocator, current)) != null) {
+            const app_root = try std.fs.path.join(allocator, &.{ current, "app" });
+            defer allocator.free(app_root);
+            if (std.mem.eql(u8, current, source_dir) or pathWithinRoot(canonical_source, app_root)) return current;
+        }
         const parent = std.fs.path.dirname(current) orelse break;
         if (std.mem.eql(u8, parent, current)) break;
         const copy = try allocator.dupe(u8, parent);
@@ -542,6 +551,13 @@ fn discoverProjectRootFromSource(allocator: std.mem.Allocator, source_path: []co
     }
     allocator.free(current);
     return null;
+}
+
+fn pathWithinRoot(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (path.len <= root.len) return false;
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    return path[root.len] == '/' or path[root.len] == '\\';
 }
 
 fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
@@ -572,10 +588,7 @@ fn discoverNestedPackageRoot(allocator: std.mem.Allocator, root_path: []const u8
 }
 
 fn discoverModuleSourceRoot(allocator: std.mem.Allocator, package_root: []const u8) ![]u8 {
-    const app_root = try std.fs.path.join(allocator, &.{ package_root, "app" });
-    if (directoryExists(app_root)) return app_root;
-    allocator.free(app_root);
-    return allocator.dupe(u8, package_root);
+    return std.fs.path.join(allocator, &.{ package_root, "app" });
 }
 
 fn canonicalizePath(allocator: std.mem.Allocator, parent_root: []const u8, relative: []const u8) ![]u8 {

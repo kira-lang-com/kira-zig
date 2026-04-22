@@ -8,8 +8,11 @@ pub const Suggestion = @import("diagnostic.zig").Suggestion;
 pub const hasErrors = @import("diagnostic.zig").hasErrors;
 pub const appendOwned = @import("diagnostic.zig").appendOwned;
 pub const single = @import("diagnostic.zig").single;
+pub const Emitter = @import("builder.zig").Emitter;
+pub const ErrorSpec = @import("builder.zig").ErrorSpec;
 pub const renderer = @import("renderer.zig");
 
 test {
+    _ = @import("builder.zig");
     _ = @import("renderer.zig");
 }

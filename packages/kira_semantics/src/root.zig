@@ -1,5 +1,6 @@
 pub const analyze = @import("analyzer.zig").analyze;
 pub const analyzeWithImports = @import("analyzer.zig").analyzeWithImports;
+pub const analyzeLibrary = @import("analyzer.zig").analyzeLibrary;
 pub const ImportedGlobals = @import("analyzer.zig").ImportedGlobals;
 pub const ImportedFunction = @import("imported_globals.zig").ImportedFunction;
 pub const ImportedType = @import("imported_globals.zig").ImportedType;

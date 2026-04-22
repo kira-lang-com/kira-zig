@@ -1,0 +1,4 @@
+mode = "fail"
+diagnostic_code = "KSEM032"
+diagnostic_title = "unresolved import"
+stage = "semantics"

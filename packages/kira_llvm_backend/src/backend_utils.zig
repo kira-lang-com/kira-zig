@@ -284,6 +284,32 @@ pub fn llvmCallTypeText(value_type: ir.ValueType, is_extern: bool) []const u8 {
     };
 }
 
+pub fn externReturnUsesSRet(program: *const ir.Program, value_type: ir.ValueType) bool {
+    if (builtin.os.tag != .windows) return false;
+    if (value_type.kind != .ffi_struct) return false;
+    const layout = valueTypeLayout(program, value_type) catch return false;
+    return layout.size > 8;
+}
+
+pub fn externReturnAbiTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
+    if (value_type.kind == .ffi_struct and !externReturnUsesSRet(program, value_type)) {
+        const layout = try valueTypeLayout(program, value_type);
+        const bits = @max(layout.size, 1) * 8;
+        return std.fmt.allocPrint(allocator, "i{d}", .{bits});
+    }
+    return allocator.dupe(u8, llvmCallTypeText(value_type, true));
+}
+
+pub fn externParamAbiTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
+    if (value_type.kind == .ffi_struct) {
+        const layout = try valueTypeLayout(program, value_type);
+        if (layout.size <= 8) {
+            return std.fmt.allocPrint(allocator, "i{d}", .{@max(layout.size, 1) * 8});
+        }
+    }
+    return allocator.dupe(u8, llvmCallTypeText(value_type, true));
+}
+
 pub fn llvmLocalStorageTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     _ = program;
     return switch (value_type.kind) {
@@ -466,21 +492,99 @@ pub fn buildTextExternDecl(
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     function_decl: ir.Function,
 ) ![]const u8 {
-    _ = request;
     var output = std.array_list.Managed(u8).init(allocator);
     errdefer output.deinit();
     var writer = output.writer();
+    const uses_sret = externReturnUsesSRet(request.program, function_decl.return_type);
     try writer.writeAll("declare ");
-    try writer.writeAll(llvmCallTypeText(function_decl.return_type, true));
+    if (uses_sret) {
+        try writer.writeAll("void");
+    } else {
+        const abi_type = try externReturnAbiTypeText(allocator, request.program, function_decl.return_type);
+        defer allocator.free(abi_type);
+        try writer.writeAll(abi_type);
+    }
     try writer.writeByte(' ');
     try writeLlvmSymbol(writer, symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration);
     try writer.writeByte('(');
+    if (uses_sret) {
+        try writer.print("ptr sret({s}) align {d}", .{
+            typeRefName(function_decl.return_type.name orelse return error.UnsupportedExecutableFeature),
+            (try valueTypeLayout(request.program, function_decl.return_type)).alignment,
+        });
+    }
     for (function_decl.param_types, 0..) |param_type, index| {
-        if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(llvmCallTypeText(param_type, true));
+        if (index != 0 or uses_sret) try writer.writeAll(", ");
+        const abi_type = try externParamAbiTypeText(allocator, request.program, param_type);
+        defer allocator.free(abi_type);
+        try writer.writeAll(abi_type);
     }
     try writer.writeAll(")\n");
     return output.toOwnedSlice();
+}
+
+const TypeLayout = struct {
+    size: usize,
+    alignment: usize,
+};
+
+fn valueTypeLayout(program: *const ir.Program, value_type: ir.ValueType) anyerror!TypeLayout {
+    return switch (value_type.kind) {
+        .void => .{ .size = 0, .alignment = 1 },
+        .boolean => .{ .size = 1, .alignment = 1 },
+        .integer => integerLayout(value_type.name),
+        .float => if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
+            .{ .size = 4, .alignment = 4 }
+        else
+            .{ .size = 8, .alignment = 8 },
+        .string => .{ .size = 16, .alignment = 8 },
+        .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+        .ffi_struct => try ffiTypeLayout(program, value_type.name orelse return error.UnsupportedExecutableFeature),
+    };
+}
+
+fn integerLayout(name: ?[]const u8) TypeLayout {
+    const value = name orelse return .{ .size = 8, .alignment = 8 };
+    if (std.mem.eql(u8, value, "I8") or std.mem.eql(u8, value, "U8")) return .{ .size = 1, .alignment = 1 };
+    if (std.mem.eql(u8, value, "I16") or std.mem.eql(u8, value, "U16")) return .{ .size = 2, .alignment = 2 };
+    if (std.mem.eql(u8, value, "I32") or std.mem.eql(u8, value, "U32")) return .{ .size = 4, .alignment = 4 };
+    return .{ .size = 8, .alignment = 8 };
+}
+
+fn ffiTypeLayout(program: *const ir.Program, type_name: []const u8) anyerror!TypeLayout {
+    const type_decl = findTypeDecl(program, type_name) orelse return error.UnsupportedExecutableFeature;
+    if (type_decl.ffi) |ffi_info| {
+        switch (ffi_info) {
+            .ffi_struct => {},
+            .pointer, .callback => return .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+            .alias => |alias| return valueTypeLayout(program, alias.target),
+            .array => |array| {
+                const element = try valueTypeLayout(program, array.element);
+                return .{
+                    .size = alignForward(element.size, element.alignment) * array.count,
+                    .alignment = element.alignment,
+                };
+            },
+        }
+    }
+
+    var offset: usize = 0;
+    var max_alignment: usize = 1;
+    for (type_decl.fields) |field| {
+        const field_layout = try valueTypeLayout(program, field.ty);
+        max_alignment = @max(max_alignment, field_layout.alignment);
+        offset = alignForward(offset, field_layout.alignment);
+        offset += field_layout.size;
+    }
+    return .{
+        .size = alignForward(offset, max_alignment),
+        .alignment = max_alignment,
+    };
+}
+
+fn alignForward(value: usize, alignment: usize) usize {
+    if (alignment <= 1) return value;
+    return std.mem.alignForward(usize, value, alignment);
 }
 
 pub fn buildHybridBridgeWrapper(
