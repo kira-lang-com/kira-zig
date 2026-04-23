@@ -439,7 +439,7 @@ pub fn lowerResolvedMethodCall(
                 try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index + 1], imports, scope, headers, node.span));
             }
             if (trailing_callback_type) |callback_type| {
-                try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, headers));
+                try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
             }
 
             lowered.* = .{ .call = .{
@@ -475,7 +475,7 @@ pub fn lowerResolvedMethodCall(
             try args.append(try lowerExpectedValue(ctx, arg.value, resolved_imported.params[index + 1], imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span));
         }
         if (trailing_callback_type) |callback_type| {
-            try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, function_headers orelse return error.DiagnosticsEmitted));
+            try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, function_headers orelse return error.DiagnosticsEmitted));
         }
 
         lowered.* = .{ .call = .{
@@ -518,14 +518,15 @@ pub fn lowerTrailingCallbackValue(
     node: syntax.ast.CallExpr,
     expected_type: model.ResolvedType,
     imports: []const model.Import,
+    scope: *model.Scope,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
     if (node.trailing_callback) |callback_block| {
-        return lowerCallbackBlockValue(ctx, callback_block.params, callback_block.body, callback_block.span, expected_type, imports, function_headers);
+        return lowerCallbackBlockValue(ctx, callback_block.params, callback_block.body, callback_block.span, expected_type, imports, scope, function_headers);
     }
     if (node.trailing_builder) |builder_block| {
         const body = try statementBlockFromBuilder(ctx.allocator, builder_block);
-        return lowerCallbackBlockValue(ctx, &.{}, body, builder_block.span, expected_type, imports, function_headers);
+        return lowerCallbackBlockValue(ctx, &.{}, body, builder_block.span, expected_type, imports, scope, function_headers);
     }
     return error.DiagnosticsEmitted;
 }
@@ -537,6 +538,7 @@ pub fn lowerCallbackBlockValue(
     span: source_pkg.Span,
     expected_type: model.ResolvedType,
     imports: []const model.Import,
+    capture_scope: *model.Scope,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
     const signature = try function_types.parseSignature(ctx.allocator, expected_type) orelse return error.DiagnosticsEmitted;
@@ -586,7 +588,11 @@ pub fn lowerCallbackBlockValue(
         next_local_id += 1;
     }
 
-    const lowered_body = try lowerBlockStatements(ctx, body, imports, &callback_scope, &locals, &next_local_id, function_headers, 0);
+    const previous_capture_scope = ctx.callback_capture_scope;
+    ctx.callback_capture_scope = capture_scope;
+    defer ctx.callback_capture_scope = previous_capture_scope;
+
+    const lowered_body = try lowerBlockStatements(ctx, body, imports, &callback_scope, &locals, &next_local_id, function_headers, 0, signature.result);
     const return_type = try resolveFunctionReturnType(ctx, signature.result, lowered_body);
     const lowered = try ctx.allocator.create(model.Expr);
     lowered.* = .{ .callback = .{

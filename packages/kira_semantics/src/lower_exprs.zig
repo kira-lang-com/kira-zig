@@ -78,10 +78,11 @@ pub fn lowerBlockStatements(
     next_local_id: *u32,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
     loop_depth: usize,
+    expected_return_type: model.ResolvedType,
 ) anyerror![]model.Statement {
     var statements = std.array_list.Managed(model.Statement).init(ctx.allocator);
     for (block.statements) |statement| {
-        try statements.append(try lowerStatement(ctx, statement, imports, scope, locals, next_local_id, function_headers, loop_depth));
+        try statements.append(try lowerStatement(ctx, statement, imports, scope, locals, next_local_id, function_headers, loop_depth, expected_return_type));
     }
     return statements.toOwnedSlice();
 }
@@ -95,6 +96,7 @@ pub fn lowerStatement(
     next_local_id: *u32,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
     loop_depth: usize,
+    expected_return_type: model.ResolvedType,
 ) anyerror!model.Statement {
     return switch (statement) {
         .let_stmt => |node| blk: {
@@ -141,13 +143,13 @@ pub fn lowerStatement(
             const condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers);
             var then_scope = try cloneScope(ctx.allocator, scope.*);
             defer then_scope.deinit(ctx.allocator);
-            const then_body = try lowerBlockStatements(ctx, node.then_block, imports, &then_scope, locals, next_local_id, function_headers, loop_depth);
+            const then_body = try lowerBlockStatements(ctx, node.then_block, imports, &then_scope, locals, next_local_id, function_headers, loop_depth, expected_return_type);
 
             var else_scope: ?model.Scope = null;
             defer if (else_scope) |*value| value.deinit(ctx.allocator);
             const else_body = if (node.else_block) |else_block| else_body: {
                 var branch_scope = try cloneScope(ctx.allocator, scope.*);
-                const lowered_else = try lowerBlockStatements(ctx, else_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth);
+                const lowered_else = try lowerBlockStatements(ctx, else_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth, expected_return_type);
                 else_scope = branch_scope;
                 break :else_body lowered_else;
             } else null;
@@ -171,7 +173,7 @@ pub fn lowerStatement(
                     .binding_local_id = 0,
                     .binding_ty = binding_ty,
                     .iterator = iterator,
-                    .body = try lowerBlockStatements(ctx, node.body, imports, &empty_body_scope, locals, next_local_id, function_headers, loop_depth + 1),
+                    .body = try lowerBlockStatements(ctx, node.body, imports, &empty_body_scope, locals, next_local_id, function_headers, loop_depth + 1, expected_return_type),
                     .span = node.span,
                 } };
             }
@@ -198,7 +200,7 @@ pub fn lowerStatement(
                 .binding_local_id = local_id,
                 .binding_ty = binding_ty,
                 .iterator = iterator,
-                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1),
+                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1, expected_return_type),
                 .span = node.span,
             } };
         },
@@ -207,7 +209,7 @@ pub fn lowerStatement(
             defer body_scope.deinit(ctx.allocator);
             break :blk .{ .while_stmt = .{
                 .condition = try lowerExpr(ctx, node.condition, imports, scope, function_headers),
-                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1),
+                .body = try lowerBlockStatements(ctx, node.body, imports, &body_scope, locals, next_local_id, function_headers, loop_depth + 1, expected_return_type),
                 .span = node.span,
             } };
         },
@@ -251,7 +253,7 @@ pub fn lowerStatement(
                 var case_scope = try cloneScope(ctx.allocator, scope.*);
                 try cases.append(.{
                     .pattern = try lowerExpr(ctx, case_node.pattern, imports, scope, function_headers),
-                    .body = try lowerBlockStatements(ctx, case_node.body, imports, &case_scope, locals, next_local_id, function_headers, loop_depth),
+                    .body = try lowerBlockStatements(ctx, case_node.body, imports, &case_scope, locals, next_local_id, function_headers, loop_depth, expected_return_type),
                     .span = case_node.span,
                 });
                 try case_scopes.append(case_scope);
@@ -260,7 +262,7 @@ pub fn lowerStatement(
             defer if (default_scope) |*value| value.deinit(ctx.allocator);
             const default_body = if (node.default_block) |default_block| default_body: {
                 var branch_scope = try cloneScope(ctx.allocator, scope.*);
-                const lowered_default = try lowerBlockStatements(ctx, default_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth);
+                const lowered_default = try lowerBlockStatements(ctx, default_block, imports, &branch_scope, locals, next_local_id, function_headers, loop_depth, expected_return_type);
                 default_scope = branch_scope;
                 break :default_body lowered_default;
             } else null;
@@ -273,7 +275,13 @@ pub fn lowerStatement(
             } };
         },
         .return_stmt => |node| .{ .return_stmt = .{
-            .value = if (node.value) |expr| try lowerExpr(ctx, expr, imports, scope, function_headers) else null,
+            .value = if (node.value) |expr|
+                if (expected_return_type.kind == .unknown)
+                    try lowerExpr(ctx, expr, imports, scope, function_headers)
+                else
+                    try lowerExpectedValue(ctx, expr, expected_return_type, imports, scope, function_headers, node.span)
+            else
+                null,
             .span = node.span,
         } },
     };
@@ -480,6 +488,9 @@ pub fn lowerExpr(
                     .storage = binding.storage,
                     .span = node.span,
                 } };
+            } else if (shared.findUnsupportedCallbackCapture(ctx, scope.*, name)) |binding| {
+                try shared.emitUnsupportedCallbackCapture(ctx, name, node.span, binding.decl_span);
+                return error.DiagnosticsEmitted;
             } else if (shared.isImportedRoot(name, imports)) {
                 lowered.* = .{ .namespace_ref = .{
                     .root = try ctx.allocator.dupe(u8, name),

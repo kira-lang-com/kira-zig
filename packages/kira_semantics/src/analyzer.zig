@@ -92,6 +92,77 @@ test "preserves explicit @Native and @Runtime execution semantics" {
     try std.testing.expectEqual(model.FunctionExecution.runtime, analyzed.functions[1].execution);
 }
 
+test "requires @Native only for direct FFI use" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const extern_decl =
+        "@FFI.Extern { library: testlib; symbol: ffi_value; abi: c; }\n" ++
+        "function ffi_value(): I64;\n";
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            extern_decl ++
+                "@Main\n" ++
+                "function entry() {\n" ++
+                "    ffi_value();\n" ++
+                "    return;\n" ++
+                "}",
+            &diags,
+        );
+
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "direct FFI requires @Native");
+        try std.testing.expectEqualStrings("KSEM093", diags.items[0].code.?);
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        _ = try analyzeSource(
+            allocator,
+            extern_decl ++
+                "@Main\n" ++
+                "function entry() {\n" ++
+                "    let value = wrapper();\n" ++
+                "    print(value);\n" ++
+                "    return;\n" ++
+                "}\n" ++
+                "\n" ++
+                "@Native\n" ++
+                "function nativeHelper(): I64 {\n" ++
+                "    return ffi_value();\n" ++
+                "}\n" ++
+                "\n" ++
+                "function wrapper(): I64 {\n" ++
+                "    return nativeHelper();\n" ++
+                "}",
+            &diags,
+        );
+
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    }
+
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const result = analyzeSource(
+            allocator,
+            extern_decl ++
+                "@Main\n" ++
+                "function entry() {\n" ++
+                "    let callback: () -> I64 = ffi_value;\n" ++
+                "    return;\n" ++
+                "}",
+            &diags,
+        );
+
+        try std.testing.expectError(error.DiagnosticsEmitted, result);
+        try expectFirstDiagnosticTitle(diags.items, "direct FFI requires @Native");
+    }
+}
+
 test "reports conflicting execution annotations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

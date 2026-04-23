@@ -7,6 +7,7 @@ const shared = @import("lower_shared.zig");
 const exprs = @import("lower_exprs.zig");
 const ImportedGlobals = @import("imported_globals.zig").ImportedGlobals;
 const type_impl = @import("lower_program_types.zig");
+const ffi_boundary = @import("lower_program_ffi_boundary.zig");
 
 pub const lowerImports = type_impl.lowerImports;
 pub const composeAnnotationGeneratedFunctions = type_impl.composeAnnotationGeneratedFunctions;
@@ -501,7 +502,7 @@ pub fn lowerFunction(
 
     const explicit_return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(ctx.allocator, return_type.*) else model.ResolvedType{ .kind = .unknown };
     const body = if (function_decl.body) |syntax_body|
-        try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0)
+        try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type)
     else if (foreign != null)
         try ctx.allocator.alloc(model.Statement, 0)
     else {
@@ -522,6 +523,7 @@ pub fn lowerFunction(
     else
         try exprs.resolveFunctionReturnType(ctx, explicit_return_type, body);
     const header = function_headers.get(function_decl.name).?;
+    try ffi_boundary.validateDirectFfiBoundary(ctx, function_decl.name, header, body, function_headers);
 
     return .{
         .id = header.id,

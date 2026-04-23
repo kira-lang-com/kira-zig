@@ -1,0 +1,15 @@
+class CallbackApp {
+    function onEvent(handler: (Int) -> Void) {
+        handler(42)
+        return
+    }
+}
+
+@Main
+function main() {
+    let app = CallbackApp()
+    app.onEvent { value in
+        print(value)
+    }
+    return
+}

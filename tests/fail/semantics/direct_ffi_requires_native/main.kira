@@ -1,0 +1,8 @@
+@FFI.Extern { library: testlib; symbol: ffi_value; abi: c; }
+function ffi_value(): I64;
+
+@Main
+function entry() {
+    ffi_value()
+    return
+}

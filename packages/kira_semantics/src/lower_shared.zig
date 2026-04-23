@@ -19,6 +19,7 @@ pub const Context = struct {
     annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
+    callback_capture_scope: ?*const model.Scope = null,
 };
 
 pub const AnnotationHeader = struct {
@@ -717,6 +718,31 @@ pub fn emitAmbiguousInference(
             diagnostics.primaryLabel(span, "type is ambiguous here"),
         },
         .help = "Add an explicit type annotation.",
+    });
+}
+
+pub fn findUnsupportedCallbackCapture(ctx: *const Context, active_scope: model.Scope, name: []const u8) ?model.LocalBinding {
+    if (active_scope.get(name) != null) return null;
+    const capture_scope = ctx.callback_capture_scope orelse return null;
+    return capture_scope.get(name);
+}
+
+pub fn emitUnsupportedCallbackCapture(
+    ctx: *Context,
+    name: []const u8,
+    use_span: source_pkg.Span,
+    decl_span: source_pkg.Span,
+) !void {
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM094",
+        .title = "callback captures are not supported",
+        .message = try std.fmt.allocPrint(ctx.allocator, "The callback block refers to outer local '{s}', but callback blocks are currently non-capturing.", .{name}),
+        .labels = &.{
+            diagnostics.primaryLabel(use_span, "outer local would be captured here"),
+            diagnostics.secondaryLabel(decl_span, "outer local is declared here"),
+        },
+        .help = "Pass needed state explicitly, for example through a callback parameter or RawPtr user data.",
     });
 }
 

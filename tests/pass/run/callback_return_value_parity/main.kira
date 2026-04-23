@@ -1,0 +1,12 @@
+function makePrinter(): (Int) -> Void {
+    return { value in
+        print(value)
+    }
+}
+
+@Main
+function main() {
+    let printer = makePrinter()
+    printer(5)
+    return
+}

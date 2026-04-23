@@ -340,7 +340,7 @@ pub fn lowerCallExpr(
                 try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index], imports, scope, headers, node.span));
             }
             if (trailing_callback_type) |callback_type| {
-                try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, headers));
+                try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
             }
             lowered.* = .{ .call = .{
                 .callee_name = callee_name,
@@ -447,6 +447,11 @@ pub fn lowerCallExpr(
             });
             return error.DiagnosticsEmitted;
         }
+    }
+
+    if (shared.findUnsupportedCallbackCapture(ctx, scope.*, callee_leaf)) |binding| {
+        try shared.emitUnsupportedCallbackCapture(ctx, callee_leaf, node.span, binding.decl_span);
+        return error.DiagnosticsEmitted;
     }
 
     if (std.mem.indexOfScalar(u8, callee_name, '.')) |root_end| {

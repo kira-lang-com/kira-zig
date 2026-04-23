@@ -107,6 +107,17 @@ pub fn lowerExpectedValue(
     span: source_pkg.Span,
 ) !*model.Expr {
     if (shared.callbackInfo(ctx, expected_type)) |callback_info| {
+        if (syntax_arg.* == .callback) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM095",
+                .title = "inline FFI callbacks are not supported",
+                .message = "Inline callback blocks cannot be converted directly to named FFI callback pointer types yet.",
+                .labels = &.{diagnostics.primaryLabel(exprSpan(syntax_arg.*), "inline block cannot become an FFI callback pointer")},
+                .help = "Use a named @Native function for FFI callback pointer fields, or store this block in an ordinary function-typed Kira value.",
+            });
+            return error.DiagnosticsEmitted;
+        }
         return lowerCallbackArgument(ctx, syntax_arg, expected_type, callback_info, function_headers);
     }
 
@@ -118,6 +129,7 @@ pub fn lowerExpectedValue(
             syntax_arg.callback.span,
             expected_type,
             imports,
+            scope,
             function_headers,
         );
     }
