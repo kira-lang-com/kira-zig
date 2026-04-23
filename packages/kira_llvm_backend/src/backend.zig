@@ -426,9 +426,9 @@ fn lowerFunction(
             },
             .const_bool => |value| register_values[value.dst] = api.LLVMConstInt(types.bool_ty, if (value.value) 1 else 0, 0),
             .const_null_ptr => |value| register_values[value.dst] = api.LLVMConstInt(types.usize_ty, 0, 0),
-            .alloc_struct => |_| return error.UnsupportedExecutableFeature,
-            .alloc_array => |_| return error.UnsupportedExecutableFeature,
-            .const_function => |_| return error.UnsupportedExecutableFeature,
+            .alloc_struct => return error.UnsupportedExecutableFeature,
+            .alloc_array => return error.UnsupportedExecutableFeature,
+            .const_function => return error.UnsupportedExecutableFeature,
             .add => |value| register_values[value.dst] = api.LLVMBuildAdd(builder, register_values[value.lhs], register_values[value.rhs], "add"),
             .subtract => |value| register_values[value.dst] = api.LLVMBuildSub(builder, register_values[value.lhs], register_values[value.rhs], "sub"),
             .multiply => |value| register_values[value.dst] = api.LLVMBuildMul(builder, register_values[value.lhs], register_values[value.rhs], "mul"),
@@ -449,7 +449,7 @@ fn lowerFunction(
                 if (value.args.len != 0 or value.dst != null) return error.UnsupportedExecutableFeature;
                 try lowerCall(api, builder, types, runtime_decls, request.mode, request.program, functions, value.callee);
             },
-            .call_value => |_| return error.UnsupportedExecutableFeature,
+            .call_value => return error.UnsupportedExecutableFeature,
             .ret => |value| {
                 if (value.src != null) return error.UnsupportedExecutableFeature;
                 _ = api.LLVMBuildRetVoid(builder);
@@ -582,15 +582,18 @@ fn emitObjectFileFromIr(
     object_path: []const u8,
 ) !void {
     const target = try zigCcTargetTriple(allocator);
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = std.process.run(allocator, io_impl.io(), .{
         .argv = &.{ build_options.zig_exe, "cc", "-target", target, "-c", "-o", object_path, ir_path },
-        .max_output_bytes = 512 * 1024,
-    });
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
+    }) catch |err| return err;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.ObjectEmissionFailed;
     }
 }

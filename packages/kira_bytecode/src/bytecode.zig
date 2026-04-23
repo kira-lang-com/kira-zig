@@ -7,16 +7,16 @@ pub const Module = struct {
     entry_function_id: ?u32,
 
     pub fn writeToFile(self: Module, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
         var buffer: [4096]u8 = undefined;
-        var writer = file.writer(&buffer);
+        var writer = file.writer(std.Options.debug_io, &buffer);
         defer writer.interface.flush() catch {};
         try serialize(&writer.interface, self);
     }
 
     pub fn readFromFile(allocator: std.mem.Allocator, path: []const u8) !Module {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
         return deserialize(allocator, bytes);
     }
 
@@ -238,22 +238,22 @@ pub fn serialize(writer: anytype, module: Module) !void {
 }
 
 pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
-    var stream = std.io.fixedBufferStream(bytes);
-    const reader = stream.reader();
+    var reader_state = std.Io.Reader.fixed(bytes);
+    const reader = &reader_state;
 
     var magic: [4]u8 = undefined;
-    _ = try reader.readAll(&magic);
+    try reader.readSliceAll(&magic);
     if (!std.mem.eql(u8, &magic, "KBC0")) return error.InvalidBytecode;
 
-    const type_count = try reader.readInt(u32, .little);
-    const function_count = try reader.readInt(u32, .little);
-    const raw_entry = try reader.readInt(i32, .little);
+    const type_count = try reader.takeInt(u32, .little);
+    const function_count = try reader.takeInt(u32, .little);
+    const raw_entry = try reader.takeInt(i32, .little);
     var types = std.array_list.Managed(TypeDecl).init(allocator);
     var functions = std.array_list.Managed(Function).init(allocator);
 
     for (0..type_count) |_| {
         const name = try readString(allocator, reader);
-        const field_count = try reader.readInt(u32, .little);
+        const field_count = try reader.takeInt(u32, .little);
         var fields = std.array_list.Managed(Field).init(allocator);
         for (0..field_count) |_| {
             try fields.append(.{
@@ -268,171 +268,171 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     }
 
     for (0..function_count) |_| {
-        const function_id = try reader.readInt(u32, .little);
+        const function_id = try reader.takeInt(u32, .little);
         const name = try readString(allocator, reader);
-        const param_count = try reader.readInt(u32, .little);
-        const register_count = try reader.readInt(u32, .little);
-        const local_count = try reader.readInt(u32, .little);
-        const local_type_count = try reader.readInt(u32, .little);
+        const param_count = try reader.takeInt(u32, .little);
+        const register_count = try reader.takeInt(u32, .little);
+        const local_count = try reader.takeInt(u32, .little);
+        const local_type_count = try reader.takeInt(u32, .little);
         var local_types = std.array_list.Managed(instruction.TypeRef).init(allocator);
         for (0..local_type_count) |_| try local_types.append(try readTypeRef(allocator, reader));
-        const instruction_count = try reader.readInt(u32, .little);
+        const instruction_count = try reader.takeInt(u32, .little);
         var instructions = std.array_list.Managed(instruction.Instruction).init(allocator);
         for (0..instruction_count) |_| {
-            const tag = try reader.readByte();
+            const tag = try reader.takeByte();
             const op: instruction.OpCode = @enumFromInt(tag);
             switch (op) {
                 .const_int => try instructions.append(.{ .const_int = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .value = try reader.readInt(i64, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .value = try reader.takeInt(i64, .little),
                 } }),
                 .const_float => try instructions.append(.{ .const_float = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .value = @bitCast(try reader.readInt(u64, .little)),
+                    .dst = try reader.takeInt(u32, .little),
+                    .value = @bitCast(try reader.takeInt(u64, .little)),
                 } }),
                 .const_string => try instructions.append(.{ .const_string = .{
-                    .dst = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
                     .value = try readString(allocator, reader),
                 } }),
                 .const_bool => try instructions.append(.{ .const_bool = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .value = (try reader.readByte()) != 0,
+                    .dst = try reader.takeInt(u32, .little),
+                    .value = (try reader.takeByte()) != 0,
                 } }),
                 .const_null_ptr => try instructions.append(.{ .const_null_ptr = .{
-                    .dst = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
                 } }),
                 .const_function => try instructions.append(.{ .const_function = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .function_id = try reader.readInt(u32, .little),
-                    .representation = @enumFromInt(try reader.readByte()),
+                    .dst = try reader.takeInt(u32, .little),
+                    .function_id = try reader.takeInt(u32, .little),
+                    .representation = @enumFromInt(try reader.takeByte()),
                 } }),
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
-                    .dst = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                 } }),
                 .alloc_native_state => try instructions.append(.{ .alloc_native_state = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
-                    .type_id = try reader.readInt(u64, .little),
+                    .type_id = try reader.takeInt(u64, .little),
                 } }),
                 .alloc_array => try instructions.append(.{ .alloc_array = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .len = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .len = try reader.takeInt(u32, .little),
                 } }),
                 .add => try instructions.append(.{ .add = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
                 } }),
                 .subtract => try instructions.append(.{ .subtract = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
                 } }),
                 .multiply => try instructions.append(.{ .multiply = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
                 } }),
                 .divide => try instructions.append(.{ .divide = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
                 } }),
                 .modulo => try instructions.append(.{ .modulo = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
                 } }),
                 .compare => try instructions.append(.{ .compare = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .lhs = try reader.readInt(u32, .little),
-                    .rhs = try reader.readInt(u32, .little),
-                    .op = @enumFromInt(try reader.readByte()),
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
+                    .op = @enumFromInt(try reader.takeByte()),
                 } }),
                 .unary => try instructions.append(.{ .unary = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
-                    .op = @enumFromInt(try reader.readByte()),
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                    .op = @enumFromInt(try reader.takeByte()),
                 } }),
                 .store_local => try instructions.append(.{ .store_local = .{
-                    .local = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
+                    .local = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                 } }),
                 .load_local => try instructions.append(.{ .load_local = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .local = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .local = try reader.takeInt(u32, .little),
                 } }),
                 .subobject_ptr => try instructions.append(.{ .subobject_ptr = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .base = try reader.readInt(u32, .little),
-                    .offset = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .base = try reader.takeInt(u32, .little),
+                    .offset = try reader.takeInt(u32, .little),
                 } }),
                 .field_ptr => try instructions.append(.{ .field_ptr = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .base = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .base = try reader.takeInt(u32, .little),
                     .base_type_name = try readString(allocator, reader),
-                    .field_index = try reader.readInt(u32, .little),
+                    .field_index = try reader.takeInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
                 } }),
                 .recover_native_state => try instructions.append(.{ .recover_native_state = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .state = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .state = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
-                    .type_id = try reader.readInt(u64, .little),
+                    .type_id = try reader.takeInt(u64, .little),
                 } }),
                 .native_state_field_get => try instructions.append(.{ .native_state_field_get = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .state = try reader.readInt(u32, .little),
-                    .field_index = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .state = try reader.takeInt(u32, .little),
+                    .field_index = try reader.takeInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
                 } }),
                 .native_state_field_set => try instructions.append(.{ .native_state_field_set = .{
-                    .state = try reader.readInt(u32, .little),
-                    .field_index = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
+                    .state = try reader.takeInt(u32, .little),
+                    .field_index = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
                 } }),
                 .array_len => try instructions.append(.{ .array_len = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .array = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .array = try reader.takeInt(u32, .little),
                 } }),
                 .array_get => try instructions.append(.{ .array_get = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .array = try reader.readInt(u32, .little),
-                    .index = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .array = try reader.takeInt(u32, .little),
+                    .index = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                 } }),
                 .array_set => try instructions.append(.{ .array_set = .{
-                    .array = try reader.readInt(u32, .little),
-                    .index = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
+                    .array = try reader.takeInt(u32, .little),
+                    .index = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                 } }),
                 .load_indirect => try instructions.append(.{ .load_indirect = .{
-                    .dst = try reader.readInt(u32, .little),
-                    .ptr = try reader.readInt(u32, .little),
+                    .dst = try reader.takeInt(u32, .little),
+                    .ptr = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                 } }),
                 .store_indirect => try instructions.append(.{ .store_indirect = .{
-                    .ptr = try reader.readInt(u32, .little),
-                    .src = try reader.readInt(u32, .little),
+                    .ptr = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                 } }),
                 .copy_indirect => try instructions.append(.{ .copy_indirect = .{
-                    .dst_ptr = try reader.readInt(u32, .little),
-                    .src_ptr = try reader.readInt(u32, .little),
+                    .dst_ptr = try reader.takeInt(u32, .little),
+                    .src_ptr = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                 } }),
                 .branch => try instructions.append(.{ .branch = .{
-                    .condition = try reader.readInt(u32, .little),
-                    .true_label = try reader.readInt(u32, .little),
-                    .false_label = try reader.readInt(u32, .little),
+                    .condition = try reader.takeInt(u32, .little),
+                    .true_label = try reader.takeInt(u32, .little),
+                    .false_label = try reader.takeInt(u32, .little),
                 } }),
-                .jump => try instructions.append(.{ .jump = .{ .label = try reader.readInt(u32, .little) } }),
-                .label => try instructions.append(.{ .label = .{ .id = try reader.readInt(u32, .little) } }),
+                .jump => try instructions.append(.{ .jump = .{ .label = try reader.takeInt(u32, .little) } }),
+                .label => try instructions.append(.{ .label = .{ .id = try reader.takeInt(u32, .little) } }),
                 .print => try instructions.append(.{ .print = .{
-                    .src = try reader.readInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                 } }),
                 .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
@@ -440,7 +440,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .call_value => try instructions.append(.{ .call_value = try readIndirectCall(allocator, reader) }),
                 .ret => try instructions.append(.{ .ret = .{
                     .src = blk: {
-                        const raw = try reader.readInt(i32, .little);
+                        const raw = try reader.takeInt(i32, .little);
                         break :blk if (raw >= 0) @as(?u32, @intCast(raw)) else null;
                     },
                 } }),
@@ -470,9 +470,9 @@ fn writeString(writer: anytype, value: []const u8) !void {
 }
 
 fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
-    const length = try reader.readInt(u32, .little);
+    const length = try reader.takeInt(u32, .little);
     const buffer = try allocator.alloc(u8, length);
-    _ = try reader.readAll(buffer);
+    _ = try reader.readSliceAll(buffer);
     return buffer;
 }
 
@@ -497,8 +497,8 @@ fn writeTypeRef(writer: anytype, value: instruction.TypeRef) !void {
 }
 
 fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !instruction.TypeRef {
-    const kind: instruction.TypeRef.Kind = @enumFromInt(try reader.readByte());
-    const has_name = (try reader.readByte()) != 0;
+    const kind: instruction.TypeRef.Kind = @enumFromInt(try reader.takeByte());
+    const has_name = (try reader.takeByte()) != 0;
     return .{
         .kind = kind,
         .name = if (has_name) try readString(allocator, reader) else null,
@@ -521,13 +521,13 @@ fn readIndirectCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(i
 }
 
 fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { function_id: u32, args: []const u32, dst: ?u32 } {
-    const function_id = try reader.readInt(u32, .little);
-    const arg_count = try reader.readInt(u32, .little);
+    const function_id = try reader.takeInt(u32, .little);
+    const arg_count = try reader.takeInt(u32, .little);
     const args = try allocator.alloc(u32, arg_count);
     for (0..arg_count) |index| {
-        args[index] = try reader.readInt(u32, .little);
+        args[index] = try reader.takeInt(u32, .little);
     }
-    const raw_dst = try reader.readInt(i32, .little);
+    const raw_dst = try reader.takeInt(i32, .little);
     return .{
         .function_id = function_id,
         .args = args,
@@ -536,13 +536,13 @@ fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { functi
 }
 
 fn readIndirectCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { callee: u32, args: []const u32, dst: ?u32 } {
-    const callee = try reader.readInt(u32, .little);
-    const arg_count = try reader.readInt(u32, .little);
+    const callee = try reader.takeInt(u32, .little);
+    const arg_count = try reader.takeInt(u32, .little);
     const args = try allocator.alloc(u32, arg_count);
     for (0..arg_count) |index| {
-        args[index] = try reader.readInt(u32, .little);
+        args[index] = try reader.takeInt(u32, .little);
     }
-    const raw_dst = try reader.readInt(i32, .little);
+    const raw_dst = try reader.takeInt(i32, .little);
     return .{
         .callee = callee,
         .args = args,
@@ -585,10 +585,10 @@ test "round-trips struct metadata and print instructions" {
     };
 
     var buffer: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try serialize(stream.writer(), module);
+    var stream = std.Io.Writer.fixed(&buffer);
+    try serialize(&stream, module);
 
-    const round_tripped = try deserialize(allocator, stream.getWritten());
+    const round_tripped = try deserialize(allocator, stream.buffered());
     try std.testing.expectEqual(@as(usize, 1), round_tripped.types.len);
     try std.testing.expectEqualStrings("Color", round_tripped.types[0].name);
     try std.testing.expectEqual(@as(usize, 3), round_tripped.types[0].fields.len);
@@ -622,11 +622,11 @@ test "round-trips function constants" {
         .entry_function_id = 0,
     };
 
-    var bytes = std.array_list.Managed(u8).init(allocator);
+    var bytes: std.Io.Writer.Allocating = .init(allocator);
     defer bytes.deinit();
-    try serialize(bytes.writer(), module);
+    try serialize(&bytes.writer, module);
 
-    const round_tripped = try deserialize(allocator, bytes.items);
+    const round_tripped = try deserialize(allocator, bytes.written());
     try std.testing.expect(round_tripped.functions[0].instructions[0] == .const_function);
     try std.testing.expectEqual(@as(u32, 42), round_tripped.functions[0].instructions[0].const_function.function_id);
 }

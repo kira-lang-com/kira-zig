@@ -3,11 +3,11 @@ const builtin = @import("builtin");
 
 pub fn canonicalizeExistingPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) {
-        var dir = std.fs.openDirAbsolute(std.fs.path.dirname(path) orelse ".", .{}) catch return allocator.dupe(u8, path);
-        defer dir.close();
-        return dir.realpathAlloc(allocator, std.fs.path.basename(path));
+        var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, std.fs.path.dirname(path) orelse ".", .{}) catch return allocator.dupe(u8, path);
+        defer dir.close(std.Options.debug_io);
+        return realPathFileAlloc(allocator, dir, std.fs.path.basename(path));
     }
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return realPathFileAlloc(allocator, std.Io.Dir.cwd(), path);
 }
 
 pub fn canonicalizeSourceRoot(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
@@ -17,41 +17,47 @@ pub fn canonicalizeSourceRoot(allocator: std.mem.Allocator, root_path: []const u
 
 pub fn canonicalizeDirectory(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) {
-        var parent = std.fs.openDirAbsolute(std.fs.path.dirname(path) orelse ".", .{}) catch return allocator.dupe(u8, path);
-        defer parent.close();
-        return parent.realpathAlloc(allocator, std.fs.path.basename(path));
+        var parent = std.Io.Dir.openDirAbsolute(std.Options.debug_io, std.fs.path.dirname(path) orelse ".", .{}) catch return allocator.dupe(u8, path);
+        defer parent.close(std.Options.debug_io);
+        return realPathFileAlloc(allocator, parent, std.fs.path.basename(path));
     }
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return realPathFileAlloc(allocator, std.Io.Dir.cwd(), path);
 }
 
 pub fn absolutizeLexical(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, path });
 }
 
+fn realPathFileAlloc(allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8) ![]u8 {
+    const canonical_z = try dir.realPathFileAlloc(std.Options.debug_io, path, allocator);
+    defer allocator.free(canonical_z);
+    return allocator.dupe(u8, canonical_z);
+}
+
 pub fn fileExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-        file.close();
+        var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        file.close(std.Options.debug_io);
         return true;
     }
 
-    var file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 pub fn dirExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        dir.close();
+        var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        dir.close(std.Options.debug_io);
         return true;
     }
 
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 

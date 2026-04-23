@@ -14,21 +14,22 @@ pub fn sha256Hex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 }
 
 pub fn extractTarSecure(allocator: std.mem.Allocator, archive_path: []const u8, destination_path: []const u8) !void {
-    try std.fs.cwd().makePath(destination_path);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, destination_path);
     try validateTarEntries(archive_path);
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
         .argv = &.{ "tar", "-xf", archive_path, "-C", destination_path },
-        .max_output_bytes = 64 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) return error.ArchiveExtractionFailed;
+    if (result.term != .exited or result.term.exited != 0) return error.ArchiveExtractionFailed;
 }
 
 fn isSafeArchivePath(path: []const u8) bool {
     if (path.len == 0) return false;
-    const normalized = std.mem.trimRight(u8, path, "/");
+    const normalized = std.mem.trimEnd(u8, path, "/");
     if (normalized.len == 0) return false;
     if (normalized[0] == '/' or normalized[0] == '\\') return false;
     if (std.mem.indexOfScalar(u8, path, ':')) |_| return false;
@@ -42,14 +43,15 @@ fn isSafeArchivePath(path: []const u8) bool {
 }
 
 fn validateTarEntries(archive_path: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
+    const result = try std.process.run(std.heap.page_allocator, std.Options.debug_io, .{
         .argv = &.{ "tar", "-tvf", archive_path },
-        .max_output_bytes = 256 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(256 * 1024),
     });
     defer std.heap.page_allocator.free(result.stdout);
     defer std.heap.page_allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) return error.ArchiveExtractionFailed;
+    if (result.term != .exited or result.term.exited != 0) return error.ArchiveExtractionFailed;
 
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line_raw| {
@@ -73,18 +75,18 @@ test "rejects archive traversal paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tar_path = try tmp.dir.realpathAlloc(arena.allocator(), "bad.tar");
+    const tar_path = try tmp.dir.realPathFileAlloc(std.testing.io, "bad.tar", arena.allocator());
     defer arena.allocator().free(tar_path);
 
-    const tar_file = try std.fs.createFileAbsolute(tar_path, .{ .truncate = true });
-    defer tar_file.close();
+    const tar_file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, tar_path, .{ .truncate = true });
+    defer tar_file.close(std.Options.debug_io);
     var write_buf: [1024]u8 = undefined;
-    var file_writer = tar_file.writer(&write_buf);
+    var file_writer = tar_file.writer(std.Options.debug_io, &write_buf);
     var tar_writer = std.tar.Writer{ .underlying_writer = &file_writer.interface };
     try tar_writer.writeFileBytes("../evil.txt", "bad", .{});
     try file_writer.interface.flush();
 
-    const dest = try tmp.dir.realpathAlloc(arena.allocator(), "dest");
+    const dest = try tmp.dir.realPathFileAlloc(std.testing.io, "dest", arena.allocator());
     defer arena.allocator().free(dest);
     try std.testing.expectError(error.ArchivePathTraversal, extractTarSecure(arena.allocator(), tar_path, dest));
 }

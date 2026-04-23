@@ -1,16 +1,16 @@
 const std = @import("std");
 
 pub fn copyTemplateTree(allocator: std.mem.Allocator, src_path: []const u8, dst_path: []const u8, app_name: []const u8) !void {
-    try std.fs.cwd().makePath(dst_path);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dst_path);
     try copyDirRecursive(allocator, src_path, dst_path, app_name);
 }
 
 fn copyDirRecursive(allocator: std.mem.Allocator, src_path: []const u8, dst_path: []const u8, app_name: []const u8) !void {
-    var src_dir = try std.fs.cwd().openDir(src_path, .{ .iterate = true });
-    defer src_dir.close();
+    var src_dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, src_path, .{ .iterate = true });
+    defer src_dir.close(std.Options.debug_io);
 
     var iterator = src_dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         const child_src = try std.fs.path.join(std.heap.page_allocator, &.{ src_path, entry.name });
         const rendered_name = try renderTemplateName(allocator, entry.name, app_name);
         defer allocator.free(rendered_name);
@@ -20,15 +20,15 @@ fn copyDirRecursive(allocator: std.mem.Allocator, src_path: []const u8, dst_path
 
         switch (entry.kind) {
             .directory => {
-                try std.fs.cwd().makePath(child_dst);
+                try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, child_dst);
                 try copyDirRecursive(allocator, child_src, child_dst, app_name);
             },
             .file => {
-                const contents = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, child_src, 1024 * 1024);
+                const contents = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, child_src, std.heap.page_allocator, .limited(1024 * 1024));
                 defer std.heap.page_allocator.free(contents);
                 const rendered = try renderTemplateContents(allocator, contents, app_name);
                 defer allocator.free(rendered);
-                try std.fs.cwd().writeFile(.{ .sub_path = child_dst, .data = rendered });
+                try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = child_dst, .data = rendered });
             },
             else => {},
         }

@@ -175,6 +175,13 @@ pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !Reso
         };
     }
 
+    if (fileExists(path)) {
+        return .{
+            .source_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator),
+            .project_name = std.fs.path.stem(path),
+        };
+    }
+
     return error.InvalidArguments;
 }
 
@@ -202,6 +209,13 @@ pub fn resolveCheckInput(allocator: std.mem.Allocator, path: []const u8) !Resolv
         } };
     }
 
+    if (fileExists(path)) {
+        return .{ .application = .{
+            .source_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator),
+            .project_name = std.fs.path.stem(path),
+        } };
+    }
+
     return error.InvalidArguments;
 }
 
@@ -218,7 +232,7 @@ pub fn outputRoot(allocator: std.mem.Allocator, project_root: ?[]const u8) ![]u8
 }
 
 pub fn ensurePath(path: []const u8) !void {
-    try std.fs.cwd().makePath(path);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
 }
 
 fn frontendStageName(stage: ?build.FrontendStage) []const u8 {
@@ -241,13 +255,13 @@ fn buildFailureName(kind: build.BuildFailureKind) []const u8 {
 }
 
 fn findRepoRootFromCwd(allocator: std.mem.Allocator) !?[]u8 {
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return findRepoRootFromPath(allocator, cwd);
 }
 
 fn findRepoRootFromSelfExe(allocator: std.mem.Allocator) !?[]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(exe_path);
     const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
     return findRepoRootFromPath(allocator, exe_dir);
@@ -289,8 +303,8 @@ fn hasManagedResources(path: []const u8) bool {
 
     const templates_path = std.fs.path.join(std.heap.page_allocator, &.{ path, "templates" }) catch return false;
     defer std.heap.page_allocator.free(templates_path);
-    var dir = std.fs.openDirAbsolute(templates_path, .{}) catch std.fs.cwd().openDir(templates_path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, templates_path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, templates_path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
 
     const foundation_manifest_path = std.fs.path.join(std.heap.page_allocator, &.{ path, "foundation", "kira.toml" }) catch return false;
     defer std.heap.page_allocator.free(foundation_manifest_path);
@@ -299,24 +313,24 @@ fn hasManagedResources(path: []const u8) bool {
 
 fn fileExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-        file.close();
+        var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        file.close(std.Options.debug_io);
         return true;
     }
 
-    var file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 fn directoryExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        dir.close();
+        var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        dir.close(std.Options.debug_io);
         return true;
     }
 
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }

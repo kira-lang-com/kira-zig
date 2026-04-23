@@ -87,14 +87,14 @@ pub fn buildTextLlvmIr(
         try function_bodies.append(main_body);
     }
 
-    var output = std.array_list.Managed(u8).init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
 
-    var writer = output.writer();
+    var writer = &output.writer;
     try writer.print("; ModuleID = \"{s}\"\n", .{request.module_name});
     try writer.print("source_filename = \"{s}\"\n", .{request.module_name});
     try writer.print("target triple = \"{s}\"\n\n", .{triple});
-    try appendTypeDefinitions(allocator, &writer, request.program);
+    try appendTypeDefinitions(allocator, writer, request.program);
     try writer.writeAll("%kira.string = type { ptr, i64 }\n\n");
     try writer.writeAll("%kira.bridge.value = type { i8, [7 x i8], i64, i64 }\n\n");
 
@@ -163,10 +163,10 @@ pub fn buildTextFunctionBody(
     function_decl: ir.Function,
     string_counter: usize,
 ) ![]const u8 {
-    var body = std.array_list.Managed(u8).init(allocator);
+    var body: std.Io.Writer.Allocating = .init(allocator);
     errdefer body.deinit();
 
-    var writer = body.writer();
+    var writer = &body.writer;
     const function_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
     try writer.writeAll("define ");
     try writer.writeAll(llvmValueTypeText(function_decl.return_type));
@@ -961,10 +961,10 @@ pub fn buildTextMainBody(
     allocator: std.mem.Allocator,
     entry_function_name: []const u8,
 ) ![]const u8 {
-    var body = std.array_list.Managed(u8).init(allocator);
+    var body: std.Io.Writer.Allocating = .init(allocator);
     errdefer body.deinit();
 
-    var writer = body.writer();
+    var writer = &body.writer;
     try writer.writeAll("define i32 @main() {\nentry:\n");
     try writer.writeAll("  call void ");
     try writeLlvmSymbol(writer, entry_function_name);

@@ -84,15 +84,19 @@ fn helperObjectPath(allocator: std.mem.Allocator, object_path: []const u8) ![]co
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (@import("builtin").os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = argv,
-        .max_output_bytes = 512 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term == .Exited and result.term.Exited == 0) return;
+    if (result.term == .exited and result.term.exited == 0) return;
     if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
     if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
     return error.ExternalCommandFailed;
@@ -100,7 +104,7 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 
 fn ensureParentDir(path: []const u8) !void {
     const maybe_dir = std.fs.path.dirname(path) orelse return;
-    try std.fs.cwd().makePath(maybe_dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
 }
 
 fn zigTargetTriple(allocator: std.mem.Allocator) ![]const u8 {

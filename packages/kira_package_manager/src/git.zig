@@ -51,12 +51,12 @@ pub fn resolveGitCheckout(
 
     const tar_path = try std.fs.path.join(allocator, &.{ git_root, "tmp-git.tar" });
     defer allocator.free(tar_path);
-    _ = std.fs.deleteFileAbsolute(tar_path) catch {};
+    _ = std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, tar_path) catch {};
 
     try ensureRepo(allocator, repo_path, canonical_url, false);
     try runGit(allocator, &.{ "git", "-C", repo_path, "archive", "--format=tar", "-o", tar_path, commit });
     try archive.extractTarSecure(allocator, tar_path, source_root);
-    _ = std.fs.deleteFileAbsolute(tar_path) catch {};
+    _ = std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, tar_path) catch {};
 
     return .{
         .commit = commit,
@@ -96,7 +96,7 @@ fn resolveCommit(
 fn ensureRepo(allocator: std.mem.Allocator, repo_path: []const u8, canonical_url: []const u8, offline: bool) !void {
     if (!dirExists(repo_path)) {
         if (offline) return error.GitRepositoryNotCached;
-        if (std.fs.path.dirname(repo_path)) |parent| try std.fs.cwd().makePath(parent);
+        if (std.fs.path.dirname(repo_path)) |parent| try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, parent);
         try runGit(allocator, &.{ "git", "clone", "--mirror", canonical_url, repo_path });
         return;
     }
@@ -108,26 +108,28 @@ fn ensureRepo(allocator: std.mem.Allocator, repo_path: []const u8, canonical_url
 fn commitExists(allocator: std.mem.Allocator, repo_path: []const u8, rev: []const u8) bool {
     const object = std.fmt.allocPrint(allocator, "{s}^{{commit}}", .{rev}) catch return false;
     defer allocator.free(object);
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Options.debug_io, .{
         .argv = &.{ "git", "-C", repo_path, "cat-file", "-e", object },
-        .max_output_bytes = 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(1024),
+        .stderr_limit = .limited(1024),
     }) catch return false;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    return result.term == .Exited and result.term.Exited == 0;
+    return result.term == .exited and result.term.exited == 0;
 }
 
 fn normalizeCommit(allocator: std.mem.Allocator, repo_path: []const u8, rev: []const u8) ![]u8 {
     const object = try std.fmt.allocPrint(allocator, "{s}^{{commit}}", .{rev});
     defer allocator.free(object);
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
         .argv = &.{ "git", "-C", repo_path, "rev-parse", object },
-        .max_output_bytes = 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(1024),
+        .stderr_limit = .limited(1024),
     });
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
         return error.GitCommitNotFound;
     }
@@ -138,14 +140,15 @@ fn normalizeCommit(allocator: std.mem.Allocator, repo_path: []const u8, rev: []c
 }
 
 fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
         .argv = argv,
-        .max_output_bytes = 64 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.GitCommandFailed;
     }
 }
@@ -153,12 +156,12 @@ fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 fn canonicalizeGitUrl(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     const trimmed = std.mem.trim(u8, url, " \t\r\n");
     if (trimmed.len == 0) return error.InvalidManifest;
-    const without_trailing = std.mem.trimRight(u8, trimmed, "/");
+    const without_trailing = std.mem.trimEnd(u8, trimmed, "/");
     return allocator.dupe(u8, without_trailing);
 }
 
 fn dirExists(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }

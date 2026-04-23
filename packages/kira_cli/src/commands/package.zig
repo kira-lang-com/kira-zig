@@ -19,25 +19,27 @@ fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 
     const generated_root = try std.fs.path.join(allocator, &.{ location.root_path, "generated" });
     defer allocator.free(generated_root);
-    try std.fs.cwd().makePath(generated_root);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, generated_root);
 
     const archive_name = try std.fmt.allocPrint(allocator, "{s}-{s}.tar", .{ location.manifest.name, location.manifest.version });
     defer allocator.free(archive_name);
     const archive_path = try std.fs.path.join(allocator, &.{ generated_root, archive_name });
     defer allocator.free(archive_path);
 
-    const file = try std.fs.createFileAbsolute(archive_path, .{ .truncate = true });
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, archive_path, .{ .truncate = true });
     var buffer: [16 * 1024]u8 = undefined;
-    var writer = file.writer(&buffer);
+    var writer = file.writer(std.Options.debug_io, &buffer);
     var tar_writer = std.tar.Writer{ .underlying_writer = &writer.interface };
     try addProjectTree(allocator, location.root_path, location.root_path, &tar_writer);
     try tar_writer.finishPedantically();
     try writer.interface.flush();
-    file.close();
+    file.close(std.Options.debug_io);
 
-    const archive_file = try std.fs.openFileAbsolute(archive_path, .{});
-    defer archive_file.close();
-    const bytes = try archive_file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    const archive_file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, archive_path, .{});
+    defer archive_file.close(std.Options.debug_io);
+    var read_buffer: [16 * 1024]u8 = undefined;
+    var archive_reader = archive_file.reader(std.Options.debug_io, &read_buffer);
+    const bytes = try archive_reader.interface.allocRemaining(allocator, .limited(64 * 1024 * 1024));
     defer allocator.free(bytes);
     const checksum = try package_manager.sha256Hex(allocator, bytes);
     defer allocator.free(checksum);
@@ -59,13 +61,13 @@ fn executeInspect(allocator: std.mem.Allocator, args: []const []const u8, stdout
     defer allocator.free(archive_path);
     const temp_dir = try std.fmt.allocPrint(allocator, "{s}.inspect", .{archive_path});
     defer allocator.free(temp_dir);
-    _ = std.fs.deleteTreeAbsolute(temp_dir) catch {};
+    _ = std.Io.Dir.cwd().deleteTree(std.Options.debug_io, temp_dir) catch {};
     try package_manager.extractTarSecure(allocator, archive_path, temp_dir);
 
     try stdout.print("archive {s}\n", .{archive_path});
     const manifest_path = try printExtractedTree(allocator, stdout, temp_dir, temp_dir);
     if (manifest_path) |path| {
-        const text = try std.fs.cwd().readFileAlloc(allocator, path, 2 * 1024 * 1024);
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(2 * 1024 * 1024));
         const parsed = try manifest.parseProjectManifest(allocator, text);
         try printManifestSummary(stdout, parsed);
     }
@@ -89,15 +91,17 @@ fn printManifestSummary(stdout: anytype, project_manifest: manifest.ProjectManif
 }
 
 fn addProjectTree(allocator: std.mem.Allocator, root_path: []const u8, current_path: []const u8, tar_writer: *std.tar.Writer) !void {
-    var dir = try std.fs.openDirAbsolute(current_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, current_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         if (shouldSkip(entry.name)) continue;
         const child_path = try std.fs.path.join(allocator, &.{ current_path, entry.name });
         defer allocator.free(child_path);
-        const relative_native = try std.fs.path.relative(allocator, root_path, child_path);
+        const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
+        defer allocator.free(cwd);
+        const relative_native = try std.fs.path.relative(allocator, cwd, null, root_path, child_path);
         defer allocator.free(relative_native);
         const relative = try normalizeArchivePath(allocator, relative_native);
         defer allocator.free(relative);
@@ -106,12 +110,13 @@ fn addProjectTree(allocator: std.mem.Allocator, root_path: []const u8, current_p
             .directory => try addProjectTree(allocator, root_path, child_path, tar_writer),
             .file => {
                 if (shouldSkipFile(relative)) continue;
-                const child_file = try std.fs.openFileAbsolute(child_path, .{});
-                defer child_file.close();
+                const child_file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, child_path, .{});
+                defer child_file.close(std.Options.debug_io);
                 var read_buffer: [16 * 1024]u8 = undefined;
-                var reader = child_file.reader(&read_buffer);
-                const stat = try child_file.stat();
-                try tar_writer.writeFile(relative, &reader, stat.mtime);
+                var reader = child_file.reader(std.Options.debug_io, &read_buffer);
+                const stat = try child_file.stat(std.Options.debug_io);
+                const mtime_seconds = stat.mtime.toSeconds();
+                try tar_writer.writeFile(relative, &reader, if (mtime_seconds > 0) @intCast(mtime_seconds) else 0);
             },
             else => {},
         }
@@ -125,14 +130,16 @@ fn printExtractedTree(
     current_path: []const u8,
 ) !?[]const u8 {
     var manifest_path: ?[]const u8 = null;
-    var dir = try std.fs.openDirAbsolute(current_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, current_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         const child_path = try std.fs.path.join(allocator, &.{ current_path, entry.name });
         defer allocator.free(child_path);
-        const relative = try std.fs.path.relative(allocator, root_path, child_path);
+        const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
+        defer allocator.free(cwd);
+        const relative = try std.fs.path.relative(allocator, cwd, null, root_path, child_path);
         defer allocator.free(relative);
 
         switch (entry.kind) {
@@ -184,12 +191,12 @@ fn normalizeArchivePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn isDirectory(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
 }

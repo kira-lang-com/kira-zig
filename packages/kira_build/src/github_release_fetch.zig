@@ -1,4 +1,5 @@
 const std = @import("std");
+const kira_toolchain = @import("kira_toolchain");
 
 pub const default_repository = "kira-lang-com/kira-zig";
 
@@ -80,16 +81,16 @@ pub fn downloadAssetToFile(
     destination_path: []const u8,
 ) !void {
     if (std.fs.path.dirname(destination_path)) |parent| {
-        try std.fs.cwd().makePath(parent);
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, parent);
     }
 
     downloadWithCurl(allocator, download_url, destination_path) catch |err| switch (err) {
         error.FileNotFound => {
-            const file = try std.fs.createFileAbsolute(destination_path, .{ .read = true, .truncate = true });
-            defer file.close();
+            const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, destination_path, .{ .read = true, .truncate = true });
+            defer file.close(std.Options.debug_io);
 
             var file_buffer: [16 * 1024]u8 = undefined;
-            var file_writer = file.writer(&file_buffer);
+            var file_writer = file.writer(std.Options.debug_io, &file_buffer);
 
             const response = try fetchWriter(allocator, download_url, false, &file_writer.interface);
             try file_writer.interface.flush();
@@ -128,15 +129,16 @@ fn downloadWithCurl(
     }
     try argv.append(download_url);
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
         .argv = argv.items,
-        .max_output_bytes = 64 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term == .Exited and result.term.Exited == 0) return;
+    if (result.term == .exited and result.term.exited == 0) return;
     if (std.mem.indexOf(u8, result.stderr, "404")) |_| return error.GitHubReleaseAssetNotFound;
     if (std.mem.indexOf(u8, result.stderr, "404")) |_| return error.GitHubReleaseAssetNotFound;
     return error.GitHubAssetDownloadFailed;
@@ -172,7 +174,7 @@ fn fetchWriter(
     is_api_request: bool,
     writer: *std.Io.Writer,
 ) !struct { status: std.http.Status } {
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = .{ .allocator = allocator, .io = std.Options.debug_io };
     defer client.deinit();
 
     const token = githubToken(allocator) catch null;
@@ -201,13 +203,13 @@ fn fetchWriter(
 }
 
 fn githubToken(allocator: std.mem.Allocator) !?[]const u8 {
-    return std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch
-        std.process.getEnvVarOwned(allocator, "GH_TOKEN") catch
+    return kira_toolchain.envVarOwned(allocator, "GITHUB_TOKEN") catch
+        kira_toolchain.envVarOwned(allocator, "GH_TOKEN") catch
         null;
 }
 
 pub fn resolveRepositorySlug(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "KIRA_LLVM_GITHUB_REPOSITORY")) |value| {
+    if (kira_toolchain.envVarOwned(allocator, "KIRA_LLVM_GITHUB_REPOSITORY")) |value| {
         return value;
     } else |_| {}
 
@@ -222,15 +224,16 @@ pub fn resolveRepositorySlug(allocator: std.mem.Allocator, repo_root: []const u8
 }
 
 fn gitRemoteOriginUrl(allocator: std.mem.Allocator, repo_root: []const u8) ?[]const u8 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Options.debug_io, .{
         .argv = &.{ "git", "config", "--get", "remote.origin.url" },
-        .cwd = repo_root,
-        .max_output_bytes = 4096,
+        .expand_arg0 = .expand,
+        .cwd = .{ .path = repo_root },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
     }) catch return null;
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
         return null;
     }

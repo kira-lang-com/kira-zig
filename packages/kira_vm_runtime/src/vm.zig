@@ -789,9 +789,9 @@ test "executes nested runtime calls" {
     };
 
     var buffer: [128]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try vm.runMain(&module, stream.writer());
-    try std.testing.expectEqualStrings("42\n", stream.getWritten());
+    var stream = std.Io.Writer.fixed(&buffer);
+    try vm.runMain(&module, &stream);
+    try std.testing.expectEqualStrings("42\n", stream.buffered());
 }
 
 test "prints struct values" {
@@ -838,9 +838,9 @@ test "prints struct values" {
     };
 
     var buffer: [256]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try vm.runMain(&module, stream.writer());
-    try std.testing.expectEqualStrings("Color(r: 255, g: 0, b: 0)\n", stream.getWritten());
+    var stream = std.Io.Writer.fixed(&buffer);
+    try vm.runMain(&module, &stream);
+    try std.testing.expectEqualStrings("Color(r: 255, g: 0, b: 0)\n", stream.buffered());
 }
 
 test "resolves function constants through hooks" {

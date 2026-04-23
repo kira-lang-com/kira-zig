@@ -153,26 +153,28 @@ fn runExecutable(
     stdout: anytype,
     stderr: anytype,
 ) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{path},
-        .cwd = project_root,
+        .cwd = if (project_root) |root| .{ .path = root } else .inherit,
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     if (result.stdout.len > 0) try stdout.writeAll(result.stdout);
-    if (result.term == .Exited and result.term.Exited == 0) {
+    if (result.term == .exited and result.term.exited == 0) {
         if (result.stderr.len > 0) try stderr.writeAll(result.stderr);
         return;
     }
 
     try stderr.print("native executable failed: {s}\n", .{path});
     switch (result.term) {
-        .Exited => |code| try stderr.print("  exit code: {d}\n", .{code}),
-        .Signal => |signal| try stderr.print("  signal: {d}\n", .{signal}),
-        .Stopped => |signal| try stderr.print("  stopped by signal: {d}\n", .{signal}),
-        .Unknown => |code| try stderr.print("  status: {d}\n", .{code}),
+        .exited => |code| try stderr.print("  exit code: {d}\n", .{code}),
+        .signal => |signal| try stderr.print("  signal: {d}\n", .{signal}),
+        .stopped => |signal| try stderr.print("  stopped by signal: {d}\n", .{signal}),
+        .unknown => |code| try stderr.print("  status: {d}\n", .{code}),
     }
     if (result.stderr.len > 0) {
         try stderr.writeAll("  stderr:\n");
@@ -190,7 +192,7 @@ fn runExecutable(
         try stderr.print("  cwd: {s}\n", .{cwd});
     }
     try stderr.print("  command: {s}\n", .{path});
-    if (builtin.os.tag == .windows and result.term == .Exited and result.term.Exited == 9) {
+    if (builtin.os.tag == .windows and result.term == .exited and result.term.exited == 9) {
         try stderr.writeAll("  note: Windows may report native fail-fast statuses through the low exit byte; running the executable directly can reveal the full NTSTATUS.\n");
     }
     return error.NativeRunFailed;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const CurrentToolchain = struct {
     channel: Channel,
@@ -27,15 +28,33 @@ pub const Channel = enum {
 };
 
 pub fn homeDir(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (envVarOwned(allocator, "HOME")) |home| {
         return home;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |home| {
+    if (envVarOwned(allocator, "USERPROFILE")) |home| {
         return home;
     } else |_| {}
 
     return error.HomeDirectoryUnavailable;
+}
+
+pub fn envVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    if (builtin.os.tag == .windows or (builtin.os.tag == .wasi and !builtin.link_libc)) {
+        var environ = try std.process.Environ.createMap(.{ .block = .global }, allocator);
+        defer environ.deinit();
+        const value = environ.get(name) orelse return error.EnvironmentVariableNotFound;
+        return allocator.dupe(u8, value);
+    }
+
+    if (builtin.link_libc) {
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
+        const value = std.c.getenv(name_z.ptr) orelse return error.EnvironmentVariableNotFound;
+        return allocator.dupe(u8, std.mem.span(value));
+    }
+
+    return error.EnvironmentVariableNotFound;
 }
 
 pub fn kiraHome(allocator: std.mem.Allocator) ![]u8 {
@@ -138,7 +157,7 @@ pub fn toolchainRootFromExecutablePath(allocator: std.mem.Allocator, exe_path: [
 }
 
 pub fn toolchainRootFromSelfExecutable(allocator: std.mem.Allocator) !?[]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(exe_path);
     return toolchainRootFromExecutablePath(allocator, exe_path);
 }
@@ -174,7 +193,7 @@ fn parseQuotedField(allocator: std.mem.Allocator, contents: []const u8, field_na
     const field_index = std.mem.indexOf(u8, contents, field_name) orelse return error.InvalidCurrentToolchain;
     const after_field = contents[field_index + field_name.len ..];
     const equals_index = std.mem.indexOfScalar(u8, after_field, '=') orelse return error.InvalidCurrentToolchain;
-    const after_equals = std.mem.trimLeft(u8, after_field[equals_index + 1 ..], " \t\r\n");
+    const after_equals = std.mem.trimStart(u8, after_field[equals_index + 1 ..], " \t\r\n");
     if (after_equals.len == 0 or after_equals[0] != '"') return error.InvalidCurrentToolchain;
 
     const closing_quote = std.mem.indexOfScalarPos(u8, after_equals, 1, '"') orelse return error.InvalidCurrentToolchain;
@@ -182,17 +201,17 @@ fn parseQuotedField(allocator: std.mem.Allocator, contents: []const u8, field_na
 }
 
 fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 test "writes and parses current toolchain toml" {
     var buffer: [256]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream = std.Io.Writer.fixed(&buffer);
 
-    try writeCurrentToolchainToml(stream.writer(), .release, "0.1.0", "kirac");
-    const parsed = try parseCurrentToolchainToml(std.testing.allocator, stream.getWritten());
+    try writeCurrentToolchainToml(&stream, .release, "0.1.0", "kirac");
+    const parsed = try parseCurrentToolchainToml(std.testing.allocator, stream.buffered());
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(Channel.release, parsed.channel);

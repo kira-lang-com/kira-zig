@@ -17,7 +17,7 @@ pub const manifest_file_names = [_][]const u8{
 };
 
 pub fn loadProjectFromFile(allocator: std.mem.Allocator, path: []const u8) !Project {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
     return .{
         .manifest = try manifest.parseProjectManifest(allocator, text),
     };
@@ -85,7 +85,7 @@ fn isManifestPath(path: []const u8) bool {
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
 }
 
 fn moduleSourceRoot(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
@@ -94,24 +94,24 @@ fn moduleSourceRoot(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
 
 fn fileExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-        file.close();
+        var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        file.close(std.Options.debug_io);
         return true;
     }
 
-    var file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 fn directoryExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        dir.close();
+        var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        dir.close(std.Options.debug_io);
         return true;
     }
 
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }

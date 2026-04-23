@@ -51,14 +51,14 @@ pub const Case = struct {
 pub fn discoverCases(allocator: std.mem.Allocator) ![]Case {
     const repo_root = try findRepoRoot(allocator) orelse return error.FileNotFound;
     defer allocator.free(repo_root);
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
     defer {
-        original_cwd.setAsCwd() catch {};
-        original_cwd.close();
+        std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
     }
-    var repo_dir = try std.fs.openDirAbsolute(repo_root, .{});
-    defer repo_dir.close();
-    try repo_dir.setAsCwd();
+    var repo_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, repo_root, .{});
+    defer repo_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.Options.debug_io, repo_dir);
 
     var cases = std.array_list.Managed(Case).init(allocator);
     try scanRoot(allocator, "tests/pass/run", &cases);
@@ -88,11 +88,11 @@ fn scanDir(
     else
         try std.fs.path.join(allocator, &.{ root_rel, current_rel });
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var walker = dir.iterate();
-    while (try walker.next()) |entry| {
+    while (try walker.next(std.Options.debug_io)) |entry| {
         switch (entry.kind) {
             .directory => {
                 const next_rel = if (current_rel.len == 0)
@@ -126,7 +126,7 @@ fn loadExpectation(
     allocator: std.mem.Allocator,
     path: []const u8,
 ) !Expectation {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, 1 << 20);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1 << 20));
     return parseExpectation(allocator, text);
 }
 
@@ -448,13 +448,13 @@ fn sortCases(items: []Case) void {
 }
 
 fn dirExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
 fn findRepoRoot(allocator: std.mem.Allocator) !?[]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(exe_path);
     var current = try allocator.dupe(u8, std.fs.path.dirname(exe_path) orelse ".");
     errdefer allocator.free(current);
@@ -477,9 +477,9 @@ fn findRepoRoot(allocator: std.mem.Allocator) !?[]u8 {
 
 fn fileExists(path: []const u8) bool {
     var file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{}) catch return false
+        std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false
     else
-        std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+        std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }

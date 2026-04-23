@@ -8,9 +8,9 @@ pub fn main() !void {
 
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
     defer stdout.interface.flush() catch {};
-    var stderr = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
     const build_options = @import("fetch_llvm_build_options");

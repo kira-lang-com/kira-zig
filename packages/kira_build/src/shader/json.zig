@@ -2,8 +2,8 @@ const std = @import("std");
 const shader_model = @import("kira_shader_model");
 
 pub fn renderReflectionJson(allocator: std.mem.Allocator, reflection: shader_model.Reflection) ![]const u8 {
-    var out = std.array_list.Managed(u8).init(allocator);
-    const writer = out.writer();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    const writer = &out.writer;
 
     try writer.print(
         \\{{

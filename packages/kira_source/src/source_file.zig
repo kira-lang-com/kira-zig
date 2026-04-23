@@ -17,7 +17,7 @@ pub const SourceFile = struct {
     }
 
     pub fn fromPath(allocator: std.mem.Allocator, path: []const u8) !SourceFile {
-        const text = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
         return .{
             .allocator = allocator,
             .path = try allocator.dupe(u8, path),

@@ -581,8 +581,8 @@ test "check and build stop points share imported graph diagnostics" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("App/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/project.toml",
         .data =
         \\[project]
@@ -594,7 +594,7 @@ test "check and build stop points share imported graph diagnostics" {
         \\build_target = "host"
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/app/main.kira",
         .data =
         \\import support as Support
@@ -605,12 +605,12 @@ test "check and build stop points share imported graph diagnostics" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/app/support.kira",
         .data = "function helper( { return; }\n",
     });
 
-    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "App/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", arena.allocator());
     const checked = try checkFileForBackend(arena.allocator(), source_path, .vm);
     const built = try compileFileForBackend(arena.allocator(), source_path, .vm, &.{});
 
@@ -627,8 +627,8 @@ test "check reaches backend preparation for selected backend" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("App/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/app/main.kira",
         .data =
         \\@Main
@@ -644,7 +644,7 @@ test "check reaches backend preparation for selected backend" {
         ,
     });
 
-    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "App/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", arena.allocator());
     const result = try checkFileForBackend(arena.allocator(), source_path, .vm);
 
     try std.testing.expect(result.failed());
@@ -661,9 +661,9 @@ test "built-in Foundation resolves before installed package conflicts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Workspace/App/app");
-    try tmp.dir.makePath("Workspace/ConflictFoundation");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/App/app");
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/ConflictFoundation");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/App/kira.toml",
         .data =
         \\[package]
@@ -680,7 +680,7 @@ test "built-in Foundation resolves before installed package conflicts" {
         \\Foundation = { path = "../ConflictFoundation" }
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/App/app/main.kira",
         .data =
         \\import Foundation
@@ -692,7 +692,7 @@ test "built-in Foundation resolves before installed package conflicts" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/ConflictFoundation/kira.toml",
         .data =
         \\[package]
@@ -703,13 +703,13 @@ test "built-in Foundation resolves before installed package conflicts" {
         \\module_root = "Foundation"
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/ConflictFoundation/Foundation.kira",
         .data = "function broken( { return; }\n",
     });
 
-    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/App");
-    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/App/app/main.kira");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/App", arena.allocator());
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/App/app/main.kira", arena.allocator());
 
     var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
     _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
@@ -727,10 +727,10 @@ test "path dependency rooted at repo root resolves module file from app director
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Workspace/KiraUI/app");
-    try tmp.dir.makePath("Workspace/CardExample/app");
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/KiraUI/app");
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/CardExample/app");
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/KiraUI/kira.toml",
         .data =
         \\[package]
@@ -741,7 +741,7 @@ test "path dependency rooted at repo root resolves module file from app director
         \\module_root = "KiraUI"
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/KiraUI/app/kiraui.kira",
         .data =
         \\function hello() {
@@ -749,7 +749,7 @@ test "path dependency rooted at repo root resolves module file from app director
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/CardExample/kira.toml",
         .data =
         \\[package]
@@ -766,7 +766,7 @@ test "path dependency rooted at repo root resolves module file from app director
         \\KiraUI = { path = "../KiraUI" }
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/CardExample/app/main.kira",
         .data =
         \\import KiraUI
@@ -779,8 +779,8 @@ test "path dependency rooted at repo root resolves module file from app director
         ,
     });
 
-    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/CardExample");
-    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/CardExample/app/main.kira");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/CardExample", arena.allocator());
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/CardExample/app/main.kira", arena.allocator());
     var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
     _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
 
@@ -795,8 +795,8 @@ test "current library root import exposes declarations from every library file" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Workspace/UILibrary/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/UILibrary/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/UILibrary/kira.toml",
         .data =
         \\[package]
@@ -807,7 +807,7 @@ test "current library root import exposes declarations from every library file" 
         \\module_root = "UI"
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/UILibrary/app/main.kira",
         .data =
         \\import UI
@@ -820,7 +820,7 @@ test "current library root import exposes declarations from every library file" 
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/UILibrary/app/UI.kira",
         .data =
         \\function header() {
@@ -828,7 +828,7 @@ test "current library root import exposes declarations from every library file" 
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/UILibrary/app/Footer.kira",
         .data =
         \\function footer() {
@@ -837,7 +837,7 @@ test "current library root import exposes declarations from every library file" 
         ,
     });
 
-    const source_path = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/UILibrary/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/UILibrary/app/main.kira", arena.allocator());
     const result = try checkFile(arena.allocator(), source_path);
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
@@ -849,8 +849,8 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Workspace/callbacks/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "Workspace/callbacks/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/callbacks/project.toml",
         .data =
         \\[project]
@@ -862,7 +862,7 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
         \\build_target = "host"
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/callbacks/app/main.kira",
         .data =
         \\import callbacks as cb
@@ -874,7 +874,7 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/callbacks/app/callbacks.kira",
         .data =
         \\function hello() {
@@ -883,7 +883,7 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
         ,
     });
 
-    const app_root = try tmp.dir.realpathAlloc(arena.allocator(), "Workspace/callbacks/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/callbacks/app", arena.allocator());
     const mixed_source_path = try std.fmt.allocPrint(arena.allocator(), "{s}/main.kira", .{app_root});
     const result = try compileFileToIr(arena.allocator(), mixed_source_path);
 

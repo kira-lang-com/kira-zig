@@ -48,15 +48,15 @@ const Lowerer = struct {
     shader: *const shader_ir.ShaderDecl,
 
     fn emitStage(self: *Lowerer, stage: shader_ir.StageDecl, paired_fragment: ?shader_ir.StageDecl) ![]const u8 {
-        var out = std.array_list.Managed(u8).init(self.allocator);
-        try out.writer().writeAll("#version 330 core\n\n");
-        try self.emitStructs(out.writer());
-        try self.emitOptions(out.writer());
-        try self.emitResources(out.writer(), stage.kind);
-        try self.emitStageIo(out.writer(), stage, paired_fragment);
-        try self.emitHelpers(out.writer());
-        try self.emitFunction(out.writer(), stage.entry);
-        try self.emitMain(out.writer(), stage);
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        try out.writer.writeAll("#version 330 core\n\n");
+        try self.emitStructs(&out.writer);
+        try self.emitOptions(&out.writer);
+        try self.emitResources(&out.writer, stage.kind);
+        try self.emitStageIo(&out.writer, stage, paired_fragment);
+        try self.emitHelpers(&out.writer);
+        try self.emitFunction(&out.writer, stage.entry);
+        try self.emitMain(&out.writer, stage);
         return out.toOwnedSlice();
     }
 

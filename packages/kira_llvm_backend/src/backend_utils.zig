@@ -97,17 +97,17 @@ pub fn appendStringGlobals(
     const struct_name = try std.fmt.allocPrint(allocator, "kira_str_{d}", .{index});
     defer allocator.free(struct_name);
 
-    var data_line = std.array_list.Managed(u8).init(allocator);
+    var data_line: std.Io.Writer.Allocating = .init(allocator);
     errdefer data_line.deinit();
-    var data_writer = data_line.writer();
+    var data_writer = &data_line.writer;
     try data_writer.print("@{s} = private unnamed_addr constant [{d} x i8] c\"", .{ data_name, value.len + 1 });
     try writeLlvmStringLiteral(data_writer, value);
     try data_writer.writeAll("\\00\"\n");
     try globals.append(try data_line.toOwnedSlice());
 
-    var struct_line = std.array_list.Managed(u8).init(allocator);
+    var struct_line: std.Io.Writer.Allocating = .init(allocator);
     errdefer struct_line.deinit();
-    var struct_writer = struct_line.writer();
+    var struct_writer = &struct_line.writer;
     try struct_writer.print("@{s} = private unnamed_addr constant %kira.string {{ ptr getelementptr inbounds ([{d} x i8], ptr @{s}, i64 0, i64 0), i64 {d} }}\n", .{
         struct_name,
         value.len + 1,
@@ -381,12 +381,12 @@ pub fn freeSymbolNames(allocator: std.mem.Allocator, symbols: *std.AutoHashMapUn
 
 pub fn writeTextFile(path: []const u8, data: []const u8) !void {
     if (std.fs.path.isAbsolute(path)) {
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(data);
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
+        try file.writeStreamingAll(std.Options.debug_io, data);
         return;
     }
-    try std.fs.cwd().writeFile(.{
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = path,
         .data = data,
     });
@@ -404,22 +404,25 @@ pub fn emitObjectFileViaZigCc(
     const ir_text = std.mem.span(ir_text_z);
     const ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{object_path});
     defer allocator.free(ir_path);
-    defer std.fs.cwd().deleteFile(ir_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, ir_path) catch {};
 
-    try std.fs.cwd().writeFile(.{
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = ir_path,
         .data = ir_text,
     });
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (@import("builtin").os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{ build_options.zig_exe, "cc", "-c", "-x", "ir", "-o", object_path, ir_path },
-        .max_output_bytes = 512 * 1024,
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.ObjectEmissionFailed;
     }
 }
@@ -492,9 +495,9 @@ pub fn buildTextExternDecl(
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     function_decl: ir.Function,
 ) ![]const u8 {
-    var output = std.array_list.Managed(u8).init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
-    var writer = output.writer();
+    var writer = &output.writer;
     const uses_sret = externReturnUsesSRet(request.program, function_decl.return_type);
     try writer.writeAll("declare ");
     if (uses_sret) {
@@ -592,9 +595,9 @@ pub fn buildHybridBridgeWrapper(
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     function_decl: ir.Function,
 ) ![]const u8 {
-    var output = std.array_list.Managed(u8).init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
-    var writer = output.writer();
+    var writer = &output.writer;
 
     const export_name = try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id});
     defer allocator.free(export_name);
@@ -885,7 +888,7 @@ pub fn hostTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
 
 pub fn ensureParentDir(path: []const u8) !void {
     const maybe_dir = std.fs.path.dirname(path) orelse return;
-    try std.fs.cwd().makePath(maybe_dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
 }
 
 pub fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {

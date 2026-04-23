@@ -88,7 +88,7 @@ const Section = union(enum) {
 };
 
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !Metadata {
-    const contents = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024);
+    const contents = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(16 * 1024));
     defer allocator.free(contents);
     return parse(allocator, contents);
 }
@@ -229,7 +229,7 @@ fn trimComment(line: []const u8) []const u8 {
     while (index < trimmed.len) : (index += 1) {
         switch (trimmed[index]) {
             '"' => in_string = !in_string,
-            '#' => if (!in_string) return std.mem.trimRight(u8, trimmed[0..index], " \t"),
+            '#' => if (!in_string) return std.mem.trimEnd(u8, trimmed[0..index], " \t"),
             else => {},
         }
     }

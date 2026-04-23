@@ -393,9 +393,9 @@ pub fn buildCallValueDispatcher(
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     dispatcher: CallValueDispatcher,
 ) ![]const u8 {
-    var output = std.array_list.Managed(u8).init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
-    var writer = output.writer();
+    var writer = &output.writer;
 
     const dispatcher_name = try dispatcherSymbolName(allocator, dispatcher.hash);
     defer allocator.free(dispatcher_name);

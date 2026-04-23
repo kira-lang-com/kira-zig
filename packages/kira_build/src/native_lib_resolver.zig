@@ -3,7 +3,7 @@ const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 
 pub fn resolveNativeManifestFile(allocator: std.mem.Allocator, path: []const u8, target: native.TargetSelector) !native.ResolvedNativeLibrary {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
     const parsed = try manifest.parseNativeLibManifest(allocator, text);
     var resolved = try native.resolveLibrary(allocator, parsed.library, target);
     resolved.manifest_path = try absolutizePath(allocator, path, path);
@@ -72,7 +72,7 @@ fn absolutizePath(allocator: std.mem.Allocator, manifest_path: []const u8, value
     const joined = try std.fs.path.join(allocator, &.{ base_dir, value });
     if (std.fs.path.isAbsolute(joined)) return joined;
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, joined });
 }

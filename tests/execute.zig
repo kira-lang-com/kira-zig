@@ -122,7 +122,7 @@ fn runBuildPhase(
     case: discovery.Case,
     backend: discovery.Backend,
 ) !PhaseActual {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
     const output_path = try buildOutputPath(allocator, tmp, backend);
@@ -230,10 +230,10 @@ fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: di
         };
     }
 
-    var output = std.array_list.Managed(u8).init(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
 
     var vm = vm_runtime.Vm.init(allocator);
-    try vm.runMain(&result.bytecode_module.?, output.writer());
+    try vm.runMain(&result.bytecode_module.?, &output.writer);
     return .{
         .result = .pass,
         .stdout = try output.toOwnedSlice(),
@@ -241,7 +241,7 @@ fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: di
 }
 
 fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
     const output_path = try makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension());
@@ -259,8 +259,9 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     }
 
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
-    const child = try std.process.Child.run(.{
-        .allocator = allocator,
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = .{ .block = .global } });
+    defer io_impl.deinit();
+    const child = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{executable.path},
     });
     defer allocator.free(child.stderr);
@@ -278,7 +279,7 @@ fn runHybridPhase(
     case: discovery.Case,
     options: Options,
 ) !PhaseActual {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
     const manifest_path = try makeBackendOutputPath(allocator, tmp, "hybrid", ".khm");
@@ -296,8 +297,9 @@ fn runHybridPhase(
     }
 
     const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
-    const child = try std.process.Child.run(.{
-        .allocator = allocator,
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = .{ .block = .global } });
+    defer io_impl.deinit();
+    const child = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{ runner, manifest_path },
     });
     defer allocator.free(child.stderr);
@@ -316,7 +318,29 @@ fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
     return null;
 }
 
-fn buildOutputPath(allocator: std.mem.Allocator, tmp: std.testing.TmpDir, backend: discovery.Backend) ![]const u8 {
+const TmpDir = struct {
+    allocator: std.mem.Allocator,
+    sub_path: []const u8,
+    dir: std.Io.Dir,
+
+    fn cleanup(self: *TmpDir) void {
+        self.dir.close(std.Options.debug_io);
+        std.Io.Dir.cwd().deleteTree(std.Options.debug_io, self.sub_path) catch {};
+        self.allocator.free(self.sub_path);
+    }
+};
+
+fn makeTmpDir(allocator: std.mem.Allocator) !TmpDir {
+    var bytes: [8]u8 = undefined;
+    std.Options.debug_io.random(&bytes);
+    const suffix = std.mem.readInt(u64, &bytes, .little);
+    const sub_path = try std.fmt.allocPrint(allocator, ".zig-cache/corpus-{x}", .{suffix});
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, sub_path);
+    const dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, sub_path, .{});
+    return .{ .allocator = allocator, .sub_path = sub_path, .dir = dir };
+}
+
+fn buildOutputPath(allocator: std.mem.Allocator, tmp: TmpDir, backend: discovery.Backend) ![]const u8 {
     return switch (backend) {
         .vm => makeBackendOutputPath(allocator, tmp, "vm", ".kbc"),
         .llvm => makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension()),
@@ -326,19 +350,19 @@ fn buildOutputPath(allocator: std.mem.Allocator, tmp: std.testing.TmpDir, backen
 
 fn makeBackendOutputPath(
     allocator: std.mem.Allocator,
-    tmp: std.testing.TmpDir,
+    tmp: TmpDir,
     backend_name: []const u8,
     extension: []const u8,
 ) ![]const u8 {
-    try tmp.dir.makePath(backend_name);
-    const backend_root = try tmp.dir.realpathAlloc(allocator, backend_name);
+    try tmp.dir.createDirPath(std.Options.debug_io, backend_name);
+    const backend_root = try tmp.dir.realPathFileAlloc(std.Options.debug_io, backend_name, allocator);
     const file_name = try std.fmt.allocPrint(allocator, "main{s}", .{extension});
     return std.fs.path.join(allocator, &.{ backend_root, file_name });
 }
 
 fn expectExitedZero(term: std.process.Child.Term) !void {
     switch (term) {
-        .Exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+        .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
         else => return error.CommandFailed,
     }
 }

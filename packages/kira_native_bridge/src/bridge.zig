@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const hybrid = @import("kira_hybrid_definition");
 const runtime_abi = @import("kira_runtime_abi");
 const symbol_resolver = @import("symbol_resolver.zig");
@@ -9,10 +10,11 @@ const InstallRuntimeInvokerFn = *const fn (*const fn (u32, ?[*]const runtime_abi
 
 var active_runtime_context: ?*anyopaque = null;
 var active_runtime_invoker: ?RuntimeInvoker = null;
+const NativeLibrary = if (builtin.os.tag == .windows) WindowsNativeLibrary else std.DynLib;
 
 pub const NativeBridge = struct {
     allocator: std.mem.Allocator,
-    library: ?std.DynLib = null,
+    library: ?NativeLibrary = null,
     trampolines: std.AutoHashMapUnmanaged(u32, trampoline.Trampoline) = .{},
 
     pub fn init(allocator: std.mem.Allocator) NativeBridge {
@@ -25,7 +27,7 @@ pub const NativeBridge = struct {
     }
 
     pub fn bind(self: *NativeBridge, library_path: []const u8, descriptors: []const hybrid.BridgeDescriptor) !void {
-        var library = try std.DynLib.open(library_path);
+        var library = try openNativeLibrary(self.allocator, library_path);
         errdefer library.close();
 
         for (descriptors) |descriptor| {
@@ -64,6 +66,38 @@ pub const NativeBridge = struct {
         const symbol_name = try std.fmt.bufPrintZ(&buffer, "kira_native_impl_{d}", .{function_id});
         const symbol = library.lookup(*const anyopaque, symbol_name) orelse return error.MissingNativeSymbol;
         return @intFromPtr(symbol);
+    }
+};
+
+fn openNativeLibrary(allocator: std.mem.Allocator, path: []const u8) !NativeLibrary {
+    if (builtin.os.tag == .windows) {
+        return WindowsNativeLibrary.open(allocator, path);
+    }
+    return std.DynLib.open(path);
+}
+
+const WindowsNativeLibrary = struct {
+    handle: std.os.windows.HMODULE,
+
+    const LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
+    extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?std.os.windows.HANDLE, u32) callconv(.winapi) ?std.os.windows.HMODULE;
+    extern "kernel32" fn FreeLibrary(std.os.windows.HMODULE) callconv(.winapi) std.os.windows.BOOL;
+    extern "kernel32" fn GetProcAddress(std.os.windows.HMODULE, [*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+    fn open(allocator: std.mem.Allocator, path: []const u8) !WindowsNativeLibrary {
+        const path_w = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, path);
+        defer allocator.free(path_w);
+        const handle = LoadLibraryExW(path_w.ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH) orelse return error.NativeLibraryLoadFailed;
+        return .{ .handle = handle };
+    }
+
+    fn close(self: *WindowsNativeLibrary) void {
+        _ = FreeLibrary(self.handle);
+    }
+
+    pub fn lookup(self: *WindowsNativeLibrary, comptime T: type, name: [:0]const u8) ?T {
+        const address = GetProcAddress(self.handle, name.ptr) orelse return null;
+        return @ptrCast(address);
     }
 };
 

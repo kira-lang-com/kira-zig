@@ -577,7 +577,6 @@ pub fn annotationValueForParameter(
             });
             return error.DiagnosticsEmitted;
         },
-        else => return err,
     };
 
     if (!canAssign(expected_type, literal.ty)) {

@@ -52,7 +52,7 @@ const packages = [_]Package{
     .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_app_generation", "kira_log", "kira_toolchain", "kira_project", "kira_package_manager", "kira_manifest", "kira_ksl_syntax_model" } },
 };
 
-fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMap(*std.Build.Module), names: []const []const u8) void {
+fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMapUnmanaged(*std.Build.Module), names: []const []const u8) void {
     for (names) |name| {
         module.addImport(name, modules.get(name).?);
     }
@@ -69,10 +69,10 @@ pub fn build(b: *std.Build) void {
         @panic("failed to parse llvm-metadata.toml");
     const llvm_version = metadata.llvm_version;
     const llvm_host_key = toolchain_layout.hostLlvmBundleKey(b.graph.host.result) orelse "unsupported-host";
-    const llvm_probe = discoverLlvmHeaders(b.allocator, repo_root, llvm_version, llvm_host_key);
+    const llvm_probe = discoverLlvmHeaders(b.allocator, repo_root, llvm_version, llvm_host_key, b.graph.environ_map.get("KIRA_LLVM_HOME"));
 
-    var modules = std.StringArrayHashMap(*std.Build.Module).init(b.allocator);
-    defer modules.deinit();
+    var modules: std.StringArrayHashMapUnmanaged(*std.Build.Module) = .empty;
+    defer modules.deinit(b.allocator);
 
     for (packages) |pkg| {
         const module = b.createModule(.{
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        modules.put(pkg.name, module) catch @panic("failed to register module");
+        modules.put(b.allocator, pkg.name, module) catch @panic("failed to register module");
     }
 
     for (packages) |pkg| {
@@ -277,8 +277,8 @@ fn discoverLlvmHeaders(
     repo_root: []const u8,
     llvm_version: []const u8,
     llvm_host_key: []const u8,
+    env_home: ?[]const u8,
 ) ?LlvmHeaderProbe {
-    const env_home = std.process.getEnvVarOwned(allocator, "KIRA_LLVM_HOME") catch null;
     if (env_home) |path| {
         if (headerProbeForHome(allocator, path)) |probe| return probe;
     }
@@ -347,14 +347,14 @@ fn isValidLlvmSplitIncludeDirs(source_include: []const u8, build_include: []cons
 }
 
 fn isDir(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
 fn isFile(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 

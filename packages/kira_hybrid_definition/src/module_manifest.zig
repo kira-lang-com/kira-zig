@@ -17,10 +17,10 @@ pub const HybridModuleManifest = struct {
     functions: []const FunctionManifest,
 
     pub fn writeToFile(self: HybridModuleManifest, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
         var buffer: [4096]u8 = undefined;
-        var writer = file.writer(&buffer);
+        var writer = file.writer(std.Options.debug_io, &buffer);
         defer writer.interface.flush() catch {};
 
         try writer.interface.writeAll("KHM1");
@@ -39,24 +39,24 @@ pub const HybridModuleManifest = struct {
     }
 
     pub fn readFromFile(allocator: std.mem.Allocator, path: []const u8) !HybridModuleManifest {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
-        var stream = std.io.fixedBufferStream(bytes);
-        const reader = stream.reader();
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
+        var reader_state = std.Io.Reader.fixed(bytes);
+        const reader = &reader_state;
 
         var magic: [4]u8 = undefined;
-        _ = try reader.readAll(&magic);
+        try reader.readSliceAll(&magic);
         if (!std.mem.eql(u8, &magic, "KHM1")) return error.InvalidHybridManifest;
 
         const module_name = try readString(allocator, reader);
         const bytecode_path = try readString(allocator, reader);
         const native_library_path = try readString(allocator, reader);
-        const entry_function_id = try reader.readInt(u32, .little);
-        const entry_execution: runtime_abi.FunctionExecution = @enumFromInt(try reader.readByte());
-        const function_count = try reader.readInt(u32, .little);
+        const entry_function_id = try reader.takeInt(u32, .little);
+        const entry_execution: runtime_abi.FunctionExecution = @enumFromInt(try reader.takeByte());
+        const function_count = try reader.takeInt(u32, .little);
         var functions = std.array_list.Managed(FunctionManifest).init(allocator);
         for (0..function_count) |_| {
-            const function_id = try reader.readInt(u32, .little);
-            const execution: runtime_abi.FunctionExecution = @enumFromInt(try reader.readByte());
+            const function_id = try reader.takeInt(u32, .little);
+            const execution: runtime_abi.FunctionExecution = @enumFromInt(try reader.takeByte());
             const name = try readString(allocator, reader);
             const exported_name = try readString(allocator, reader);
             try functions.append(.{
@@ -84,8 +84,8 @@ fn writeString(writer: anytype, value: []const u8) !void {
 }
 
 fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
-    const length = try reader.readInt(u32, .little);
+    const length = try reader.takeInt(u32, .little);
     const buffer = try allocator.alloc(u8, length);
-    _ = try reader.readAll(buffer);
+    try reader.readSliceAll(buffer);
     return buffer;
 }

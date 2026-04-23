@@ -494,11 +494,11 @@ pub fn readRepoFileForTest(allocator: std.mem.Allocator, path: []const u8) ![]co
     defer allocator.free(repo_root);
     const full_path = try std.fs.path.join(allocator, &.{ repo_root, path });
     defer allocator.free(full_path);
-    return std.fs.cwd().readFileAlloc(allocator, full_path, std.math.maxInt(usize));
+    return std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, full_path, allocator, .limited(std.math.maxInt(usize)));
 }
 
 pub fn findRepoRootForTest(allocator: std.mem.Allocator) !?[]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(exe_path);
     var current = try allocator.dupe(u8, std.fs.path.dirname(exe_path) orelse ".");
     errdefer allocator.free(current);
@@ -520,8 +520,8 @@ pub fn findRepoRootForTest(allocator: std.mem.Allocator) !?[]u8 {
 }
 
 pub fn fileExistsForTest(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 

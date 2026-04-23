@@ -19,7 +19,7 @@ pub fn syncProject(
     defer allocator.free(resolved.manifest_path);
     defer allocator.free(resolved.lockfile_path);
 
-    const manifest_text = try std.fs.cwd().readFileAlloc(allocator, resolved.manifest_path, 2 * 1024 * 1024);
+    const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, resolved.manifest_path, allocator, .limited(2 * 1024 * 1024));
     const project_manifest = manifest.parseProjectManifest(allocator, manifest_text) catch |err| switch (err) {
         error.UnsupportedVersionRange => {
             try diag.append(allocator, out_diagnostics, "KPKG007", "unsupported version range", "Kira package management v1 only supports exact registry versions.", "Use an exact version such as \"0.1.0\".");
@@ -58,13 +58,13 @@ pub fn syncProject(
 
     var changed = true;
     if (fileExists(resolved.lockfile_path)) {
-        const existing = try std.fs.cwd().readFileAlloc(allocator, resolved.lockfile_path, 2 * 1024 * 1024);
+        const existing = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, resolved.lockfile_path, allocator, .limited(2 * 1024 * 1024));
         changed = !std.mem.eql(u8, existing, rendered);
     }
     if (!options.locked and changed) {
-        const file = try std.fs.createFileAbsolute(resolved.lockfile_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(rendered);
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, resolved.lockfile_path, .{ .truncate = true });
+        defer file.close(std.Options.debug_io);
+        try file.writeStreamingAll(std.Options.debug_io, rendered);
     }
 
     return .{
@@ -86,7 +86,7 @@ pub fn loadModuleMapForSource(allocator: std.mem.Allocator, source_path: []const
     defer allocator.free(lockfile_path);
     if (!fileExists(lockfile_path)) return .{ .owners = try owners.toOwnedSlice() };
 
-    const lockfile_text = try std.fs.cwd().readFileAlloc(allocator, lockfile_path, 2 * 1024 * 1024);
+    const lockfile_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, lockfile_path, allocator, .limited(2 * 1024 * 1024));
     const lockfile = try manifest.parseLockFile(allocator, lockfile_text);
 
     for (lockfile.packages) |item| {
@@ -364,7 +364,7 @@ fn loadPackageManifest(allocator: std.mem.Allocator, root_path: []const u8) !Loa
         }
     }
     const resolved_manifest_path = manifest_path orelse return error.ProjectManifestNotFound;
-    const text = try std.fs.cwd().readFileAlloc(allocator, resolved_manifest_path, 2 * 1024 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, resolved_manifest_path, allocator, .limited(2 * 1024 * 1024));
     const parsed = try manifest.parseProjectManifest(allocator, text);
     const module_source_root = try discoverModuleSourceRoot(allocator, actual_root);
     return .{
@@ -525,7 +525,7 @@ fn findLockedGitCommit(
 
 fn loadLockfileIfPresent(allocator: std.mem.Allocator, lockfile_path: []const u8) !?manifest.LockFile {
     if (!fileExists(lockfile_path)) return null;
-    const text = try std.fs.cwd().readFileAlloc(allocator, lockfile_path, 2 * 1024 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, lockfile_path, allocator, .limited(2 * 1024 * 1024));
     return try manifest.parseLockFile(allocator, text);
 }
 
@@ -571,12 +571,12 @@ fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[
 }
 
 fn discoverNestedPackageRoot(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
-    var dir = try std.fs.openDirAbsolute(root_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, root_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var iterator = dir.iterate();
     var only_directory: ?[]const u8 = null;
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .directory) continue;
         if (only_directory != null) return null;
         only_directory = try std.fs.path.join(allocator, &.{ root_path, entry.name });
@@ -597,17 +597,17 @@ fn canonicalizePath(allocator: std.mem.Allocator, parent_root: []const u8, relat
     else
         try std.fs.path.join(allocator, &.{ parent_root, relative });
     defer allocator.free(joined);
-    return std.fs.cwd().realpathAlloc(allocator, joined);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, joined, allocator);
 }
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
 }
 
 fn isDirectory(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
@@ -617,17 +617,17 @@ fn isManifestPath(path: []const u8) bool {
 }
 
 fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 fn directoryExists(path: []const u8) bool {
     var dir = if (std.fs.path.isAbsolute(path))
-        std.fs.openDirAbsolute(path, .{}) catch return false
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false
     else
-        std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
@@ -703,14 +703,14 @@ fn discoverBundledFoundationRoot(allocator: std.mem.Allocator, source_path: []co
         if (try foundationRootFromRepoRoot(allocator, repo_root)) |foundation_root| return foundation_root;
     }
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     if (try findRepoRootFromPath(allocator, cwd)) |repo_root| {
         defer allocator.free(repo_root);
         if (try foundationRootFromRepoRoot(allocator, repo_root)) |foundation_root| return foundation_root;
     }
 
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(exe_path);
     if (try findRepoRootFromPath(allocator, std.fs.path.dirname(exe_path) orelse ".")) |repo_root| {
         defer allocator.free(repo_root);

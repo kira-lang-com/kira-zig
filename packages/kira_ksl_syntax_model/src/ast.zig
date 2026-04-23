@@ -323,14 +323,14 @@ fn qualifiedNameText(name: QualifiedName) []const u8 {
 }
 
 test "dump module writes shader summary" {
-    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer buffer.deinit();
 
-    try dumpModule(buffer.writer(), .{
+    try dumpModule(&buffer.writer, .{
         .imports = &.{},
         .types = &.{},
         .functions = &.{},
         .shaders = &.{},
     });
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "Module(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.written(), "Module(") != null);
 }

@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const toolchain = @import("toolchain.zig");
+const NativeLibrary = if (builtin.os.tag == .windows) WindowsNativeLibrary else std.DynLib;
 
 pub const c = @cImport({
     @cInclude("llvm-c/Analysis.h");
@@ -9,7 +11,7 @@ pub const c = @cImport({
 });
 
 pub const Api = struct {
-    lib: std.DynLib,
+    lib: NativeLibrary,
 
     LLVMContextCreate: *const @TypeOf(c.LLVMContextCreate),
     LLVMContextDispose: *const @TypeOf(c.LLVMContextDispose),
@@ -70,7 +72,7 @@ pub const Api = struct {
     LLVMInitializeAsmParser: ?*const fn () callconv(.c) void,
 
     pub fn open(tc: toolchain.Toolchain) !Api {
-        var lib = try std.DynLib.open(tc.llvm_c_library_path);
+        var lib = try openNativeLibrary(tc.llvm_c_library_path);
         errdefer lib.close();
 
         return .{
@@ -142,9 +144,39 @@ pub const Api = struct {
     }
 };
 
-fn load(lib: *std.DynLib, comptime T: type, name: [:0]const u8) !T {
+fn openNativeLibrary(path: []const u8) !NativeLibrary {
+    if (builtin.os.tag == .windows) return WindowsNativeLibrary.open(path);
+    return std.DynLib.open(path);
+}
+
+fn load(lib: anytype, comptime T: type, name: [:0]const u8) !T {
     return lib.lookup(T, name) orelse {
         std.debug.print("missing LLVM C symbol '{s}'\n", .{name});
         return error.MissingLlvmSymbol;
     };
 }
+
+const WindowsNativeLibrary = struct {
+    handle: std.os.windows.HMODULE,
+
+    const LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
+    extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?std.os.windows.HANDLE, u32) callconv(.winapi) ?std.os.windows.HMODULE;
+    extern "kernel32" fn FreeLibrary(std.os.windows.HMODULE) callconv(.winapi) std.os.windows.BOOL;
+    extern "kernel32" fn GetProcAddress(std.os.windows.HMODULE, [*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+    fn open(path: []const u8) !WindowsNativeLibrary {
+        const path_w = try std.unicode.wtf8ToWtf16LeAllocZ(std.heap.page_allocator, path);
+        defer std.heap.page_allocator.free(path_w);
+        const handle = LoadLibraryExW(path_w.ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH) orelse return error.NativeLibraryLoadFailed;
+        return .{ .handle = handle };
+    }
+
+    fn close(self: *WindowsNativeLibrary) void {
+        _ = FreeLibrary(self.handle);
+    }
+
+    fn lookup(self: *WindowsNativeLibrary, comptime T: type, name: [:0]const u8) ?T {
+        const address = GetProcAddress(self.handle, name.ptr) orelse return null;
+        return @ptrCast(address);
+    }
+};

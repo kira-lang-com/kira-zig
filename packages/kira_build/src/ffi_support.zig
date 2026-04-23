@@ -27,7 +27,7 @@ pub fn prepareNativeLibraries(
 
 fn loadProjectNativeManifestPaths(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {
     const project_manifest_path = try discoverProjectManifestPath(allocator, source_path) orelse return &.{};
-    const manifest_text = try std.fs.cwd().readFileAlloc(allocator, project_manifest_path, 1024 * 1024);
+    const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, project_manifest_path, allocator, .limited(1024 * 1024));
     const project_manifest = try manifest.parseProjectManifest(allocator, manifest_text);
 
     var manifests = std.array_list.Managed([]const u8).init(allocator);
@@ -66,15 +66,19 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     }
     try argv.appendSlice(library.build.sources);
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = argv.items,
-        .max_output_bytes = 1024 * 1024,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) return error.NativeLibraryBuildFailed;
+    if (result.term != .exited or result.term.exited != 0) return error.NativeLibraryBuildFailed;
 }
 
 fn targetTriple(allocator: std.mem.Allocator, selector: native.TargetSelector) ![]const u8 {
@@ -105,7 +109,7 @@ fn hostTargetSelector(allocator: std.mem.Allocator) !native.TargetSelector {
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, path });
 }
@@ -115,7 +119,7 @@ fn absolutizeFromManifest(allocator: std.mem.Allocator, manifest_path: []const u
     const base_dir = std.fs.path.dirname(manifest_path) orelse ".";
     const joined = try std.fs.path.join(allocator, &.{ base_dir, value });
     if (std.fs.path.isAbsolute(joined)) return joined;
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, joined });
 }
@@ -154,13 +158,13 @@ fn findManifestInDirectory(allocator: std.mem.Allocator, directory: []const u8) 
 
 fn fileExists(path: []const u8) bool {
     var file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{}) catch return false
+        std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false
     else
-        std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+        std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 fn makePath(path: []const u8) !void {
-    try std.fs.cwd().makePath(path);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
 }

@@ -277,11 +277,11 @@ fn renderQualifiedName(allocator: std.mem.Allocator, name: syntax.ast.QualifiedN
 
 fn absolutizePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.Options.debug_io, path, .{}) catch return false;
     return true;
 }
 
@@ -393,7 +393,7 @@ test "shader binding assignment is deterministic and class ordered" {
     const allocator = arena.allocator();
     const temp_dir = std.testing.tmpDir(.{});
     defer temp_dir.cleanup();
-    try temp_dir.dir.writeFile(.{
+    try temp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "main.ksl",
         .data =
         \\type CameraUniform { let view_projection: Float4x4 }
@@ -415,7 +415,7 @@ test "shader binding assignment is deterministic and class ordered" {
         \\}
         ,
     });
-    const source_path = try temp_dir.dir.realpathAlloc(allocator, "main.ksl");
+    const source_path = try temp_dir.dir.realPathFileAlloc(std.testing.io, "main.ksl", allocator);
     const result = try buildFile(allocator, source_path);
     try std.testing.expect(result.artifacts.len == 1);
     try std.testing.expect(std.mem.indexOf(u8, result.artifacts[0].reflection_json, "\"group\": \"Frame\"") != null);
@@ -441,6 +441,6 @@ fn expectDiagnosticCode(items: []const diagnostics.Diagnostic, code: []const u8)
 }
 
 fn expectFileText(allocator: std.mem.Allocator, path: []const u8, actual: []const u8) !void {
-    const expected = try std.fs.cwd().readFileAlloc(allocator, path, 1 << 20);
+    const expected = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1 << 20));
     try std.testing.expectEqualStrings(expected, actual);
 }

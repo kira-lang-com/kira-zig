@@ -17,9 +17,9 @@ const support = @import("support.zig");
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
     defer stdout.interface.flush() catch {};
-    var stderr = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
     return runWithWriters(allocator, args, &stdout.interface, &stderr.interface);
@@ -137,8 +137,8 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("DemoApp/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/project.toml",
         .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
@@ -147,27 +147,27 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
             "execution_mode = \"vm\"\n" ++
             "build_target = \"host\"\n",
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
         .data = "@Main\nfunction main() { let x = ; }\n",
     });
-    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "DemoApp", arena.allocator());
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
     const exit_code = try runWithWriters(
         arena.allocator(),
         &.{ "kirac", "check", path },
-        stdout.writer(),
-        stderr.writer(),
+        &stdout,
+        &stderr,
     );
 
     try std.testing.expectEqual(@as(u8, 1), exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "panic") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "error[KPAR002]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "panic") == null);
 }
 
 test "invalid hybrid input exits cleanly without renderer crash" {
@@ -177,8 +177,8 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("DemoApp/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/project.toml",
         .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
@@ -187,7 +187,7 @@ test "invalid hybrid input exits cleanly without renderer crash" {
             "execution_mode = \"hybrid\"\n" ++
             "build_target = \"host\"\n",
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
         .data = "@Main\n" ++
             "@Native\n" ++
@@ -201,42 +201,42 @@ test "invalid hybrid input exits cleanly without renderer crash" {
             "    return;\n" ++
             "}\n",
     });
-    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "DemoApp", arena.allocator());
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
     const exit_code = try runWithWriters(
         arena.allocator(),
         &.{ "kirac", "run", "--backend", "hybrid", path },
-        stdout.writer(),
-        stderr.writer(),
+        &stdout,
+        &stderr,
     );
 
     try std.testing.expectEqual(@as(u8, 1), exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "panic") == null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "Segmentation fault") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "error[KPAR002]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "panic") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "Segmentation fault") == null);
 }
 
 test "version prints standalone binary identity" {
     var stdout_buffer: [128]u8 = undefined;
     var stderr_buffer: [128]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
     const exit_code = try runWithWriters(
         std.testing.allocator,
         &.{ "kirac", "--version" },
-        stdout.writer(),
-        stderr.writer(),
+        &stdout,
+        &stderr,
     );
 
     try std.testing.expectEqual(@as(u8, 0), exit_code);
-    try std.testing.expectEqualStrings("kira-bootstrapper 0.1.0\n", stdout.getWritten());
-    try std.testing.expectEqualStrings("", stderr.getWritten());
+    try std.testing.expectEqualStrings("kira-bootstrapper 0.1.0\n", stdout.buffered());
+    try std.testing.expectEqualStrings("", stderr.buffered());
 }
 
 test "run defaults to project.toml in the current directory" {
@@ -246,8 +246,8 @@ test "run defaults to project.toml in the current directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("DemoApp/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/project.toml",
         .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
@@ -256,36 +256,36 @@ test "run defaults to project.toml in the current directory" {
             "execution_mode = \"vm\"\n" ++
             "build_target = \"host\"\n",
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
         .data = "@Main\nfunction main() { let x = ; }\n",
     });
 
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
     defer {
-        original_cwd.setAsCwd() catch {};
-        original_cwd.close();
+        std.process.setCurrentDir(std.testing.io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
     }
 
-    var app_dir = try tmp.dir.openDir("DemoApp", .{});
-    defer app_dir.close();
-    try app_dir.setAsCwd();
+    var app_dir = try tmp.dir.openDir(std.testing.io, "DemoApp", .{});
+    defer app_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.testing.io, app_dir);
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
     const exit_code = try runWithWriters(
         arena.allocator(),
         &.{ "kirac", "run" },
-        stdout.writer(),
-        stderr.writer(),
+        &stdout,
+        &stderr,
     );
 
     try std.testing.expectEqual(@as(u8, 1), exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "error[KPAR002]: expected expression") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "invalid Kira input") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "error[KPAR002]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "invalid Kira input") == null);
 }
 
 test "vm run launches bytecode produced by the build pipeline" {
@@ -295,8 +295,8 @@ test "vm run launches bytecode produced by the build pipeline" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("DemoApp/app");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/project.toml",
         .data = "[project]\n" ++
             "name = \"DemoApp\"\n" ++
@@ -305,28 +305,28 @@ test "vm run launches bytecode produced by the build pipeline" {
             "execution_mode = \"vm\"\n" ++
             "build_target = \"host\"\n",
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
         .data = "@Main\nfunction main() { print(\"ok\"); return; }\n",
     });
-    const path = try tmp.dir.realpathAlloc(arena.allocator(), "DemoApp");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "DemoApp", arena.allocator());
 
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
     const exit_code = try runWithWriters(
         arena.allocator(),
         &.{ "kirac", "run", "--backend", "vm", path },
-        stdout.writer(),
-        stderr.writer(),
+        &stdout,
+        &stderr,
     );
 
     const artifact_path = try std.fs.path.join(arena.allocator(), &.{ path, "generated", "DemoApp.run.kbc" });
-    var artifact = try std.fs.openFileAbsolute(artifact_path, .{});
-    artifact.close();
+    var artifact = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, artifact_path, .{});
+    artifact.close(std.Options.debug_io);
 
     try std.testing.expectEqual(@as(u8, 0), exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.getWritten(), "ok") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "ok") != null);
 }

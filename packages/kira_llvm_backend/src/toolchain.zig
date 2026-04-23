@@ -23,7 +23,7 @@ pub const Toolchain = struct {
     pub fn discover(allocator: std.mem.Allocator) !Toolchain {
         var checked = std.array_list.Managed([]const u8).init(allocator);
 
-        if (std.process.getEnvVarOwned(allocator, "KIRA_LLVM_HOME")) |env_home| {
+        if (kira_toolchain.envVarOwned(allocator, "KIRA_LLVM_HOME")) |env_home| {
             try checked.append(env_home);
             if (try fromHome(allocator, env_home)) |tc| return tc;
             std.debug.print("KIRA_LLVM_HOME was set to '{s}', but no usable LLVM-C runtime was found there.\n", .{env_home});
@@ -136,14 +136,17 @@ fn resolveWithLlvmConfig(
 }
 
 fn runLlvmConfig(allocator: std.mem.Allocator, llvm_config: []const u8, arg: []const u8) ![]const u8 {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{ llvm_config, arg },
-        .max_output_bytes = 8 * 1024,
+        .stdout_limit = .limited(8 * 1024),
+        .stderr_limit = .limited(8 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) return error.LlvmConfigFailed;
+    if (result.term != .exited or result.term.exited != 0) return error.LlvmConfigFailed;
     return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
@@ -182,11 +185,11 @@ fn libraryPath(allocator: std.mem.Allocator, bin_dir: []const u8, lib_dir: []con
 
 fn fileExists(path: []const u8) bool {
     const file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{})
+        std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{})
     else
-        std.fs.cwd().openFile(path, .{});
+        std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{});
     if (file) |value| {
-        value.close();
+        value.close(std.Options.debug_io);
         return true;
     } else |_| {
         return false;

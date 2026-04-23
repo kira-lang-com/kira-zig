@@ -67,7 +67,7 @@ pub fn ensureRegistrySource(
 }
 
 fn fetchIndexConfig(allocator: std.mem.Allocator, registry_url: []const u8) !registry.IndexConfig {
-    const config_url = try std.fmt.allocPrint(allocator, "{s}/index/config.json", .{std.mem.trimRight(u8, registry_url, "/")});
+    const config_url = try std.fmt.allocPrint(allocator, "{s}/index/config.json", .{std.mem.trimEnd(u8, registry_url, "/")});
     defer allocator.free(config_url);
     const bytes = try fetchBytes(allocator, config_url);
 
@@ -84,7 +84,7 @@ pub fn fetchPackageMetadata(allocator: std.mem.Allocator, registry_url: []const 
     const url = try std.fmt.allocPrint(
         allocator,
         "{s}/index/{s}",
-        .{ std.mem.trimRight(u8, registry_url, "/"), normalized },
+        .{ std.mem.trimEnd(u8, registry_url, "/"), normalized },
     );
     defer allocator.free(url);
     const bytes = try fetchBytes(allocator, url);
@@ -97,7 +97,7 @@ pub fn fetchPackageMetadata(allocator: std.mem.Allocator, registry_url: []const 
 fn fetchBytes(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
-    var client: std.http.Client = .{ .allocator = allocator };
+    var client: std.http.Client = .{ .allocator = allocator, .io = std.Options.debug_io };
     defer client.deinit();
     const response = try client.fetch(.{
         .location = .{ .url = url },
@@ -108,13 +108,13 @@ fn fetchBytes(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
 }
 
 fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, destination_path: []const u8) !void {
-    if (std.fs.path.dirname(destination_path)) |parent| try std.fs.cwd().makePath(parent);
-    const file = try std.fs.createFileAbsolute(destination_path, .{ .truncate = true });
-    defer file.close();
+    if (std.fs.path.dirname(destination_path)) |parent| try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, parent);
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, destination_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
 
     var buffer: [16 * 1024]u8 = undefined;
-    var writer = file.writer(&buffer);
-    var client: std.http.Client = .{ .allocator = allocator };
+    var writer = file.writer(std.Options.debug_io, &buffer);
+    var client: std.http.Client = .{ .allocator = allocator, .io = std.Options.debug_io };
     defer client.deinit();
     const response = try client.fetch(.{
         .location = .{ .url = url },
@@ -126,7 +126,7 @@ fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, destination_pat
 
 fn absolutizeUrl(allocator: std.mem.Allocator, base: []const u8, value: []const u8) ![]u8 {
     if (std.mem.indexOf(u8, value, "://")) |_| return allocator.dupe(u8, value);
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimRight(u8, base, "/"), std.mem.trimLeft(u8, value, "/") });
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimEnd(u8, base, "/"), std.mem.trimStart(u8, value, "/") });
 }
 
 fn normalizeToUrlPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -136,19 +136,21 @@ fn normalizeToUrlPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn readFileAbsoluteAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(allocator, max_bytes);
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{});
+    defer file.close(std.Options.debug_io);
+    var buffer: [4096]u8 = undefined;
+    var reader = file.reader(std.Options.debug_io, &buffer);
+    return reader.interface.allocRemaining(allocator, .limited(max_bytes));
 }
 
 fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 fn dirExists(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }

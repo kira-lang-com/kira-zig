@@ -2,12 +2,14 @@ const std = @import("std");
 const discovery = @import("discovery.zig");
 const execute = @import("execute.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const args = try std.process.argsAlloc(allocator);
+    const raw_args = try init.args.toSlice(allocator);
+    const args = try allocator.alloc([]const u8, raw_args.len);
+    for (raw_args, 0..) |arg, index| args[index] = arg;
     if (args.len != 2) return error.InvalidArguments;
 
     const cases = try discovery.discoverCases(allocator);

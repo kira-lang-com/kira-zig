@@ -314,7 +314,7 @@ fn unescapeStringLiteral(allocator: std.mem.Allocator, raw: []const u8) ![]const
 }
 
 fn readRepoFileForTest(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
+    return std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(std.math.maxInt(usize)));
 }
 
 test "tokenizes expanded declaration grammar" {

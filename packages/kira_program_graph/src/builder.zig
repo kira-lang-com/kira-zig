@@ -132,11 +132,11 @@ fn appendPackageModuleFiles(
     files: *std.array_list.Managed([]u8),
     current_path: []const u8,
 ) !void {
-    var dir = try std.fs.openDirAbsolute(current_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, current_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         const child_path = try std.fs.path.join(allocator, &.{ current_path, entry.name });
         defer allocator.free(child_path);
         switch (entry.kind) {
@@ -212,11 +212,11 @@ test "collectPackageModuleFiles ignores package-root Kira files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Package/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Package/root.kira", .data = "function rootOnly() { return; }\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "Package/app/main.kira", .data = "function appOnly() { return; }\n" });
+    try tmp.dir.createDirPath(std.testing.io, "Package/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/root.kira", .data = "function rootOnly() { return; }\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/app/main.kira", .data = "function appOnly() { return; }\n" });
 
-    const app_root = try tmp.dir.realpathAlloc(std.testing.allocator, "Package/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app", std.testing.allocator);
     defer std.testing.allocator.free(app_root);
     const files = try collectPackageModuleFiles(std.testing.allocator, app_root);
     defer freeModuleFiles(std.testing.allocator, files);
@@ -233,11 +233,11 @@ test "canonical visited identity deduplicates alternate path spellings" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Package/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Package/app/main.kira", .data = "function onlyOnce() { return; }\n" });
+    try tmp.dir.createDirPath(std.testing.io, "Package/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/app/main.kira", .data = "function onlyOnce() { return; }\n" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "Package/app");
-    const canonical = try tmp.dir.realpathAlloc(allocator, "Package/app/main.kira");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app", allocator);
+    const canonical = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app/main.kira", allocator);
     const alternate = try std.fmt.allocPrint(allocator, "{s}/main.kira", .{app_root});
     const source_paths = try allocator.alloc([]u8, 2);
     source_paths[0] = canonical;
@@ -258,11 +258,11 @@ test "graph rejects an entry source outside declared app roots" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Package/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Package/main.kira", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "Package/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/main.kira", .data = "" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "Package/app");
-    const source_path = try tmp.dir.realpathAlloc(allocator, "Package/main.kira");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app", allocator);
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/main.kira", allocator);
     const owners = [_]package_manager.ModuleMap.ModuleOwner{.{
         .module_root = "Package",
         .package_name = "Package",

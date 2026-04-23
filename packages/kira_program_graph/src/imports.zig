@@ -208,12 +208,12 @@ test "local import candidates stay inside the app source root" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Project/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Project/app/main.kira", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "Project/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Project/app/main.kira", .data = "" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "Project/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Project/app", allocator);
     defer allocator.free(app_root);
-    const source_path = try tmp.dir.realpathAlloc(allocator, "Project/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Project/app/main.kira", allocator);
     defer allocator.free(source_path);
 
     var segments = [_]syntax.ast.NameSegment{.{ .text = "support", .span = .{ .start = 0, .end = 7 } }};
@@ -243,13 +243,13 @@ test "local import resolves inside canonical app root" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Package/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Package/app/main.kira", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "Package/app/support.kira", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "Package/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/app/main.kira", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/app/support.kira", .data = "" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "Package/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app", allocator);
     defer allocator.free(app_root);
-    const source_path = try tmp.dir.realpathAlloc(allocator, "Package/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app/main.kira", allocator);
     defer allocator.free(source_path);
 
     var segments = [_]syntax.ast.NameSegment{.{ .text = "support", .span = .{ .start = 0, .end = 7 } }};
@@ -275,13 +275,13 @@ test "local import ignores package root outside app" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("Package/app");
-    try tmp.dir.writeFile(.{ .sub_path = "Package/app/main.kira", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "Package/support.kira", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "Package/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/app/main.kira", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Package/support.kira", .data = "" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "Package/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app", allocator);
     defer allocator.free(app_root);
-    const source_path = try tmp.dir.realpathAlloc(allocator, "Package/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Package/app/main.kira", allocator);
     defer allocator.free(source_path);
 
     var segments = [_]syntax.ast.NameSegment{.{ .text = "support", .span = .{ .start = 0, .end = 7 } }};
@@ -307,16 +307,16 @@ test "dependency import ignores dependency root outside app" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("App/app");
-    try tmp.dir.makePath("Dep/app");
-    try tmp.dir.writeFile(.{ .sub_path = "App/app/main.kira", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "Dep/Helper.kira", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.createDirPath(std.testing.io, "Dep/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "App/app/main.kira", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Dep/Helper.kira", .data = "" });
 
-    const app_root = try tmp.dir.realpathAlloc(allocator, "App/app");
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app", allocator);
     defer allocator.free(app_root);
-    const dep_app_root = try tmp.dir.realpathAlloc(allocator, "Dep/app");
+    const dep_app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Dep/app", allocator);
     defer allocator.free(dep_app_root);
-    const source_path = try tmp.dir.realpathAlloc(allocator, "App/app/main.kira");
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", allocator);
     defer allocator.free(source_path);
 
     var segments = [_]syntax.ast.NameSegment{

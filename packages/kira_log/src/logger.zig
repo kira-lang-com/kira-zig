@@ -4,9 +4,9 @@ const LogField = @import("log_entry.zig").LogField;
 const LogLevel = @import("log_entry.zig").LogLevel;
 
 pub const Logger = struct {
-    writer: std.fs.File.Writer,
+    writer: std.Io.File.Writer,
 
-    pub fn init(writer: std.fs.File.Writer) Logger {
+    pub fn init(writer: std.Io.File.Writer) Logger {
         return .{ .writer = writer };
     }
 

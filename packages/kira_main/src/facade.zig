@@ -37,7 +37,7 @@ pub const RuntimeFacade = struct {
             return error.RuntimeFailure;
         }
         var stdout_buffer: [4096]u8 = undefined;
-        var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+        var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
         defer stdout.interface.flush() catch {};
         try self.vm.runMain(&self.module.?, &stdout.interface);
     }

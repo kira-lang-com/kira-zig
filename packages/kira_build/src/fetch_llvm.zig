@@ -71,11 +71,11 @@ pub fn run(
 
     const version_root = try kira_toolchain.managedLlvmVersionRoot(allocator, metadata.llvm_version);
     defer allocator.free(version_root);
-    try std.fs.cwd().makePath(version_root);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, version_root);
 
     if (dirExistsAbsolute(install_home)) {
         try out.print("Removing stale install at {s} before reinstalling.\n", .{install_home});
-        try std.fs.deleteTreeAbsolute(install_home);
+        try std.Io.Dir.cwd().deleteTree(std.Options.debug_io, install_home);
     }
 
     const resolved_asset = github_release_fetch.resolveReleaseAsset(
@@ -104,12 +104,12 @@ pub fn run(
 
     const temp_root_dir = try temporaryInstallDir(allocator, version_root, host_key);
     defer allocator.free(temp_root_dir);
-    try std.fs.cwd().makePath(temp_root_dir);
-    errdefer std.fs.deleteTreeAbsolute(temp_root_dir) catch {};
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, temp_root_dir);
+    errdefer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, temp_root_dir) catch {};
 
     const temp_install_dir = try std.fs.path.join(allocator, &.{ temp_root_dir, "payload" });
     defer allocator.free(temp_install_dir);
-    try std.fs.cwd().makePath(temp_install_dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, temp_install_dir);
 
     const archive_path = try std.fs.path.join(allocator, &.{ temp_root_dir, target.asset });
     defer allocator.free(archive_path);
@@ -141,9 +141,9 @@ pub fn run(
         .asset_name = target.asset,
     });
 
-    try std.fs.renameAbsolute(temp_install_dir, install_home);
+    try std.Io.Dir.renameAbsolute(temp_install_dir, install_home, std.Options.debug_io);
     if (dirExistsAbsolute(temp_root_dir)) {
-        std.fs.deleteTreeAbsolute(temp_root_dir) catch {};
+        std.Io.Dir.cwd().deleteTree(std.Options.debug_io, temp_root_dir) catch {};
     }
     try out.print("Installed LLVM toolchain into {s}\n", .{install_home});
 }
@@ -177,18 +177,18 @@ fn writeInstallMarker(
     const marker_path = try installMarkerPath(allocator, install_home);
     defer allocator.free(marker_path);
 
-    const file = try std.fs.createFileAbsolute(marker_path, .{ .truncate = true });
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, marker_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
 
     var buffer: [4096]u8 = undefined;
-    var writer = file.writer(&buffer);
+    var writer = file.writer(std.Options.debug_io, &buffer);
     try std.json.Stringify.value(marker, .{ .whitespace = .indent_2 }, &writer.interface);
     try writer.interface.writeByte('\n');
     try writer.interface.flush();
 }
 
 fn readInstallMarker(allocator: std.mem.Allocator, marker_path: []const u8) !OwnedMarker {
-    const contents = try std.fs.cwd().readFileAlloc(allocator, marker_path, 4 * 1024);
+    const contents = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, marker_path, allocator, .limited(4 * 1024));
     defer allocator.free(contents);
 
     var parsed = try std.json.parseFromSlice(InstallMarker, allocator, contents, .{
@@ -228,7 +228,9 @@ fn temporaryInstallDir(
     version_root: []const u8,
     host_key: []const u8,
 ) ![]const u8 {
-    const stamp = std.time.milliTimestamp();
+    var stamp_bytes: [8]u8 = undefined;
+    std.Options.debug_io.random(&stamp_bytes);
+    const stamp = std.mem.readInt(u64, &stamp_bytes, .little);
     const dirname = try std.fmt.allocPrint(allocator, ".{s}.tmp-{d}", .{ host_key, stamp });
     defer allocator.free(dirname);
     return std.fs.path.join(allocator, &.{ version_root, dirname });
@@ -271,14 +273,14 @@ fn looksLikeLlvmInstall(allocator: std.mem.Allocator, install_home: []const u8) 
 }
 
 fn dirExistsAbsolute(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
 fn fileExistsAbsolute(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    file.close();
+    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
@@ -286,10 +288,10 @@ test "validates managed marker and install path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const install_home = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const install_home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(install_home);
-    try tmp.dir.makePath("include/llvm-c");
-    try tmp.dir.makePath("include/llvm/Config");
+    try tmp.dir.createDirPath(std.testing.io, "include/llvm-c");
+    try tmp.dir.createDirPath(std.testing.io, "include/llvm/Config");
     const library_relative_path = switch (builtin.os.tag) {
         .windows => "bin/LLVM-C.dll",
         .linux => "lib/libLLVM-C.so",
@@ -297,7 +299,7 @@ test "validates managed marker and install path" {
         else => return error.UnsupportedLlvmHost,
     };
     if (std.fs.path.dirname(library_relative_path)) |parent| {
-        try tmp.dir.makePath(parent);
+        try tmp.dir.createDirPath(std.testing.io, parent);
     }
 
     try writeFile(tmp.dir, "include/llvm-c/Core.h", "");
@@ -321,9 +323,9 @@ test "validates managed marker and install path" {
 
 fn writeFile(dir: std.fs.Dir, relative_path: []const u8, contents: []const u8) !void {
     if (std.fs.path.dirname(relative_path)) |parent| {
-        try dir.makePath(parent);
+        try dir.createDirPath(std.Options.debug_io, parent);
     }
     const file = try dir.createFile(relative_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(contents);
+    defer file.close(std.Options.debug_io);
+    try file.writeStreamingAll(std.Options.debug_io, contents);
 }

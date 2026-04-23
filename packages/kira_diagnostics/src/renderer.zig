@@ -109,13 +109,13 @@ test "renders labeled diagnostics with notes and help" {
     };
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try render(stream.writer(), &source, diagnostic);
+    var stream = std.Io.Writer.fixed(&buffer);
+    try render(&stream, &source, diagnostic);
 
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "error[KPAR001]: expected expression") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "sample.kira:2:11") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "help: Insert a value after '=' or remove the assignment.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "note: Parsing stopped after this statement.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "error[KPAR001]: expected expression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "sample.kira:2:11") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "help: Insert a value after '=' or remove the assignment.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "note: Parsing stopped after this statement.") != null);
 }
 
 test "renders zero-length eof labels without overflowing" {
@@ -139,9 +139,9 @@ test "renders zero-length eof labels without overflowing" {
     };
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try render(stream.writer(), &source, diagnostic);
+    var stream = std.Io.Writer.fixed(&buffer);
+    try render(&stream, &source, diagnostic);
 
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "error[KSEM001]: missing @Main entrypoint") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "^ file ends here") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "error[KSEM001]: missing @Main entrypoint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.buffered(), "^ file ends here") != null);
 }

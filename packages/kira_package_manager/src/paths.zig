@@ -20,5 +20,5 @@ pub fn gitRoot(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn ensurePath(path: []const u8) !void {
-    try std.fs.cwd().makePath(path);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
 }

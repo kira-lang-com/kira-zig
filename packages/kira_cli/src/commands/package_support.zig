@@ -26,7 +26,7 @@ pub fn loadManifestLocation(allocator: std.mem.Allocator, input_path: ?[]const u
 
     const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
     errdefer allocator.free(manifest_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, manifest_path, 2 * 1024 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, manifest_path, allocator, .limited(2 * 1024 * 1024));
     return .{
         .root_path = root_path,
         .manifest_path = manifest_path,
@@ -39,9 +39,9 @@ pub fn writeManifest(manifest_path: []const u8, project_manifest: manifest.Proje
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     try manifest.writeProjectManifest(&output.writer, project_manifest);
-    const file = try std.fs.createFileAbsolute(manifest_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(output.written());
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    try file.writeStreamingAll(std.Options.debug_io, output.written());
 }
 
 pub fn latestRegistryVersion(
@@ -133,10 +133,10 @@ fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[
 
 fn isDirectory(path: []const u8) bool {
     var dir = if (std.fs.path.isAbsolute(path))
-        std.fs.openDirAbsolute(path, .{}) catch return false
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false
     else
-        std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
     return true;
 }
 
@@ -147,14 +147,14 @@ fn isManifestPath(path: []const u8) bool {
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.fs.cwd().realpathAlloc(allocator, path);
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
 }
 
 fn fileExists(path: []const u8) bool {
     var file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{}) catch return false
+        std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false
     else
-        std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+        std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }

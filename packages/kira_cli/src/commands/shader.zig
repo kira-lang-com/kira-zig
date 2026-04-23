@@ -43,7 +43,7 @@ fn executeBuild(allocator: std.mem.Allocator, args: []const []const u8, stdout: 
     if (args.len > 3) return error.InvalidArguments;
     const parsed = try parseBuildArgs(args);
     const resolved = try resolveBuildInputs(allocator, parsed, stderr);
-    try std.fs.cwd().makePath(resolved.output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, resolved.output_dir);
     var artifact_sets_written: usize = 0;
 
     for (resolved.paths) |path| {
@@ -137,12 +137,12 @@ fn defaultOutputDirForDirectory(allocator: std.mem.Allocator, path: []const u8) 
 }
 
 fn discoverShaderFilesInDir(allocator: std.mem.Allocator, dir_path: []const u8, enforce_pascal: bool, stderr: anytype) ![]const []const u8 {
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
 
     var paths = std.array_list.Managed([]const u8).init(allocator);
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".ksl")) continue;
 
@@ -178,8 +178,8 @@ fn isPascalCase(name: []const u8) bool {
 }
 
 fn directoryExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    defer dir.close(std.Options.debug_io);
     return true;
 }
 
@@ -187,9 +187,9 @@ fn writeTextFile(allocator: std.mem.Allocator, output_dir: []const u8, file_name
     defer allocator.free(file_name);
     const path = try std.fs.path.join(allocator, &.{ output_dir, file_name });
     defer allocator.free(path);
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(text);
+    const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    try file.writeStreamingAll(std.Options.debug_io, text);
 }
 
 test "shader check command succeeds for a valid shader" {
@@ -198,11 +198,11 @@ test "shader check command succeeds for a valid shader" {
 
     var stdout_buffer: [256]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try execute(arena.allocator(), &.{ "check", "examples/shaders/textured_quad.ksl" }, stdout.writer(), stderr.writer());
-    try std.testing.expect(std.mem.indexOf(u8, stdout.getWritten(), "shader check passed") != null);
+    try execute(arena.allocator(), &.{ "check", "examples/shaders/textured_quad.ksl" }, &stdout, &stderr);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "shader check passed") != null);
 }
 
 test "shader ast command prints shader declarations" {
@@ -211,11 +211,11 @@ test "shader ast command prints shader declarations" {
 
     var stdout_buffer: [2048]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try execute(arena.allocator(), &.{ "ast", "examples/shaders/textured_quad.ksl" }, stdout.writer(), stderr.writer());
-    try std.testing.expect(std.mem.indexOf(u8, stdout.getWritten(), "shader TexturedQuad") != null);
+    try execute(arena.allocator(), &.{ "ast", "examples/shaders/textured_quad.ksl" }, &stdout, &stderr);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "shader TexturedQuad") != null);
 }
 
 test "shader build command writes artifacts" {
@@ -225,14 +225,14 @@ test "shader build command writes artifacts" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const out_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    const out_dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
 
     var stdout_buffer: [256]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try execute(allocator, &.{ "build", "examples/shaders/textured_quad.ksl", "--out-dir", out_dir }, stdout.writer(), stderr.writer());
+    try execute(allocator, &.{ "build", "examples/shaders/textured_quad.ksl", "--out-dir", out_dir }, &stdout, &stderr);
 
     try std.testing.expect(fileExists(out_dir, "TexturedQuad.vert.glsl"));
     try std.testing.expect(fileExists(out_dir, "TexturedQuad.frag.glsl"));
@@ -245,8 +245,8 @@ test "shader build discovers PascalCase entry shaders in Shaders directory" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("DemoApp/Shaders");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/Shaders");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/Shaders/BasicTriangle.ksl",
         .data =
         \\type VertexIn { let position: Float2 }
@@ -275,21 +275,21 @@ test "shader build discovers PascalCase entry shaders in Shaders directory" {
         ,
     });
 
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
     defer {
-        original_cwd.setAsCwd() catch {};
-        original_cwd.close();
+        std.process.setCurrentDir(std.testing.io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
     }
-    var app_dir = try tmp.dir.openDir("DemoApp", .{});
-    defer app_dir.close();
-    try app_dir.setAsCwd();
+    var app_dir = try tmp.dir.openDir(std.testing.io, "DemoApp", .{});
+    defer app_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.testing.io, app_dir);
 
     var stdout_buffer: [256]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try execute(arena.allocator(), &.{"build"}, stdout.writer(), stderr.writer());
+    try execute(arena.allocator(), &.{"build"}, &stdout, &stderr);
 
     try std.testing.expect(fileExists("generated/Shaders", "BasicTriangle.vert.glsl"));
     try std.testing.expect(fileExists("generated/Shaders", "BasicTriangle.frag.glsl"));
@@ -302,33 +302,33 @@ test "shader build rejects non-PascalCase shader entry files in Shaders director
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("DemoApp/Shaders");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/Shaders");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/Shaders/basic_triangle.ksl",
         .data = "shader Broken {}",
     });
 
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
     defer {
-        original_cwd.setAsCwd() catch {};
-        original_cwd.close();
+        std.process.setCurrentDir(std.testing.io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
     }
-    var app_dir = try tmp.dir.openDir("DemoApp", .{});
-    defer app_dir.close();
-    try app_dir.setAsCwd();
+    var app_dir = try tmp.dir.openDir(std.testing.io, "DemoApp", .{});
+    defer app_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.testing.io, app_dir);
 
     var stdout_buffer: [128]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
-    var stdout = std.io.fixedBufferStream(&stdout_buffer);
-    var stderr = std.io.fixedBufferStream(&stderr_buffer);
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try std.testing.expectError(error.CommandFailed, execute(arena.allocator(), &.{"build"}, stdout.writer(), stderr.writer()));
-    try std.testing.expect(std.mem.indexOf(u8, stderr.getWritten(), "PascalCase") != null);
+    try std.testing.expectError(error.CommandFailed, execute(arena.allocator(), &.{"build"}, &stdout, &stderr));
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "PascalCase") != null);
 }
 
 fn fileExists(dir_path: []const u8, file_name: []const u8) bool {
     const full_path = std.fs.path.join(std.testing.allocator, &.{ dir_path, file_name }) catch return false;
     defer std.testing.allocator.free(full_path);
-    std.fs.cwd().access(full_path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.Options.debug_io, full_path, .{}) catch return false;
     return true;
 }
