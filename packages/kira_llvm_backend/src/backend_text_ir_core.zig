@@ -433,6 +433,7 @@ pub fn buildTextFunctionBody(
                     },
                 }
             },
+            .const_closure => return error.UnsupportedExecutableFeature,
             .add => |value| {
                 const arithmetic_type = register_types[value.lhs];
                 try writer.writeAll("  %r");

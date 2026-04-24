@@ -455,9 +455,18 @@ pub const CallExpr = struct {
 
 pub const CallbackExpr = struct {
     params: []Parameter,
+    captures: []Capture,
     locals: []symbols.LocalSymbol,
     body: []Statement,
     return_type: ResolvedType,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const Capture = struct {
+    local_id: u32,
+    source_local_id: u32,
+    name: []const u8,
     ty: ResolvedType,
     span: source_pkg.Span,
 };

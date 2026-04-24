@@ -1,0 +1,13 @@
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
+diagnostic_code = "KPAR001"
+diagnostic_title = "expected 'in' after callback parameters"
+stage = "parser"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

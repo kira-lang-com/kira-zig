@@ -1,0 +1,13 @@
+function register(handler: (Int) -> Void) {
+    handler(1)
+    return
+}
+
+@Main
+function main() {
+    var offset: Int = 1
+    register { value in
+        print(value + offset)
+    }
+    return
+}

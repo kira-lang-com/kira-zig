@@ -48,6 +48,11 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .function_id = value.function_id,
                     .representation = @enumFromInt(@intFromEnum(value.representation)),
                 } }),
+                .const_closure => |value| try instructions.append(.{ .const_closure = .{
+                    .dst = value.dst,
+                    .function_id = value.function_id,
+                    .captures = value.captures,
+                } }),
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .alloc_native_state => |value| try instructions.append(.{ .alloc_native_state = .{
                     .dst = value.dst,

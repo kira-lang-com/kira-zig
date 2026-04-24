@@ -1,0 +1,73 @@
+class Frame {
+    let value: Int
+
+    function draw() {
+        print(self.value)
+        return
+    }
+
+    function clear(color: Int) {
+        print(color + self.value)
+        return
+    }
+}
+
+class Graphics {
+    function run(handler: (Frame) -> Void) {
+        handler(Frame(1))
+        return
+    }
+}
+
+class App {
+    function tick(handler: () -> Void) {
+        handler()
+        return
+    }
+}
+
+function register(handler: (Int) -> Void) {
+    handler(2)
+    return
+}
+
+function register0(handler: () -> Void) {
+    handler()
+    return
+}
+
+@Main
+function main() {
+    let graphics = Graphics()
+    let color = 7
+    graphics.run { frame in
+        frame.clear(color)
+    }
+
+    let app = App()
+    let message = "tick"
+    app.tick { in
+        print(message)
+    }
+
+    let frame = 123
+    graphics.run { frame in
+        frame.draw()
+    }
+
+    let shadowed = 20
+    register0 { in
+        print(shadowed)
+        let shadowed = 21
+        print(shadowed)
+    }
+
+    let base = 30
+    register { value in
+        let outer_value = value
+        register0 { in
+            print(base + outer_value)
+        }
+    }
+    return
+}

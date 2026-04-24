@@ -605,6 +605,7 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
             .alloc_native_state => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.type_name },
             .alloc_array => |value| register_types[value.dst] = .{ .kind = .array },
             .const_function => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = if (value.representation == .callable_value) "Callable" else "RawPtr" },
+            .const_closure => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "Closure" },
             .add => |value| register_types[value.dst] = register_types[value.lhs],
             .subtract => |value| register_types[value.dst] = register_types[value.lhs],
             .multiply => |value| register_types[value.dst] = register_types[value.lhs],
@@ -982,7 +983,7 @@ pub fn functionDeclNeedsTextIrFallback(program: ir.Program, function_decl: ir.Fu
             .const_int, .const_string, .const_bool, .const_null_ptr, .add, .subtract, .multiply, .divide, .modulo, .unary, .store_local, .load_local => {},
             .const_float => return true,
             .compare, .branch, .jump, .label => return true,
-            .alloc_struct, .alloc_native_state, .alloc_array, .const_function, .subobject_ptr, .field_ptr, .recover_native_state, .native_state_field_get, .native_state_field_set, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return true,
+            .alloc_struct, .alloc_native_state, .alloc_array, .const_function, .const_closure, .subobject_ptr, .field_ptr, .recover_native_state, .native_state_field_get, .native_state_field_set, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return true,
             .print => |value| if (value.ty.kind != .integer and value.ty.kind != .string and value.ty.kind != .float) return true,
             .call => |value| {
                 if (value.args.len != 0 or value.dst != null) return true;

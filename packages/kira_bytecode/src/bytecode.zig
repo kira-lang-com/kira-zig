@@ -101,6 +101,12 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.function_id, .little);
                     try writer.writeByte(@intFromEnum(value.representation));
                 },
+                .const_closure => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.function_id, .little);
+                    try writer.writeInt(u32, @as(u32, @intCast(value.captures.len)), .little);
+                    for (value.captures) |capture| try writer.writeInt(u32, capture, .little);
+                },
                 .alloc_struct => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.type_name);
@@ -312,6 +318,18 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .function_id = try reader.takeInt(u32, .little),
                     .representation = @enumFromInt(try reader.takeByte()),
                 } }),
+                .const_closure => {
+                    const dst = try reader.takeInt(u32, .little);
+                    const closure_function_id = try reader.takeInt(u32, .little);
+                    const capture_count = try reader.takeInt(u32, .little);
+                    const captures = try allocator.alloc(u32, capture_count);
+                    for (0..capture_count) |index| captures[index] = try reader.takeInt(u32, .little);
+                    try instructions.append(.{ .const_closure = .{
+                        .dst = dst,
+                        .function_id = closure_function_id,
+                        .captures = captures,
+                    } });
+                },
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
                     .dst = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),

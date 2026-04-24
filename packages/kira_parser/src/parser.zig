@@ -57,6 +57,7 @@ pub const Parser = struct {
 
     pub const parseBuilderBlock = block_impl.parseBuilderBlock;
     pub const looksLikeCallbackBlock = block_impl.looksLikeCallbackBlock;
+    pub const looksLikeCallbackBlockMissingIn = block_impl.looksLikeCallbackBlockMissingIn;
     pub const parseCallbackBlock = block_impl.parseCallbackBlock;
     pub const parseBuilderItem = block_impl.parseBuilderItem;
     pub const parseBuilderIfItem = block_impl.parseBuilderIfItem;

@@ -373,6 +373,7 @@ fn lowerFunction(
             .alloc_struct => return error.UnsupportedExecutableFeature,
             .alloc_array => return error.UnsupportedExecutableFeature,
             .const_function => return error.UnsupportedExecutableFeature,
+            .const_closure => return error.UnsupportedExecutableFeature,
             .add => |value| register_values[value.dst] = api.LLVMBuildAdd(builder, register_values[value.lhs], register_values[value.rhs], "add"),
             .subtract => |value| register_values[value.dst] = api.LLVMBuildSub(builder, register_values[value.lhs], register_values[value.rhs], "sub"),
             .multiply => |value| register_values[value.dst] = api.LLVMBuildMul(builder, register_values[value.lhs], register_values[value.rhs], "mul"),

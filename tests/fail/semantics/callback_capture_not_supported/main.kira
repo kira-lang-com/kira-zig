@@ -1,6 +1,6 @@
 @Main
 function main() {
-    let offset: Int = 1
+    var offset: Int = 1
     let printer: (Int) -> Void = { value in
         print(value + offset)
     }

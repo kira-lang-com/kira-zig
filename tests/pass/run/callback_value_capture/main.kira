@@ -1,0 +1,9 @@
+@Main
+function main() {
+    let offset: Int = 1
+    let printer: (Int) -> Void = { value in
+        print(value + offset)
+    }
+    printer(1)
+    return
+}

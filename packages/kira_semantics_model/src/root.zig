@@ -28,6 +28,7 @@ pub const TypeKind = hir.TypeKind;
 pub const ConstructForm = hir.ConstructForm;
 pub const Function = hir.Function;
 pub const Parameter = hir.Parameter;
+pub const Capture = hir.Capture;
 pub const Statement = hir.Statement;
 pub const AssignStatement = hir.AssignStatement;
 pub const Expr = hir.Expr;

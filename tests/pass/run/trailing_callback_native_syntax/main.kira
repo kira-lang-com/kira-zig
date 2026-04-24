@@ -1,0 +1,50 @@
+class Frame {
+    let value: Int
+
+    function draw() {
+        print(self.value)
+        return
+    }
+}
+
+class Graphics {
+    function run(handler: (Frame) -> Void) {
+        handler(Frame(1))
+        return
+    }
+
+    function runWithConfig(config: Int, handler: (Frame) -> Void) {
+        handler(Frame(config))
+        return
+    }
+}
+
+class App {
+    function tick(handler: () -> Void) {
+        handler()
+        return
+    }
+}
+
+function update() {
+    print(3)
+    return
+}
+
+@Main
+function main() {
+    let graphics = Graphics()
+    graphics.run { frame in
+        frame.draw()
+    }
+
+    graphics.runWithConfig(2) { frame in
+        frame.draw()
+    }
+
+    let app = App()
+    app.tick { in
+        update()
+    }
+    return
+}

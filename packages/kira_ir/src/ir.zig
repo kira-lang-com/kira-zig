@@ -87,6 +87,7 @@ pub const Instruction = union(enum) {
     const_bool: ConstBool,
     const_null_ptr: ConstNullPtr,
     const_function: ConstFunction,
+    const_closure: ConstClosure,
     alloc_struct: AllocStruct,
     alloc_native_state: AllocNativeState,
     alloc_array: AllocArray,
@@ -147,6 +148,12 @@ pub const ConstFunction = struct {
     dst: u32,
     function_id: u32,
     representation: FunctionConstRepresentation = .callable_value,
+};
+
+pub const ConstClosure = struct {
+    dst: u32,
+    function_id: u32,
+    captures: []const u32,
 };
 
 pub const FunctionConstRepresentation = enum {

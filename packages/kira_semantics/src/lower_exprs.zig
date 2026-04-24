@@ -476,7 +476,8 @@ pub fn lowerExpr(
         },
         .identifier => |node| {
             const name = node.name.segments[0].text;
-            if (scope.get(name)) |binding| {
+            if (try shared.resolveLocalOrCapture(ctx, scope.*, name, node.span)) |resolution| {
+                const binding = resolution.binding;
                 if (!binding.initialized) {
                     try emitUninitializedLocalUse(ctx, name, node.span, binding.decl_span);
                     return error.DiagnosticsEmitted;
@@ -488,9 +489,6 @@ pub fn lowerExpr(
                     .storage = binding.storage,
                     .span = node.span,
                 } };
-            } else if (shared.findUnsupportedCallbackCapture(ctx, scope.*, name)) |binding| {
-                try shared.emitUnsupportedCallbackCapture(ctx, name, node.span, binding.decl_span);
-                return error.DiagnosticsEmitted;
             } else if (shared.isImportedRoot(name, imports)) {
                 lowered.* = .{ .namespace_ref = .{
                     .root = try ctx.allocator.dupe(u8, name),

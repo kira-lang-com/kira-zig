@@ -1,0 +1,12 @@
+function draw(value: Int) {
+    print(value)
+    return
+}
+
+@Main
+function main() {
+    draw(1) { value in
+        print(value)
+    }
+    return
+}

@@ -19,7 +19,16 @@ pub const Context = struct {
     annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
-    callback_capture_scope: ?*const model.Scope = null,
+    callback_capture_frame: ?*CallbackCaptureFrame = null,
+};
+
+pub const CallbackCaptureFrame = struct {
+    source_scope: *const model.Scope,
+    active_scope: *model.Scope,
+    captures: *std.array_list.Managed(model.Capture),
+    locals: *std.array_list.Managed(model.LocalSymbol),
+    next_local_id: *u32,
+    parent: ?*CallbackCaptureFrame = null,
 };
 
 pub const AnnotationHeader = struct {
@@ -721,13 +730,68 @@ pub fn emitAmbiguousInference(
     });
 }
 
-pub fn findUnsupportedCallbackCapture(ctx: *const Context, active_scope: model.Scope, name: []const u8) ?model.LocalBinding {
-    if (active_scope.get(name) != null) return null;
-    const capture_scope = ctx.callback_capture_scope orelse return null;
-    return capture_scope.get(name);
+pub const CaptureResolution = struct {
+    binding: model.LocalBinding,
+    captured: bool,
+};
+
+pub fn resolveLocalOrCapture(ctx: *Context, active_scope: model.Scope, name: []const u8, use_span: source_pkg.Span) !?CaptureResolution {
+    if (active_scope.get(name)) |binding| return .{ .binding = binding, .captured = false };
+    const frame = ctx.callback_capture_frame orelse return null;
+    const outer = try resolveCaptureSource(ctx, frame, name, use_span) orelse return null;
+    const captured = try captureBinding(ctx, frame, name, outer, use_span);
+    return .{ .binding = captured, .captured = true };
 }
 
-pub fn emitUnsupportedCallbackCapture(
+fn resolveCaptureSource(ctx: *Context, frame: *CallbackCaptureFrame, name: []const u8, use_span: source_pkg.Span) !?model.LocalBinding {
+    if (frame.source_scope.get(name)) |binding| return binding;
+    const parent = frame.parent orelse return null;
+    if (parent.active_scope.get(name)) |binding| return binding;
+    const parent_outer = try resolveCaptureSource(ctx, parent, name, use_span) orelse return null;
+    return try captureBinding(ctx, parent, name, parent_outer, use_span);
+}
+
+fn captureBinding(
+    ctx: *Context,
+    frame: *CallbackCaptureFrame,
+    name: []const u8,
+    outer: model.LocalBinding,
+    use_span: source_pkg.Span,
+) !model.LocalBinding {
+    if (frame.active_scope.get(name)) |binding| return binding;
+    if (outer.storage != .immutable) {
+        try emitUnsupportedMutableCapture(ctx, name, use_span, outer.decl_span);
+        return error.DiagnosticsEmitted;
+    }
+
+    const local_id = frame.next_local_id.*;
+    frame.next_local_id.* += 1;
+    const local_name = try ctx.allocator.dupe(u8, name);
+    try frame.active_scope.put(ctx.allocator, local_name, .{
+        .id = local_id,
+        .ty = outer.ty,
+        .storage = outer.storage,
+        .initialized = true,
+        .decl_span = outer.decl_span,
+    });
+    try frame.locals.append(.{
+        .id = local_id,
+        .name = local_name,
+        .ty = outer.ty,
+        .is_capture = true,
+        .span = outer.decl_span,
+    });
+    try frame.captures.append(.{
+        .local_id = local_id,
+        .source_local_id = outer.id,
+        .name = local_name,
+        .ty = outer.ty,
+        .span = outer.decl_span,
+    });
+    return frame.active_scope.get(name).?;
+}
+
+pub fn emitUnsupportedMutableCapture(
     ctx: *Context,
     name: []const u8,
     use_span: source_pkg.Span,
@@ -736,13 +800,13 @@ pub fn emitUnsupportedCallbackCapture(
     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
         .severity = .@"error",
         .code = "KSEM094",
-        .title = "callback captures are not supported",
-        .message = try std.fmt.allocPrint(ctx.allocator, "The callback block refers to outer local '{s}', but callback blocks are currently non-capturing.", .{name}),
+        .title = "mutable callback capture is not supported",
+        .message = try std.fmt.allocPrint(ctx.allocator, "The trailing callback captures mutable local '{s}', but mutable captures are not supported yet.", .{name}),
         .labels = &.{
-            diagnostics.primaryLabel(use_span, "outer local would be captured here"),
-            diagnostics.secondaryLabel(decl_span, "outer local is declared here"),
+            diagnostics.primaryLabel(use_span, "mutable local is captured here"),
+            diagnostics.secondaryLabel(decl_span, "mutable local is declared here"),
         },
-        .help = "Pass needed state explicitly, for example through a callback parameter or RawPtr user data.",
+        .help = "Capture an immutable `let` value, or pass mutable state explicitly through a supported state object.",
     });
 }
 

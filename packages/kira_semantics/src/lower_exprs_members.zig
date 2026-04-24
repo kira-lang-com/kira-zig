@@ -560,6 +560,7 @@ pub fn lowerCallbackBlockValue(
     var callback_scope = model.Scope{};
     defer callback_scope.deinit(ctx.allocator);
     var lowered_params = std.array_list.Managed(model.Parameter).init(ctx.allocator);
+    var captures = std.array_list.Managed(model.Capture).init(ctx.allocator);
     var locals = std.array_list.Managed(model.LocalSymbol).init(ctx.allocator);
     var next_local_id: u32 = 0;
 
@@ -588,15 +589,24 @@ pub fn lowerCallbackBlockValue(
         next_local_id += 1;
     }
 
-    const previous_capture_scope = ctx.callback_capture_scope;
-    ctx.callback_capture_scope = capture_scope;
-    defer ctx.callback_capture_scope = previous_capture_scope;
+    var capture_frame = shared.CallbackCaptureFrame{
+        .source_scope = capture_scope,
+        .active_scope = &callback_scope,
+        .captures = &captures,
+        .locals = &locals,
+        .next_local_id = &next_local_id,
+        .parent = ctx.callback_capture_frame,
+    };
+    const previous_capture_frame = ctx.callback_capture_frame;
+    ctx.callback_capture_frame = &capture_frame;
+    defer ctx.callback_capture_frame = previous_capture_frame;
 
     const lowered_body = try lowerBlockStatements(ctx, body, imports, &callback_scope, &locals, &next_local_id, function_headers, 0, signature.result);
     const return_type = try resolveFunctionReturnType(ctx, signature.result, lowered_body);
     const lowered = try ctx.allocator.create(model.Expr);
     lowered.* = .{ .callback = .{
         .params = try lowered_params.toOwnedSlice(),
+        .captures = try captures.toOwnedSlice(),
         .locals = try locals.toOwnedSlice(),
         .body = lowered_body,
         .return_type = return_type,

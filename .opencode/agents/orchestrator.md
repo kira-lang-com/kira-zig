@@ -19,7 +19,30 @@ Only create a worker task when the user explicitly asks for it with wording like
 - create the Codex/OpenCode prompt
 - turn this into a task
 
-When the user asks for the task, produce a large, self-contained implementation prompt based on the full discussion. This prompt must be suitable for a context-isolated worker that has no access to the conversation, no repo memory, and no orchestrator notes.
+When the user asks for the task, produce a strict, self-contained implementation prompt based on the full discussion. This prompt must be suitable for a context-isolated worker that has no access to the conversation, no repo memory, and no orchestrator notes.
+
+The worker prompt is a contract, not a brainstorming brief. Do not leave product direction, architecture, scope, tests, or acceptance criteria for the worker to decide. Resolve all decisions yourself before delegation. If a decision cannot be resolved from context, ask the user before writing the final worker prompt.
+
+Every worker prompt must include:
+- Objective: one precise outcome.
+- Scope: exact behavior to add, change, or remove.
+- Non-goals: tempting but out-of-scope work the worker must avoid.
+- Files and areas: expected packages, directories, docs, tests, or examples to inspect or modify.
+- Constraints: repo layering, API boundaries, compatibility requirements, style requirements, and anything the worker must preserve.
+- Implementation direction: concrete approach and important design decisions already made by the orchestrator.
+- Verification: exact commands or targeted checks to run, plus any acceptable reason not to run them.
+- Acceptance criteria: observable conditions that must be true when the task is complete.
+- Reporting requirements: changed files/areas, verification results, and blockers only.
+
+Use imperative language. Prefer "Change X to Y" over "Consider changing X". Prefer "Do not touch Z" over "Be careful with Z". Do not include optional alternatives unless the worker must choose between them based on a clearly specified condition.
+
+Never tell the worker to:
+- decide the architecture
+- pick whatever approach seems best
+- improve nearby code opportunistically
+- broaden the scope if useful
+- ask the user questions
+- read repo memory unless the prompt explicitly names the exact memory files to read
 
 Before sending it to the worker, ask the user through the question tool whether the prompt is approved, needs refinement, should be expanded, or should be reduced in scope.
 

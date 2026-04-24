@@ -6,5 +6,6 @@ pub const LocalSymbol = struct {
     name: []const u8,
     ty: ResolvedType,
     is_param: bool = false,
+    is_capture: bool = false,
     span: source_pkg.Span,
 };

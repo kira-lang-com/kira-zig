@@ -8,6 +8,11 @@ const ArrayObject = extern struct {
     items: [*]runtime_abi.BridgeValue,
 };
 
+const ClosureObject = struct {
+    function_id: u32,
+    captures: []runtime_abi.Value,
+};
+
 const NativeStateBox = extern struct {
     type_id: u64,
     payload: usize,
@@ -152,6 +157,7 @@ pub const Vm = struct {
                     else
                         value.function_id,
                 } },
+                .const_closure => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateClosure(registers, value.function_id, value.captures) },
                 .alloc_struct => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateStruct(module, value.type_name) },
                 .alloc_native_state => |value| {
                     const src_value = registers[value.src];
@@ -375,17 +381,25 @@ pub const Vm = struct {
                         self.rememberError("indirect call requires a callable function value");
                         return error.RuntimeFailure;
                     }
-                    const function_id: u32 = @intCast(callee_value.raw_ptr);
                     const call_args = try collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
-                    const result = if (module.findFunctionById(function_id) != null)
-                        try self.runFunctionById(module, function_id, call_args, writer, hooks)
-                    else blk: {
+                    const result = if (callee_value.raw_ptr <= std.math.maxInt(u32)) direct: {
+                        const function_id: u32 = @intCast(callee_value.raw_ptr);
+                        if (module.findFunctionById(function_id) != null) {
+                            break :direct try self.runFunctionById(module, function_id, call_args, writer, hooks);
+                        }
                         const callback = hooks.call_native orelse {
                             self.rememberError("vm native bridge was not installed");
                             return error.RuntimeFailure;
                         };
-                        break :blk try callback(hooks.context, function_id, call_args);
+                        break :direct try callback(hooks.context, function_id, call_args);
+                    } else closure_call: {
+                        const closure: *const ClosureObject = @ptrFromInt(callee_value.raw_ptr);
+                        var closure_args = try self.allocator.alloc(runtime_abi.Value, call_args.len + closure.captures.len);
+                        defer self.allocator.free(closure_args);
+                        @memcpy(closure_args[0..call_args.len], call_args);
+                        @memcpy(closure_args[call_args.len..], closure.captures);
+                        break :closure_call try self.runFunctionById(module, closure.function_id, closure_args, writer, hooks);
                     };
                     if (value.dst) |dst| registers[dst] = result;
                 },
@@ -400,6 +414,14 @@ pub const Vm = struct {
         const length = @min(message.len, self.last_error_buffer.len);
         @memcpy(self.last_error_buffer[0..length], message[0..length]);
         self.last_error_len = length;
+    }
+
+    fn allocateClosure(self: *Vm, registers: []const runtime_abi.Value, function_id: u32, capture_registers: []const u32) !usize {
+        const closure = try self.allocator.create(ClosureObject);
+        const captures = try self.allocator.alloc(runtime_abi.Value, capture_registers.len);
+        for (capture_registers, 0..) |reg, index| captures[index] = registers[reg];
+        closure.* = .{ .function_id = function_id, .captures = captures };
+        return @intFromPtr(closure);
     }
 
     fn allocateStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8) !usize {

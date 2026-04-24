@@ -153,6 +153,13 @@ fn lowerGeneratedCallbackFunction(
     defer lowerer.loop_stack.deinit();
 
     var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
+    for (callback.captures, 0..) |capture, index| {
+        const param_slot: u32 = @intCast(callback.params.len + index);
+        if (param_slot == capture.local_id) continue;
+        const reg = lowerer.freshRegister();
+        try instructions.append(.{ .load_local = .{ .dst = reg, .local = param_slot } });
+        try instructions.append(.{ .store_local = .{ .src = reg, .local = capture.local_id } });
+    }
     const terminated = try lowerer.lowerStatements(&instructions, callback.body);
     if (!terminated and (instructions.items.len == 0 or instructions.items[instructions.items.len - 1] != .ret)) {
         try instructions.append(.{ .ret = .{ .src = null } });
@@ -164,11 +171,11 @@ fn lowerGeneratedCallbackFunction(
         .execution = execution,
         .is_extern = false,
         .foreign = null,
-        .param_types = try lowerParamTypes(allocator, program, callback.params),
+        .param_types = try lowerCallbackParamTypes(allocator, program, callback),
         .return_type = try lowerResolvedType(program, callback.return_type),
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
-        .local_types = try lowerAllLocalTypes(allocator, program, callback.locals, lowerer.hidden_local_types.items),
+        .local_types = try lowerCallbackLocalTypes(allocator, program, callback, lowerer.hidden_local_types.items),
         .instructions = try instructions.toOwnedSlice(),
     };
 }
@@ -189,10 +196,35 @@ fn lowerAllLocalTypes(
     return lowered;
 }
 
+fn lowerCallbackLocalTypes(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    callback: model.hir.CallbackExpr,
+    hidden_locals: []const ir.ValueType,
+) ![]ir.ValueType {
+    const lowered = try lowerAllLocalTypes(allocator, program, callback.locals, hidden_locals);
+    for (callback.captures, 0..) |_, index| {
+        const param_slot = callback.params.len + index;
+        if (param_slot < lowered.len) lowered[param_slot] = try lowerResolvedType(program, callback.captures[index].ty);
+    }
+    return lowered;
+}
+
 fn lowerParamTypes(allocator: std.mem.Allocator, program: model.Program, params: []const model.Parameter) ![]ir.ValueType {
     const lowered = try allocator.alloc(ir.ValueType, params.len);
     for (params, 0..) |param, index| {
         lowered[index] = try lowerResolvedType(program, param.ty);
+    }
+    return lowered;
+}
+
+fn lowerCallbackParamTypes(allocator: std.mem.Allocator, program: model.Program, callback: model.hir.CallbackExpr) ![]ir.ValueType {
+    const lowered = try allocator.alloc(ir.ValueType, callback.params.len + callback.captures.len);
+    for (callback.params, 0..) |param, index| {
+        lowered[index] = try lowerResolvedType(program, param.ty);
+    }
+    for (callback.captures, 0..) |capture, index| {
+        lowered[callback.params.len + index] = try lowerResolvedType(program, capture.ty);
     }
     return lowered;
 }
@@ -572,11 +604,26 @@ pub const Lowerer = struct {
             .callback => |node| blk: {
                 const function_id = try self.lowerCallbackExpr(node);
                 const dst = self.freshRegister();
-                try instructions.append(.{ .const_function = .{
-                    .dst = dst,
-                    .function_id = function_id,
-                    .representation = .callable_value,
-                } });
+                if (node.captures.len == 0) {
+                    try instructions.append(.{ .const_function = .{
+                        .dst = dst,
+                        .function_id = function_id,
+                        .representation = .callable_value,
+                    } });
+                } else {
+                    var captures = std.array_list.Managed(u32).init(self.allocator);
+                    defer captures.deinit();
+                    for (node.captures) |capture| {
+                        const reg = self.freshRegister();
+                        try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                        try captures.append(reg);
+                    }
+                    try instructions.append(.{ .const_closure = .{
+                        .dst = dst,
+                        .function_id = function_id,
+                        .captures = try captures.toOwnedSlice(),
+                    } });
+                }
                 break :blk dst;
             },
             .call_value => |node| blk: {

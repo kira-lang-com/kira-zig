@@ -39,6 +39,25 @@ pub fn looksLikeCallbackBlock(self: *Parser) bool {
     return lookahead < self.tokens.len and self.tokens[lookahead].kind == .kw_in;
 }
 
+pub fn looksLikeCallbackBlockMissingIn(self: *Parser) bool {
+    if (!self.at(.l_brace)) return false;
+    var lookahead = self.index + 1;
+    if (lookahead >= self.tokens.len or self.tokens[lookahead].kind != .identifier) return false;
+
+    var saw_comma = false;
+    while (lookahead < self.tokens.len and self.tokens[lookahead].kind == .identifier) {
+        lookahead += 1;
+        if (lookahead < self.tokens.len and self.tokens[lookahead].kind == .comma) {
+            saw_comma = true;
+            lookahead += 1;
+            continue;
+        }
+        break;
+    }
+
+    return saw_comma and lookahead < self.tokens.len and self.tokens[lookahead].kind != .kw_in;
+}
+
 pub fn parseCallbackBlock(self: *Parser) anyerror!syntax.ast.CallbackBlock {
     const open = try self.expect(.l_brace, "expected '{' to start callback block", "open the callback block here");
     var params = std.array_list.Managed(syntax.ast.CallbackParam).init(self.allocator);

@@ -18,6 +18,11 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Struct declarations: non-inheriting value shapes with stored members, default values, and methods
 - Expressions: integer, float, string, boolean, arrays, named/nested struct literals, unary operators, binary operators, grouped expressions, member access, namespaced references, indexing, call syntax, named function references, inline callback values, and callable-value invocations
 - Conditional expressions `condition ? then : else`
+- Trailing callbacks are native call syntax, for example `graphics.run { frame in frame.draw() }`,
+  `graphics.runWithConfig(config) { frame in ... }`, and zero-parameter `app.tick { in update() }`; the trailing block binds as the final function-typed call argument.
+  Trailing callbacks may capture surrounding immutable `let` locals by value, for example `let color = Color.red; graphics.run { frame in frame.clear(color) }`.
+  Mutable `var` captures are currently rejected with a targeted mutable-capture diagnostic.
+  This syntax does not introduce standalone callback literals beyond the existing inline callback-value surface.
 - Control flow syntax: `if`, `else if`, `for`, `while`, `break`, `continue`, and `switch` in statement position, plus `if`/`else if`, `for`, and `switch` in builder/content contexts
 - Construct sections: `annotations`, `modifiers`, `requires`, `lifecycle`, `builder`, `representation`, plus custom sections preserved structurally
 - Builder/content blocks with sequential composition, control-flow builder items, and preserved nested trailing-builder child trees on call expressions
@@ -58,7 +63,7 @@ The frontend and semantic model understand the broader language surface above. T
 - callback-typed arguments targeting native/external functions
 - `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
 - boxed callback-state handles for Kira-owned native userdata transport, with typed field-oriented recovery across `llvm` and `hybrid`
-- function types, named function references, non-capturing inline callback literals, direct trailing callbacks, and callable-value invocations through locals and fields across the shared executable backends
+- function types, named function references, inline callback literals, direct trailing callbacks, immutable by-value callback captures on the VM/hybrid closure path, and callable-value invocations through locals and fields across the shared executable backends
 
 `kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` use the shared executable lowering across VM, LLVM/native, and hybrid backends rather than treating LLVM/native as a permanently tiny subset.
 

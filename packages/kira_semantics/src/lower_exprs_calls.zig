@@ -449,10 +449,7 @@ pub fn lowerCallExpr(
         }
     }
 
-    if (shared.findUnsupportedCallbackCapture(ctx, scope.*, callee_leaf)) |binding| {
-        try shared.emitUnsupportedCallbackCapture(ctx, callee_leaf, node.span, binding.decl_span);
-        return error.DiagnosticsEmitted;
-    }
+    _ = try shared.resolveLocalOrCapture(ctx, scope.*, callee_leaf, node.span);
 
     if (std.mem.indexOfScalar(u8, callee_name, '.')) |root_end| {
         if (!shared.isImportedRoot(callee_name[0..root_end], imports)) {

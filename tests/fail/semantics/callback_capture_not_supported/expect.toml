@@ -3,7 +3,7 @@ backends = ["hybrid", "vm"]
 [phases.check]
 result = "fail"
 diagnostic_code = "KSEM094"
-diagnostic_title = "callback captures are not supported"
+diagnostic_title = "mutable callback capture is not supported"
 stage = "semantics"
 
 [phases.build]

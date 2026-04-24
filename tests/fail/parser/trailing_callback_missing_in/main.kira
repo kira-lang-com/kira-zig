@@ -1,0 +1,11 @@
+function resize(handler: (Int, Int) -> Void) {
+    return
+}
+
+@Main
+function main() {
+    resize { width, height
+        print(width)
+    }
+    return
+}

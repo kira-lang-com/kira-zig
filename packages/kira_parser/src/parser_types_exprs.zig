@@ -323,6 +323,9 @@ pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
                 if (self.looksLikeCallbackBlock()) {
                     trailing_callback = try self.parseCallbackBlock();
                     end = trailing_callback.?.span.end;
+                } else if (self.looksLikeCallbackBlockMissingIn()) {
+                    trailing_callback = try self.parseCallbackBlock();
+                    end = trailing_callback.?.span.end;
                 } else {
                     trailing_builder = try self.parseBuilderBlock();
                     end = trailing_builder.?.span.end;
@@ -344,6 +347,9 @@ pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
             var trailing_callback: ?syntax.ast.CallbackBlock = null;
             var end: usize = exprSpan(expr.*).end;
             if (self.looksLikeCallbackBlock()) {
+                trailing_callback = try self.parseCallbackBlock();
+                end = trailing_callback.?.span.end;
+            } else if (self.looksLikeCallbackBlockMissingIn()) {
                 trailing_callback = try self.parseCallbackBlock();
                 end = trailing_callback.?.span.end;
             } else {
