@@ -1,0 +1,16 @@
+@Native
+struct Color {
+    var r: Int
+    var g: Int
+    var b: Int
+}
+
+@Main
+@Native
+function main() {
+    let color = Color { r: 255, g: 128, b: 64 }
+    let values = [1, 2, 3]
+    print(color)
+    print(values)
+    return
+}

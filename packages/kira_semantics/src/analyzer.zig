@@ -92,6 +92,57 @@ test "preserves explicit @Native and @Runtime execution semantics" {
     try std.testing.expectEqual(model.FunctionExecution.runtime, analyzed.functions[1].execution);
 }
 
+test "preserves type execution annotations and class annotation flexibility" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "annotation Tagged { targets: class }\n" ++
+            "@Native struct NativeValue {}\n" ++
+            "@Runtime struct RuntimeValue {}\n" ++
+            "@Tagged @Native class NativeBox {}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    var saw_native = false;
+    var saw_runtime = false;
+    for (analyzed.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, "NativeValue")) {
+            saw_native = true;
+            try std.testing.expectEqual(model.FunctionExecution.native, type_decl.execution);
+        }
+        if (std.mem.eql(u8, type_decl.name, "RuntimeValue")) {
+            saw_runtime = true;
+            try std.testing.expectEqual(model.FunctionExecution.runtime, type_decl.execution);
+        }
+    }
+    try std.testing.expect(saw_native);
+    try std.testing.expect(saw_runtime);
+}
+
+test "rejects non execution struct annotations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = analyzeSource(
+        allocator,
+        "annotation Tagged { targets: struct }\n" ++
+            "@Tagged struct Value {}\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "invalid struct annotation");
+}
+
 test "requires @Native only for direct FFI use" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -849,6 +900,24 @@ test "rejects native callback state misuse" {
         try std.testing.expectError(error.DiagnosticsEmitted, result);
         try expectFirstDiagnosticTitle(diags.items, "native state requires a Kira-owned type");
     }
+}
+
+test "allows indirect FFI usage through native functions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    _ = try analyzeSource(
+        allocator,
+        "@FFI.Extern { library: testlib; symbol: ffi_value; abi: c; }\n" ++
+            "function ffi_value(): I64;\n" ++
+            "@Native function readViaNative(): I64 { return ffi_value(); }\n" ++
+            "@Main function entry() { readViaNative(); return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
 }
 
 test "preserves trailing builder trees on call expressions" {

@@ -1,0 +1,23 @@
+annotation Tagged { targets: class }
+
+@Native
+struct NativePoint {
+    var x: Int = 0
+}
+
+@Runtime
+struct RuntimePoint {
+    var y: Int = 0
+}
+
+@Tagged
+class Label {}
+
+@Tagged
+@Native
+class NativeLabel {}
+
+@Main
+function entry() {
+    return
+}

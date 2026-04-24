@@ -142,7 +142,12 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     const resolved_callee_execution = resolveExecution(callee_execution, mode);
                     try instructions.append(switch (resolved_callee_execution) {
                         .runtime => .{ .call_runtime = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
-                        .native => .{ .call_native = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
+                        .native => .{ .call_native = .{
+                            .function_id = value.callee,
+                            .args = value.args,
+                            .dst = value.dst,
+                            .return_ty = lowerTypeRef((functionById(program, value.callee) orelse return error.UnknownFunction).return_type),
+                        } },
                         .inherited => unreachable,
                     });
                 },
@@ -159,6 +164,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
             .id = function_decl.id,
             .name = function_decl.name,
             .param_count = @as(u32, @intCast(function_decl.param_types.len)),
+            .return_type = lowerTypeRef(function_decl.return_type),
             .register_count = function_decl.register_count,
             .local_count = function_decl.local_count,
             .local_types = try lowerLocalTypes(allocator, function_decl.local_types),
@@ -193,6 +199,13 @@ fn lowerTypeRef(value_type: ir_pkg.ValueType) instruction.TypeRef {
 fn functionExecutionById(program: ir_pkg.Program, function_id: u32) ?runtime_abi.FunctionExecution {
     for (program.functions) |function_decl| {
         if (function_decl.id == function_id) return function_decl.execution;
+    }
+    return null;
+}
+
+fn functionById(program: ir_pkg.Program, function_id: u32) ?ir_pkg.Function {
+    for (program.functions) |function_decl| {
+        if (function_decl.id == function_id) return function_decl;
     }
     return null;
 }

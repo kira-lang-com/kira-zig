@@ -5,11 +5,15 @@ const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
 const hybrid_runtime = @import("kira_hybrid_runtime");
 const package_manager = @import("kira_package_manager");
+const runtime_abi = @import("kira_runtime_abi");
 const vm_runtime = @import("kira_vm_runtime");
 const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    const previous_trace = runtime_abi.executionTraceEnabled();
+    runtime_abi.setExecutionTraceEnabled(parsed.trace_execution);
+    defer runtime_abi.setExecutionTraceEnabled(previous_trace);
     const input = try support.resolveCommandInput(allocator, parsed.input_path);
     const backend = parsed.backend orelse input.default_backend orelse .vm;
 
@@ -56,7 +60,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         },
         .llvm_native => {
             const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
-            try runExecutable(allocator, executable.path, input.project_root, stdout, stderr);
+            try runExecutable(allocator, executable.path, input.project_root, parsed.trace_execution, stdout, stderr);
         },
         .hybrid => {
             const manifest_artifact = findHybridManifest(result.artifacts) orelse return error.MissingHybridManifestArtifact;
@@ -72,6 +76,7 @@ const ParsedArgs = struct {
     backend: ?build_def.ExecutionTarget = null,
     offline: bool = false,
     locked: bool = false,
+    trace_execution: bool = false,
     input_path: []const u8,
 };
 
@@ -79,6 +84,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var backend: ?build_def.ExecutionTarget = null;
     var offline = false;
     var locked = false;
+    var trace_execution = false;
     var input_path: ?[]const u8 = null;
 
     var index: usize = 0;
@@ -98,6 +104,10 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             locked = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--trace-execution")) {
+            trace_execution = true;
+            continue;
+        }
         if (input_path != null) return error.InvalidArguments;
         input_path = arg;
     }
@@ -106,6 +116,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
         .backend = backend,
         .offline = offline,
         .locked = locked,
+        .trace_execution = trace_execution,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
 }
@@ -150,15 +161,22 @@ fn runExecutable(
     allocator: std.mem.Allocator,
     path: []const u8,
     project_root: ?[]const u8,
+    trace_execution: bool,
     stdout: anytype,
     stderr: anytype,
 ) !void {
     const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
+    var environ_map = if (trace_execution) try std.process.Environ.createMap(process_environ, allocator) else null;
+    defer if (environ_map) |*map| map.deinit();
+    if (environ_map) |*map| {
+        try map.put("KIRA_TRACE_EXECUTION", "1");
+    }
     const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{path},
         .cwd = if (project_root) |root| .{ .path = root } else .inherit,
+        .environ_map = if (environ_map) |*map| map else null,
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -196,4 +214,11 @@ fn runExecutable(
         try stderr.writeAll("  note: Windows may report native fail-fast statuses through the low exit byte; running the executable directly can reveal the full NTSTATUS.\n");
     }
     return error.NativeRunFailed;
+}
+
+test "parseArgs recognizes trace execution" {
+    const parsed = try parseArgs(&.{ "--trace-execution", "--backend", "hybrid", "examples/hello.kira" });
+    try std.testing.expect(parsed.trace_execution);
+    try std.testing.expectEqual(build_def.ExecutionTarget.hybrid, parsed.backend.?);
+    try std.testing.expectEqualStrings("examples/hello.kira", parsed.input_path);
 }

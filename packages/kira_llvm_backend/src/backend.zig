@@ -71,63 +71,7 @@ pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest
 
     const triple = try hostTargetTriple(allocator);
     defer allocator.free(triple);
-
-    if (builtin.os.tag == .macos or builtin.os.tag == .windows or requiresTextIrFallback(request.program.*, request.mode)) {
-        return compileViaTextIr(allocator, request, triple);
-    }
-
-    const tc = try toolchain.Toolchain.discover(allocator);
-    var api = try llvm.Api.open(tc);
-    defer api.close();
-
-    api.LLVMInitializeTargetInfo();
-    api.LLVMInitializeTarget();
-    api.LLVMInitializeTargetMC();
-    api.LLVMInitializeAsmPrinter();
-    if (api.LLVMInitializeAsmParser) |init| init();
-
-    const target_machine = try createTargetMachine(allocator, &api, triple);
-    defer api.LLVMDisposeTargetMachine(target_machine.machine);
-    defer api.LLVMDisposeMessage(target_machine.cpu_features);
-    defer api.LLVMDisposeMessage(target_machine.cpu_name);
-
-    try ensureParentDir(request.emit.object_path);
-    if (request.emit.executable_path) |path| try ensureParentDir(path);
-    if (request.emit.shared_library_path) |path| try ensureParentDir(path);
-
-    const lowered = try lowerProgram(allocator, &api, target_machine, request, triple);
-    if (builtin.os.tag != .windows) {
-        defer api.LLVMContextDispose(lowered.context);
-        defer api.LLVMDisposeModule(lowered.module_ref);
-    }
-
-    try emitObjectFile(allocator, &api, target_machine.machine, lowered.module_ref, request.emit.object_path);
-
-    var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
-    try artifacts.append(.{
-        .kind = .native_object,
-        .path = try allocator.dupe(u8, request.emit.object_path),
-    });
-
-    if (request.emit.executable_path) |executable_path| {
-        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
-        try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
-        try artifacts.append(.{
-            .kind = .executable,
-            .path = try allocator.dupe(u8, executable_path),
-        });
-    }
-
-    if (request.emit.shared_library_path) |library_path| {
-        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
-        try linker.linkSharedLibrary(allocator, library_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
-        try artifacts.append(.{
-            .kind = .native_library,
-            .path = try allocator.dupe(u8, library_path),
-        });
-    }
-
-    return .{ .artifacts = try artifacts.toOwnedSlice() };
+    return compileViaTextIr(allocator, request, triple);
 }
 
 pub fn validate(allocator: std.mem.Allocator, request: backend_api.CompileRequest) !void {

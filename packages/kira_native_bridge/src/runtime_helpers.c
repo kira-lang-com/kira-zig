@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #if defined(_WIN32)
 #define KIRA_BRIDGE_EXPORT __declspec(dllexport)
@@ -49,21 +50,72 @@ typedef struct {
 } KiraNativeState;
 
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
+static int kira_trace_execution_enabled = -1;
+
+static int kira_trace_enabled(void) {
+    if (kira_trace_execution_enabled >= 0) return kira_trace_execution_enabled;
+    const char *value = getenv("KIRA_TRACE_EXECUTION");
+    return value != NULL && value[0] != '\0' && value[0] != '0';
+}
+
+static void kira_trace_log(const char *domain, const char *event, const char *fmt, ...) {
+    if (!kira_trace_enabled()) return;
+
+    fprintf(stderr, "[trace][%s][%s] ", domain, event);
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
+KIRA_BRIDGE_EXPORT void kira_set_execution_trace_enabled(uint8_t enabled) {
+    kira_trace_execution_enabled = enabled != 0 ? 1 : 0;
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_write_i64(int64_t value) {
+    kira_trace_log("NATIVE", "PRINT", "i64");
+    printf("%lld", (long long)value);
+    fflush(stdout);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_write_f64(double value) {
+    kira_trace_log("NATIVE", "PRINT", "f64");
+    printf("%g", value);
+    fflush(stdout);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_write_string(const unsigned char *ptr, size_t len) {
+    kira_trace_log("NATIVE", "PRINT", "string len=%llu", (unsigned long long)len);
+    fwrite(ptr, 1, len, stdout);
+    fflush(stdout);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_write_ptr(uintptr_t value) {
+    kira_trace_log("NATIVE", "PRINT", "ptr");
+    printf("0x%llx", (unsigned long long)value);
+    fflush(stdout);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_write_newline(void) {
+    fputc('\n', stdout);
+    fflush(stdout);
+}
 
 KIRA_BRIDGE_EXPORT void kira_native_print_i64(int64_t value) {
-    printf("%lld\n", (long long)value);
-    fflush(stdout);
+    kira_native_write_i64(value);
+    kira_native_write_newline();
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_print_f64(double value) {
-    printf("%g\n", value);
-    fflush(stdout);
+    kira_native_write_f64(value);
+    kira_native_write_newline();
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_print_string(const unsigned char *ptr, size_t len) {
-    fwrite(ptr, 1, len, stdout);
-    fputc('\n', stdout);
-    fflush(stdout);
+    kira_native_write_string(ptr, len);
+    kira_native_write_newline();
 }
 
 KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
@@ -131,11 +183,18 @@ KIRA_BRIDGE_EXPORT void kira_hybrid_install_runtime_invoker(void (*invoker)(uint
 }
 
 KIRA_BRIDGE_EXPORT void kira_hybrid_call_runtime(uint32_t function_id, const KiraBridgeValue *args, uint32_t arg_count, KiraBridgeValue *out_result) {
+    kira_trace_log("TRAMPOLINE", "ENTER", "native->runtime fn=%u args=%u", function_id, arg_count);
     if (kira_runtime_invoker_ex != NULL) {
         kira_runtime_invoker_ex(function_id, args, arg_count, out_result);
+        if (out_result != NULL) {
+            kira_trace_log("TRAMPOLINE", "RETURN", "runtime->native fn=%u tag=%u", function_id, (unsigned)out_result->tag);
+        } else {
+            kira_trace_log("TRAMPOLINE", "RETURN", "runtime->native fn=%u", function_id);
+        }
         return;
     }
     if (kira_runtime_invoker != NULL) {
         kira_runtime_invoker(function_id);
+        kira_trace_log("TRAMPOLINE", "RETURN", "runtime->native fn=%u", function_id);
     }
 }

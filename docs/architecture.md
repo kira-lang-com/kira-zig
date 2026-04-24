@@ -21,7 +21,7 @@ The VM backend path is:
 
 The LLVM-native backend path is:
 
-1. `kira_llvm_backend` discovers LLVM, loads the LLVM C API, lowers shared IR into LLVM IR, verifies it, and emits a real object file
+1. `kira_llvm_backend` lowers shared IR through the text-LLVM path, verifies it, and emits a real object file for ordinary language execution
 2. `kira_native_bridge` provides the stable native helper symbols used by LLVM lowering for builtin printing
 3. `kira_build` links the emitted object and helper object into a host-native executable through Zig's linker driver
 
@@ -33,7 +33,7 @@ The hybrid path is:
 4. native-to-runtime calls go through an installed native bridge callback
 5. runtime-to-native calls go through native trampolines resolved from the shared library
 
-The current native and hybrid subset intentionally matches the current VM subset plus zero-argument calls: `@Main`, `@Runtime`, `@Native`, function declarations, integer and string literals, `let`, identifier loads, integer addition, builtin `print`, simple zero-argument calls, `return`, and block statements.
+`@Runtime` and `@Native` are execution-boundary annotations, not usability restrictions. Outside direct FFI usage, runtime code and native code can call each other naturally, pass values in both directions, and use the same shared executable surface through the bridge/trampoline layer.
 
 `kira_build_definition` and `kira_backend_api` stay backend-neutral. `kira_cli` stays a leaf command surface. `kira_main` remains the app-facing C ABI facade rather than becoming compiler glue.
 

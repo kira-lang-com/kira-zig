@@ -221,6 +221,45 @@ pub fn resolveFunctionAnnotations(ctx: *Context, annotations: []const syntax.ast
     };
 }
 
+pub fn resolveTypeExecutionAnnotations(
+    ctx: *Context,
+    annotations: []const syntax.ast.Annotation,
+    kind: model.TypeKind,
+) !runtime_abi.FunctionExecution {
+    var execution: runtime_abi.FunctionExecution = .inherited;
+    var execution_span: ?source_pkg.Span = null;
+
+    for (annotations) |annotation| {
+        const name = try qualifiedNameLeaf(ctx.allocator, annotation.name);
+        if (!isTypeExecutionAnnotation(name)) continue;
+        const next_execution: runtime_abi.FunctionExecution = if (std.mem.eql(u8, name, "Runtime")) .runtime else .native;
+        if (execution != .inherited) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM005",
+                .title = "conflicting execution annotations",
+                .message = switch (kind) {
+                    .class => "A type can use at most one execution annotation.",
+                    .struct_decl => "A struct can use at most one execution annotation.",
+                },
+                .labels = &.{
+                    diagnostics.primaryLabel(annotation.span, "conflicting execution annotation"),
+                    diagnostics.secondaryLabel(execution_span.?, "the first execution annotation was here"),
+                },
+                .help = switch (kind) {
+                    .class => "Choose either @Runtime or @Native for this type.",
+                    .struct_decl => "Choose either @Runtime or @Native for this struct.",
+                },
+            });
+            return error.DiagnosticsEmitted;
+        }
+        execution = next_execution;
+        execution_span = annotation.span;
+    }
+
+    return execution;
+}
+
 pub fn lowerAnnotations(ctx: *Context, annotations: []const syntax.ast.Annotation) ![]model.Annotation {
     var lowered = std.array_list.Managed(model.Annotation).init(ctx.allocator);
     for (annotations) |annotation| {
@@ -239,17 +278,42 @@ pub fn validateAnnotationPlacement(
         const header = try resolveAnnotationHeader(ctx, annotation.name);
         _ = try lowerAnnotationArguments(ctx, annotation, header);
         const name = try qualifiedNameLeaf(ctx.allocator, annotation.name);
-        const is_execution = std.mem.eql(u8, name, "Main") or std.mem.eql(u8, name, "Native") or std.mem.eql(u8, name, "Runtime");
-        if (placement != .function_decl and is_execution) {
+        const is_main = std.mem.eql(u8, name, "Main");
+        const is_type_execution = isTypeExecutionAnnotation(name);
+        const is_execution = is_main or is_type_execution;
+        const allows_execution = placement == .function_decl or ((placement == .class_decl or placement == .struct_decl) and is_type_execution);
+        if (is_execution and !allows_execution) {
+            const message = if (is_main)
+                try std.fmt.allocPrint(ctx.allocator, "The annotation '@{s}' is only valid on functions.", .{name})
+            else
+                try std.fmt.allocPrint(ctx.allocator, "The annotation '@{s}' is only valid on functions and type declarations.", .{name});
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM025",
                 .title = "illegal annotation placement",
-                .message = try std.fmt.allocPrint(ctx.allocator, "The annotation '@{s}' is only valid on functions.", .{name}),
+                .message = message,
                 .labels = &.{
                     diagnostics.primaryLabel(annotation.span, "annotation cannot be applied here"),
                 },
-                .help = "Move the annotation onto a function declaration or remove it.",
+                .help = if (is_main)
+                    "Move the annotation onto a function declaration or remove it."
+                else
+                    "Move the annotation onto a function, class, or struct declaration, or remove it.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        if (placement == .struct_decl and !structAnnotationAllowed(header, name)) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM096",
+                .title = "invalid struct annotation",
+                .message = try std.fmt.allocPrint(
+                    ctx.allocator,
+                    "The struct annotation '@{s}' is not allowed here.",
+                    .{name},
+                ),
+                .labels = &.{diagnostics.primaryLabel(annotation.span, "struct annotations are limited to execution-boundary and compiler-reserved FFI annotations")},
+                .help = "Use @Runtime or @Native for ordinary struct execution, or keep compiler-reserved FFI annotations only where the FFI type system requires them.",
             });
             return error.DiagnosticsEmitted;
         }
@@ -282,6 +346,15 @@ pub fn validateAnnotationPlacement(
             }
         }
     }
+}
+
+fn isTypeExecutionAnnotation(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Native") or std.mem.eql(u8, name, "Runtime");
+}
+
+fn structAnnotationAllowed(header: AnnotationHeader, name: []const u8) bool {
+    if (isTypeExecutionAnnotation(name)) return true;
+    return header.compiler_builtin and std.mem.startsWith(u8, header.decl.name, "FFI.");
 }
 
 fn annotationTargetsIncludePlacement(targets: []const model.AnnotationTarget, placement: AnnotationPlacement) bool {

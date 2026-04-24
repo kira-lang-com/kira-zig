@@ -103,6 +103,11 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("@kira_bool_false_data = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
     try writer.writeAll("@kira_bool_false = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([6 x i8], ptr @kira_bool_false_data, i64 0, i64 0), i64 5 }\n\n");
 
+    try writer.writeAll("declare void @\"kira_native_write_i64\"(i64)\n");
+    try writer.writeAll("declare void @\"kira_native_write_f64\"(double)\n");
+    try writer.writeAll("declare void @\"kira_native_write_string\"(ptr, i64)\n");
+    try writer.writeAll("declare void @\"kira_native_write_ptr\"(i64)\n");
+    try writer.writeAll("declare void @\"kira_native_write_newline\"()\n");
     try writer.writeAll("declare void @\"kira_native_print_i64\"(i64)\n");
     try writer.writeAll("declare void @\"kira_native_print_f64\"(double)\n");
     try writer.writeAll("declare void @\"kira_native_print_string\"(ptr, i64)\n");
@@ -927,7 +932,16 @@ pub fn buildTextFunctionBody(
                 block_terminated = false;
             },
             .print => |value| {
-                try writePrintInstruction(writer, register_types[value.src], value.src, &temp_counter);
+                try writePrintInstruction(
+                    allocator,
+                    writer,
+                    request.program,
+                    globals,
+                    register_types[value.src],
+                    value.src,
+                    &string_state[0],
+                    &temp_counter,
+                );
             },
             .call => |value| {
                 try writeCallInstruction(writer, request, symbol_names, request.program, register_types, value);

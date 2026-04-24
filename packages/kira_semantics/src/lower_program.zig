@@ -229,6 +229,7 @@ pub fn lowerProgramWithOptions(
         try types.append(.{
             .name = try allocator.dupe(u8, entry.key_ptr.*),
             .kind = entry.value_ptr.kind,
+            .execution = entry.value_ptr.execution,
             .fields = @constCast(entry.value_ptr.fields),
             .ffi = entry.value_ptr.ffi,
             .span = entry.value_ptr.span,

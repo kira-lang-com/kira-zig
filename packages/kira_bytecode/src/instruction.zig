@@ -73,7 +73,7 @@ pub const Instruction = union(OpCode) {
     label: struct { id: u32 },
     print: struct { src: u32, ty: TypeRef },
     call_runtime: struct { function_id: u32, args: []const u32, dst: ?u32 = null },
-    call_native: struct { function_id: u32, args: []const u32, dst: ?u32 = null },
+    call_native: struct { function_id: u32, args: []const u32, dst: ?u32 = null, return_ty: TypeRef = .{ .kind = .void } },
     call_value: struct { callee: u32, args: []const u32, dst: ?u32 = null },
     ret: struct { src: ?u32 = null },
 };

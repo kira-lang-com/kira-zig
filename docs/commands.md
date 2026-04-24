@@ -66,7 +66,7 @@ CLI behavior:
 - `run` defaults to the VM backend; `run --backend llvm` builds and runs a native executable
 - `run --backend hybrid` builds a hybrid manifest, bytecode sidecar, and native shared library, then runs the mixed program in the hybrid host
 - `run`, `build`, and `check` automatically sync dependencies before compiling; add `--offline` or `--locked` when you want cache-only or lockfile-only behavior
-- the default VM run path can print scalar values plus named struct values; native/hybrid print support is still narrower
+- VM, LLVM/native, and hybrid now share the ordinary executable surface for control flow, calls, arrays, named values, and mixed runtime/native interaction
 - `tokens` dumps lexer output
 - `ast` dumps the parsed AST
 - `check` runs parse and semantics

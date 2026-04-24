@@ -101,6 +101,7 @@ pub const AnnotationRule = struct {
 pub const TypeDecl = struct {
     kind: TypeKind = .struct_decl,
     name: []const u8,
+    execution: runtime_abi.FunctionExecution = .inherited,
     fields: []const Field,
     ffi: ?ffi.NamedTypeInfo = null,
     span: source_pkg.Span,

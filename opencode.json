@@ -1,0 +1,103 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "agent": {
+    "orchestrator": {
+      "description": "Planning-only orchestrator. Reads repo memory manually, asks the user for approval, then delegates a self-contained brief to the worker.",
+      "mode": "primary",
+      "model": "gpt-5.5",
+      "temperature": 0.1,
+      "reasoningEffort": "high",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "lsp": "allow",
+        "question": "allow",
+        "todowrite": "allow",
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git diff*": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "worker": "allow",
+          "reviewer": "ask",
+          "memory-maintainer": "ask"
+        }
+      }
+    },
+
+    "worker": {
+      "description": "Context-isolated implementation worker. Receives only the approved brief and executes it without inherited planning context.",
+      "mode": "subagent",
+      "model": "gpt-5.5",
+      "temperature": 0.1,
+      "reasoningEffort": "high",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "lsp": "allow",
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "zig build test*": "allow",
+          "zig build run*": "allow"
+        },
+        "question": "deny",
+        "task": "deny"
+      }
+    },
+
+    "reviewer": {
+      "description": "Read-only reviewer. Checks the final diff against the approved brief and reports issues without editing.",
+      "mode": "subagent",
+      "model": "gpt-5.4-mini",
+      "temperature": 0.1,
+      "reasoningEffort": "medium",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "lsp": "allow",
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git diff*": "allow"
+        },
+        "question": "deny",
+        "task": "deny"
+      }
+    },
+
+    "memory-maintainer": {
+      "description": "Updates repo memory markdown after completed work. Only edits docs/agent-memory and never changes source code.",
+      "mode": "subagent",
+      "model": "gpt-5.4-mini",
+      "temperature": 0.1,
+      "reasoningEffort": "low",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "edit": {
+          "*": "deny",
+          "docs/agent-memory/**": "allow"
+        },
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git diff*": "allow"
+        },
+        "question": "deny",
+        "task": "deny"
+      }
+    }
+  }
+}

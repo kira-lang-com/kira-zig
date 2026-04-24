@@ -24,6 +24,7 @@ pub const Program = struct {
 
 pub const TypeDecl = struct {
     name: []const u8,
+    execution: runtime_abi.FunctionExecution = .inherited,
     fields: []Field,
     ffi: ?FfiTypeInfo = null,
 };

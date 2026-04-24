@@ -17,25 +17,11 @@ The working execution paths today are:
 - source -> lexer -> parser -> semantics -> IR -> bytecode -> VM
 - source -> lexer -> parser -> semantics -> IR -> LLVM IR -> object file -> native executable
 - source -> lexer -> parser -> semantics -> IR -> bytecode plus native shared library -> hybrid runtime host
-- `print(...)` works for integers, floats, strings, booleans, raw pointers, and named struct values on the VM path
+- `print(...)` works for integers, floats, strings, booleans, raw pointers, named struct values, and array summaries across VM, LLVM/native, and hybrid
 - `kira` launches the active managed Kira toolchain
 - `KiraMain` can load and run bytecode modules
 
-The native path currently supports the same bootstrap subset as the VM path, except that richer `print(...)` support is still centered on the VM/default execution path:
-
-- `@Main`
-- `@Runtime`
-- `@Native`
-- `function`
-- integer literals
-- string literals
-- local `let`
-- identifier loads
-- integer `+`
-- builtin `print`
-- simple zero-argument function calls
-- `return`
-- block statements
+`@Runtime` and `@Native` are now execution-boundary annotations rather than usability restrictions. Outside direct FFI usage, runtime and native code can call each other naturally across the hybrid bridge, and the LLVM/native backend executes the same ordinary language core that the shared IR lowers for the checked-in parity corpus.
 
 The FFI path extends that executable boundary with:
 

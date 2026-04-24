@@ -1,0 +1,20 @@
+@Native
+struct Counter {
+    var count: Int
+}
+
+@Native
+function readCounter(counter: Counter) -> Int {
+    return counter.count + 1
+}
+
+@Main
+@Runtime
+function main() {
+    var counter = Counter { count: 4 }
+    print(counter.count)
+    counter.count = counter.count + 2
+    print(counter.count)
+    print(readCounter(counter))
+    return
+}

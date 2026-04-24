@@ -14,3 +14,6 @@ pub const ExecutionMode = @import("calling.zig").ExecutionMode;
 pub const RuntimeModuleId = @import("module_ids.zig").RuntimeModuleId;
 pub const RuntimeSymbolId = @import("module_ids.zig").RuntimeSymbolId;
 pub const RuntimeLibraryId = @import("module_ids.zig").RuntimeLibraryId;
+pub const setExecutionTraceEnabled = @import("trace.zig").setEnabled;
+pub const executionTraceEnabled = @import("trace.zig").isEnabled;
+pub const emitExecutionTrace = @import("trace.zig").emit;

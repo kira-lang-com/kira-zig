@@ -20,6 +20,7 @@ pub const Hooks = struct {
     context: ?*anyopaque = null,
     call_native: ?NativeCallHook = null,
     resolve_function: ?ResolveFunctionHook = null,
+    copy_struct_args_by_value: bool = true,
 };
 
 pub const Vm = struct {
@@ -59,6 +60,26 @@ pub const Vm = struct {
         return self.last_error_buffer[0..self.last_error_len];
     }
 
+    pub fn materializeNativeStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) !usize {
+        runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime type={s} ptr=0x{x}", .{ type_name, native_ptr });
+        return self.copyStructFromNativeLayout(module, type_name, native_ptr);
+    }
+
+    pub fn lowerStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) !usize {
+        runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "runtime->native type={s} ptr=0x{x}", .{ type_name, runtime_ptr });
+        return self.copyStructToNativeLayout(module, type_name, runtime_ptr);
+    }
+
+    pub fn writeStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
+        runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "sync runtime->native type={s} src=0x{x} dst=0x{x}", .{ type_name, runtime_ptr, native_ptr });
+        try self.copyStructToNativeLayoutInto(module, type_name, runtime_ptr, native_ptr);
+    }
+
+    pub fn syncStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
+        runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "sync native->runtime type={s} src=0x{x} dst=0x{x}", .{ type_name, native_ptr, runtime_ptr });
+        try self.copyStructFromNativeLayoutInto(module, type_name, runtime_ptr, native_ptr);
+    }
+
     fn runFunction(
         self: *Vm,
         module: *const bytecode.Module,
@@ -78,6 +99,7 @@ pub const Vm = struct {
         for (locals) |*slot| slot.* = .{ .void = {} };
         for (function_decl.local_types, 0..) |local_ty, index| {
             if (local_ty.kind != .ffi_struct) continue;
+            if (index < function_decl.param_count and !hooks.copy_struct_args_by_value) continue;
             const type_name = local_ty.name orelse {
                 self.rememberError("struct local type is missing a name");
                 return error.RuntimeFailure;
@@ -94,17 +116,21 @@ pub const Vm = struct {
                     self.rememberError("struct argument requires a valid pointer");
                     return error.RuntimeFailure;
                 }
-                const type_name = function_decl.local_types[index].name orelse {
-                    self.rememberError("struct local type is missing a name");
-                    return error.RuntimeFailure;
-                };
-                const type_decl = findType(module, type_name) orelse {
-                    self.rememberError("struct type could not be resolved");
-                    return error.RuntimeFailure;
-                };
-                const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
-                const src_ptr: [*]runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
-                try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+                if (hooks.copy_struct_args_by_value) {
+                    const type_name = function_decl.local_types[index].name orelse {
+                        self.rememberError("struct local type is missing a name");
+                        return error.RuntimeFailure;
+                    };
+                    const type_decl = findType(module, type_name) orelse {
+                        self.rememberError("struct type could not be resolved");
+                        return error.RuntimeFailure;
+                    };
+                    const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
+                    const src_ptr: [*]runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
+                    try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+                } else {
+                    locals[index] = arg;
+                }
             } else {
                 locals[index] = arg;
             }
@@ -339,7 +365,8 @@ pub const Vm = struct {
                     };
                     const call_args = try collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
-                    const result = try callback(hooks.context, value.function_id, call_args);
+                    var result = try callback(hooks.context, value.function_id, call_args);
+                    result = try self.materializeNativeResult(module, value.return_ty, result);
                     if (value.dst) |dst| registers[dst] = result;
                 },
                 .call_value => |value| {
@@ -478,6 +505,152 @@ pub const Vm = struct {
                 dst_ptr[index] = src_ptr[index];
             }
         }
+    }
+
+    fn materializeNativeResult(
+        self: *Vm,
+        module: *const bytecode.Module,
+        return_ty: bytecode.TypeRef,
+        value: runtime_abi.Value,
+    ) !runtime_abi.Value {
+        if (return_ty.kind != .ffi_struct) return value;
+        if (value != .raw_ptr or value.raw_ptr == 0) {
+            self.rememberError("native struct result requires a valid pointer");
+            return error.RuntimeFailure;
+        }
+        return .{ .raw_ptr = try self.copyStructFromNativeLayout(module, return_ty.name orelse {
+            self.rememberError("native struct result is missing a type name");
+            return error.RuntimeFailure;
+        }, value.raw_ptr) };
+    }
+
+    fn copyStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+        const type_decl = findType(module, type_name) orelse {
+            self.rememberError("struct type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const fields = try self.allocator.alloc(runtime_abi.Value, type_decl.fields.len);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            fields[index] = try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr);
+        }
+        return @intFromPtr(fields.ptr);
+    }
+
+    fn copyStructFromNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
+        const type_decl = findType(module, type_name) orelse {
+            self.rememberError("struct type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const fields: [*]runtime_abi.Value = @ptrFromInt(runtime_ptr);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            const offset = try nativeFieldOffset(module, type_name, index);
+            const address = native_ptr + offset;
+            switch (field_decl.ty.kind) {
+                .ffi_struct => {
+                    const nested_name = field_decl.ty.name orelse {
+                        self.rememberError("nested struct field type is missing a name");
+                        return error.RuntimeFailure;
+                    };
+                    if (fields[index] != .raw_ptr or fields[index].raw_ptr == 0) {
+                        fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                    }
+                    try self.copyStructFromNativeLayoutInto(module, nested_name, fields[index].raw_ptr, address);
+                },
+                else => fields[index] = try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr),
+            }
+        }
+    }
+
+    fn copyStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
+        const layout = try nativeStructLayout(module, type_name);
+        const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
+        const words = try self.allocator.alloc(u64, word_count);
+        @memset(std.mem.sliceAsBytes(words), 0);
+        try self.copyStructToNativeLayoutInto(module, type_name, runtime_ptr, @intFromPtr(words.ptr));
+        return @intFromPtr(words.ptr);
+    }
+
+    fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
+        const type_decl = findType(module, type_name) orelse {
+            self.rememberError("struct type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const fields: [*]const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            const offset = try nativeFieldOffset(module, type_name, index);
+            try self.writeNativeFieldValue(module, field_decl.ty, fields[index], native_ptr + offset);
+        }
+    }
+
+    fn writeNativeFieldValue(self: *Vm, module: *const bytecode.Module, field_ty: bytecode.TypeRef, value: runtime_abi.Value, address: usize) anyerror!void {
+        try switch (field_ty.kind) {
+            .void => {},
+            .integer => writeNativeInteger(field_ty.name, address, value),
+            .float => writeNativeFloat(field_ty.name, address, value),
+            .string => {
+                if (value != .string) {
+                    self.rememberError("runtime string field cannot be lowered to native memory");
+                    return error.RuntimeFailure;
+                }
+                const string_ptr: *runtime_abi.BridgeString = @ptrFromInt(address);
+                string_ptr.* = .{
+                    .ptr = if (value.string.len == 0) null else value.string.ptr,
+                    .len = value.string.len,
+                };
+            },
+            .boolean => {
+                if (value != .boolean) {
+                    self.rememberError("runtime boolean field cannot be lowered to native memory");
+                    return error.RuntimeFailure;
+                }
+                (@as(*u8, @ptrFromInt(address))).* = if (value.boolean) 1 else 0;
+            },
+            .array, .raw_ptr => {
+                if (value != .raw_ptr) {
+                    self.rememberError("runtime pointer field cannot be lowered to native memory");
+                    return error.RuntimeFailure;
+                }
+                (@as(*usize, @ptrFromInt(address))).* = value.raw_ptr;
+            },
+            .ffi_struct => {
+                const nested_name = field_ty.name orelse {
+                    self.rememberError("nested struct field type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                if (value != .raw_ptr or value.raw_ptr == 0) {
+                    self.rememberError("runtime struct field cannot be lowered to native memory");
+                    return error.RuntimeFailure;
+                }
+                try self.copyStructToNativeLayoutInto(module, nested_name, value.raw_ptr, address);
+            },
+        };
+    }
+
+    fn readNativeFieldValue(
+        self: *Vm,
+        module: *const bytecode.Module,
+        owner_type_name: []const u8,
+        field_decl: bytecode.Field,
+        field_index: usize,
+        native_ptr: usize,
+    ) anyerror!runtime_abi.Value {
+        const offset = try nativeFieldOffset(module, owner_type_name, field_index);
+        const address = native_ptr + offset;
+        return switch (field_decl.ty.kind) {
+            .void => .{ .void = {} },
+            .integer => .{ .integer = readNativeInteger(field_decl.ty.name, address) },
+            .float => .{ .float = readNativeFloat(field_decl.ty.name, address) },
+            .string => blk: {
+                const value_ptr: *const runtime_abi.BridgeString = @ptrFromInt(address);
+                break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
+            },
+            .boolean => .{ .boolean = (@as(*const u8, @ptrFromInt(address))).* != 0 },
+            .array, .raw_ptr => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+            .ffi_struct => .{ .raw_ptr = try self.copyStructFromNativeLayout(module, field_decl.ty.name orelse {
+                self.rememberError("nested struct field type is missing a name");
+                return error.RuntimeFailure;
+            }, address) },
+        };
     }
 
     fn compareValues(
@@ -749,6 +922,125 @@ fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl
         if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
     }
     return null;
+}
+
+const NativeTypeLayout = struct {
+    size: usize,
+    alignment: usize,
+};
+
+fn nativeFieldOffset(module: *const bytecode.Module, owner_type_name: []const u8, field_index: usize) anyerror!usize {
+    const type_decl = findType(module, owner_type_name) orelse return error.RuntimeFailure;
+    var offset: usize = 0;
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const layout = try nativeValueTypeLayout(module, field_decl.ty);
+        offset = alignForward(offset, layout.alignment);
+        if (index == field_index) return offset;
+        offset += layout.size;
+    }
+    return error.RuntimeFailure;
+}
+
+fn nativeValueTypeLayout(module: *const bytecode.Module, value_type: bytecode.TypeRef) anyerror!NativeTypeLayout {
+    return switch (value_type.kind) {
+        .void => .{ .size = 0, .alignment = 1 },
+        .boolean => .{ .size = 1, .alignment = 1 },
+        .integer => integerLayout(value_type.name),
+        .float => if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
+            .{ .size = 4, .alignment = 4 }
+        else
+            .{ .size = 8, .alignment = 8 },
+        .string => .{ .size = @sizeOf(runtime_abi.BridgeString), .alignment = @alignOf(runtime_abi.BridgeString) },
+        .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+        .ffi_struct => try nativeStructLayout(module, value_type.name orelse return error.RuntimeFailure),
+    };
+}
+
+fn nativeStructLayout(module: *const bytecode.Module, type_name: []const u8) anyerror!NativeTypeLayout {
+    const type_decl = findType(module, type_name) orelse return error.RuntimeFailure;
+    var offset: usize = 0;
+    var max_alignment: usize = 1;
+    for (type_decl.fields) |field_decl| {
+        const field_layout = try nativeValueTypeLayout(module, field_decl.ty);
+        max_alignment = @max(max_alignment, field_layout.alignment);
+        offset = alignForward(offset, field_layout.alignment);
+        offset += field_layout.size;
+    }
+    return .{
+        .size = alignForward(offset, max_alignment),
+        .alignment = max_alignment,
+    };
+}
+
+fn integerLayout(name: ?[]const u8) NativeTypeLayout {
+    const value = name orelse return .{ .size = 8, .alignment = 8 };
+    if (std.mem.eql(u8, value, "I8") or std.mem.eql(u8, value, "U8")) return .{ .size = 1, .alignment = 1 };
+    if (std.mem.eql(u8, value, "I16") or std.mem.eql(u8, value, "U16")) return .{ .size = 2, .alignment = 2 };
+    if (std.mem.eql(u8, value, "I32") or std.mem.eql(u8, value, "U32")) return .{ .size = 4, .alignment = 4 };
+    return .{ .size = 8, .alignment = 8 };
+}
+
+fn readNativeInteger(name: ?[]const u8, address: usize) i64 {
+    const value = name orelse return (@as(*const i64, @ptrFromInt(address))).*;
+    if (std.mem.eql(u8, value, "U8")) return @as(i64, (@as(*const u8, @ptrFromInt(address))).*);
+    if (std.mem.eql(u8, value, "U16")) return @as(i64, (@as(*const u16, @ptrFromInt(address))).*);
+    if (std.mem.eql(u8, value, "U32")) return @as(i64, (@as(*const u32, @ptrFromInt(address))).*);
+    if (std.mem.eql(u8, value, "I8")) return @as(*const i8, @ptrFromInt(address)).*;
+    if (std.mem.eql(u8, value, "I16")) return @as(*const i16, @ptrFromInt(address)).*;
+    if (std.mem.eql(u8, value, "I32")) return @as(*const i32, @ptrFromInt(address)).*;
+    return (@as(*const i64, @ptrFromInt(address))).*;
+}
+
+fn readNativeFloat(name: ?[]const u8, address: usize) f64 {
+    if (name != null and std.mem.eql(u8, name.?, "F32")) {
+        return @as(f64, (@as(*const f32, @ptrFromInt(address))).*);
+    }
+    return (@as(*const f64, @ptrFromInt(address))).*;
+}
+
+fn writeNativeInteger(name: ?[]const u8, address: usize, value: runtime_abi.Value) anyerror!void {
+    if (value != .integer) return error.RuntimeFailure;
+    const raw = value.integer;
+    const type_name = name orelse "I64";
+    if (std.mem.eql(u8, type_name, "U8")) {
+        (@as(*u8, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    if (std.mem.eql(u8, type_name, "U16")) {
+        (@as(*u16, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    if (std.mem.eql(u8, type_name, "U32")) {
+        (@as(*u32, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    if (std.mem.eql(u8, type_name, "I8")) {
+        (@as(*i8, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    if (std.mem.eql(u8, type_name, "I16")) {
+        (@as(*i16, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    if (std.mem.eql(u8, type_name, "I32")) {
+        (@as(*i32, @ptrFromInt(address))).* = @intCast(raw);
+        return;
+    }
+    (@as(*i64, @ptrFromInt(address))).* = raw;
+}
+
+fn writeNativeFloat(name: ?[]const u8, address: usize, value: runtime_abi.Value) anyerror!void {
+    if (value != .float) return error.RuntimeFailure;
+    if (name != null and std.mem.eql(u8, name.?, "F32")) {
+        (@as(*f32, @ptrFromInt(address))).* = @floatCast(value.float);
+        return;
+    }
+    (@as(*f64, @ptrFromInt(address))).* = value.float;
+}
+
+fn alignForward(value: usize, alignment: usize) usize {
+    if (alignment <= 1) return value;
+    return std.mem.alignForward(usize, value, alignment);
 }
 
 test "executes nested runtime calls" {

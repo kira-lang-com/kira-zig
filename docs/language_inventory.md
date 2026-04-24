@@ -10,6 +10,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Annotation declarations: parameter schemas, `targets: ...`, `uses CapabilityName`, and explicit `generated { ... }` function members
 - Capability declarations: reusable generated function members composed into annotations
 - Core execution annotations with compiler semantics: `@Main`, `@Native`, `@Runtime`
+- Type execution annotations: `@Native` and `@Runtime` on `struct` and `class`, with structs reserved for execution-boundary and compiler FFI annotations only
 - FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`, plus zero-filled explicit construction for `@FFI.Struct { layout: c; }` values
 - Native callback-state expressions with compiler semantics: `nativeState(value)`, `nativeUserData(state)`, and `nativeRecover<Type>(raw_ptr)`
 - Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`/`var`, inferred local declarations, explicit typed local declarations with or without initializer expressions, strict declared-type matching for annotated initializers, expression statements, `return`, calls, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
@@ -27,7 +28,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 
 ## Current Executable Lowering Boundary
 
-The frontend and semantic model understand the broader language surface above. The shared executable IR and current VM/LLVM lowering still intentionally execute a smaller subset:
+The frontend and semantic model understand the broader language surface above. The shared executable IR and current VM/LLVM/hybrid lowering now execute the ordinary language core used by the checked-in parity and interop corpus:
 
 - `@Main`, `@Runtime`, `@Native`
 - `function`
@@ -46,11 +47,11 @@ The frontend and semantic model understand the broader language surface above. T
 - statement-form `while`, `break`, and `continue`
 - statement-form `for` over array literals
 - statement-form `switch`
-- builtin `print`, including named-struct formatting on the VM executable path
+- builtin `print`, including named-struct formatting and array summaries across `vm`, `llvm`, and `hybrid`
 - direct function calls with arguments and results in the lowered scalar/pointer subset
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
-- lowered named-struct construction, field access, and struct methods on the VM executable path
+- lowered named-struct construction, field access, and struct methods across `vm`, `llvm`, and `hybrid`
 - lowered zero-filled `@FFI.Struct { layout: c; }` construction through both `Type()` and `Type { ... }`, with omitted C-layout fields preserved as zero
 - lowered inheritance dispatch across `vm`, `llvm`, and `hybrid`, including multiple parents, imported parents, parent-qualified field/method access, inherited method calls, and inherited field-default overrides
 - explicit FFI extern declarations
@@ -59,7 +60,7 @@ The frontend and semantic model understand the broader language surface above. T
 - boxed callback-state handles for Kira-owned native userdata transport, with typed field-oriented recovery across `llvm` and `hybrid`
 - function types, named function references, non-capturing inline callback literals, direct trailing callbacks, and callable-value invocations through locals and fields across the shared executable backends
 
-`kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` continue to require the currently lowered executable subset. The broadest runtime-value printing support currently lives on the VM/default execution path.
+`kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` use the shared executable lowering across VM, LLVM/native, and hybrid backends rather than treating LLVM/native as a permanently tiny subset.
 
 Executable arrays currently use a shared handle-based runtime representation. The VM and the native/text-LLVM path agree on the same array object layout, so array locals, params, returns, and `for` iteration stay in parity across `vm`, `llvm`, and `hybrid`.
 

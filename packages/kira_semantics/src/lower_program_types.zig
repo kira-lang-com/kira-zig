@@ -197,6 +197,11 @@ pub fn resolveLocalTypeHeader(
     type_decl: syntax.ast.TypeDecl,
 ) anyerror!shared.TypeHeader {
     try shared.validateAnnotationPlacement(ctx, type_decl.annotations, if (type_decl.kind == .class) .class_decl else .struct_decl, null);
+    const execution = try @import("lower_shared_annotations.zig").resolveTypeExecutionAnnotations(
+        ctx,
+        type_decl.annotations,
+        if (type_decl.kind == .class) .class else .struct_decl,
+    );
     if (type_decl.kind == .struct_decl and type_decl.parents.len != 0) {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
@@ -231,6 +236,7 @@ pub fn resolveLocalTypeHeader(
 
     return .{
         .kind = if (type_decl.kind == .class) .class else .struct_decl,
+        .execution = execution,
         .fields = try fields.toOwnedSlice(),
         .methods = try methods.toOwnedSlice(),
         .parent_views = try parent_views.toOwnedSlice(),
@@ -279,6 +285,7 @@ pub fn resolveImportedTypeHeader(
     try appendDeclaredImportedMethods(ctx, type_decl.name, &methods);
 
     return .{
+        .execution = type_decl.execution,
         .fields = try fields.toOwnedSlice(),
         .methods = try methods.toOwnedSlice(),
         .parent_views = try parent_views.toOwnedSlice(),

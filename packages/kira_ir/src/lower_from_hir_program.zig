@@ -26,6 +26,7 @@ pub fn lowerTypeDecls(
         if (!referenced.contains(type_decl.name)) continue;
         try types.append(.{
             .name = try allocator.dupe(u8, type_decl.name),
+            .execution = type_decl.execution,
             .fields = try lowerFieldTypes(allocator, program, type_decl.fields),
             .ffi = if (type_decl.ffi) |ffi_info| try lowerFfiTypeInfo(allocator, program, ffi_info) else null,
         });

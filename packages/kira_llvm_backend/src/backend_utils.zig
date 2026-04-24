@@ -8,82 +8,247 @@ const llvm = @import("llvm_c.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
 const parent = @import("backend.zig");
 const shouldLowerFunction = parent.shouldLowerFunction;
-pub fn writePrintInstruction(writer: anytype, value_type: ir.ValueType, src: u32, temp_counter: *usize) !void {
-    switch (value_type.kind) {
+const PrintValueRef = struct {
+    ty: ir.ValueType,
+    ssa_name: []const u8,
+};
+
+pub fn writePrintInstruction(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: *const ir.Program,
+    globals: *std.array_list.Managed([]const u8),
+    value_type: ir.ValueType,
+    src: u32,
+    string_state: *usize,
+    temp_counter: *usize,
+) !void {
+    const root_name = try std.fmt.allocPrint(allocator, "%r{d}", .{src});
+    defer allocator.free(root_name);
+
+    try writePrintedValue(allocator, writer, program, globals, .{
+        .ty = value_type,
+        .ssa_name = root_name,
+    }, string_state, temp_counter);
+    try writer.writeAll("  call void @\"kira_native_write_newline\"()\n");
+}
+
+fn writePrintedValue(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: *const ir.Program,
+    globals: *std.array_list.Managed([]const u8),
+    value_ref: PrintValueRef,
+    string_state: *usize,
+    temp_counter: *usize,
+) anyerror!void {
+    switch (value_ref.ty.kind) {
+        .void => try writePrintLiteral(allocator, writer, globals, "void", string_state, temp_counter),
         .integer => {
-            try writer.writeAll("  call void @\"kira_native_print_i64\"(i64 %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(")\n");
+            try writer.print("  call void @\"kira_native_write_i64\"(i64 {s})\n", .{value_ref.ssa_name});
         },
         .float => {
-            const temp_index = temp_counter.*;
-            temp_counter.* += 1;
-            if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32")) {
-                try writer.writeAll("  %float.ext.");
-                try writer.print("{d}", .{temp_index});
-                try writer.writeAll(" = fpext float %r");
-                try writer.print("{d}", .{src});
-                try writer.writeAll(" to double\n");
-                try writer.writeAll("  call void @\"kira_native_print_f64\"(double %float.ext.");
-                try writer.print("{d}", .{temp_index});
-                try writer.writeAll(")\n");
+            if (value_ref.ty.name != null and std.mem.eql(u8, value_ref.ty.name.?, "F32")) {
+                const temp_index = temp_counter.*;
+                temp_counter.* += 1;
+                try writer.print("  %print.float.ext.{d} = fpext float {s} to double\n", .{ temp_index, value_ref.ssa_name });
+                try writer.print("  call void @\"kira_native_write_f64\"(double %print.float.ext.{d})\n", .{temp_index});
             } else {
-                try writer.writeAll("  call void @\"kira_native_print_f64\"(double %r");
-                try writer.print("{d}", .{src});
-                try writer.writeAll(")\n");
+                try writer.print("  call void @\"kira_native_write_f64\"(double {s})\n", .{value_ref.ssa_name});
             }
         },
-        .string => {
-            const temp_index = temp_counter.*;
-            temp_counter.* += 1;
+        .string => try writeStringValue(writer, value_ref.ssa_name, temp_counter),
+        .boolean => try writeBooleanValue(writer, value_ref.ssa_name, temp_counter),
+        .raw_ptr => {
+            try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+        },
+        .array => try writeArraySummary(allocator, writer, globals, value_ref.ssa_name, string_state, temp_counter),
+        .ffi_struct => try writeStructValue(allocator, writer, program, globals, value_ref, string_state, temp_counter),
+    }
+}
 
-            try writer.writeAll("  %str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", 0\n");
-            try writer.writeAll("  %str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", 1\n");
-            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", i64 %str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(")\n");
+fn writeStructValue(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: *const ir.Program,
+    globals: *std.array_list.Managed([]const u8),
+    value_ref: PrintValueRef,
+    string_state: *usize,
+    temp_counter: *usize,
+) anyerror!void {
+    const type_name = value_ref.ty.name orelse {
+        try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+        return;
+    };
+    const type_decl = findTypeDecl(program, type_name);
+    if (type_decl == null) {
+        try writePrintLiteral(allocator, writer, globals, type_name, string_state, temp_counter);
+        try writePrintLiteral(allocator, writer, globals, "@", string_state, temp_counter);
+        try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+        return;
+    }
+
+    try writePrintLiteral(allocator, writer, globals, type_name, string_state, temp_counter);
+    try writePrintLiteral(allocator, writer, globals, "(", string_state, temp_counter);
+
+    const base_temp = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.struct.ptr.{d} = inttoptr i64 {s} to ptr\n", .{ base_temp, value_ref.ssa_name });
+    const base_ptr_name = try std.fmt.allocPrint(allocator, "%print.struct.ptr.{d}", .{base_temp});
+    defer allocator.free(base_ptr_name);
+
+    for (type_decl.?.fields, 0..) |field_decl, index| {
+        if (index != 0) {
+            try writePrintLiteral(allocator, writer, globals, ", ", string_state, temp_counter);
+        }
+        try writePrintLiteral(allocator, writer, globals, field_decl.name, string_state, temp_counter);
+        try writePrintLiteral(allocator, writer, globals, ": ", string_state, temp_counter);
+
+        const field_ref = try loadFieldValue(allocator, writer, program, type_decl.?.name, field_decl, base_ptr_name, index, temp_counter);
+        defer allocator.free(field_ref.ssa_name);
+        try writePrintedValue(allocator, writer, program, globals, field_ref, string_state, temp_counter);
+    }
+
+    try writePrintLiteral(allocator, writer, globals, ")", string_state, temp_counter);
+}
+
+fn loadFieldValue(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: *const ir.Program,
+    owner_type_name: []const u8,
+    field_decl: ir.Field,
+    base_ptr_name: []const u8,
+    field_index_value: usize,
+    temp_counter: *usize,
+) anyerror!PrintValueRef {
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    const owner_ref_name = typeRefName(owner_type_name);
+    try writer.print(
+        "  %print.field.ptr.{d} = getelementptr inbounds {s}, ptr {s}, i32 0, i32 {d}\n",
+        .{ temp_index, owner_ref_name, base_ptr_name, field_index_value },
+    );
+
+    switch (field_decl.ty.kind) {
+        .integer => {
+            const abi_type = try llvmIndirectLoadTypeText(allocator, program, field_decl.ty);
+            defer allocator.free(abi_type);
+            try writer.print("  %print.field.raw.{d} = load {s}, ptr %print.field.ptr.{d}\n", .{ temp_index, abi_type, temp_index });
+            if (std.mem.eql(u8, abi_type, "i64")) {
+                return .{
+                    .ty = field_decl.ty,
+                    .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.raw.{d}", .{temp_index}),
+                };
+            }
+            try writer.print("  %print.field.value.{d} = sext {s} %print.field.raw.{d} to i64\n", .{ temp_index, abi_type, temp_index });
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+            };
+        },
+        .float => {
+            const abi_type = try llvmIndirectLoadTypeText(allocator, program, field_decl.ty);
+            defer allocator.free(abi_type);
+            try writer.print("  %print.field.raw.{d} = load {s}, ptr %print.field.ptr.{d}\n", .{ temp_index, abi_type, temp_index });
+            if (std.mem.eql(u8, abi_type, "float")) {
+                try writer.print("  %print.field.value.{d} = fpext float %print.field.raw.{d} to double\n", .{ temp_index, temp_index });
+                return .{
+                    .ty = field_decl.ty,
+                    .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+                };
+            }
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.raw.{d}", .{temp_index}),
+            };
+        },
+        .string => {
+            try writer.print("  %print.field.value.{d} = load %kira.string, ptr %print.field.ptr.{d}\n", .{ temp_index, temp_index });
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+            };
         },
         .boolean => {
-            const temp_index = temp_counter.*;
-            temp_counter.* += 1;
-
-            try writer.writeAll("  %bool.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = select i1 %r");
-            try writer.print("{d}", .{src});
-            try writer.writeAll(", ptr @kira_bool_true, ptr @kira_bool_false\n");
-            try writer.writeAll("  %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = load %kira.string, ptr %bool.ptr.");
-            try writer.print("{d}\n", .{temp_index});
-            try writer.writeAll("  %bool.str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", 0\n");
-            try writer.writeAll("  %bool.str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(" = extractvalue %kira.string %bool.val.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", 1\n");
-            try writer.writeAll("  call void @\"kira_native_print_string\"(ptr %bool.str.ptr.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(", i64 %bool.str.len.");
-            try writer.print("{d}", .{temp_index});
-            try writer.writeAll(")\n");
+            try writer.print("  %print.field.raw.{d} = load i8, ptr %print.field.ptr.{d}\n", .{ temp_index, temp_index });
+            try writer.print("  %print.field.value.{d} = trunc i8 %print.field.raw.{d} to i1\n", .{ temp_index, temp_index });
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+            };
         },
-        .void, .array, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
+        .raw_ptr, .array => {
+            try writer.print("  %print.field.rawptr.{d} = load ptr, ptr %print.field.ptr.{d}\n", .{ temp_index, temp_index });
+            try writer.print("  %print.field.value.{d} = ptrtoint ptr %print.field.rawptr.{d} to i64\n", .{ temp_index, temp_index });
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+            };
+        },
+        .ffi_struct => {
+            try writer.print("  %print.field.value.{d} = ptrtoint ptr %print.field.ptr.{d} to i64\n", .{ temp_index, temp_index });
+            return .{
+                .ty = field_decl.ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
+            };
+        },
+        .void => return error.UnsupportedExecutableFeature,
     }
+}
+
+fn writeArraySummary(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    globals: *std.array_list.Managed([]const u8),
+    value_name: []const u8,
+    string_state: *usize,
+    temp_counter: *usize,
+) !void {
+    try writePrintLiteral(allocator, writer, globals, "array(len: ", string_state, temp_counter);
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.array.ptr.{d} = inttoptr i64 {s} to ptr\n", .{ temp_index, value_name });
+    try writer.print("  %print.array.len.{d} = call i64 @\"kira_array_len\"(ptr %print.array.ptr.{d})\n", .{ temp_index, temp_index });
+    try writer.print("  call void @\"kira_native_write_i64\"(i64 %print.array.len.{d})\n", .{temp_index});
+    try writePrintLiteral(allocator, writer, globals, ")", string_state, temp_counter);
+}
+
+fn writeBooleanValue(writer: anytype, value_name: []const u8, temp_counter: *usize) !void {
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.bool.ptr.{d} = select i1 {s}, ptr @kira_bool_true, ptr @kira_bool_false\n", .{ temp_index, value_name });
+    try writer.print("  %print.bool.val.{d} = load %kira.string, ptr %print.bool.ptr.{d}\n", .{ temp_index, temp_index });
+    try writer.print("  %print.str.ptr.{d} = extractvalue %kira.string %print.bool.val.{d}, 0\n", .{ temp_index, temp_index });
+    try writer.print("  %print.str.len.{d} = extractvalue %kira.string %print.bool.val.{d}, 1\n", .{ temp_index, temp_index });
+    try writer.print("  call void @\"kira_native_write_string\"(ptr %print.str.ptr.{d}, i64 %print.str.len.{d})\n", .{ temp_index, temp_index });
+}
+
+fn writeStringValue(writer: anytype, value_name: []const u8, temp_counter: *usize) !void {
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.str.ptr.{d} = extractvalue %kira.string {s}, 0\n", .{ temp_index, value_name });
+    try writer.print("  %print.str.len.{d} = extractvalue %kira.string {s}, 1\n", .{ temp_index, value_name });
+    try writer.print("  call void @\"kira_native_write_string\"(ptr %print.str.ptr.{d}, i64 %print.str.len.{d})\n", .{ temp_index, temp_index });
+}
+
+fn writePrintLiteral(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    globals: *std.array_list.Managed([]const u8),
+    value: []const u8,
+    string_state: *usize,
+    temp_counter: *usize,
+) !void {
+    const string_index = string_state.*;
+    string_state.* += 1;
+    try appendStringGlobals(allocator, globals, string_index, value);
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.literal.{d} = load %kira.string, ptr @kira_str_{d}\n", .{ temp_index, string_index });
+    const literal_name = try std.fmt.allocPrint(allocator, "%print.literal.{d}", .{temp_index});
+    defer allocator.free(literal_name);
+    try writeStringValue(writer, literal_name, temp_counter);
 }
 
 pub fn appendStringGlobals(

@@ -32,6 +32,7 @@ pub const Function = struct {
     id: u32,
     name: []const u8,
     param_count: u32 = 0,
+    return_type: instruction.TypeRef = .{ .kind = .void },
     register_count: u32,
     local_count: u32,
     local_types: []instruction.TypeRef = &.{},
@@ -67,6 +68,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
         try writer.writeInt(u32, function_decl.id, .little);
         try writeString(writer, function_decl.name);
         try writer.writeInt(u32, function_decl.param_count, .little);
+        try writeTypeRef(writer, function_decl.return_type);
         try writer.writeInt(u32, function_decl.register_count, .little);
         try writer.writeInt(u32, function_decl.local_count, .little);
         try writer.writeInt(u32, @as(u32, @intCast(function_decl.local_types.len)), .little);
@@ -229,7 +231,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writeTypeRef(writer, value.ty);
                 },
                 .call_runtime => |value| try writeCall(writer, value.function_id, value.args, value.dst),
-                .call_native => |value| try writeCall(writer, value.function_id, value.args, value.dst),
+                .call_native => |value| {
+                    try writeCall(writer, value.function_id, value.args, value.dst);
+                    try writeTypeRef(writer, value.return_ty);
+                },
                 .call_value => |value| try writeIndirectCall(writer, value.callee, value.args, value.dst),
                 .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
             }
@@ -271,6 +276,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         const function_id = try reader.takeInt(u32, .little);
         const name = try readString(allocator, reader);
         const param_count = try reader.takeInt(u32, .little);
+        const return_type = try readTypeRef(allocator, reader);
         const register_count = try reader.takeInt(u32, .little);
         const local_count = try reader.takeInt(u32, .little);
         const local_type_count = try reader.takeInt(u32, .little);
@@ -450,6 +456,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
             .id = function_id,
             .name = name,
             .param_count = param_count,
+            .return_type = return_type,
             .register_count = register_count,
             .local_count = local_count,
             .local_types = try local_types.toOwnedSlice(),
@@ -512,7 +519,12 @@ fn readRuntimeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(in
 
 fn readNativeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_native") {
     const call = try readCallParts(allocator, reader);
-    return .{ .function_id = call.function_id, .args = call.args, .dst = call.dst };
+    return .{
+        .function_id = call.function_id,
+        .args = call.args,
+        .dst = call.dst,
+        .return_ty = try readTypeRef(allocator, reader),
+    };
 }
 
 fn readIndirectCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_value") {

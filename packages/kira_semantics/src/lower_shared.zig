@@ -64,6 +64,7 @@ pub const MethodMember = struct {
 
 pub const TypeHeader = struct {
     kind: model.TypeKind = .struct_decl,
+    execution: runtime_abi.FunctionExecution = .inherited,
     fields: []const model.Field = &.{},
     methods: []const MethodMember = &.{},
     parent_views: []const ParentView = &.{},

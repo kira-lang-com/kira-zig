@@ -255,6 +255,8 @@ fn buildHybridManifest(
             .id = function_decl.id,
             .name = function_decl.name,
             .execution = resolved_execution,
+            .param_types = try lowerHybridTypeRefs(allocator, function_decl.param_types),
+            .return_type = lowerHybridTypeRef(function_decl.return_type),
             .exported_name = if (resolved_execution == .native and !function_decl.is_extern)
                 try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id})
             else
@@ -277,5 +279,18 @@ fn resolveHybridExecution(execution: runtime_abi.FunctionExecution) runtime_abi.
     return switch (execution) {
         .inherited => .runtime,
         else => execution,
+    };
+}
+
+fn lowerHybridTypeRefs(allocator: std.mem.Allocator, types: []const @import("kira_ir").ValueType) ![]hybrid.TypeRef {
+    const lowered = try allocator.alloc(hybrid.TypeRef, types.len);
+    for (types, 0..) |value_type, index| lowered[index] = lowerHybridTypeRef(value_type);
+    return lowered;
+}
+
+fn lowerHybridTypeRef(value_type: @import("kira_ir").ValueType) hybrid.TypeRef {
+    return .{
+        .kind = @enumFromInt(@intFromEnum(value_type.kind)),
+        .name = value_type.name,
     };
 }

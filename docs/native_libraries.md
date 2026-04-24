@@ -122,7 +122,7 @@ Callbacks are explicit in this first version:
 
 - callback typedefs lower to real native function pointers
 - native/external functions can accept callback parameters directly
-- callback targets must currently resolve to `@Native` or extern functions
+- direct FFI callback targets must currently resolve to `@Native` or extern functions
 - `void*`/context parameters are passed explicitly as `RawPtr`
 - no captured-closure magic crosses the ABI boundary
 
@@ -188,7 +188,14 @@ Hybrid mode now uses a real bridge value ABI for boundary calls:
 - native Kira functions compile as typed internal implementations plus exported bridge wrappers
 - imported extern functions are not exposed as bridge entrypoints
 
-The current bridge value set matches the executable subset:
+That bridge is the normal execution boundary, not a usability quarantine:
+
+- direct FFI usage still requires `@Native`
+- indirect use remains allowed
+- `@Runtime` code can call `@Native` Kira helpers, construct and mutate native-annotated values, and pass them through hybrid honestly
+- `@Native` code can call back into `@Runtime` helpers the same way
+
+The current bridge value set covers the ordinary executable surface used by mixed runtime/native code:
 
 - `void`
 - integer

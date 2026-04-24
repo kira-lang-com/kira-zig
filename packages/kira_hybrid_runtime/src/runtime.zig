@@ -52,16 +52,61 @@ pub const HybridRuntime = struct {
     }
 
     fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: ?*runtime_abi.BridgeValue) !void {
+        const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
+        runtime_abi.emitExecutionTrace("CALLBACK", "ENTER", "native->runtime fn={s}({d}) args={d}", .{
+            function_decl.name,
+            function_id,
+            args.len,
+        });
         const runtime_args = try self.allocator.alloc(runtime_abi.Value, args.len);
         defer self.allocator.free(runtime_args);
-        for (args, 0..) |arg, index| runtime_args[index] = runtime_abi.bridgeValueToValue(arg);
+        const native_arg_ptrs = try self.allocator.alloc(usize, args.len);
+        defer self.allocator.free(native_arg_ptrs);
+        @memset(native_arg_ptrs, 0);
+        for (args, 0..) |arg, index| {
+            runtime_args[index] = runtime_abi.bridgeValueToValue(arg);
+            if (index >= function_decl.param_count) continue;
+            const local_ty = function_decl.local_types[index];
+            if (local_ty.kind != .ffi_struct or runtime_args[index] != .raw_ptr or runtime_args[index].raw_ptr == 0) continue;
+            native_arg_ptrs[index] = runtime_args[index].raw_ptr;
+            runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeStruct(
+                &self.module,
+                local_ty.name orelse return error.RuntimeFailure,
+                runtime_args[index].raw_ptr,
+            ) };
+        }
 
-        const result = try self.vm.runFunctionById(&self.module, function_id, runtime_args, context.writer, .{
+        const result = try self.vm.runFunctionById(&self.module, function_decl.id, runtime_args, context.writer, .{
             .context = @as(?*anyopaque, @ptrCast(context)),
-            .call_native = callNative(@TypeOf(context.*)),
+            .call_native = nativeCallHook(@TypeOf(context.*)),
             .resolve_function = resolveFunctionHook(@TypeOf(context.*)),
+            .copy_struct_args_by_value = false,
         });
-        if (out_result) |ptr| ptr.* = runtime_abi.bridgeValueFromValue(result);
+        for (native_arg_ptrs, 0..) |native_ptr, index| {
+            if (native_ptr == 0) continue;
+            const local_ty = function_decl.local_types[index];
+            try self.vm.writeStructToNativeLayout(
+                &self.module,
+                local_ty.name orelse return error.RuntimeFailure,
+                runtime_args[index].raw_ptr,
+                native_ptr,
+            );
+        }
+
+        var bridge_result = runtime_abi.bridgeValueFromValue(result);
+        if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
+            bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = try self.vm.lowerStructToNativeLayout(
+                &self.module,
+                function_decl.return_type.name orelse return error.RuntimeFailure,
+                result.raw_ptr,
+            ) });
+        }
+        if (out_result) |ptr| ptr.* = bridge_result;
+        runtime_abi.emitExecutionTrace("CALLBACK", "RETURN", "runtime->native fn={s}({d}) tag={s}", .{
+            function_decl.name,
+            function_id,
+            @tagName(bridge_result.tag),
+        });
     }
 
     fn resolveFunctionPointer(self: *HybridRuntime, function_id: u32) !usize {
@@ -87,11 +132,11 @@ fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32, []const ru
     }.invoke;
 }
 
-fn callNative(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value {
+fn nativeCallHook(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value {
     return struct {
         fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-            return runtime_context.runtime.bridge.call(function_id, args);
+            return callNative(runtime_context.runtime, function_id, args);
         }
     }.invoke;
 }
@@ -127,6 +172,49 @@ fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?h
         if (function_decl.id == function_id) return function_decl;
     }
     return null;
+}
+
+fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
+    const function_decl = findFunction(self.manifest.functions, function_id) orelse return error.UnknownFunction;
+    const lowered_args = try self.allocator.alloc(runtime_abi.Value, args.len);
+    defer self.allocator.free(lowered_args);
+    const native_arg_ptrs = try self.allocator.alloc(usize, args.len);
+    defer self.allocator.free(native_arg_ptrs);
+    @memset(native_arg_ptrs, 0);
+
+    for (args, 0..) |arg, index| {
+        lowered_args[index] = arg;
+        if (index >= function_decl.param_types.len) continue;
+        const param_type = function_decl.param_types[index];
+        if (param_type.kind != .ffi_struct or arg != .raw_ptr or arg.raw_ptr == 0) continue;
+        native_arg_ptrs[index] = try self.vm.lowerStructToNativeLayout(
+            &self.module,
+            param_type.name orelse return error.RuntimeFailure,
+            arg.raw_ptr,
+        );
+        lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+    }
+
+    var result = try self.bridge.call(function_id, lowered_args);
+    for (native_arg_ptrs, 0..) |native_ptr, index| {
+        if (native_ptr == 0) continue;
+        const param_type = function_decl.param_types[index];
+        try self.vm.syncStructFromNativeLayout(
+            &self.module,
+            param_type.name orelse return error.RuntimeFailure,
+            args[index].raw_ptr,
+            native_ptr,
+        );
+    }
+
+    if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
+        result = .{ .raw_ptr = try self.vm.materializeNativeStruct(
+            &self.module,
+            function_decl.return_type.name orelse return error.RuntimeFailure,
+            result.raw_ptr,
+        ) };
+    }
+    return result;
 }
 
 const DirectStdoutWriter = struct {

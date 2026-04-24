@@ -1,10 +1,28 @@
 const std = @import("std");
 const runtime_abi = @import("kira_runtime_abi");
 
+pub const TypeRef = struct {
+    kind: Kind,
+    name: ?[]const u8 = null,
+
+    pub const Kind = enum(u8) {
+        void,
+        integer,
+        float,
+        string,
+        boolean,
+        array,
+        raw_ptr,
+        ffi_struct,
+    };
+};
+
 pub const FunctionManifest = struct {
     id: u32,
     name: []const u8,
     execution: runtime_abi.FunctionExecution,
+    param_types: []const TypeRef = &.{},
+    return_type: TypeRef = .{ .kind = .void },
     exported_name: ?[]const u8 = null,
 };
 
@@ -34,6 +52,9 @@ pub const HybridModuleManifest = struct {
             try writer.interface.writeInt(u32, function_decl.id, .little);
             try writer.interface.writeByte(@intFromEnum(function_decl.execution));
             try writeString(&writer.interface, function_decl.name);
+            try writer.interface.writeInt(u32, @as(u32, @intCast(function_decl.param_types.len)), .little);
+            for (function_decl.param_types) |param_type| try writeTypeRef(&writer.interface, param_type);
+            try writeTypeRef(&writer.interface, function_decl.return_type);
             try writeString(&writer.interface, function_decl.exported_name orelse "");
         }
     }
@@ -58,11 +79,17 @@ pub const HybridModuleManifest = struct {
             const function_id = try reader.takeInt(u32, .little);
             const execution: runtime_abi.FunctionExecution = @enumFromInt(try reader.takeByte());
             const name = try readString(allocator, reader);
+            const param_count = try reader.takeInt(u32, .little);
+            const param_types = try allocator.alloc(TypeRef, param_count);
+            for (param_types) |*param_type| param_type.* = try readTypeRef(allocator, reader);
+            const return_type = try readTypeRef(allocator, reader);
             const exported_name = try readString(allocator, reader);
             try functions.append(.{
                 .id = function_id,
                 .name = name,
                 .execution = execution,
+                .param_types = param_types,
+                .return_type = return_type,
                 .exported_name = if (exported_name.len == 0) null else exported_name,
             });
         }
@@ -88,4 +115,18 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
     const buffer = try allocator.alloc(u8, length);
     try reader.readSliceAll(buffer);
     return buffer;
+}
+
+fn writeTypeRef(writer: anytype, value: TypeRef) !void {
+    try writer.writeByte(@intFromEnum(value.kind));
+    try writeString(writer, value.name orelse "");
+}
+
+fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !TypeRef {
+    const kind: TypeRef.Kind = @enumFromInt(try reader.takeByte());
+    const name = try readString(allocator, reader);
+    return .{
+        .kind = kind,
+        .name = if (name.len == 0) null else name,
+    };
 }

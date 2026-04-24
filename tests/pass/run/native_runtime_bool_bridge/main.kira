@@ -1,0 +1,24 @@
+@Runtime
+struct FlagBox {
+    var value: Bool
+}
+
+@Runtime
+function setFlag(box: FlagBox) {
+    box.value = true
+    return
+}
+
+@Native
+function readFlag(box: FlagBox) -> Bool {
+    return box.value
+}
+
+@Main
+@Native
+function main() {
+    var box = FlagBox { value: false }
+    setFlag(box)
+    print(readFlag(box))
+    return
+}

@@ -3,6 +3,7 @@ const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 
 pub fn printValue(writer: anytype, module: *const bytecode.Module, value: runtime_abi.Value, ty: bytecode.TypeRef) !void {
+    runtime_abi.emitExecutionTrace("VM", "PRINT", "type={s}", .{traceTypeName(ty)});
     try formatValue(writer, module, value, ty);
     try writer.writeByte('\n');
 }
@@ -53,6 +54,10 @@ fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl
         if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
     }
     return null;
+}
+
+fn traceTypeName(ty: bytecode.TypeRef) []const u8 {
+    return ty.name orelse @tagName(ty.kind);
 }
 
 test "printValue fails cleanly on mismatched runtime value" {

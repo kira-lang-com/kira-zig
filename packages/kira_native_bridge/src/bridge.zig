@@ -7,6 +7,7 @@ const trampoline = @import("trampoline.zig");
 
 pub const RuntimeInvoker = *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void;
 const InstallRuntimeInvokerFn = *const fn (*const fn (u32, ?[*]const runtime_abi.BridgeValue, u32, *runtime_abi.BridgeValue) callconv(.c) void) callconv(.c) void;
+const SetTraceEnabledFn = *const fn (u8) callconv(.c) void;
 
 var active_runtime_context: ?*anyopaque = null;
 var active_runtime_invoker: ?RuntimeInvoker = null;
@@ -42,12 +43,20 @@ pub const NativeBridge = struct {
 
         const install_invoker = library.lookup(InstallRuntimeInvokerFn, "kira_hybrid_install_runtime_invoker") orelse return error.MissingRuntimeInvokerInstaller;
         install_invoker(kira_hybrid_host_call_runtime);
+        if (library.lookup(SetTraceEnabledFn, "kira_set_execution_trace_enabled")) |set_trace_enabled| {
+            set_trace_enabled(if (runtime_abi.executionTraceEnabled()) 1 else 0);
+        }
 
         self.library = library;
     }
 
     pub fn call(self: *NativeBridge, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
         const tramp = self.trampolines.get(function_id) orelse return error.MissingNativeTrampoline;
+        runtime_abi.emitExecutionTrace("BRIDGE", "CALL", "runtime->native fn={d} symbol={s} args={d}", .{
+            function_id,
+            tramp.symbol_name,
+            args.len,
+        });
         const lowered_args = try self.allocator.alloc(runtime_abi.BridgeValue, args.len);
         defer self.allocator.free(lowered_args);
         for (args, 0..) |arg, index| lowered_args[index] = runtime_abi.bridgeValueFromValue(arg);
@@ -57,7 +66,13 @@ pub const NativeBridge = struct {
             .payload = .{ .raw_ptr = 0 },
         };
         tramp.invoke(if (lowered_args.len == 0) null else lowered_args.ptr, @intCast(lowered_args.len), &result);
-        return runtime_abi.bridgeValueToValue(result);
+        const lifted = runtime_abi.bridgeValueToValue(result);
+        runtime_abi.emitExecutionTrace("BRIDGE", "RETURN", "native->runtime fn={d} symbol={s} tag={s}", .{
+            function_id,
+            tramp.symbol_name,
+            @tagName(result.tag),
+        });
+        return lifted;
     }
 
     pub fn resolveImplementationPointer(self: *NativeBridge, function_id: u32) !usize {

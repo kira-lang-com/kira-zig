@@ -47,3 +47,9 @@ The `callbacks/`, `sokol_triangle/`, and `sokol_runtime_entry/` examples demonst
 - `nativeRecover<T>(...)` inside the callback to mutate the original state across repeated invocations
 
 For Sokol examples, descriptor values such as `sapp_desc`, `sg_desc`, `sg_shader_desc`, `sg_pipeline_desc`, and `sg_pass` remain C-layout FFI structs because Sokol reads those fields directly. App callback state is ordinary Kira state boxed with `nativeState`; Sokol only carries the opaque `RawPtr` from `nativeUserData(state)` through `user_data` and never depends on the Kira state layout.
+
+That split is the intended execution model for larger apps too:
+
+- direct Sokol or C ABI edges stay `@Native`
+- higher-level Kira logic can remain `@Runtime`
+- runtime/native calls and value flow go through hybrid bridging rather than forcing transitive native contagion
