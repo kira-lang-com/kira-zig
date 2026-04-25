@@ -2,16 +2,11 @@ const std = @import("std");
 const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 const builtins = @import("builtins.zig");
+const ownership = @import("ownership.zig");
+const native_layout = @import("native_layout.zig");
 
-const ArrayObject = extern struct {
-    len: usize,
-    items: [*]runtime_abi.BridgeValue,
-};
-
-const ClosureObject = struct {
-    function_id: u32,
-    captures: []runtime_abi.Value,
-};
+const ArrayObject = ownership.ArrayObject;
+const ClosureObject = ownership.ClosureObject;
 
 const NativeStateBox = extern struct {
     type_id: u64,
@@ -31,11 +26,24 @@ pub const Hooks = struct {
 
 pub const Vm = struct {
     allocator: std.mem.Allocator,
+    heap: ownership.Heap,
     last_error_buffer: [256]u8 = [_]u8{0} ** 256,
     last_error_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Vm {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .heap = ownership.Heap.init(allocator) };
+    }
+
+    pub fn deinit(self: *Vm) void {
+        self.heap.deinit();
+    }
+
+    pub fn managedObjectCount(self: *const Vm) usize {
+        return self.heap.count();
+    }
+
+    pub fn releaseManagedValue(self: *Vm, value: runtime_abi.Value) void {
+        self.heap.releaseValue(value);
     }
 
     pub fn runMain(self: *Vm, module: *const bytecode.Module, writer: anytype) anyerror!void {
@@ -43,7 +51,8 @@ pub const Vm = struct {
             self.rememberError("bytecode module has no runtime entrypoint");
             return error.RuntimeFailure;
         };
-        _ = try self.runFunctionById(module, entry_function_id, &.{}, writer, .{});
+        const result = try self.runFunctionById(module, entry_function_id, &.{}, writer, .{});
+        self.heap.releaseValue(result);
     }
 
     pub fn runFunctionById(
@@ -95,14 +104,26 @@ pub const Vm = struct {
         hooks: Hooks,
     ) anyerror!runtime_abi.Value {
         const registers = try self.allocator.alloc(runtime_abi.Value, function_decl.register_count);
-        defer self.allocator.free(registers);
+        const register_owned = try self.allocator.alloc(bool, function_decl.register_count);
+        defer {
+            self.releaseTrackedSlots(registers, register_owned);
+            self.allocator.free(register_owned);
+            self.allocator.free(registers);
+        }
         const locals = try self.allocator.alloc(runtime_abi.Value, function_decl.local_count);
-        defer self.allocator.free(locals);
+        const local_owned = try self.allocator.alloc(bool, function_decl.local_count);
+        defer {
+            self.releaseTrackedSlots(locals, local_owned);
+            self.allocator.free(local_owned);
+            self.allocator.free(locals);
+        }
         const label_offsets = try buildLabelOffsets(self.allocator, function_decl.instructions);
         defer self.allocator.free(label_offsets);
 
         for (registers) |*slot| slot.* = .{ .void = {} };
         for (locals) |*slot| slot.* = .{ .void = {} };
+        @memset(register_owned, false);
+        @memset(local_owned, false);
         for (function_decl.local_types, 0..) |local_ty, index| {
             if (local_ty.kind != .ffi_struct) continue;
             if (index < function_decl.param_count and !hooks.copy_struct_args_by_value) continue;
@@ -110,7 +131,7 @@ pub const Vm = struct {
                 self.rememberError("struct local type is missing a name");
                 return error.RuntimeFailure;
             };
-            locals[index] = .{ .raw_ptr = try self.allocateStruct(module, type_name) };
+            self.setSlotOwned(&locals[index], &local_owned[index], .{ .raw_ptr = try self.allocateStruct(module, type_name) });
         }
         if (args.len != function_decl.param_count) {
             self.rememberError("bytecode function call used the wrong number of arguments");
@@ -134,11 +155,9 @@ pub const Vm = struct {
                     const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
                     const src_ptr: [*]runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
                     try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
-                } else {
-                    locals[index] = arg;
-                }
+                } else self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
             } else {
-                locals[index] = arg;
+                self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
             }
         }
 
@@ -146,27 +165,27 @@ pub const Vm = struct {
         while (pc < function_decl.instructions.len) {
             const inst = function_decl.instructions[pc];
             switch (inst) {
-                .const_int => |value| registers[value.dst] = .{ .integer = value.value },
-                .const_float => |value| registers[value.dst] = .{ .float = value.value },
-                .const_string => |value| registers[value.dst] = .{ .string = value.value },
-                .const_bool => |value| registers[value.dst] = .{ .boolean = value.value },
-                .const_null_ptr => |value| registers[value.dst] = .{ .raw_ptr = 0 },
-                .const_function => |value| registers[value.dst] = .{ .raw_ptr = switch (value.representation) {
+                .const_int => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .integer = value.value }),
+                .const_float => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .float = value.value }),
+                .const_string => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .string = value.value }),
+                .const_bool => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .boolean = value.value }),
+                .const_null_ptr => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = 0 }),
+                .const_function => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = switch (value.representation) {
                     .callable_value => value.function_id,
                     .native_callback => if (hooks.resolve_function) |resolve_function|
                         try resolveFunctionPointer(hooks, resolve_function, value.function_id)
                     else
                         value.function_id,
-                } },
-                .const_closure => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateClosure(registers, value.function_id, value.captures) },
-                .alloc_struct => |value| registers[value.dst] = .{ .raw_ptr = try self.allocateStruct(module, value.type_name) },
+                } }),
+                .const_closure => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateClosure(registers, value.function_id, value.captures) }),
+                .alloc_struct => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateStruct(module, value.type_name) }),
                 .alloc_native_state => |value| {
                     const src_value = registers[value.src];
                     if (src_value != .raw_ptr or src_value.raw_ptr == 0) {
                         self.rememberError("nativeState requires a valid Kira struct value");
                         return error.RuntimeFailure;
                     }
-                    registers[value.dst] = .{ .raw_ptr = try self.allocateNativeState(module, value.type_name, value.type_id, src_value.raw_ptr) };
+                    self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateNativeState(module, value.type_name, value.type_id, src_value.raw_ptr) });
                 },
                 .alloc_array => |value| {
                     const len_value = registers[value.len];
@@ -174,42 +193,42 @@ pub const Vm = struct {
                         self.rememberError("array allocation requires a non-negative integer length");
                         return error.RuntimeFailure;
                     }
-                    registers[value.dst] = .{ .raw_ptr = try self.allocateArray(@intCast(len_value.integer)) };
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateArray(@intCast(len_value.integer)) });
                 },
                 .add => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    registers[value.dst] = try self.addValues(lhs, rhs);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.addValues(lhs, rhs));
                 },
                 .subtract => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    registers[value.dst] = try self.subtractValues(lhs, rhs);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.subtractValues(lhs, rhs));
                 },
                 .multiply => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    registers[value.dst] = try self.multiplyValues(lhs, rhs);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.multiplyValues(lhs, rhs));
                 },
                 .divide => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    registers[value.dst] = try self.divideValues(lhs, rhs);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.divideValues(lhs, rhs));
                 },
                 .modulo => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    registers[value.dst] = try self.moduloValues(lhs, rhs);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.moduloValues(lhs, rhs));
                 },
                 .compare => |value| {
-                    registers[value.dst] = .{ .boolean = try self.compareValues(registers[value.lhs], registers[value.rhs], value.op) };
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .boolean = try self.compareValues(registers[value.lhs], registers[value.rhs], value.op) });
                 },
                 .unary => |value| {
-                    registers[value.dst] = try self.unaryValue(registers[value.src], value.op);
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.unaryValue(registers[value.src], value.op));
                 },
-                .store_local => |value| locals[value.local] = registers[value.src],
-                .load_local => |value| registers[value.dst] = locals[value.local],
-                .local_ptr => |value| registers[value.dst] = .{ .raw_ptr = @intFromPtr(&locals[value.local]) },
+                .store_local => |value| self.setSlotBorrowed(&locals[value.local], &local_owned[value.local], registers[value.src]),
+                .load_local => |value| self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], locals[value.local]),
+                .local_ptr => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(&locals[value.local]) }),
                 .subobject_ptr => |value| {
                     const base = registers[value.base];
                     if (base != .raw_ptr or base.raw_ptr == 0) {
@@ -217,7 +236,7 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     const base_ptr: [*]runtime_abi.Value = @ptrFromInt(base.raw_ptr);
-                    registers[value.dst] = .{ .raw_ptr = @intFromPtr(base_ptr + value.offset) };
+                    self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(base_ptr + value.offset) });
                 },
                 .field_ptr => |value| {
                     const base = registers[value.base];
@@ -233,9 +252,9 @@ pub const Vm = struct {
                             self.rememberError("nested struct field storage is invalid");
                             return error.RuntimeFailure;
                         }
-                        registers[value.dst] = .{ .raw_ptr = slot_ptr[0].raw_ptr };
+                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = slot_ptr[0].raw_ptr });
                     } else {
-                        registers[value.dst] = .{ .raw_ptr = @intFromPtr(slot_ptr) };
+                        self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(slot_ptr) });
                     }
                 },
                 .recover_native_state => |value| {
@@ -244,7 +263,7 @@ pub const Vm = struct {
                         self.rememberError("nativeRecover requires a valid native state token");
                         return error.RuntimeFailure;
                     }
-                    registers[value.dst] = .{ .raw_ptr = try self.recoverNativeState(module, value.type_name, state_value.raw_ptr, value.type_id) };
+                    self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.recoverNativeState(module, value.type_name, state_value.raw_ptr, value.type_id) });
                 },
                 .native_state_field_get => |value| {
                     const state_value = registers[value.state];
@@ -253,7 +272,7 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     const payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(state_value.raw_ptr);
-                    registers[value.dst] = runtime_abi.bridgeValueToValue(payload[@intCast(value.field_index)]);
+                    self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], runtime_abi.bridgeValueToValue(payload[@intCast(value.field_index)]));
                     _ = value.field_ty;
                 },
                 .native_state_field_set => |value| {
@@ -273,7 +292,7 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     const array_ptr: *const ArrayObject = @ptrFromInt(array_value.raw_ptr);
-                    registers[value.dst] = .{ .integer = @intCast(array_ptr.len) };
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(array_ptr.len) });
                 },
                 .array_get => |value| {
                     const array_value = registers[value.array];
@@ -288,7 +307,7 @@ pub const Vm = struct {
                         self.rememberError("array index is out of bounds");
                         return error.RuntimeFailure;
                     }
-                    registers[value.dst] = runtime_abi.bridgeValueToValue(array_ptr.items[index]);
+                    self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], runtime_abi.bridgeValueToValue(array_ptr.items[index]));
                     _ = value.ty;
                 },
                 .array_set => |value| {
@@ -304,7 +323,7 @@ pub const Vm = struct {
                         self.rememberError("array index is out of bounds");
                         return error.RuntimeFailure;
                     }
-                    array_ptr.items[index] = runtime_abi.bridgeValueFromValue(registers[value.src]);
+                    self.heap.replaceArrayItem(&array_ptr.items[index], registers[value.src]);
                 },
                 .load_indirect => |value| {
                     const ptr = registers[value.ptr];
@@ -313,10 +332,10 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     if (value.ty.kind == .ffi_struct) {
-                        registers[value.dst] = .{ .raw_ptr = ptr.raw_ptr };
+                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = ptr.raw_ptr });
                     } else {
                         const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
-                        registers[value.dst] = slot_ptr.*;
+                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], slot_ptr.*);
                     }
                 },
                 .store_indirect => |value| {
@@ -326,7 +345,7 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
-                    slot_ptr.* = registers[value.src];
+                    self.heap.assignBorrowed(slot_ptr, registers[value.src]);
                     _ = value.ty;
                 },
                 .copy_indirect => |value| {
@@ -363,7 +382,7 @@ pub const Vm = struct {
                     const call_args = try collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
                     const result = try self.runFunctionById(module, value.function_id, call_args, writer, hooks);
-                    if (value.dst) |dst| registers[dst] = result;
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
                 },
                 .call_native => |value| {
                     const callback = hooks.call_native orelse {
@@ -374,7 +393,7 @@ pub const Vm = struct {
                     defer self.allocator.free(call_args);
                     var result = try callback(hooks.context, value.function_id, call_args);
                     result = try self.materializeNativeResult(module, value.return_ty, result);
-                    if (value.dst) |dst| registers[dst] = result;
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
                 },
                 .call_value => |value| {
                     const callee_value = registers[value.callee];
@@ -402,9 +421,13 @@ pub const Vm = struct {
                         @memcpy(closure_args[call_args.len..], closure.captures);
                         break :closure_call try self.runFunctionById(module, closure.function_id, closure_args, writer, hooks);
                     };
-                    if (value.dst) |dst| registers[dst] = result;
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
                 },
-                .ret => |value| return if (value.src) |src| registers[src] else .{ .void = {} },
+                .ret => |value| {
+                    const result = if (value.src) |src| registers[src] else runtime_abi.Value{ .void = {} };
+                    if (value.src == null or register_owned[value.src.?]) self.heap.retainValue(result);
+                    return result;
+                },
             }
             pc += 1;
         }
@@ -417,12 +440,43 @@ pub const Vm = struct {
         self.last_error_len = length;
     }
 
+    fn setSlotOwned(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
+        const old = slot.*;
+        const old_owned = owned.*;
+        slot.* = value;
+        owned.* = self.heap.isManagedValue(value);
+        if (old_owned) self.heap.releaseValue(old);
+    }
+
+    fn setSlotBorrowed(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
+        const new_owned = self.heap.isManagedValue(value);
+        if (new_owned) self.heap.retainValue(value);
+        const old = slot.*;
+        const old_owned = owned.*;
+        slot.* = value;
+        owned.* = new_owned;
+        if (old_owned) self.heap.releaseValue(old);
+    }
+
+    fn setSlotUnmanaged(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
+        const old = slot.*;
+        const old_owned = owned.*;
+        slot.* = value;
+        owned.* = false;
+        if (old_owned) self.heap.releaseValue(old);
+    }
+
+    fn releaseTrackedSlots(self: *Vm, slots: []runtime_abi.Value, owned: []const bool) void {
+        for (slots, owned) |slot, is_owned| if (is_owned) self.heap.releaseValue(slot);
+    }
+
     fn allocateClosure(self: *Vm, registers: []const runtime_abi.Value, function_id: u32, capture_registers: []const u32) !usize {
         const closure = try self.allocator.create(ClosureObject);
         const captures = try self.allocator.alloc(runtime_abi.Value, capture_registers.len);
-        for (capture_registers, 0..) |reg, index| captures[index] = registers[reg];
+        for (captures) |*capture| capture.* = .{ .void = {} };
+        for (capture_registers, 0..) |reg, index| self.heap.assignBorrowed(&captures[index], registers[reg]);
         closure.* = .{ .function_id = function_id, .captures = captures };
-        return @intFromPtr(closure);
+        return self.heap.registerClosure(closure);
     }
 
     fn allocateStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8) !usize {
@@ -434,7 +488,7 @@ pub const Vm = struct {
         for (type_decl.fields, 0..) |field_decl, index| {
             fields[index] = try self.zeroValueForType(module, field_decl.ty);
         }
-        return @intFromPtr(fields.ptr);
+        return self.heap.registerStruct(fields);
     }
 
     fn allocateNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, type_id: u64, src_payload: usize) !usize {
@@ -530,7 +584,7 @@ pub const Vm = struct {
             .len = len,
             .items = items.ptr,
         };
-        return @intFromPtr(object);
+        return self.heap.registerArray(object);
     }
 
     fn typeFieldCount(self: *Vm, module: *const bytecode.Module, type_name: []const u8) ?usize {
@@ -564,7 +618,7 @@ pub const Vm = struct {
                 const nested_src: [*]runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
                 try self.copyStruct(module, nested_type, nested_dst, nested_src);
             } else {
-                dst_ptr[index] = src_ptr[index];
+                self.heap.assignBorrowed(&dst_ptr[index], src_ptr[index]);
             }
         }
     }
@@ -595,7 +649,7 @@ pub const Vm = struct {
         for (type_decl.fields, 0..) |field_decl, index| {
             fields[index] = try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr);
         }
-        return @intFromPtr(fields.ptr);
+        return self.heap.registerStruct(fields);
     }
 
     fn copyStructFromNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
@@ -605,7 +659,7 @@ pub const Vm = struct {
         };
         const fields: [*]runtime_abi.Value = @ptrFromInt(runtime_ptr);
         for (type_decl.fields, 0..) |field_decl, index| {
-            const offset = try nativeFieldOffset(module, type_name, index);
+            const offset = try native_layout.fieldOffset(module, type_name, index);
             const address = native_ptr + offset;
             switch (field_decl.ty.kind) {
                 .ffi_struct => {
@@ -614,17 +668,17 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     };
                     if (fields[index] != .raw_ptr or fields[index].raw_ptr == 0) {
-                        fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                        self.heap.assignOwned(&fields[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
                     }
                     try self.copyStructFromNativeLayoutInto(module, nested_name, fields[index].raw_ptr, address);
                 },
-                else => fields[index] = try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr),
+                else => self.heap.assignOwned(&fields[index], try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr)),
             }
         }
     }
 
     fn copyStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-        const layout = try nativeStructLayout(module, type_name);
+        const layout = try native_layout.structLayout(module, type_name);
         const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
         const words = try self.allocator.alloc(u64, word_count);
         @memset(std.mem.sliceAsBytes(words), 0);
@@ -639,7 +693,7 @@ pub const Vm = struct {
         };
         const fields: [*]const runtime_abi.Value = @ptrFromInt(runtime_ptr);
         for (type_decl.fields, 0..) |field_decl, index| {
-            const offset = try nativeFieldOffset(module, type_name, index);
+            const offset = try native_layout.fieldOffset(module, type_name, index);
             try self.writeNativeFieldValue(module, field_decl.ty, fields[index], native_ptr + offset);
         }
     }
@@ -647,8 +701,8 @@ pub const Vm = struct {
     fn writeNativeFieldValue(self: *Vm, module: *const bytecode.Module, field_ty: bytecode.TypeRef, value: runtime_abi.Value, address: usize) anyerror!void {
         try switch (field_ty.kind) {
             .void => {},
-            .integer => writeNativeInteger(field_ty.name, address, value),
-            .float => writeNativeFloat(field_ty.name, address, value),
+            .integer => native_layout.writeInteger(field_ty.name, address, value),
+            .float => native_layout.writeFloat(field_ty.name, address, value),
             .string => {
                 if (value != .string) {
                     self.rememberError("runtime string field cannot be lowered to native memory");
@@ -696,12 +750,12 @@ pub const Vm = struct {
         field_index: usize,
         native_ptr: usize,
     ) anyerror!runtime_abi.Value {
-        const offset = try nativeFieldOffset(module, owner_type_name, field_index);
+        const offset = try native_layout.fieldOffset(module, owner_type_name, field_index);
         const address = native_ptr + offset;
         return switch (field_decl.ty.kind) {
             .void => .{ .void = {} },
-            .integer => .{ .integer = readNativeInteger(field_decl.ty.name, address) },
-            .float => .{ .float = readNativeFloat(field_decl.ty.name, address) },
+            .integer => .{ .integer = native_layout.readInteger(field_decl.ty.name, address) },
+            .float => .{ .float = native_layout.readFloat(field_decl.ty.name, address) },
             .string => blk: {
                 const value_ptr: *const runtime_abi.BridgeString = @ptrFromInt(address);
                 break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
@@ -984,125 +1038,6 @@ fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl
         if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
     }
     return null;
-}
-
-const NativeTypeLayout = struct {
-    size: usize,
-    alignment: usize,
-};
-
-fn nativeFieldOffset(module: *const bytecode.Module, owner_type_name: []const u8, field_index: usize) anyerror!usize {
-    const type_decl = findType(module, owner_type_name) orelse return error.RuntimeFailure;
-    var offset: usize = 0;
-    for (type_decl.fields, 0..) |field_decl, index| {
-        const layout = try nativeValueTypeLayout(module, field_decl.ty);
-        offset = alignForward(offset, layout.alignment);
-        if (index == field_index) return offset;
-        offset += layout.size;
-    }
-    return error.RuntimeFailure;
-}
-
-fn nativeValueTypeLayout(module: *const bytecode.Module, value_type: bytecode.TypeRef) anyerror!NativeTypeLayout {
-    return switch (value_type.kind) {
-        .void => .{ .size = 0, .alignment = 1 },
-        .boolean => .{ .size = 1, .alignment = 1 },
-        .integer => integerLayout(value_type.name),
-        .float => if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-            .{ .size = 4, .alignment = 4 }
-        else
-            .{ .size = 8, .alignment = 8 },
-        .string => .{ .size = @sizeOf(runtime_abi.BridgeString), .alignment = @alignOf(runtime_abi.BridgeString) },
-        .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
-        .ffi_struct => try nativeStructLayout(module, value_type.name orelse return error.RuntimeFailure),
-    };
-}
-
-fn nativeStructLayout(module: *const bytecode.Module, type_name: []const u8) anyerror!NativeTypeLayout {
-    const type_decl = findType(module, type_name) orelse return error.RuntimeFailure;
-    var offset: usize = 0;
-    var max_alignment: usize = 1;
-    for (type_decl.fields) |field_decl| {
-        const field_layout = try nativeValueTypeLayout(module, field_decl.ty);
-        max_alignment = @max(max_alignment, field_layout.alignment);
-        offset = alignForward(offset, field_layout.alignment);
-        offset += field_layout.size;
-    }
-    return .{
-        .size = alignForward(offset, max_alignment),
-        .alignment = max_alignment,
-    };
-}
-
-fn integerLayout(name: ?[]const u8) NativeTypeLayout {
-    const value = name orelse return .{ .size = 8, .alignment = 8 };
-    if (std.mem.eql(u8, value, "I8") or std.mem.eql(u8, value, "U8")) return .{ .size = 1, .alignment = 1 };
-    if (std.mem.eql(u8, value, "I16") or std.mem.eql(u8, value, "U16")) return .{ .size = 2, .alignment = 2 };
-    if (std.mem.eql(u8, value, "I32") or std.mem.eql(u8, value, "U32")) return .{ .size = 4, .alignment = 4 };
-    return .{ .size = 8, .alignment = 8 };
-}
-
-fn readNativeInteger(name: ?[]const u8, address: usize) i64 {
-    const value = name orelse return (@as(*const i64, @ptrFromInt(address))).*;
-    if (std.mem.eql(u8, value, "U8")) return @as(i64, (@as(*const u8, @ptrFromInt(address))).*);
-    if (std.mem.eql(u8, value, "U16")) return @as(i64, (@as(*const u16, @ptrFromInt(address))).*);
-    if (std.mem.eql(u8, value, "U32")) return @as(i64, (@as(*const u32, @ptrFromInt(address))).*);
-    if (std.mem.eql(u8, value, "I8")) return @as(*const i8, @ptrFromInt(address)).*;
-    if (std.mem.eql(u8, value, "I16")) return @as(*const i16, @ptrFromInt(address)).*;
-    if (std.mem.eql(u8, value, "I32")) return @as(*const i32, @ptrFromInt(address)).*;
-    return (@as(*const i64, @ptrFromInt(address))).*;
-}
-
-fn readNativeFloat(name: ?[]const u8, address: usize) f64 {
-    if (name != null and std.mem.eql(u8, name.?, "F32")) {
-        return @as(f64, (@as(*const f32, @ptrFromInt(address))).*);
-    }
-    return (@as(*const f64, @ptrFromInt(address))).*;
-}
-
-fn writeNativeInteger(name: ?[]const u8, address: usize, value: runtime_abi.Value) anyerror!void {
-    if (value != .integer) return error.RuntimeFailure;
-    const raw = value.integer;
-    const type_name = name orelse "I64";
-    if (std.mem.eql(u8, type_name, "U8")) {
-        (@as(*u8, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    if (std.mem.eql(u8, type_name, "U16")) {
-        (@as(*u16, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    if (std.mem.eql(u8, type_name, "U32")) {
-        (@as(*u32, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    if (std.mem.eql(u8, type_name, "I8")) {
-        (@as(*i8, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    if (std.mem.eql(u8, type_name, "I16")) {
-        (@as(*i16, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    if (std.mem.eql(u8, type_name, "I32")) {
-        (@as(*i32, @ptrFromInt(address))).* = @intCast(raw);
-        return;
-    }
-    (@as(*i64, @ptrFromInt(address))).* = raw;
-}
-
-fn writeNativeFloat(name: ?[]const u8, address: usize, value: runtime_abi.Value) anyerror!void {
-    if (value != .float) return error.RuntimeFailure;
-    if (name != null and std.mem.eql(u8, name.?, "F32")) {
-        (@as(*f32, @ptrFromInt(address))).* = @floatCast(value.float);
-        return;
-    }
-    (@as(*f64, @ptrFromInt(address))).* = value.float;
-}
-
-fn alignForward(value: usize, alignment: usize) usize {
-    if (alignment <= 1) return value;
-    return std.mem.alignForward(usize, value, alignment);
 }
 
 test "executes nested runtime calls" {

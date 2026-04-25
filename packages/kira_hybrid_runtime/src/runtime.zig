@@ -28,6 +28,7 @@ pub const HybridRuntime = struct {
     }
 
     pub fn deinit(self: *HybridRuntime) void {
+        self.vm.deinit();
         self.bridge.deinit();
     }
 
@@ -91,6 +92,7 @@ pub const HybridRuntime = struct {
                 runtime_args[index].raw_ptr,
                 native_ptr,
             );
+            self.vm.releaseManagedValue(runtime_args[index]);
         }
 
         var bridge_result = runtime_abi.bridgeValueFromValue(result);
@@ -102,6 +104,7 @@ pub const HybridRuntime = struct {
             ) });
         }
         if (out_result) |ptr| ptr.* = bridge_result;
+        self.vm.releaseManagedValue(result);
         runtime_abi.emitExecutionTrace("CALLBACK", "RETURN", "runtime->native fn={s}({d}) tag={s}", .{
             function_decl.name,
             function_id,
