@@ -46,6 +46,22 @@ pub const Vm = struct {
         self.heap.releaseValue(value);
     }
 
+    pub fn retainManagedValue(self: *Vm, value: runtime_abi.Value) void {
+        self.heap.retainValue(value);
+    }
+
+    pub fn beginNativeBoundary(self: *Vm) !void {
+        try self.heap.beginBoundaryPinScope();
+    }
+
+    pub fn endNativeBoundary(self: *Vm) void {
+        self.heap.endBoundaryPinScope();
+    }
+
+    pub fn pinNativeBoundaryValue(self: *Vm, value: runtime_abi.Value) !void {
+        try self.heap.pinBoundaryValue(value);
+    }
+
     pub fn runMain(self: *Vm, module: *const bytecode.Module, writer: anytype) anyerror!void {
         const entry_function_id = module.entry_function_id orelse {
             self.rememberError("bytecode module has no runtime entrypoint");
