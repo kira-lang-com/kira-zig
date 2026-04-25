@@ -1,0 +1,6 @@
+class Plain {
+}
+
+function acceptPlain(value: any Plain) {
+    return;
+}

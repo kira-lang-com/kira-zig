@@ -519,8 +519,14 @@ pub const UnaryOp = enum {
 
 pub const TypeExpr = union(enum) {
     named: QualifiedName,
+    any: AnyTypeExpr,
     array: ArrayTypeExpr,
     function: FunctionTypeExpr,
+};
+
+pub const AnyTypeExpr = struct {
+    target: *TypeExpr,
+    span: Span,
 };
 
 pub const ArrayTypeExpr = struct {
@@ -840,6 +846,7 @@ fn dumpExpr(writer: anytype, expr: Expr, depth: usize) anyerror!void {
 fn typeExprText(ty: TypeExpr) []const u8 {
     return switch (ty) {
         .named => |value| qualifiedNameText(value),
+        .any => "any",
         .array => "Array",
         .function => "Function",
     };

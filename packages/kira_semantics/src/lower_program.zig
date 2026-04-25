@@ -91,6 +91,7 @@ pub fn lowerProgramWithOptions(
 
     var construct_headers = std.StringHashMapUnmanaged(shared.ConstructHeader){};
     defer construct_headers.deinit(allocator);
+    ctx.construct_headers = &construct_headers;
     var function_headers = std.StringHashMapUnmanaged(shared.FunctionHeader){};
     defer function_headers.deinit(allocator);
     ctx.function_headers = &function_headers;
@@ -449,7 +450,7 @@ pub fn lowerFunction(
             return error.DiagnosticsEmitted;
         }
 
-        const param_type = try shared.typeFromSyntax(ctx.allocator, param.type_expr.?.*);
+        const param_type = try shared.typeFromSyntaxChecked(ctx, param.type_expr.?.*);
         try scope.put(ctx.allocator, param.name, .{
             .id = next_local_id,
             .ty = param_type,
@@ -501,7 +502,7 @@ pub fn lowerFunction(
         return error.DiagnosticsEmitted;
     }
 
-    const explicit_return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(ctx.allocator, return_type.*) else model.ResolvedType{ .kind = .unknown };
+    const explicit_return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else model.ResolvedType{ .kind = .unknown };
     const body = if (function_decl.body) |syntax_body|
         try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type)
     else if (foreign != null)

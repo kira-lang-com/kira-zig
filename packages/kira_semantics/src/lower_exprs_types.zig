@@ -57,7 +57,7 @@ pub fn lowerLocalDeclaration(
     scope: *model.Scope,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !LoweredLocalDeclaration {
-    const explicit_type = if (node.type_expr) |type_expr| try shared.typeFromSyntax(ctx.allocator, type_expr.*) else null;
+    const explicit_type = if (node.type_expr) |type_expr| try shared.typeFromSyntaxChecked(ctx, type_expr.*) else null;
 
     if (node.value) |value_expr| {
         const lowered_value = if (explicit_type) |declared_type|
@@ -474,7 +474,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
         },
         .native_user_data => .{ .kind = .raw_ptr, .name = "RawPtr" },
         .native_recover => |node| blk: {
-            const recovered_ty = try shared.typeFromSyntax(ctx.allocator, node.state_type.*);
+            const recovered_ty = try shared.typeFromSyntaxChecked(ctx, node.state_type.*);
             break :blk if (recovered_ty.kind == .named and recovered_ty.name != null)
                 .{ .kind = .native_state_view, .name = recovered_ty.name }
             else
@@ -506,7 +506,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
 
 pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*model.Expr, span: source_pkg.Span) !model.ResolvedType {
     if (explicit_type_expr) |type_expr| {
-        const explicit_type = try shared.typeFromSyntax(ctx.allocator, type_expr.*);
+        const explicit_type = try shared.typeFromSyntaxChecked(ctx, type_expr.*);
         if (value_expr) |expr| {
             const actual = model.hir.exprType(expr.*);
             if (!(shared.canAssign(explicit_type, actual) or canPassArgument(ctx, explicit_type, actual))) {
@@ -523,7 +523,7 @@ pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*synta
 
 pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.TypeExpr, value_expr: ?*syntax.ast.Expr, span: source_pkg.Span) !model.ResolvedType {
     if (explicit_type_expr) |type_expr| {
-        const explicit_type = try shared.typeFromSyntax(ctx.allocator, type_expr.*);
+        const explicit_type = try shared.typeFromSyntaxChecked(ctx, type_expr.*);
         if (value_expr) |expr| {
             const inferred = try resolveSyntaxExprType(ctx, expr, span);
             if (explicit_type.kind == .callback and inferred.kind == .unknown and isFunctionNameExpr(expr.*)) return explicit_type;

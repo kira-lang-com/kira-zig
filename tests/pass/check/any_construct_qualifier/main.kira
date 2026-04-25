@@ -1,0 +1,12 @@
+construct Widget {
+}
+
+@Runtime
+function acceptWidget(value: any Widget) {
+    return;
+}
+
+@Main
+function entry() {
+    return;
+}

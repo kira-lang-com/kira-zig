@@ -11,6 +11,17 @@ const tokenDescription = parent.tokenDescription;
 const unexpectedTokenLabel = parent.unexpectedTokenLabel;
 const expectedTokenHelp = parent.expectedTokenHelp;
 pub fn parseTypeExpr(self: *Parser) anyerror!*syntax.ast.TypeExpr {
+    if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "any")) {
+        const start = self.advance().span.start;
+        const target = try self.parseTypeExpr();
+        const node = try self.allocator.create(syntax.ast.TypeExpr);
+        node.* = .{ .any = .{
+            .target = target,
+            .span = source_pkg.Span.init(start, typeSpan(target.*).end),
+        } };
+        return node;
+    }
+
     if (self.match(.l_bracket)) {
         const start = self.previous().span.start;
         const element_type = try self.parseTypeExpr();
