@@ -26,6 +26,7 @@ const sameCallValueSignature = parent.sameCallValueSignature;
 pub fn writeCallInstruction(
     writer: anytype,
     request: backend_api.CompileRequest,
+    plan: *const parent.MonomorphizationPlan,
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     program: *const ir.Program,
     register_types: []const ir.ValueType,
@@ -36,13 +37,17 @@ pub fn writeCallInstruction(
     const callee_execution = functionExecutionById(request.program.*, callee_id) orelse return error.UnknownFunction;
     switch (resolveExecution(callee_execution, request.mode)) {
         .native => {
-            const callee_name = symbol_names.get(callee_id) orelse return error.MissingFunctionDeclaration;
+            const variant = if (!callee_decl.is_extern) plan.variantForFunction(callee_id, register_types, call_inst.args) else null;
+            const callee_name = if (variant) |value| value.symbol_name else symbol_names.get(callee_id) orelse return error.MissingFunctionDeclaration;
+            const effective_param_types = if (variant) |value| value.param_types else callee_decl.param_types;
+            const effective_return_type = if (variant) |value| value.return_type else callee_decl.return_type;
             if (callee_decl.is_extern) {
                 for (call_inst.args, 0..) |arg, index| {
-                    const param_type = callee_decl.param_types[index];
+                    const param_type = effective_param_types[index];
+                    const arg_type = if (arg < register_types.len) register_types[arg] else param_type;
                     switch (param_type.kind) {
                         .array, .raw_ptr => {
-                            if (register_types[arg].kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) {
+                            if (arg_type.kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) {
                                 try writer.print("  %call.arg.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ callee_id, index, arg });
                             } else {
                                 try writer.print("  %call.arg.{d}.{d} = inttoptr i64 %r{d} to ptr\n", .{ callee_id, index, arg });
@@ -79,32 +84,32 @@ pub fn writeCallInstruction(
                     }
                 }
             }
-            const uses_sret = callee_decl.is_extern and externReturnUsesSRet(program, callee_decl.return_type);
+            const uses_sret = callee_decl.is_extern and externReturnUsesSRet(program, effective_return_type);
             const extern_return_abi_type = if (callee_decl.is_extern and call_inst.dst != null)
-                try externReturnAbiTypeText(std.heap.page_allocator, program, callee_decl.return_type)
+                try externReturnAbiTypeText(std.heap.page_allocator, program, effective_return_type)
             else
                 "";
             defer if (extern_return_abi_type.len > 0) std.heap.page_allocator.free(extern_return_abi_type);
             if (uses_sret) {
                 if (call_inst.dst) |dst| {
-                    const struct_type_name = typeRefName(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature);
+                    const struct_type_name = typeRefName(effective_return_type.name orelse return error.UnsupportedExecutableFeature);
                     try writer.print("  %call.ret.ptr.{d} = alloca {s}\n", .{ dst, struct_type_name });
                 }
             }
             if (call_inst.dst) |dst| {
                 if (uses_sret) {
                     try writer.writeAll("  call void ");
-                } else if (callee_decl.is_extern and (callee_decl.return_type.kind == .raw_ptr or callee_decl.return_type.kind == .array)) {
+                } else if (callee_decl.is_extern and (effective_return_type.kind == .raw_ptr or effective_return_type.kind == .array)) {
                     try writer.writeAll("  %call.ptr.");
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" = call ptr ");
-                } else if (callee_decl.is_extern and callee_decl.return_type.kind == .ffi_struct) {
+                } else if (callee_decl.is_extern and effective_return_type.kind == .ffi_struct) {
                     try writer.writeAll("  %call.struct.");
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" = call ");
                     try writer.writeAll(extern_return_abi_type);
                     try writer.writeByte(' ');
-                } else if (callee_decl.is_extern and callee_decl.return_type.kind == .integer and !std.mem.eql(u8, integerAbiTypeName(callee_decl.return_type.name), "i64")) {
+                } else if (callee_decl.is_extern and effective_return_type.kind == .integer and !std.mem.eql(u8, integerAbiTypeName(effective_return_type.name), "i64")) {
                     try writer.writeAll("  %call.int.");
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" = call ");
@@ -116,20 +121,20 @@ pub fn writeCallInstruction(
             } else {
                 try writer.writeAll("  call ");
             }
-            if (!uses_sret and !(callee_decl.is_extern and (callee_decl.return_type.kind == .raw_ptr or callee_decl.return_type.kind == .array or callee_decl.return_type.kind == .ffi_struct) and call_inst.dst != null)) {
-                try writer.writeAll(llvmCallTypeText(callee_decl.return_type, callee_decl.is_extern));
+            if (!uses_sret and !(callee_decl.is_extern and (effective_return_type.kind == .raw_ptr or effective_return_type.kind == .array or effective_return_type.kind == .ffi_struct) and call_inst.dst != null)) {
+                try writer.writeAll(llvmCallTypeText(effective_return_type, callee_decl.is_extern));
                 try writer.writeByte(' ');
             }
             try writeLlvmSymbol(writer, callee_name);
             try writer.writeByte('(');
             if (uses_sret) {
                 const dst = call_inst.dst orelse return error.UnsupportedExecutableFeature;
-                const struct_type_name = typeRefName(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature);
+                const struct_type_name = typeRefName(effective_return_type.name orelse return error.UnsupportedExecutableFeature);
                 try writer.print("ptr sret({s}) align 8 %call.ret.ptr.{d}", .{ struct_type_name, dst });
             }
             for (call_inst.args, 0..) |arg, index| {
                 if (index != 0 or uses_sret) try writer.writeAll(", ");
-                const param_type = callee_decl.param_types[index];
+                const param_type = effective_param_types[index];
                 const param_abi_type = if (callee_decl.is_extern)
                     try externParamAbiTypeText(std.heap.page_allocator, program, param_type)
                 else
@@ -182,7 +187,7 @@ pub fn writeCallInstruction(
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" to i64\n");
                 }
-            } else if (callee_decl.is_extern and (callee_decl.return_type.kind == .raw_ptr or callee_decl.return_type.kind == .array)) {
+            } else if (callee_decl.is_extern and (effective_return_type.kind == .raw_ptr or effective_return_type.kind == .array)) {
                 if (call_inst.dst) |dst| {
                     try writer.writeAll("  %r");
                     try writer.print("{d}", .{dst});
@@ -190,9 +195,9 @@ pub fn writeCallInstruction(
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" to i64\n");
                 }
-            } else if (callee_decl.is_extern and callee_decl.return_type.kind == .ffi_struct) {
+            } else if (callee_decl.is_extern and effective_return_type.kind == .ffi_struct) {
                 if (call_inst.dst) |dst| {
-                    const struct_type_name = typeRefName(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature);
+                    const struct_type_name = typeRefName(effective_return_type.name orelse return error.UnsupportedExecutableFeature);
                     try writer.print("  %call.ret.ptr.{d} = alloca {s}\n", .{ dst, struct_type_name });
                     try writer.print("  store {s} %call.struct.{d}, ptr %call.ret.ptr.{d}\n", .{ extern_return_abi_type, dst, dst });
                     try writer.writeAll("  %r");
@@ -201,15 +206,15 @@ pub fn writeCallInstruction(
                     try writer.print("{d}", .{dst});
                     try writer.writeAll(" to i64\n");
                 }
-            } else if (callee_decl.is_extern and callee_decl.return_type.kind == .integer and call_inst.dst != null) {
-                const abi_type = integerAbiTypeName(callee_decl.return_type.name);
+            } else if (callee_decl.is_extern and effective_return_type.kind == .integer and call_inst.dst != null) {
+                const abi_type = integerAbiTypeName(effective_return_type.name);
                 if (!std.mem.eql(u8, abi_type, "i64")) {
                     const dst = call_inst.dst.?;
                     try writer.print("  %r{d}.sext = sext {s} %call.int.{d} to i64\n", .{ dst, abi_type, dst });
                     try writer.print("  %r{d} = add i64 %r{d}.sext, 0\n", .{ dst, dst });
                 }
-            } else if (callee_decl.is_extern and callee_decl.return_type.kind == .float and call_inst.dst != null) {
-                const abi_type = floatAbiTypeName(callee_decl.return_type.name);
+            } else if (callee_decl.is_extern and effective_return_type.kind == .float and call_inst.dst != null) {
+                const abi_type = floatAbiTypeName(effective_return_type.name);
                 if (std.mem.eql(u8, abi_type, "float")) {
                     const dst = call_inst.dst.?;
                     try writer.print("  %r{d}.ext = fpext float %r{d} to double\n", .{ dst, dst });

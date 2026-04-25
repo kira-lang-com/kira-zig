@@ -17,6 +17,7 @@ const countStringConstants = parent.countStringConstants;
 const appendTypeDefinitions = parent.appendTypeDefinitions;
 const buildCallValueDispatcher = parent.buildCallValueDispatcher;
 const buildHybridBridgeWrapper = parent.buildHybridBridgeWrapper;
+const buildMonomorphizationPlan = parent.buildMonomorphizationPlan;
 const llvmValueTypeText = parent.llvmValueTypeText;
 const llvmLocalStorageTypeText = parent.llvmLocalStorageTypeText;
 const writeLlvmSymbol = parent.writeLlvmSymbol;
@@ -53,11 +54,16 @@ pub fn buildTextLlvmIr(
     var globals = std.array_list.Managed([]const u8).init(allocator);
     defer freeStringList(allocator, &globals);
 
+    const plan = try buildMonomorphizationPlan(allocator, request);
+    defer {
+        var owned = plan;
+        owned.deinit();
+    }
+
     var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
     defer freeSymbolNames(allocator, &symbol_names);
-
     for (request.program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+        if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
         const name = try functionSymbolName(allocator, function_decl, request.mode);
         try symbol_names.put(allocator, function_decl.id, name);
     }
@@ -72,11 +78,29 @@ pub fn buildTextLlvmIr(
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
         if (function_decl.is_extern) {
             try function_decls.append(try buildTextExternDecl(allocator, request, &symbol_names, function_decl));
-        } else {
-            const body = try buildTextFunctionBody(allocator, request, &symbol_names, &globals, function_decl, string_counter);
-            string_counter += countStringConstants(function_decl);
-            try function_bodies.append(body);
         }
+    }
+    for (request.program.functions) |function_decl| {
+        if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
+        const register_types = try inferRegisterTypes(allocator, request.program.*, function_decl);
+        defer allocator.free(register_types);
+        const base_variant = parent.FunctionVariant{
+            .function_id = function_decl.id,
+            .param_types = function_decl.param_types,
+            .local_types = function_decl.local_types,
+            .return_type = function_decl.return_type,
+            .register_types = register_types,
+            .symbol_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration,
+        };
+        const body = try buildTextFunctionBody(allocator, request, &plan, &symbol_names, &globals, function_decl, base_variant, string_counter);
+        string_counter += countStringConstants(function_decl);
+        try function_bodies.append(body);
+    }
+    for (plan.variants) |variant| {
+        const function_decl = functionById(request.program.*, variant.function_id) orelse return error.UnknownFunction;
+        const body = try buildTextFunctionBody(allocator, request, &plan, &symbol_names, &globals, function_decl, variant, string_counter);
+        string_counter += countStringConstants(function_decl);
+        try function_bodies.append(body);
     }
 
     if (request.mode == .llvm_native) {
@@ -163,22 +187,24 @@ pub fn buildTextLlvmIr(
 pub fn buildTextFunctionBody(
     allocator: std.mem.Allocator,
     request: backend_api.CompileRequest,
+    plan: *const parent.MonomorphizationPlan,
     symbol_names: *const std.AutoHashMapUnmanaged(u32, []const u8),
     globals: *std.array_list.Managed([]const u8),
     function_decl: ir.Function,
+    variant: parent.FunctionVariant,
     string_counter: usize,
 ) ![]const u8 {
     var body: std.Io.Writer.Allocating = .init(allocator);
     errdefer body.deinit();
 
     var writer = &body.writer;
-    const function_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
+    const function_name = variant.symbol_name;
     try writer.writeAll("define ");
-    try writer.writeAll(llvmValueTypeText(function_decl.return_type));
+    try writer.writeAll(llvmValueTypeText(variant.return_type));
     try writer.writeByte(' ');
     try writeLlvmSymbol(writer, function_name);
     try writer.writeByte('(');
-    for (function_decl.param_types, 0..) |param_type, index| {
+    for (variant.param_types, 0..) |param_type, index| {
         if (index != 0) try writer.writeAll(", ");
         try writer.writeAll(llvmValueTypeText(param_type));
         try writer.writeAll(" %arg");
@@ -186,8 +212,7 @@ pub fn buildTextFunctionBody(
     }
     try writer.writeAll(") {\nentry:\n");
 
-    const register_types = try inferRegisterTypes(allocator, request.program.*, function_decl);
-    defer allocator.free(register_types);
+    const register_types = variant.register_types;
 
     const string_state = try allocator.alloc(usize, 1);
     defer allocator.free(string_state);
@@ -195,7 +220,7 @@ pub fn buildTextFunctionBody(
     var temp_counter: usize = 0;
     var block_terminated = false;
 
-    for (function_decl.local_types, 0..) |local_type, index| {
+    for (variant.local_types, 0..) |local_type, index| {
         const storage_type = try llvmLocalStorageTypeText(allocator, request.program, local_type);
         try writer.writeAll("  %local");
         try writer.print("{d}", .{index});
@@ -212,7 +237,7 @@ pub fn buildTextFunctionBody(
             try writer.print("  store i64 %local.heap.int.{d}, ptr %local{d}\n", .{ index, index });
         }
     }
-    for (function_decl.param_types, 0..) |param_type, index| {
+    for (variant.param_types, 0..) |param_type, index| {
         try writer.writeAll("  store ");
         try writer.writeAll(llvmValueTypeText(param_type));
         try writer.writeAll(" %arg");
@@ -990,7 +1015,7 @@ pub fn buildTextFunctionBody(
                 );
             },
             .call => |value| {
-                try writeCallInstruction(writer, request, symbol_names, request.program, register_types, value);
+                try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, value);
             },
             .call_value => |value| {
                 try writeIndirectCallInstruction(writer, request, symbol_names, request.program, register_types, value);

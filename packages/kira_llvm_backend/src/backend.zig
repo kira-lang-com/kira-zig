@@ -11,6 +11,7 @@ const runtime_symbols = @import("runtime_symbols.zig");
 const text_ir_core = @import("backend_text_ir_core.zig");
 const text_ir_calls = @import("backend_text_ir_calls.zig");
 const backend_utils = @import("backend_utils.zig");
+const monomorphization = @import("backend_monomorphization.zig");
 
 pub const buildTextLlvmIr = text_ir_core.buildTextLlvmIr;
 pub const buildTextFunctionBody = text_ir_core.buildTextFunctionBody;
@@ -20,6 +21,9 @@ pub const writeCallInstruction = text_ir_calls.writeCallInstruction;
 pub const writeIndirectCallInstruction = text_ir_calls.writeIndirectCallInstruction;
 pub const buildCallValueDispatcher = text_ir_calls.buildCallValueDispatcher;
 pub const dispatcherSymbolName = text_ir_calls.dispatcherSymbolName;
+pub const MonomorphizationPlan = monomorphization.Plan;
+pub const FunctionVariant = monomorphization.FunctionVariant;
+pub const buildMonomorphizationPlan = monomorphization.buildPlan;
 
 pub const writePrintInstruction = backend_utils.writePrintInstruction;
 pub const appendStringGlobals = backend_utils.appendStringGlobals;
