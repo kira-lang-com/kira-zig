@@ -104,6 +104,11 @@ pub const UnaryOp = enum(u8) {
 pub const TypeRef = struct {
     kind: Kind,
     name: ?[]const u8 = null,
+    construct_constraint: ?ConstructConstraint = null,
+
+    pub const ConstructConstraint = struct {
+        construct_name: []const u8,
+    };
 
     pub const Kind = enum(u8) {
         void,
@@ -111,6 +116,7 @@ pub const TypeRef = struct {
         float,
         string,
         boolean,
+        construct_any,
         array,
         raw_ptr,
         ffi_struct,

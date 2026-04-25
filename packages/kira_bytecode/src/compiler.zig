@@ -10,6 +10,28 @@ pub const CompileMode = enum {
 };
 
 pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mode: CompileMode) !bytecode.Module {
+    var constructs = std.array_list.Managed(bytecode.Construct).init(allocator);
+    for (program.constructs) |construct_decl| {
+        try constructs.append(.{ .name = construct_decl.name });
+    }
+
+    var construct_implementations = std.array_list.Managed(bytecode.ConstructImplementation).init(allocator);
+    for (program.construct_implementations) |implementation| {
+        var fields = std.array_list.Managed(bytecode.Field).init(allocator);
+        for (implementation.fields) |field_decl| {
+            try fields.append(.{ .name = field_decl.name, .ty = lowerTypeRef(field_decl.ty) });
+        }
+        var lifecycle_hooks = std.array_list.Managed(bytecode.LifecycleHook).init(allocator);
+        for (implementation.lifecycle_hooks) |hook| try lifecycle_hooks.append(.{ .name = hook.name });
+        try construct_implementations.append(.{
+            .type_name = implementation.type_name,
+            .construct_constraint = .{ .construct_name = implementation.construct_constraint.construct_name },
+            .fields = try fields.toOwnedSlice(),
+            .has_content = implementation.has_content,
+            .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
+        });
+    }
+
     var types = std.array_list.Managed(bytecode.TypeDecl).init(allocator);
     for (program.types) |type_decl| {
         var fields = std.array_list.Managed(bytecode.Field).init(allocator);
@@ -183,6 +205,8 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
     }
 
     return .{
+        .constructs = try constructs.toOwnedSlice(),
+        .construct_implementations = try construct_implementations.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = entry_function_id,
@@ -199,6 +223,7 @@ fn lowerTypeRef(value_type: ir_pkg.ValueType) instruction.TypeRef {
     return .{
         .kind = @enumFromInt(@intFromEnum(value_type.kind)),
         .name = value_type.name,
+        .construct_constraint = if (value_type.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null,
     };
 }
 
@@ -361,4 +386,41 @@ test "preserves native state instructions in bytecode" {
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[1].alloc_native_state.type_id);
     try std.testing.expect(module.functions[0].instructions[2] == .recover_native_state);
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[2].recover_native_state.type_id);
+}
+
+test "preserves construct metadata in bytecode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = ir_pkg.Program{
+        .constructs = &.{.{ .name = "Widget" }},
+        .construct_implementations = &.{.{
+            .type_name = "Button",
+            .construct_constraint = .{ .construct_name = "Widget" },
+            .fields = &.{.{ .name = "title", .ty = .{ .kind = .string } }},
+            .has_content = true,
+            .lifecycle_hooks = &.{.{ .name = "onAppear" }},
+        }},
+        .types = &.{},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .execution = .runtime,
+            .param_types = &.{.{ .kind = .construct_any, .name = "any Widget", .construct_constraint = .{ .construct_name = "Widget" } }},
+            .return_type = .{ .kind = .void },
+            .register_count = 0,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{.{ .ret = .{ .src = null } }},
+        }},
+        .entry_index = 0,
+    };
+
+    const module = try compileProgram(arena.allocator(), program, .vm);
+    try std.testing.expectEqual(@as(usize, 1), module.constructs.len);
+    try std.testing.expectEqualStrings("Widget", module.constructs[0].name);
+    try std.testing.expectEqual(@as(usize, 1), module.construct_implementations.len);
+    try std.testing.expectEqualStrings("Widget", module.construct_implementations[0].construct_constraint.construct_name);
+    try std.testing.expectEqual(@as(usize, 1), module.construct_implementations[0].fields.len);
+    try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, lowerTypeRef(program.functions[0].param_types[0]).kind);
 }

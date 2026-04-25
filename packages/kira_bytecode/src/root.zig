@@ -1,5 +1,8 @@
 pub const bytecode = @import("bytecode.zig");
 pub const Module = bytecode.Module;
+pub const Construct = bytecode.Construct;
+pub const ConstructImplementation = bytecode.ConstructImplementation;
+pub const LifecycleHook = bytecode.LifecycleHook;
 pub const Function = bytecode.Function;
 pub const TypeDecl = bytecode.TypeDecl;
 pub const Field = bytecode.Field;

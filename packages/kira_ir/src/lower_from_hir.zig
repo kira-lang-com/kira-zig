@@ -6,6 +6,8 @@ const program_impl = @import("lower_from_hir_program.zig");
 const type_impl = @import("lower_from_hir_types.zig");
 
 pub const lowerTypeDecls = program_impl.lowerTypeDecls;
+pub const lowerConstructs = program_impl.lowerConstructs;
+pub const lowerConstructImplementations = program_impl.lowerConstructImplementations;
 pub const markReachableFunction = program_impl.markReachableFunction;
 pub const markReachableStatement = program_impl.markReachableStatement;
 pub const markReachableExpr = program_impl.markReachableExpr;
@@ -32,6 +34,8 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
     defer reachable.deinit(allocator);
     try markReachableFunction(allocator, program, &reachable, program.functions[program.entry_index].id);
 
+    const constructs = try lowerConstructs(allocator, program);
+    const construct_implementations = try lowerConstructImplementations(allocator, program);
     const types = try lowerTypeDecls(allocator, program, reachable);
     var state = ProgramLoweringState{
         .next_generated_function_id = nextGeneratedFunctionId(program),
@@ -47,6 +51,8 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
     }
     for (state.generated_functions.items) |function_decl| try functions.append(function_decl);
     return .{
+        .constructs = constructs,
+        .construct_implementations = construct_implementations,
         .types = types,
         .functions = try functions.toOwnedSlice(),
         .entry_index = entry_index orelse return error.UnsupportedExecutableFeature,

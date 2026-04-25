@@ -15,6 +15,7 @@ pub fn lowerResolvedType(program: model.Program, ty: model.ResolvedType) !ir.Val
         .float => .{ .kind = .float, .name = ty.name },
         .string => .{ .kind = .string },
         .boolean => .{ .kind = .boolean, .name = ty.name },
+        .construct_any => .{ .kind = .construct_any, .name = ty.name, .construct_constraint = if (ty.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null },
         .array => .{ .kind = .array, .name = ty.name },
         .raw_ptr, .c_string, .callback, .native_state, .native_state_view => .{ .kind = .raw_ptr, .name = ty.name },
         .named => if (ty.name) |name| lowerNamedType(program, name) else return error.UnsupportedType,
@@ -78,6 +79,12 @@ pub fn lowerExecutableBooleanType(program: model.Program, ty: model.ResolvedType
 
 pub fn valueTypesEqual(lhs: ir.ValueType, rhs: ir.ValueType) bool {
     if (lhs.kind != rhs.kind) return false;
+    if (lhs.construct_constraint) |constraint| {
+        const rhs_constraint = rhs.construct_constraint orelse return false;
+        if (!std.mem.eql(u8, constraint.construct_name, rhs_constraint.construct_name)) return false;
+    } else if (rhs.construct_constraint != null) {
+        return false;
+    }
     if (lhs.name == null and rhs.name == null) return true;
     if (lhs.name == null or rhs.name == null) return false;
     return std.mem.eql(u8, lhs.name.?, rhs.name.?);

@@ -17,6 +17,7 @@ fn formatValue(writer: anytype, module: *const bytecode.Module, value: runtime_a
         .string => try writer.writeAll(value.string),
         .boolean => try writer.writeAll(if (value.boolean) "true" else "false"),
         .array => try writer.print("array(len: {d})", .{(@as(*const ArrayObject, @ptrFromInt(value.raw_ptr))).len}),
+        .construct_any => try writer.print("0x{x}", .{value.raw_ptr}),
         .raw_ptr => try writer.print("0x{x}", .{value.raw_ptr}),
         .ffi_struct => {
             const type_name = ty.name orelse return error.RuntimeFailure;
@@ -40,7 +41,7 @@ fn valueMatchesTypeRef(value: runtime_abi.Value, ty: bytecode.TypeRef) bool {
         .float => value == .float,
         .string => value == .string,
         .boolean => value == .boolean,
-        .array, .raw_ptr, .ffi_struct => value == .raw_ptr,
+        .construct_any, .array, .raw_ptr, .ffi_struct => value == .raw_ptr,
     };
 }
 

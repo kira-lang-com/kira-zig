@@ -29,7 +29,7 @@ pub fn valueTypeLayout(module: *const bytecode.Module, value_type: bytecode.Type
         else
             .{ .size = 8, .alignment = 8 },
         .string => .{ .size = @sizeOf(runtime_abi.BridgeString), .alignment = @alignOf(runtime_abi.BridgeString) },
-        .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+        .construct_any, .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
         .ffi_struct => try structLayout(module, value_type.name orelse return error.RuntimeFailure),
     };
 }

@@ -11,18 +11,34 @@ pub const Type = enum {
     callback,
     ffi_struct,
     named,
+    construct_any,
     array,
     native_state,
     native_state_view,
     unknown,
 };
 
+pub const ConstructConstraint = struct {
+    construct_name: []const u8,
+
+    pub fn eql(self: ConstructConstraint, other: ConstructConstraint) bool {
+        return std.mem.eql(u8, self.construct_name, other.construct_name);
+    }
+};
+
 pub const ResolvedType = struct {
     kind: Type,
     name: ?[]const u8 = null,
+    construct_constraint: ?ConstructConstraint = null,
 
     pub fn eql(self: ResolvedType, other: ResolvedType) bool {
         if (self.kind != other.kind) return false;
+        if (self.construct_constraint) |constraint| {
+            const other_constraint = other.construct_constraint orelse return false;
+            if (!constraint.eql(other_constraint)) return false;
+        } else if (other.construct_constraint != null) {
+            return false;
+        }
         if (self.name == null or other.name == null) return true;
         if (self.name == null and other.name == null) return true;
         return std.mem.eql(u8, self.name.?, other.name.?);

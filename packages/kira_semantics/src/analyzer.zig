@@ -655,7 +655,27 @@ test "allows imported construct and callable names in the global namespace" {
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
     try std.testing.expectEqual(@as(usize, 1), analyzed.forms.len);
-    try std.testing.expectEqualStrings("Widget", analyzed.forms[0].construct_name);
+    try std.testing.expectEqualStrings("Widget", analyzed.forms[0].construct.construct_name);
+}
+
+test "lowers any construct parameters as structured construct constraints" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const analyzed = try analyzeSource(
+        allocator,
+        "construct Widget {}\n" ++
+            "@Runtime function accept(value: any Widget) { return; }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(model.Type.construct_any, analyzed.functions[0].params[0].ty.kind);
+    try std.testing.expectEqualStrings("any Widget", analyzed.functions[0].params[0].ty.name.?);
+    try std.testing.expectEqualStrings("Widget", analyzed.functions[0].params[0].ty.construct_constraint.?.construct_name);
 }
 
 test "class methods can read fields through implicit self" {

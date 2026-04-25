@@ -565,7 +565,7 @@ pub const Vm = struct {
             .float => .{ .float = 0.0 },
             .string => .{ .string = "" },
             .boolean => .{ .boolean = false },
-            .array, .raw_ptr => .{ .raw_ptr = 0 },
+            .construct_any, .array, .raw_ptr => .{ .raw_ptr = 0 },
             .ffi_struct => blk: {
                 const nested_name = value_type.name orelse {
                     self.rememberError("struct field type is missing a name");
@@ -721,7 +721,7 @@ pub const Vm = struct {
                 }
                 (@as(*u8, @ptrFromInt(address))).* = if (value.boolean) 1 else 0;
             },
-            .array, .raw_ptr => {
+            .construct_any, .array, .raw_ptr => {
                 if (value != .raw_ptr) {
                     self.rememberError("runtime pointer field cannot be lowered to native memory");
                     return error.RuntimeFailure;
@@ -761,7 +761,7 @@ pub const Vm = struct {
                 break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
             },
             .boolean => .{ .boolean = (@as(*const u8, @ptrFromInt(address))).* != 0 },
-            .array, .raw_ptr => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+            .construct_any, .array, .raw_ptr => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
             .ffi_struct => .{ .raw_ptr = try self.copyStructFromNativeLayout(module, field_decl.ty.name orelse {
                 self.rememberError("nested struct field type is missing a name");
                 return error.RuntimeFailure;

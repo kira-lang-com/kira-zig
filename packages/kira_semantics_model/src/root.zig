@@ -46,6 +46,7 @@ pub const NamedTypeInfo = ffi.NamedTypeInfo;
 pub const FunctionExecution = @import("kira_runtime_abi").FunctionExecution;
 pub const LocalSymbol = symbols.LocalSymbol;
 pub const Type = types.Type;
+pub const ConstructConstraint = types.ConstructConstraint;
 pub const ResolvedType = types.ResolvedType;
 pub const Scope = scopes.Scope;
 pub const LocalBinding = scopes.LocalBinding;

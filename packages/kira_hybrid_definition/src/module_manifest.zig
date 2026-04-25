@@ -4,6 +4,11 @@ const runtime_abi = @import("kira_runtime_abi");
 pub const TypeRef = struct {
     kind: Kind,
     name: ?[]const u8 = null,
+    construct_constraint: ?ConstructConstraint = null,
+
+    pub const ConstructConstraint = struct {
+        construct_name: []const u8,
+    };
 
     pub const Kind = enum(u8) {
         void,
@@ -11,6 +16,7 @@ pub const TypeRef = struct {
         float,
         string,
         boolean,
+        construct_any,
         array,
         raw_ptr,
         ffi_struct,
@@ -120,13 +126,16 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
 fn writeTypeRef(writer: anytype, value: TypeRef) !void {
     try writer.writeByte(@intFromEnum(value.kind));
     try writeString(writer, value.name orelse "");
+    try writeString(writer, if (value.construct_constraint) |constraint| constraint.construct_name else "");
 }
 
 fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !TypeRef {
     const kind: TypeRef.Kind = @enumFromInt(try reader.takeByte());
     const name = try readString(allocator, reader);
+    const constraint_name = try readString(allocator, reader);
     return .{
         .kind = kind,
         .name = if (name.len == 0) null else name,
+        .construct_constraint = if (constraint_name.len == 0) null else .{ .construct_name = constraint_name },
     };
 }

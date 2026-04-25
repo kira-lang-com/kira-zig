@@ -6,6 +6,36 @@ const parent = @import("lower_from_hir.zig");
 const Lowerer = parent.Lowerer;
 const lowerProgram = parent.lowerProgram;
 const lowerResolvedType = parent.lowerResolvedType;
+
+pub fn lowerConstructs(allocator: std.mem.Allocator, program: model.Program) ![]ir.Construct {
+    const lowered = try allocator.alloc(ir.Construct, program.constructs.len);
+    for (program.constructs, 0..) |construct_decl, index| {
+        lowered[index] = .{ .name = try allocator.dupe(u8, construct_decl.name) };
+    }
+    return lowered;
+}
+
+pub fn lowerConstructImplementations(allocator: std.mem.Allocator, program: model.Program) ![]ir.ConstructImplementation {
+    const lowered = try allocator.alloc(ir.ConstructImplementation, program.forms.len);
+    for (program.forms, 0..) |form_decl, index| {
+        lowered[index] = .{
+            .type_name = try allocator.dupe(u8, form_decl.name),
+            .construct_constraint = .{ .construct_name = try allocator.dupe(u8, form_decl.construct.construct_name) },
+            .fields = try lowerFieldTypes(allocator, program, form_decl.fields),
+            .has_content = form_decl.content != null,
+            .lifecycle_hooks = try lowerLifecycleHooks(allocator, form_decl.lifecycle_hooks),
+        };
+    }
+    return lowered;
+}
+
+fn lowerLifecycleHooks(allocator: std.mem.Allocator, hooks: []const model.LifecycleHook) ![]ir.LifecycleHook {
+    const lowered = try allocator.alloc(ir.LifecycleHook, hooks.len);
+    for (hooks, 0..) |hook_decl, index| {
+        lowered[index] = .{ .name = try allocator.dupe(u8, hook_decl.name) };
+    }
+    return lowered;
+}
 pub fn lowerTypeDecls(
     allocator: std.mem.Allocator,
     program: model.Program,
@@ -387,4 +417,49 @@ test "lowers native callback state into dedicated IR instructions" {
     try std.testing.expect(entry.instructions[0] == .alloc_struct);
     try std.testing.expect(entry.instructions[1] == .alloc_native_state);
     try std.testing.expect(callback.instructions[1] == .recover_native_state);
+}
+
+test "lowers construct metadata and any construct types into IR" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(@import("kira_diagnostics").Diagnostic).init(allocator);
+    const source_pkg = @import("kira_source");
+    const lexer = @import("kira_lexer");
+    const parser = @import("kira_parser");
+    const semantics = @import("kira_semantics");
+
+    const source = try source_pkg.SourceFile.initOwned(
+        allocator,
+        "test.kira",
+        "construct Widget { lifecycle { onAppear() {} } }\n" ++
+            "Widget Button() { let title: String = \"Hi\" content { } onAppear() { return; } }\n" ++
+            "@Runtime function accept(value: any Widget) { return; }\n" ++
+            "@Main function entry() { return; }",
+    );
+    const tokens = try lexer.tokenize(allocator, &source, &diags);
+    const parsed = try parser.parse(allocator, tokens, &diags);
+    const analyzed = try semantics.analyze(allocator, parsed, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+
+    const lowered = try lowerProgram(allocator, analyzed);
+    try std.testing.expectEqual(@as(usize, 1), lowered.constructs.len);
+    try std.testing.expectEqualStrings("Widget", lowered.constructs[0].name);
+    try std.testing.expectEqual(@as(usize, 1), lowered.construct_implementations.len);
+    try std.testing.expectEqualStrings("Button", lowered.construct_implementations[0].type_name);
+    try std.testing.expectEqualStrings("Widget", lowered.construct_implementations[0].construct_constraint.construct_name);
+    try std.testing.expect(lowered.construct_implementations[0].has_content);
+    try std.testing.expectEqual(@as(usize, 1), lowered.construct_implementations[0].lifecycle_hooks.len);
+    try std.testing.expectEqualStrings("onAppear", lowered.construct_implementations[0].lifecycle_hooks[0].name);
+
+    const accept = blk: {
+        for (analyzed.functions) |function_decl| {
+            if (std.mem.eql(u8, function_decl.name, "accept")) break :blk function_decl;
+        }
+        return error.TestUnexpectedResult;
+    };
+    const lowered_param = try lowerResolvedType(analyzed, accept.params[0].ty);
+    try std.testing.expectEqual(ir.ValueType.Kind.construct_any, lowered_param.kind);
+    try std.testing.expectEqualStrings("Widget", lowered_param.construct_constraint.?.construct_name);
 }

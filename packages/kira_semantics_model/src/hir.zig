@@ -3,6 +3,7 @@ const runtime_abi = @import("kira_runtime_abi");
 const symbols = @import("symbols.zig");
 const Type = @import("types.zig").Type;
 const ResolvedType = @import("types.zig").ResolvedType;
+const ConstructConstraint = @import("types.zig").ConstructConstraint;
 const ffi = @import("ffi.zig");
 
 pub const Program = struct {
@@ -113,7 +114,7 @@ pub const TypeKind = enum {
 };
 
 pub const ConstructForm = struct {
-    construct_name: []const u8,
+    construct: ConstructConstraint,
     name: []const u8,
     fields: []const Field,
     content: ?BuilderBlock,

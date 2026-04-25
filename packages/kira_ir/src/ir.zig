@@ -3,6 +3,7 @@ const runtime_abi = @import("kira_runtime_abi");
 pub const ValueType = struct {
     kind: Kind,
     name: ?[]const u8 = null,
+    construct_constraint: ?ConstructConstraint = null,
 
     pub const Kind = enum {
         void,
@@ -10,16 +11,39 @@ pub const ValueType = struct {
         float,
         string,
         boolean,
+        construct_any,
         array,
         raw_ptr,
         ffi_struct,
     };
 };
 
+pub const ConstructConstraint = struct {
+    construct_name: []const u8,
+};
+
 pub const Program = struct {
+    constructs: []Construct = &.{},
+    construct_implementations: []ConstructImplementation = &.{},
     types: []TypeDecl = &.{},
     functions: []Function,
     entry_index: usize,
+};
+
+pub const Construct = struct {
+    name: []const u8,
+};
+
+pub const ConstructImplementation = struct {
+    type_name: []const u8,
+    construct_constraint: ConstructConstraint,
+    fields: []Field,
+    has_content: bool,
+    lifecycle_hooks: []LifecycleHook,
+};
+
+pub const LifecycleHook = struct {
+    name: []const u8,
 };
 
 pub const TypeDecl = struct {

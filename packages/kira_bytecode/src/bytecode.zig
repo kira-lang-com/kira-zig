@@ -2,6 +2,8 @@ const std = @import("std");
 const instruction = @import("instruction.zig");
 
 pub const Module = struct {
+    constructs: []Construct = &.{},
+    construct_implementations: []ConstructImplementation = &.{},
     types: []TypeDecl = &.{},
     functions: []Function,
     entry_function_id: ?u32,
@@ -39,6 +41,22 @@ pub const Function = struct {
     instructions: []instruction.Instruction,
 };
 
+pub const Construct = struct {
+    name: []const u8,
+};
+
+pub const ConstructImplementation = struct {
+    type_name: []const u8,
+    construct_constraint: instruction.TypeRef.ConstructConstraint,
+    fields: []Field,
+    has_content: bool,
+    lifecycle_hooks: []LifecycleHook,
+};
+
+pub const LifecycleHook = struct {
+    name: []const u8,
+};
+
 pub const TypeDecl = struct {
     name: []const u8,
     fields: []Field,
@@ -51,9 +69,28 @@ pub const Field = struct {
 
 pub fn serialize(writer: anytype, module: Module) !void {
     try writer.writeAll("KBC0");
+    try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
+    try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.functions.len)), .little);
     try writer.writeInt(i32, if (module.entry_function_id) |value| @as(i32, @intCast(value)) else -1, .little);
+
+    for (module.constructs) |construct_decl| {
+        try writeString(writer, construct_decl.name);
+    }
+
+    for (module.construct_implementations) |implementation| {
+        try writeString(writer, implementation.type_name);
+        try writeString(writer, implementation.construct_constraint.construct_name);
+        try writer.writeInt(u32, @as(u32, @intCast(implementation.fields.len)), .little);
+        for (implementation.fields) |field_decl| {
+            try writeString(writer, field_decl.name);
+            try writeTypeRef(writer, field_decl.ty);
+        }
+        try writer.writeByte(if (implementation.has_content) 1 else 0);
+        try writer.writeInt(u32, @as(u32, @intCast(implementation.lifecycle_hooks.len)), .little);
+        for (implementation.lifecycle_hooks) |hook| try writeString(writer, hook.name);
+    }
 
     for (module.types) |type_decl| {
         try writeString(writer, type_decl.name);
@@ -260,11 +297,45 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     try reader.readSliceAll(&magic);
     if (!std.mem.eql(u8, &magic, "KBC0")) return error.InvalidBytecode;
 
+    const construct_count = try reader.takeInt(u32, .little);
+    const construct_implementation_count = try reader.takeInt(u32, .little);
     const type_count = try reader.takeInt(u32, .little);
     const function_count = try reader.takeInt(u32, .little);
     const raw_entry = try reader.takeInt(i32, .little);
+    var constructs = std.array_list.Managed(Construct).init(allocator);
+    var construct_implementations = std.array_list.Managed(ConstructImplementation).init(allocator);
     var types = std.array_list.Managed(TypeDecl).init(allocator);
     var functions = std.array_list.Managed(Function).init(allocator);
+
+    for (0..construct_count) |_| {
+        try constructs.append(.{ .name = try readString(allocator, reader) });
+    }
+
+    for (0..construct_implementation_count) |_| {
+        const type_name = try readString(allocator, reader);
+        const construct_name = try readString(allocator, reader);
+        const field_count = try reader.takeInt(u32, .little);
+        var fields = std.array_list.Managed(Field).init(allocator);
+        for (0..field_count) |_| {
+            try fields.append(.{
+                .name = try readString(allocator, reader),
+                .ty = try readTypeRef(allocator, reader),
+            });
+        }
+        const has_content = (try reader.takeByte()) != 0;
+        const lifecycle_hook_count = try reader.takeInt(u32, .little);
+        var lifecycle_hooks = std.array_list.Managed(LifecycleHook).init(allocator);
+        for (0..lifecycle_hook_count) |_| {
+            try lifecycle_hooks.append(.{ .name = try readString(allocator, reader) });
+        }
+        try construct_implementations.append(.{
+            .type_name = type_name,
+            .construct_constraint = .{ .construct_name = construct_name },
+            .fields = try fields.toOwnedSlice(),
+            .has_content = has_content,
+            .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
+        });
+    }
 
     for (0..type_count) |_| {
         const name = try readString(allocator, reader);
@@ -491,6 +562,8 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     }
 
     return .{
+        .constructs = try constructs.toOwnedSlice(),
+        .construct_implementations = try construct_implementations.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
@@ -527,14 +600,19 @@ fn writeTypeRef(writer: anytype, value: instruction.TypeRef) !void {
     try writer.writeByte(@intFromEnum(value.kind));
     try writer.writeByte(if (value.name != null) 1 else 0);
     if (value.name) |name| try writeString(writer, name);
+    try writer.writeByte(if (value.construct_constraint != null) 1 else 0);
+    if (value.construct_constraint) |constraint| try writeString(writer, constraint.construct_name);
 }
 
 fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !instruction.TypeRef {
     const kind: instruction.TypeRef.Kind = @enumFromInt(try reader.takeByte());
     const has_name = (try reader.takeByte()) != 0;
+    const name = if (has_name) try readString(allocator, reader) else null;
+    const has_constraint = (try reader.takeByte()) != 0;
     return .{
         .kind = kind,
-        .name = if (has_name) try readString(allocator, reader) else null,
+        .name = name,
+        .construct_constraint = if (has_constraint) .{ .construct_name = try readString(allocator, reader) } else null,
     };
 }
 
@@ -667,4 +745,47 @@ test "round-trips function constants" {
     const round_tripped = try deserialize(allocator, bytes.written());
     try std.testing.expect(round_tripped.functions[0].instructions[0] == .const_function);
     try std.testing.expectEqual(@as(u32, 42), round_tripped.functions[0].instructions[0].const_function.function_id);
+}
+
+test "round-trips construct metadata and constrained types" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .constructs = &.{.{ .name = "Widget" }},
+        .construct_implementations = &.{.{
+            .type_name = "Button",
+            .construct_constraint = .{ .construct_name = "Widget" },
+            .fields = &.{.{ .name = "title", .ty = .{ .kind = .string } }},
+            .has_content = true,
+            .lifecycle_hooks = &.{.{ .name = "onAppear" }},
+        }},
+        .types = &.{},
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .param_count = 1,
+            .return_type = .{ .kind = .construct_any, .name = "any Widget", .construct_constraint = .{ .construct_name = "Widget" } },
+            .register_count = 0,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{.{ .ret = .{ .src = null } }},
+        }},
+        .entry_function_id = 0,
+    };
+
+    var bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer bytes.deinit();
+    try serialize(&bytes.writer, module);
+
+    const round_tripped = try deserialize(allocator, bytes.written());
+    try std.testing.expectEqual(@as(usize, 1), round_tripped.constructs.len);
+    try std.testing.expectEqualStrings("Widget", round_tripped.constructs[0].name);
+    try std.testing.expectEqual(@as(usize, 1), round_tripped.construct_implementations.len);
+    try std.testing.expectEqualStrings("Button", round_tripped.construct_implementations[0].type_name);
+    try std.testing.expectEqualStrings("Widget", round_tripped.construct_implementations[0].construct_constraint.construct_name);
+    try std.testing.expect(round_tripped.construct_implementations[0].has_content);
+    try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, round_tripped.functions[0].return_type.kind);
+    try std.testing.expectEqualStrings("Widget", round_tripped.functions[0].return_type.construct_constraint.?.construct_name);
 }

@@ -40,6 +40,7 @@ fn typeText(ty: model.ResolvedType) []const u8 {
         .callback => "Callback",
         .ffi_struct => "Struct",
         .named => "Type",
+        .construct_any => ty.name orelse "any Unknown",
         .array => "[]",
         .native_state => "NativeState",
         .native_state_view => "NativeStateView",

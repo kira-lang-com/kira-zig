@@ -345,7 +345,7 @@ pub fn buildTextFunctionBody(
                                 value.dst, index, value.dst, index, value.dst, index,
                             });
                         },
-                        .raw_ptr, .array => {
+                        .construct_any, .raw_ptr, .array => {
                             try writer.print("  %native.state.load.ptr.{d}.{d} = load ptr, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
                                 value.dst, index, value.dst, index,
                             });
@@ -447,7 +447,7 @@ pub fn buildTextFunctionBody(
                     try writer.print("  %closure.slot.{d}.{d} = getelementptr inbounds %kira.bridge.value, ptr %closure.slots.{d}, i64 {d}\n", .{ value.dst, index, value.dst, index });
                     try writer.print("  %closure.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{ value.dst, index, bridgeTagValue(capture_ty) });
                     switch (capture_ty.kind) {
-                        .integer, .raw_ptr, .ffi_struct, .array => {
+                        .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                             try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{ value.dst, index, value.dst, index, capture_reg });
                         },
                         .boolean => {
@@ -628,7 +628,7 @@ pub fn buildTextFunctionBody(
                 });
                 try writer.print("  %native.state.get.val.{d} = load %kira.bridge.value, ptr %native.state.get.slot.{d}\n", .{ temp_index, value.dst });
                 switch (value.field_ty.kind) {
-                    .integer, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{temp_index});
@@ -680,7 +680,7 @@ pub fn buildTextFunctionBody(
                     bridgeTagValue(register_types[value.src]),
                 });
                 switch (register_types[value.src].kind) {
-                    .integer, .raw_ptr, .array => {
+                    .integer, .construct_any, .raw_ptr, .array => {
                         try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %r{d}, 2\n", .{
                             temp_index, temp_index, value.src,
                         });
@@ -759,7 +759,7 @@ pub fn buildTextFunctionBody(
                 });
                 try writer.print("  %array.get.val.{d} = load %kira.bridge.value, ptr %array.get.val.ptr.{d}\n", .{ temp_index, temp_index });
                 switch (value.ty.kind) {
-                    .integer, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = extractvalue %kira.bridge.value %array.get.val.{d}, 2\n", .{temp_index});
@@ -805,7 +805,7 @@ pub fn buildTextFunctionBody(
                     temp_index, bridgeTagValue(register_types[value.src]),
                 });
                 switch (register_types[value.src].kind) {
-                    .integer, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                         try writer.print("  %array.set.pack.{d} = insertvalue %kira.bridge.value %array.set.pack.{d}.0, i64 %r{d}, 2\n", .{
                             temp_index, temp_index, value.src,
                         });
@@ -866,7 +866,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = trunc i8 %load.raw.{d} to i1\n", .{value.dst});
                     },
-                    .raw_ptr => {
+                    .construct_any, .raw_ptr => {
                         try writer.print("  %load.rawptr.{d} = load ptr, ptr %load.ptr.{d}\n", .{ value.dst, value.dst });
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
@@ -917,7 +917,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("  %store.bool.{d} = zext i1 %r{d} to i8\n", .{ value.src, value.src });
                         try writer.print("  store i8 %store.bool.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
                     },
-                    .raw_ptr => {
+                    .construct_any, .raw_ptr => {
                         if (value.ty.name != null and std.mem.eql(u8, value.ty.name.?, "CString") and register_types[value.src].kind == .string) {
                             try writer.print("  %store.cstr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ value.src, value.src });
                             try writer.print("  store ptr %store.cstr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });

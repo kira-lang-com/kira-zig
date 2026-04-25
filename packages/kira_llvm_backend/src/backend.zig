@@ -213,7 +213,7 @@ const Types = struct {
             .float => self.api.LLVMFloatTypeInContext(self.context),
             .string => self.string_ty,
             .boolean => self.bool_ty,
-            .array, .raw_ptr, .ffi_struct => self.usize_ty,
+            .construct_any, .array, .raw_ptr, .ffi_struct => self.usize_ty,
         };
     }
 
@@ -474,7 +474,7 @@ fn lowerPrint(
             var args = [_]llvm.c.LLVMValueRef{ data_ptr, length };
             _ = api.LLVMBuildCall2(builder, runtime_decls.print_string_ty, runtime_decls.print_string_fn, &args, args.len, "");
         },
-        .void, .float, .boolean, .array, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
+        .void, .float, .boolean, .construct_any, .array, .raw_ptr, .ffi_struct => return error.UnsupportedExecutableFeature,
     }
 }
 

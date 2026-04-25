@@ -59,7 +59,7 @@ fn writePrintedValue(
         },
         .string => try writeStringValue(writer, value_ref.ssa_name, temp_counter),
         .boolean => try writeBooleanValue(writer, value_ref.ssa_name, temp_counter),
-        .raw_ptr => {
+        .construct_any, .raw_ptr => {
             try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
         },
         .array => try writeArraySummary(allocator, writer, globals, value_ref.ssa_name, string_state, temp_counter),
@@ -178,7 +178,7 @@ fn loadFieldValue(
                 .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
             };
         },
-        .raw_ptr, .array => {
+        .construct_any, .raw_ptr, .array => {
             try writer.print("  %print.field.rawptr.{d} = load ptr, ptr %print.field.ptr.{d}\n", .{ temp_index, temp_index });
             try writer.print("  %print.field.value.{d} = ptrtoint ptr %print.field.rawptr.{d} to i64\n", .{ temp_index, temp_index });
             return .{
@@ -353,7 +353,7 @@ pub fn llvmFieldAbiTypeText(allocator: std.mem.Allocator, program: *const ir.Pro
         .void => return allocator.dupe(u8, "void"),
         .string => return allocator.dupe(u8, "%kira.string"),
         .boolean => return allocator.dupe(u8, "i8"),
-        .raw_ptr => {
+        .construct_any, .raw_ptr => {
             if (value_type.name) |name| {
                 if (findTypeDecl(program, name)) |type_decl| {
                     if (type_decl.ffi) |ffi_info| {
@@ -397,13 +397,13 @@ pub fn llvmValueTypeText(value_type: ir.ValueType) []const u8 {
         .float => floatAbiTypeName(value_type.name),
         .string => "%kira.string",
         .boolean => "i1",
-        .array, .raw_ptr, .ffi_struct => "i64",
+        .construct_any, .array, .raw_ptr, .ffi_struct => "i64",
     };
 }
 
 pub fn llvmCompareValueTypeText(value_type: ir.ValueType) []const u8 {
     return switch (value_type.kind) {
-        .integer, .array, .raw_ptr, .ffi_struct => "i64",
+        .integer, .construct_any, .array, .raw_ptr, .ffi_struct => "i64",
         .float => floatAbiTypeName(value_type.name),
         .boolean => "i1",
         else => unreachable,
@@ -428,7 +428,7 @@ pub fn llvmComparePredicate(value_type: ir.ValueType, op: ir.CompareOp) ![]const
             .greater => "ogt",
             .greater_equal => "oge",
         },
-        .boolean, .array, .raw_ptr, .ffi_struct => switch (op) {
+        .boolean, .construct_any, .array, .raw_ptr, .ffi_struct => switch (op) {
             .equal => "eq",
             .not_equal => "ne",
             else => error.UnsupportedExecutableFeature,
@@ -440,7 +440,7 @@ pub fn llvmComparePredicate(value_type: ir.ValueType, op: ir.CompareOp) ![]const
 pub fn llvmCallTypeText(value_type: ir.ValueType, is_extern: bool) []const u8 {
     if (!is_extern) return llvmValueTypeText(value_type);
     return switch (value_type.kind) {
-        .array, .raw_ptr => "ptr",
+        .construct_any, .array, .raw_ptr => "ptr",
         .integer => integerAbiTypeName(value_type.name),
         .float => floatAbiTypeName(value_type.name),
         .boolean => "i1",
@@ -478,13 +478,13 @@ pub fn externParamAbiTypeText(allocator: std.mem.Allocator, program: *const ir.P
 pub fn llvmLocalStorageTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     _ = program;
     return switch (value_type.kind) {
-        .array, .ffi_struct => allocator.dupe(u8, "i64"),
+        .construct_any, .array, .ffi_struct => allocator.dupe(u8, "i64"),
         else => allocator.dupe(u8, llvmValueTypeText(value_type)),
     };
 }
 
 pub fn isPointerLikeValueType(value_type: ir.ValueType) bool {
-    return value_type.kind == .array or value_type.kind == .raw_ptr or value_type.kind == .ffi_struct;
+    return value_type.kind == .construct_any or value_type.kind == .array or value_type.kind == .raw_ptr or value_type.kind == .ffi_struct;
 }
 
 pub fn fieldIndex(program: *const ir.Program, owner_type_name: []const u8, field_name: []const u8) ?usize {
@@ -505,7 +505,7 @@ pub fn fieldType(program: *const ir.Program, owner_type_name: []const u8, field_
 
 pub fn llvmIndirectLoadTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     return switch (value_type.kind) {
-        .integer, .float, .boolean, .raw_ptr, .ffi_struct => llvmFieldAbiTypeText(allocator, program, value_type),
+        .integer, .float, .boolean, .construct_any, .raw_ptr, .ffi_struct => llvmFieldAbiTypeText(allocator, program, value_type),
         else => allocator.dupe(u8, llvmValueTypeText(value_type)),
     };
 }
@@ -708,7 +708,7 @@ fn valueTypeLayout(program: *const ir.Program, value_type: ir.ValueType) anyerro
         else
             .{ .size = 8, .alignment = 8 },
         .string => .{ .size = 16, .alignment = 8 },
-        .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+        .construct_any, .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
         .ffi_struct => try ffiTypeLayout(program, value_type.name orelse return error.UnsupportedExecutableFeature),
     };
 }
@@ -787,7 +787,7 @@ pub fn buildHybridBridgeWrapper(
         try writer.writeAll(" = load %kira.bridge.value, ptr %bridge.slot.");
         try writer.print("{d}\n", .{index});
         switch (param_type.kind) {
-            .integer, .raw_ptr, .ffi_struct, .array => {
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                 try writer.writeAll("  %bridge.word0.");
                 try writer.print("{d}", .{index});
                 try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
@@ -878,7 +878,7 @@ pub fn buildHybridBridgeWrapper(
         try writer.writeAll(llvmValueTypeText(param_type));
         try writer.writeByte(' ');
         switch (param_type.kind) {
-            .integer, .raw_ptr, .ffi_struct, .array => {
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
                 try writer.writeAll("%bridge.word0.");
                 try writer.print("{d}", .{index});
             },
@@ -906,7 +906,7 @@ pub fn buildHybridBridgeWrapper(
         .void => {
             try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
         },
-        .integer, .raw_ptr, .ffi_struct, .array => {
+        .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
             try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.call, 2\n");
             try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
         },
@@ -945,7 +945,7 @@ pub fn bridgeTagValue(value_type: ir.ValueType) u8 {
         .float => 2,
         .string => 3,
         .boolean => 4,
-        .array, .raw_ptr, .ffi_struct => 5,
+        .construct_any, .array, .raw_ptr, .ffi_struct => 5,
     };
 }
 

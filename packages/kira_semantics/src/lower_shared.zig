@@ -142,7 +142,14 @@ pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) any
     return switch (ty) {
         .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(allocator, info.element_type.*) },
         .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(allocator, info) },
-        .any => |info| .{ .kind = .named, .name = try typeTextFromSyntax(allocator, .{ .any = info }) },
+        .any => |info| switch (info.target.*) {
+            .named => |name| .{
+                .kind = .construct_any,
+                .name = try typeTextFromSyntax(allocator, .{ .any = info }),
+                .construct_constraint = .{ .construct_name = try allocator.dupe(u8, name.segments[name.segments.len - 1].text) },
+            },
+            else => .{ .kind = .construct_any, .name = try typeTextFromSyntax(allocator, .{ .any = info }) },
+        },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
             if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
@@ -190,6 +197,7 @@ pub fn typeTextFromResolved(allocator: std.mem.Allocator, ty: model.ResolvedType
         .string => allocator.dupe(u8, "String"),
         .c_string => allocator.dupe(u8, ty.name orelse "CString"),
         .raw_ptr => allocator.dupe(u8, ty.name orelse "RawPtr"),
+        .construct_any => if (ty.name) |name| allocator.dupe(u8, name) else std.fmt.allocPrint(allocator, "any {s}", .{(ty.construct_constraint orelse return allocator.dupe(u8, "any Unknown")).construct_name}),
         .native_state => std.fmt.allocPrint(allocator, "NativeState<{s}>", .{ty.name orelse "Unknown"}),
         .native_state_view => std.fmt.allocPrint(allocator, "NativeStateView<{s}>", .{ty.name orelse "Unknown"}),
         .callback, .ffi_struct, .named => allocator.dupe(u8, ty.name orelse "Unknown"),
@@ -228,6 +236,7 @@ pub fn emitTypeMismatch(
 }
 
 pub fn typeLabel(ty: model.ResolvedType) []const u8 {
+    if (ty.kind == .construct_any) return ty.name orelse "any Unknown";
     if (ty.kind == .array) return ty.name orelse "[]";
     if (ty.name) |name| return name;
     return switch (ty.kind) {
@@ -238,6 +247,7 @@ pub fn typeLabel(ty: model.ResolvedType) []const u8 {
         .string => "String",
         .c_string => "CString",
         .raw_ptr => "RawPtr",
+        .construct_any => "any Unknown",
         .native_state => "NativeState",
         .native_state_view => "NativeStateView",
         .callback, .ffi_struct, .named => "Unknown",
@@ -728,6 +738,13 @@ pub fn annotationLiteralValue(ctx: *Context, expr: *syntax.ast.Expr) !CheckedAnn
 }
 
 pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
+    if (std.mem.startsWith(u8, text, "any ")) {
+        return .{
+            .kind = .construct_any,
+            .name = text,
+            .construct_constraint = .{ .construct_name = text[4..] },
+        };
+    }
     if (text.len >= 4 and text[0] == '(' and std.mem.indexOf(u8, text, "->") != null) {
         return .{ .kind = .callback, .name = text };
     }

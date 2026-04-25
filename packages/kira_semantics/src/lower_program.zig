@@ -410,7 +410,7 @@ fn lowerConstructForm(
     }
 
     return .{
-        .construct_name = construct_name,
+        .construct = .{ .construct_name = construct_name },
         .name = try ctx.allocator.dupe(u8, form_decl.name),
         .fields = try fields.toOwnedSlice(),
         .content = content,
