@@ -1,268 +1,178 @@
-# Kira Zig Toolchain Bootstrap
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Images/KiraBannerDark.png">
+  <source media="(prefers-color-scheme: light)" srcset="Images/KiraBannerLight.png">
+  <img alt="Kira" src="Images/KiraBannerDark.png">
+</picture>
 
-This monorepo now carries a real dual-backend Kira pipeline in Zig: frontend lowering, shared IR, VM bytecode execution, LLVM-native code generation, native runtime helpers, build orchestration, CLI, runtime ABI, hybrid/native contracts, and the `KiraMain` C facade.
+# Kira
 
-The repo also now carries a first real static-linking-first C-ABI FFI path:
+Kira is a Zig-hosted compiler and toolchain for a systems-oriented language that can run through a VM, emit LLVM/native executables, or split work across a hybrid runtime/native boundary. The repository includes the compiler pipeline, CLI, package tooling, managed LLVM setup, native C-ABI interop, and KSL shader parsing/validation with GLSL output.
 
-- per-library TOML manifests under nearby `native_libs/`
-- Clang-driven autobinding generation
-- generated Kira bindings emitted as real Kira source files
-- direct LLVM/native extern calls with no public shim layer
-- hybrid bridge marshalling for arguments and results
-- explicit native callback support with function-pointer passing
-- full-surface Sokol header generation and a real triangle app proof
+## Why Kira is interesting
 
-The working execution paths today are:
+- One source pipeline lowers `.kira` programs to VM bytecode, LLVM/native output, or hybrid bytecode plus a native library.
+- `@Runtime` and `@Native` mark execution boundaries for mixed programs instead of forcing separate source worlds.
+- Native library manifests are static-linking-first, C-ABI-focused, and can generate Kira bindings from headers.
+- The language surface is covered by corpus tests across VM, LLVM, and hybrid backends where those paths apply.
+- The `kira` CLI includes run/check/build workflows, package-management commands, project scaffolding, and managed LLVM fetching.
+- KSL is a sibling shader language with dedicated parsing, semantic validation, reflection, and GLSL 330 output.
 
-- source -> lexer -> parser -> semantics -> IR -> bytecode -> VM
-- source -> lexer -> parser -> semantics -> IR -> LLVM IR -> object file -> native executable
-- source -> lexer -> parser -> semantics -> IR -> bytecode plus native shared library -> hybrid runtime host
-- `print(...)` works for integers, floats, strings, booleans, raw pointers, named struct values, and array summaries across VM, LLVM/native, and hybrid
-- `kira` launches the active managed Kira toolchain
-- `KiraMain` can load and run bytecode modules
+## A small Kira program
 
-`@Runtime` and `@Native` are now execution-boundary annotations rather than usability restrictions. Outside direct FFI usage, runtime and native code can call each other naturally across the hybrid bridge, and the LLVM/native backend executes the same ordinary language core that the shared IR lowers for the checked-in parity corpus.
+```kira
+@Main
+function main() {
+    let greeting = "hello from Kira"
+    var total = 40 + 2
 
-The FFI path extends that executable boundary with:
+    print(greeting)
+    print(total)
+    return
+}
+```
 
-- direct extern/native calls with arguments and return values
-- `RawPtr`, `CString`, callback typedefs, and imported extern declarations
-- native struct field access and assignment for generated FFI types
-- hybrid runtime/native argument and result marshalling
-- native callback targets for C-ABI callback parameters
+Kira examples use `@Main` to choose the entrypoint, `function` declarations for callable code, `let` for immutable locals, `var` for mutable locals, and `print(...)` for simple output. See the executable boundary in [docs/language_inventory.md](docs/language_inventory.md) for the current implemented surface.
 
-The current VM path also supports:
+## Quick start
 
-- named struct construction in the lowered executable subset
-- struct field loads and stores in the lowered executable subset
-- inherited field and method access, including multiple parents and imported parents, across the VM, LLVM, and hybrid paths
-- parent-qualified member access plus inherited field-default overrides in the lowered executable subset
-- printing named struct values such as `Color(r: 255, g: 0, b: 0)`
-
-## Quick Start
+Build the toolchain and install the launcher:
 
 ```bash
 zig build
 zig build install
 kira --help
-kira fetch-llvm
-kira run
-kira run examples/hello
-kira run --backend llvm examples/hello
-kira run --backend hybrid examples/hybrid_roundtrip
-kira check
-kira tokens examples/hello
-kira ast examples/hello
-kira check examples/hello
-kira build examples/hello
-kira build --backend llvm examples/hello
-kira build --backend hybrid examples/hybrid_roundtrip
-kira run --backend llvm examples/sokol_triangle
-kira new DemoApp generated/DemoApp
-zig build test
 ```
 
-`zig build install` and `zig build install-kirac` now do two things:
+`zig build install` installs the PATH-facing launcher into `zig-out/bin/` by default and installs the active toolchain under `~/.kira/toolchains/<channel>/<version>/`. `zig build install-kirac` is also available for the same managed toolchain plus launcher flow.
 
-- install the PATH-facing launcher into `zig-out/bin/kira` by default
-- install the real active Kira toolchain into `~/.kira/toolchains/<channel>/<version>/`
-
-The managed toolchain layout is:
-
-```text
-~/.kira/toolchains/<channel>/<version>/
-  bin/
-    kirac[.exe]
-  templates/
-  llvm-metadata.toml
-
-~/.kira/toolchains/current.toml
-~/.kira/toolchains/llvm/<llvm-version>/<host-key>/
-```
-
-On Windows, you can run the launcher directly as `.\zig-out\bin\kira.exe`, or add `zig-out\bin` to `PATH`:
+On Windows, run the launcher directly or add it to the current PowerShell session:
 
 ```powershell
+.\zig-out\bin\kira.exe --help
 $env:Path = "$PWD\zig-out\bin;$env:Path"
 ```
 
-If you want a different install location, use Zig's prefix flag, for example `zig build install -p .local`, then add `.local\bin` to `PATH`.
-
-For development:
-
-- `zig build kirac` builds the real managed CLI binary
-- `zig build kira-bootstrapper` builds the forwarding launcher
-- `zig build install-kirac` installs the active toolchain and launcher together
-
-Install the pinned LLVM bundle with `kira fetch-llvm` before using the LLVM backend. `zig build fetch-llvm` remains available as the build-step convenience path. Kira reads `llvm-metadata.toml`, resolves the current host bundle from the published GitHub release assets, and installs it into `~/.kira/toolchains/llvm/<llvm-version>/<host>/`.
-
-LLVM discovery order is:
-
-1. `KIRA_LLVM_HOME`
-2. Kira-managed install from `llvm-metadata.toml`
-3. older repo-managed fallback paths, if present
-
-If you need to override the managed install, point Kira at a different LLVM tree explicitly:
-
-```powershell
-$env:KIRA_LLVM_HOME = "C:\path\to\llvm"
-kira run --backend llvm examples/hello
-```
-
-The pinned LLVM download flow intentionally does not use checksum verification. The release tag, asset name, host mapping, and install marker are the source of truth for reuse.
-
-## Development Flow
-
-The standalone binary is now the normal path:
+Run the checked-in examples:
 
 ```bash
-kira run
-kira build
-kira check
+kira run examples/hello
+kira fetch-llvm
+kira run --backend llvm examples/hello
+kira run --backend hybrid examples/hybrid_roundtrip
+```
+
+Run the repo tests when validating code changes:
+
+```bash
+zig build test
+```
+
+LLVM and hybrid commands need a discoverable LLVM toolchain. The easiest path is `kira fetch-llvm`; advanced users can set `KIRA_LLVM_HOME` instead. See [docs/llvm_toolchain.md](docs/llvm_toolchain.md).
+
+## Example gallery
+
+The runnable sample index lives in [examples/README.md](examples/README.md). Useful starting points:
+
+- `examples/hello` — basic VM/LLVM/hybrid executable example.
+- `examples/arithmetic` — simple functions, locals, arithmetic, and structs.
+- `examples/imports_demo`, `examples/report_pipeline`, `examples/geometry_story`, and `examples/status_board` — broader language-facing examples.
+- `examples/hybrid_roundtrip` — hybrid runtime/native boundary roundtrip.
+- `examples/callbacks` and `examples/callbacks_chain` — native callbacks and callback state.
+- `examples/sokol_triangle` and `examples/sokol_runtime_entry` — Sokol/OpenGL native interop proofs using local `NativeLibs/` manifests.
+- `examples/shaders` — `.ksl` shader examples compiled by the dedicated shader pipeline.
+
+Try a few directly:
+
+```bash
+kira run examples/hello
+kira run --backend llvm examples/callbacks
+kira run --backend hybrid examples/sokol_triangle
+kira check examples/sokol_runtime_entry
+kira shader check examples/shaders/textured_quad.ksl
+kira shader build examples/shaders/lit_surface.ksl
+```
+
+## Execution model
+
+```text
+.kira source
+  -> frontend
+  -> IR
+  -> VM bytecode
+   / LLVM native object + executable
+   / hybrid bytecode + native shared library
+```
+
+- **VM** is the default path for quick local execution and bytecode output.
+- **LLVM/native** lowers shared IR through LLVM and links a host-native executable.
+- **Hybrid** compiles `@Runtime` functions to bytecode and `@Native` functions to a native shared library, then runs both in one host process through explicit bridge/trampoline calls.
+
+The package layering and full pipeline are documented in [docs/architecture.md](docs/architecture.md) and [docs/package_graph.md](docs/package_graph.md).
+
+## Native interop
+
+Kira's current FFI path is intentionally narrow and practical: C ABI, static linking first, per-library TOML manifests, generated bindings as normal Kira source, direct extern calls from LLVM/native code, callback function pointers, and hybrid argument/result marshalling.
+
+A project lists native libraries in its manifest, and each library owns its header paths, binding-generation configuration, source files, target archives, and linker details. The Sokol and callbacks examples show this shape in practice under local `NativeLibs/` directories.
+
+Learn the manifest format and current limits in [docs/native_libraries.md](docs/native_libraries.md).
+
+## KSL shaders
+
+KSL is Kira's dedicated shader language surface. It is parsed and validated by a sibling pipeline, not by the executable `.kira` frontend. Today it can validate shader modules, emit reflection JSON, and lower graphics shaders to GLSL 330 for the repo's current Sokol/OpenGL path. Compute shaders are part of the source and semantic model, but the current GLSL 330 backend rejects them intentionally.
+
+```bash
+kira shader check examples/shaders/textured_quad.ksl
+kira shader ast examples/shaders/textured_quad.ksl
+kira shader build examples/shaders/textured_quad.ksl
+kira shader build
+```
+
+With no explicit file, `kira shader build` discovers top-level PascalCase shader entry files under `Shaders/` in the current project and writes outputs to `generated/Shaders/`. See [docs/ksl.md](docs/ksl.md).
+
+## Packages and toolchains
+
+New projects use `kira.toml`; legacy `project.toml` is still discovered for existing examples. The package manager is source-only and lockfile-backed, with registry, path, and pinned git dependencies.
+
+Common commands:
+
+```bash
+kira new DemoApp generated/DemoApp
+kira new --lib GraphicsKit generated/GraphicsKit
 kira sync
 kira add FrostUI
-kira update
+kira add --git https://github.com/Sunlight-Horizon/GameKit.git --rev <commit> GameKit
 kira package pack
-kira new --lib GraphicsKit generated/GraphicsKit
-kira run examples/hello
-kira build examples/hello
-kira check examples/hello
 ```
 
-When invoked from a project root, `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `kira.toml` first, then legacy `project.toml`.
+LLVM discovery is explicit:
 
-Kira package management v1 is now official-registry-first and source-only:
+1. `KIRA_LLVM_HOME`
+2. the managed install from `kira fetch-llvm`
+3. older repo-managed fallback paths, if present
 
-- registry dependencies use exact versions and are locked in `kira.lock`
-- path dependencies are supported for local ecosystem development
-- git dependencies are first-class, but must be pinned and locked to a commit
-- registry archives are verified with SHA-256 before extraction
-- no install scripts, postinstall scripts, lifecycle hooks, or arbitrary code execution are allowed
+Command details are in [docs/commands.md](docs/commands.md), package-management details are in [docs/package_management.md](docs/package_management.md), and LLVM bundle details are in [docs/llvm_toolchain.md](docs/llvm_toolchain.md).
 
-`kira new` can scaffold either kind of package:
+## Developing Kira
 
-- `kira new DemoApp generated/DemoApp` for apps
-- `kira new --lib GraphicsKit generated/GraphicsKit` for libraries
-
-`zig build run -- ...` is still useful when iterating on the CLI itself because it rebuilds and runs in one step:
+For compiler and CLI work, use Zig's build runner while iterating:
 
 ```bash
+zig build
 zig build run -- run examples/hello
-zig build run -- build --backend llvm examples/hello
+zig build test
 ```
 
-## Documentation Site
+Run `zig fmt` on changed Zig files before finishing code changes. Do not hand-edit generated output under `generated/`, `.zig-cache/`, `zig-out/`, or `.kira/`.
 
-The repo now carries a Bun-powered documentation website in `apps/docs/` built with Fumadocs and React Router.
+## Documentation
 
-```bash
-cd apps/docs
-bun install
-bun run dev
-bun run build
-```
-
-Static output is written to `apps/docs/build/client/`.
-
-## Bootstrap Syntax
-
-The working bootstrap syntax uses `function` declarations and an explicit `@Main` entrypoint annotation. The entrypoint is chosen by the annotation, not by the function name:
-
-```kira
-@Main
-function entry() {
-    let x = 1 + 2;
-    print(x);
-    print("hello from kira");
-    return;
-}
-```
-
-## Local Declarations
-
-Local declarations now use an explicit three-form model:
-
-- inferred declaration: `var name = expression`
-- explicit typed declaration without an initializer expression: `var name: SomeType`
-- explicit typed declaration with an initializer expression: `var name: SomeType = expression`
-
-`let` follows the same type-checking rules, but keeps the binding immutable after it has a value.
-
-Important semantics:
-
-- `var name: SomeType` declares an uninitialized local of the declared type; Kira does not invent a default value for it
-- an explicit typed declaration checks the initializer expression against the declared type strictly
-- `var value: Float = 0.0` is valid
-- `var value: Float = 0` is rejected because Kira does not implicitly convert an integer literal in an explicit typed declaration
-
-## FFI C-Struct Construction
-
-For `@FFI.Struct { layout: c; }`, explicit construction starts from a zeroed C-layout value and then applies the fields you provide:
-
-```kira
-let desc = sapp_desc {
-    init_userdata_cb: init
-    frame_userdata_cb: frame
-    cleanup_userdata_cb: cleanup
-    width: 640
-    height: 480
-    window_title: "Triangle"
-}
-```
-
-`sapp_desc()` and `sapp_desc { ... }` both zero-fill omitted fields for C-layout FFI structs. This behavior belongs to construction only. A declaration such as `var desc: sapp_desc` remains an uninitialized local until some later assignment gives it a value.
-
-## Classes, Structs, and Generated Members
-
-Kira's canonical declaration surface now distinguishes richer inheritable classes from simpler value-oriented structs:
-
-- `class Child extends Base, Mixin { ... }` accepts a comma-separated parent list
-- `struct Position { ... }` declares a non-inheriting value shape
-- inherited fields and methods are visible on child values
-- inside class methods, parent-qualified access uses the inherited class name, for example `Base.field` or `Base.method()`
-- `override function ...` must match the inherited method signature exactly
-- `override let/var name = ...` replaces only the inherited default value and keeps the original storage slot
-- parent classes can come from imported modules
-- annotations can compose capability-provided generated functions through `uses CapabilityName`; generated functions must be marked `overridable` before a class can replace them
-
-```kira
-struct Position {
-    let x: Float = 0.0
-    let y: Float = 0.0
-}
-
-class Base {
-    let value: I64 = 10
-
-    function doubled(): I64 {
-        return value * 2
-    }
-}
-
-class Child extends Base {
-    override let value = 11
-
-    function total(): I64 {
-        return doubled() + Base.value
-    }
-}
-```
-
-## Architecture
-
-- `packages/kira_core` stays tiny and universal
-- syntax and semantics are isolated from runtime/build/tooling packages
-- `kira_ir` is the backend-facing shared IR
-- `kira_bytecode` and `kira_vm_runtime` provide the VM execution path
-- `kira_llvm_backend` lowers shared IR through LLVM C API and emits native objects/executables
-- `kira_native_bridge` owns the native runtime helper surface used by LLVM lowering
-- `kira_hybrid_runtime` hosts mixed bytecode/native programs and routes boundary calls through explicit bridge/trampoline logic
-- generated FFI bindings are emitted as normal Kira modules rather than wrapper APIs
-- hybrid contracts remain layered and future-facing without forcing the repo back into VM-only assumptions
-- native library manifests live outside the root `project.toml`
-
-The runnable example set is indexed in [examples/README.md](examples/README.md). The Sokol proof lives in [examples/sokol_triangle/app/main.kira](examples/sokol_triangle/app/main.kira) and [examples/sokol_runtime_entry/app/main.kira](examples/sokol_runtime_entry/app/main.kira), each backed by its own local `native_libs/` manifest. Re-run `kira check examples/sokol_triangle` to regenerate the local binding module at `examples/sokol_triangle/bindings/sokol.kira`, or `kira run --backend llvm examples/sokol_triangle` to build and launch the native triangle proof.
-
-See [docs/architecture.md](docs/architecture.md), [docs/language_inventory.md](docs/language_inventory.md), [docs/package_graph.md](docs/package_graph.md), [docs/commands.md](docs/commands.md), [docs/package_management.md](docs/package_management.md), and [docs/native_libraries.md](docs/native_libraries.md).
-
-KSL is now a real sibling shader pipeline. Use `kira shader check <file.ksl>`, `kira shader ast <file.ksl>`, and `kira shader build [<file.ksl>]` to parse, validate, reflect, and lower `.ksl` shaders to GLSL 330 for the repo's current Sokol/OpenGL graphics path. With no explicit file, `kira shader build` discovers all top-level PascalCase shader entry files under `Shaders/` and writes outputs to `generated/Shaders/`. The current implementation lives in [docs/ksl.md](docs/ksl.md) with working examples under [examples/shaders](examples/shaders).
+- [Architecture](docs/architecture.md)
+- [Package graph](docs/package_graph.md)
+- [Commands](docs/commands.md)
+- [Language inventory](docs/language_inventory.md)
+- [Native libraries](docs/native_libraries.md)
+- [KSL shaders](docs/ksl.md)
+- [LLVM toolchain](docs/llvm_toolchain.md)
+- [Package management](docs/package_management.md)
+- [Examples](examples/README.md)
