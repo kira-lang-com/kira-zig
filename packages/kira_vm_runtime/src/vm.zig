@@ -16,6 +16,7 @@ const ClosureObject = struct {
 const NativeStateBox = extern struct {
     type_id: u64,
     payload: usize,
+    runtime_payload: usize,
 };
 
 pub const NativeCallHook = *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value;
@@ -208,6 +209,7 @@ pub const Vm = struct {
                 },
                 .store_local => |value| locals[value.local] = registers[value.src],
                 .load_local => |value| registers[value.dst] = locals[value.local],
+                .local_ptr => |value| registers[value.dst] = .{ .raw_ptr = @intFromPtr(&locals[value.local]) },
                 .subobject_ptr => |value| {
                     const base = registers[value.base];
                     if (base != .raw_ptr or base.raw_ptr == 0) {
@@ -242,8 +244,7 @@ pub const Vm = struct {
                         self.rememberError("nativeRecover requires a valid native state token");
                         return error.RuntimeFailure;
                     }
-                    registers[value.dst] = .{ .raw_ptr = try self.recoverNativeState(state_value.raw_ptr, value.type_id) };
-                    _ = value.type_name;
+                    registers[value.dst] = .{ .raw_ptr = try self.recoverNativeState(module, value.type_name, state_value.raw_ptr, value.type_id) };
                 },
                 .native_state_field_get => |value| {
                     const state_value = registers[value.state];
@@ -442,26 +443,65 @@ pub const Vm = struct {
             return error.RuntimeFailure;
         };
         const src_ptr: [*]runtime_abi.Value = @ptrFromInt(src_payload);
-        const payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
-        for (type_decl.fields, 0..) |_, index| {
-            payload[index] = runtime_abi.bridgeValueFromValue(src_ptr[index]);
+        const runtime_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+        const native_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            runtime_payload[index] = runtime_abi.bridgeValueFromValue(src_ptr[index]);
+            var native_value = src_ptr[index];
+            if (field_decl.ty.kind == .ffi_struct and native_value == .raw_ptr and native_value.raw_ptr != 0) {
+                native_value = .{ .raw_ptr = try self.copyStructToNativeLayout(
+                    module,
+                    field_decl.ty.name orelse return error.RuntimeFailure,
+                    native_value.raw_ptr,
+                ) };
+            }
+            native_payload[index] = runtime_abi.bridgeValueFromValue(native_value);
         }
 
         const box = try self.allocator.create(NativeStateBox);
         box.* = .{
             .type_id = type_id,
-            .payload = @intFromPtr(payload.ptr),
+            .payload = @intFromPtr(native_payload.ptr),
+            .runtime_payload = @intFromPtr(runtime_payload.ptr),
         };
         return @intFromPtr(box);
     }
 
-    fn recoverNativeState(self: *Vm, state_token: usize, expected_type_id: u64) !usize {
+    fn recoverNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, state_token: usize, expected_type_id: u64) !usize {
         const box: *NativeStateBox = @ptrFromInt(state_token);
-        if (box.type_id != expected_type_id or box.payload == 0) {
+        if (box.type_id != expected_type_id) {
             self.rememberError("nativeRecover used a userdata token for the wrong state type");
             return error.RuntimeFailure;
         }
-        return box.payload;
+        if (box.payload != 0) {
+            box.runtime_payload = try self.materializeNativeStatePayload(module, type_name, box.payload);
+        }
+        if (box.runtime_payload == 0) {
+            self.rememberError("nativeRecover used a userdata token with no state payload");
+            return error.RuntimeFailure;
+        }
+        return box.runtime_payload;
+    }
+
+    fn materializeNativeStatePayload(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_payload_ptr: usize) !usize {
+        const type_decl = findType(module, type_name) orelse {
+            self.rememberError("native state type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const native_payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_payload_ptr);
+        const runtime_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+        for (type_decl.fields, 0..) |field_decl, index| {
+            var value = runtime_abi.bridgeValueToValue(native_payload[index]);
+            if (field_decl.ty.kind == .ffi_struct and value == .raw_ptr and value.raw_ptr != 0) {
+                value = .{ .raw_ptr = try self.copyStructFromNativeLayout(
+                    module,
+                    field_decl.ty.name orelse return error.RuntimeFailure,
+                    value.raw_ptr,
+                ) };
+            }
+            runtime_payload[index] = runtime_abi.bridgeValueFromValue(value);
+        }
+        return @intFromPtr(runtime_payload.ptr);
     }
 
     fn zeroValueForType(self: *Vm, module: *const bytecode.Module, value_type: bytecode.TypeRef) anyerror!runtime_abi.Value {

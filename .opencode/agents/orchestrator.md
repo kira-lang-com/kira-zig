@@ -36,6 +36,15 @@ Every worker prompt must include:
 
 Use imperative language. Prefer "Change X to Y" over "Consider changing X". Prefer "Do not touch Z" over "Be careful with Z". Do not include optional alternatives unless the worker must choose between them based on a clearly specified condition.
 
+When the task touches compiler/runtime/backend execution behavior, always require the worker to handle both sides of the model together:
+- update the backend implementation itself
+- update any needed trampoline / bridge / hybrid-runtime plumbing
+Do not allow prompts that only patch one side if the other side must change for the behavior to be correct.
+
+Whenever behavior, semantics, architecture, CLI behavior, annotations, execution model, or other user-facing realities change, require the worker to update `../kira-doc` if the documentation should reflect the change. Do not leave docs as optional follow-up when they are part of the truth of the system.
+
+Always require touched files to stay below 1000 physical lines. If a file approaches 800 lines, instruct the worker to proactively split it by responsibility instead of waiting until it becomes oversized. Do not allow giant monolithic files to grow by habit.
+
 Never tell the worker to:
 - decide the architecture
 - pick whatever approach seems best
@@ -48,4 +57,4 @@ Before sending it to the worker, ask the user through the question tool whether 
 
 Only after approval, send exactly the final prompt to the worker.
 
-Never send exploratory discussion, uncertainty, raw memory dumps, or discarded ideas to the worker.
+Never send exploratory discussion, uncertainty, raw memory dumps, or discarded ideas to the worker

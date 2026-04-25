@@ -758,11 +758,9 @@ fn captureBinding(
     outer: model.LocalBinding,
     use_span: source_pkg.Span,
 ) !model.LocalBinding {
+    _ = use_span;
     if (frame.active_scope.get(name)) |binding| return binding;
-    if (outer.storage != .immutable) {
-        try emitUnsupportedMutableCapture(ctx, name, use_span, outer.decl_span);
-        return error.DiagnosticsEmitted;
-    }
+    const by_ref = outer.storage != .immutable;
 
     const local_id = frame.next_local_id.*;
     frame.next_local_id.* += 1;
@@ -784,6 +782,7 @@ fn captureBinding(
     try frame.captures.append(.{
         .local_id = local_id,
         .source_local_id = outer.id,
+        .by_ref = by_ref,
         .name = local_name,
         .ty = outer.ty,
         .span = outer.decl_span,

@@ -618,6 +618,7 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
             },
             .store_local => {},
             .load_local => |value| register_types[value.dst] = function_decl.local_types[value.local],
+            .local_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "LocalPtr" },
             .subobject_ptr => |value| register_types[value.dst] = register_types[value.base],
             .field_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.field_ty.name },
             .recover_native_state => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.type_name },
@@ -980,7 +981,7 @@ pub fn functionDeclNeedsTextIrFallback(program: ir.Program, function_decl: ir.Fu
 
     for (function_decl.instructions) |instruction| {
         switch (instruction) {
-            .const_int, .const_string, .const_bool, .const_null_ptr, .add, .subtract, .multiply, .divide, .modulo, .unary, .store_local, .load_local => {},
+            .const_int, .const_string, .const_bool, .const_null_ptr, .add, .subtract, .multiply, .divide, .modulo, .unary, .store_local, .load_local, .local_ptr => {},
             .const_float => return true,
             .compare, .branch, .jump, .label => return true,
             .alloc_struct, .alloc_native_state, .alloc_array, .const_function, .const_closure, .subobject_ptr, .field_ptr, .recover_native_state, .native_state_field_get, .native_state_field_set, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return true,

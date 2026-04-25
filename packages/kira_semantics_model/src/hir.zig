@@ -466,6 +466,7 @@ pub const CallbackExpr = struct {
 pub const Capture = struct {
     local_id: u32,
     source_local_id: u32,
+    by_ref: bool = false,
     name: []const u8,
     ty: ResolvedType,
     span: source_pkg.Span,

@@ -433,7 +433,49 @@ pub fn buildTextFunctionBody(
                     },
                 }
             },
-            .const_closure => return error.UnsupportedExecutableFeature,
+            .const_closure => |value| {
+                try writer.print("  %closure.size.ptr.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr null, i32 1\n", .{ value.dst, value.captures.len });
+                try writer.print("  %closure.captures.size.{d} = ptrtoint ptr %closure.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
+                try writer.print("  %closure.size.{d} = add i64 16, %closure.captures.size.{d}\n", .{ value.dst, value.dst });
+                try writer.print("  %closure.ptr.{d} = call ptr @malloc(i64 %closure.size.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  store i64 {d}, ptr %closure.ptr.{d}\n", .{ value.function_id, value.dst });
+                try writer.print("  %closure.count.ptr.{d} = getelementptr inbounds i64, ptr %closure.ptr.{d}, i64 1\n", .{ value.dst, value.dst });
+                try writer.print("  store i64 {d}, ptr %closure.count.ptr.{d}\n", .{ value.captures.len, value.dst });
+                try writer.print("  %closure.slots.{d} = getelementptr inbounds i8, ptr %closure.ptr.{d}, i64 16\n", .{ value.dst, value.dst });
+                for (value.captures, 0..) |capture_reg, index| {
+                    const capture_ty = register_types[capture_reg];
+                    try writer.print("  %closure.slot.{d}.{d} = getelementptr inbounds %kira.bridge.value, ptr %closure.slots.{d}, i64 {d}\n", .{ value.dst, index, value.dst, index });
+                    try writer.print("  %closure.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{ value.dst, index, bridgeTagValue(capture_ty) });
+                    switch (capture_ty.kind) {
+                        .integer, .raw_ptr, .ffi_struct, .array => {
+                            try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{ value.dst, index, value.dst, index, capture_reg });
+                        },
+                        .boolean => {
+                            try writer.print("  %closure.bool.{d}.{d} = zext i1 %r{d} to i64\n", .{ value.dst, index, capture_reg });
+                            try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %closure.bool.{d}.{d}, 2\n", .{ value.dst, index, value.dst, index, value.dst, index });
+                        },
+                        .float => {
+                            if (capture_ty.name != null and std.mem.eql(u8, capture_ty.name.?, "F32")) {
+                                try writer.print("  %closure.float.ext.{d}.{d} = fpext float %r{d} to double\n", .{ value.dst, index, capture_reg });
+                                try writer.print("  %closure.float.bits.{d}.{d} = bitcast double %closure.float.ext.{d}.{d} to i64\n", .{ value.dst, index, value.dst, index });
+                            } else {
+                                try writer.print("  %closure.float.bits.{d}.{d} = bitcast double %r{d} to i64\n", .{ value.dst, index, capture_reg });
+                            }
+                            try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %closure.float.bits.{d}.{d}, 2\n", .{ value.dst, index, value.dst, index, value.dst, index });
+                        },
+                        .string => {
+                            try writer.print("  %closure.str.ptr.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ value.dst, index, capture_reg });
+                            try writer.print("  %closure.str.ptrint.{d}.{d} = ptrtoint ptr %closure.str.ptr.{d}.{d} to i64\n", .{ value.dst, index, value.dst, index });
+                            try writer.print("  %closure.str.len.{d}.{d} = extractvalue %kira.string %r{d}, 1\n", .{ value.dst, index, capture_reg });
+                            try writer.print("  %closure.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %closure.str.ptrint.{d}.{d}, 2\n", .{ value.dst, index, value.dst, index, value.dst, index });
+                            try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.1, i64 %closure.str.len.{d}.{d}, 3\n", .{ value.dst, index, value.dst, index, value.dst, index });
+                        },
+                        .void => return error.UnsupportedExecutableFeature,
+                    }
+                    try writer.print("  store %kira.bridge.value %closure.pack.{d}.{d}, ptr %closure.slot.{d}.{d}\n", .{ value.dst, index, value.dst, index });
+                }
+                try writer.print("  %r{d} = ptrtoint ptr %closure.ptr.{d} to i64\n", .{ value.dst, value.dst });
+            },
             .add => |value| {
                 const arithmetic_type = register_types[value.lhs];
                 try writer.writeAll("  %r");
@@ -543,6 +585,9 @@ pub fn buildTextFunctionBody(
                     try writer.writeAll(", ptr %local");
                     try writer.print("{d}\n", .{value.local});
                 }
+            },
+            .local_ptr => |value| {
+                try writer.print("  %r{d} = ptrtoint ptr %local{d} to i64\n", .{ value.dst, value.local });
             },
             .subobject_ptr => |value| {
                 const base_type_name = register_types[value.base].name orelse return error.UnsupportedExecutableFeature;

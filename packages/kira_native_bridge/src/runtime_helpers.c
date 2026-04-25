@@ -47,6 +47,7 @@ typedef struct {
 typedef struct {
     uint64_t type_id;
     void *payload;
+    void *runtime_payload;
 } KiraNativeState;
 
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
@@ -153,6 +154,7 @@ KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, in
     if (state == NULL) return NULL;
     state->type_id = type_id;
     state->payload = payload_size == 0 ? NULL : calloc(1, (size_t)payload_size);
+    state->runtime_payload = NULL;
     if (payload_size != 0 && state->payload == NULL) {
         free(state);
         return NULL;

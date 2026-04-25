@@ -2,8 +2,9 @@
 function main() {
     var offset: Int = 1
     let printer: (Int) -> Void = { value in
-        print(value + offset)
+        offset = offset + value
     }
     printer(1)
+    print(offset)
     return
 }

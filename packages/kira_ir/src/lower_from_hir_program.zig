@@ -209,7 +209,11 @@ pub fn lowerAssignmentStatement(
     switch (node.target.*) {
         .local => |target| {
             const local_ty = try lowerResolvedType(program, target.ty);
-            if (local_ty.kind == .ffi_struct) {
+            if (lowerer.isBoxedLocal(target.local_id)) {
+                const ptr_reg = lowerer.freshRegister();
+                try instructions.append(.{ .load_local = .{ .dst = ptr_reg, .local = target.local_id } });
+                try instructions.append(.{ .store_indirect = .{ .ptr = ptr_reg, .src = value_reg, .ty = local_ty } });
+            } else if (local_ty.kind == .ffi_struct) {
                 const dst_ptr = lowerer.freshRegister();
                 try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = target.local_id } });
                 try instructions.append(.{ .copy_indirect = .{

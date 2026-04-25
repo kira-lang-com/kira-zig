@@ -100,6 +100,7 @@ pub const Instruction = union(enum) {
     unary: Unary,
     store_local: StoreLocal,
     load_local: LoadLocal,
+    local_ptr: LocalPtr,
     subobject_ptr: SubobjectPtr,
     field_ptr: FieldPtr,
     recover_native_state: RecoverNativeState,
@@ -154,6 +155,11 @@ pub const ConstClosure = struct {
     dst: u32,
     function_id: u32,
     captures: []const u32,
+};
+
+pub const LocalPtr = struct {
+    dst: u32,
+    local: u32,
 };
 
 pub const FunctionConstRepresentation = enum {

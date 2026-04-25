@@ -1,4 +1,4 @@
-backends = ["hybrid", "vm"]
+backends = ["hybrid", "vm", "llvm"]
 
 [phases.check]
 result = "pass"

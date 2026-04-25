@@ -162,7 +162,8 @@ pub fn lowerAssignmentTarget(
     return switch (expr.*) {
         .identifier => |node| blk: {
             const name = node.name.segments[0].text;
-            if (scope.get(name)) |binding| {
+            if (try shared.resolveLocalOrCapture(ctx, scope.*, name, node.span)) |resolution| {
+                const binding = resolution.binding;
                 const target = try ctx.allocator.create(model.Expr);
                 target.* = .{ .local = .{
                     .local_id = binding.id,

@@ -412,6 +412,9 @@ pub fn buildCallValueDispatcher(
         try writer.print("{d}", .{index});
     }
     try writer.writeAll(") {\nentry:\n");
+    try writer.writeAll("  %dispatch.is_direct = icmp ule i64 %function_id, 4294967295\n");
+    try writer.writeAll("  br i1 %dispatch.is_direct, label %dispatch.direct, label %dispatch.closure\n");
+    try writer.writeAll("dispatch.direct:\n");
     try writer.writeAll("  switch i64 %function_id, label %dispatch.default [\n");
 
     var matching_functions = std.array_list.Managed(ir.Function).init(allocator);
@@ -693,8 +696,107 @@ pub fn buildCallValueDispatcher(
         }
     }
 
+    var closure_functions = std.array_list.Managed(ir.Function).init(allocator);
+    defer closure_functions.deinit();
+    for (request.program.functions) |function_decl| {
+        if (resolveExecution(function_decl.execution, request.mode) != .native or function_decl.is_extern) continue;
+        if (!closureCallValueSignature(dispatcher.param_types, dispatcher.return_type, function_decl.param_types, function_decl.return_type)) continue;
+        try closure_functions.append(function_decl);
+    }
+
+    try writer.writeAll("dispatch.closure:\n");
+    try writer.writeAll("  %closure.ptr = inttoptr i64 %function_id to ptr\n");
+    try writer.writeAll("  %closure.id = load i64, ptr %closure.ptr\n");
+    try writer.writeAll("  %closure.slots = getelementptr inbounds i8, ptr %closure.ptr, i64 16\n");
+    try writer.writeAll("  switch i64 %closure.id, label %dispatch.default [\n");
+    for (closure_functions.items, 0..) |function_decl, case_index| {
+        try writer.print("    i64 {d}, label %dispatch.closure.case.{d}\n", .{ function_decl.id, case_index });
+    }
+    try writer.writeAll("  ]\n");
+
+    for (closure_functions.items, 0..) |function_decl, case_index| {
+        const callee_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
+        try writer.print("dispatch.closure.case.{d}:\n", .{case_index});
+        for (function_decl.param_types[dispatcher.param_types.len..], 0..) |capture_type, capture_index| {
+            try writer.print("  %closure.slot.{d}.{d} = getelementptr inbounds %kira.bridge.value, ptr %closure.slots, i64 {d}\n", .{ case_index, capture_index, capture_index });
+            try writer.print("  %closure.value.{d}.{d} = load %kira.bridge.value, ptr %closure.slot.{d}.{d}\n", .{ case_index, capture_index, case_index, capture_index });
+            try writeUnpackBridgeValue(writer, capture_type, case_index, capture_index);
+        }
+
+        if (dispatcher.return_type.kind == .void) {
+            try writer.writeAll("  call void ");
+        } else {
+            try writer.print("  %closure.call.{d} = call {s} ", .{ case_index, llvmValueTypeText(dispatcher.return_type) });
+        }
+        try writeLlvmSymbol(writer, callee_name);
+        try writer.writeByte('(');
+        for (function_decl.param_types, 0..) |param_type, index| {
+            if (index != 0) try writer.writeAll(", ");
+            try writer.writeAll(llvmValueTypeText(param_type));
+            try writer.writeByte(' ');
+            if (index < dispatcher.param_types.len) {
+                try writer.print("%arg{d}", .{index});
+            } else {
+                try writer.print("%closure.arg.{d}.{d}", .{ case_index, index - dispatcher.param_types.len });
+            }
+        }
+        try writer.writeAll(")\n");
+        switch (dispatcher.return_type.kind) {
+            .void => try writer.writeAll("  ret void\n"),
+            .integer, .raw_ptr, .ffi_struct, .array => try writer.print("  ret i64 %closure.call.{d}\n", .{case_index}),
+            .float => try writer.print("  ret {s} %closure.call.{d}\n", .{ llvmValueTypeText(dispatcher.return_type), case_index }),
+            .boolean => try writer.print("  ret i1 %closure.call.{d}\n", .{case_index}),
+            .string => try writer.print("  ret %kira.string %closure.call.{d}\n", .{case_index}),
+        }
+    }
+
     try writer.writeAll("dispatch.default:\n  unreachable\n}\n");
     return output.toOwnedSlice();
+}
+
+fn closureCallValueSignature(dispatcher_params: []const ir.ValueType, dispatcher_return: ir.ValueType, function_params: []const ir.ValueType, function_return: ir.ValueType) bool {
+    if (!sameValueType(dispatcher_return, function_return)) return false;
+    if (function_params.len <= dispatcher_params.len) return false;
+    for (dispatcher_params, 0..) |param_type, index| {
+        if (!sameValueType(param_type, function_params[index])) return false;
+    }
+    return true;
+}
+
+fn sameValueType(lhs: ir.ValueType, rhs: ir.ValueType) bool {
+    if (lhs.kind != rhs.kind) return false;
+    if (lhs.name == null and rhs.name == null) return true;
+    if (lhs.name == null or rhs.name == null) return false;
+    return std.mem.eql(u8, lhs.name.?, rhs.name.?);
+}
+
+fn writeUnpackBridgeValue(writer: anytype, value_type: ir.ValueType, case_index: usize, capture_index: usize) !void {
+    switch (value_type.kind) {
+        .integer, .raw_ptr, .ffi_struct, .array => {
+            try writer.print("  %closure.arg.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 2\n", .{ case_index, capture_index, case_index, capture_index });
+        },
+        .boolean => {
+            try writer.print("  %closure.word.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 2\n", .{ case_index, capture_index, case_index, capture_index });
+            try writer.print("  %closure.arg.{d}.{d} = trunc i64 %closure.word.{d}.{d} to i1\n", .{ case_index, capture_index, case_index, capture_index });
+        },
+        .float => {
+            try writer.print("  %closure.bits.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 2\n", .{ case_index, capture_index, case_index, capture_index });
+            if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32")) {
+                try writer.print("  %closure.float64.{d}.{d} = bitcast i64 %closure.bits.{d}.{d} to double\n", .{ case_index, capture_index, case_index, capture_index });
+                try writer.print("  %closure.arg.{d}.{d} = fptrunc double %closure.float64.{d}.{d} to float\n", .{ case_index, capture_index, case_index, capture_index });
+            } else {
+                try writer.print("  %closure.arg.{d}.{d} = bitcast i64 %closure.bits.{d}.{d} to double\n", .{ case_index, capture_index, case_index, capture_index });
+            }
+        },
+        .string => {
+            try writer.print("  %closure.ptrint.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 2\n", .{ case_index, capture_index, case_index, capture_index });
+            try writer.print("  %closure.len.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 3\n", .{ case_index, capture_index, case_index, capture_index });
+            try writer.print("  %closure.ptr.cast.{d}.{d} = inttoptr i64 %closure.ptrint.{d}.{d} to ptr\n", .{ case_index, capture_index, case_index, capture_index });
+            try writer.print("  %closure.arg.{d}.{d}.0 = insertvalue %kira.string zeroinitializer, ptr %closure.ptr.cast.{d}.{d}, 0\n", .{ case_index, capture_index, case_index, capture_index });
+            try writer.print("  %closure.arg.{d}.{d} = insertvalue %kira.string %closure.arg.{d}.{d}.0, i64 %closure.len.{d}.{d}, 1\n", .{ case_index, capture_index, case_index, capture_index, case_index, capture_index });
+        },
+        .void => return error.UnsupportedExecutableFeature,
+    }
 }
 
 pub fn dispatcherSymbolName(allocator: std.mem.Allocator, hash: u64) ![]const u8 {

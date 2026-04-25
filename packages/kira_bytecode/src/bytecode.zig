@@ -165,6 +165,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.local, .little);
                 },
+                .local_ptr => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.local, .little);
+                },
                 .subobject_ptr => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.base, .little);
@@ -385,6 +389,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .src = try reader.takeInt(u32, .little),
                 } }),
                 .load_local => try instructions.append(.{ .load_local = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .local = try reader.takeInt(u32, .little),
+                } }),
+                .local_ptr => try instructions.append(.{ .local_ptr = .{
                     .dst = try reader.takeInt(u32, .little),
                     .local = try reader.takeInt(u32, .little),
                 } }),

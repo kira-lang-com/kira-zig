@@ -92,6 +92,7 @@ fn lowerFunction(
         };
     }
 
+    const boxed_locals = try collectBoxedLocals(allocator, function_decl.locals.len, function_decl.body);
     var lowerer = Lowerer{
         .allocator = allocator,
         .program = program,
@@ -103,7 +104,9 @@ fn lowerFunction(
         .next_local = @as(u32, @intCast(function_decl.locals.len)),
         .hidden_local_types = std.array_list.Managed(ir.ValueType).init(allocator),
         .loop_stack = std.array_list.Managed(Lowerer.LoopLabels).init(allocator),
+        .boxed_locals = boxed_locals,
     };
+    defer allocator.free(boxed_locals);
     defer lowerer.hidden_local_types.deinit();
     defer lowerer.loop_stack.deinit();
     var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
@@ -123,7 +126,7 @@ fn lowerFunction(
         .return_type = try lowerResolvedType(program, function_decl.return_type),
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
-        .local_types = try lowerAllLocalTypes(allocator, program, function_decl.locals, lowerer.hidden_local_types.items),
+        .local_types = try lowerAllLocalTypesBoxed(allocator, program, function_decl.locals, lowerer.hidden_local_types.items, boxed_locals),
         .instructions = try instructions.toOwnedSlice(),
     };
 }
@@ -137,6 +140,10 @@ fn lowerGeneratedCallbackFunction(
     execution: runtime_abi.FunctionExecution,
     callback: model.hir.CallbackExpr,
 ) !ir.Function {
+    const boxed_locals = try collectBoxedLocals(allocator, callback.locals.len, callback.body);
+    for (callback.captures) |capture| {
+        if (capture.by_ref and capture.local_id < boxed_locals.len) boxed_locals[capture.local_id] = true;
+    }
     var lowerer = Lowerer{
         .allocator = allocator,
         .program = program,
@@ -148,7 +155,9 @@ fn lowerGeneratedCallbackFunction(
         .next_local = @as(u32, @intCast(callback.locals.len)),
         .hidden_local_types = std.array_list.Managed(ir.ValueType).init(allocator),
         .loop_stack = std.array_list.Managed(Lowerer.LoopLabels).init(allocator),
+        .boxed_locals = boxed_locals,
     };
+    defer allocator.free(boxed_locals);
     defer lowerer.hidden_local_types.deinit();
     defer lowerer.loop_stack.deinit();
 
@@ -175,7 +184,7 @@ fn lowerGeneratedCallbackFunction(
         .return_type = try lowerResolvedType(program, callback.return_type),
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
-        .local_types = try lowerCallbackLocalTypes(allocator, program, callback, lowerer.hidden_local_types.items),
+        .local_types = try lowerCallbackLocalTypes(allocator, program, callback, lowerer.hidden_local_types.items, boxed_locals),
         .instructions = try instructions.toOwnedSlice(),
     };
 }
@@ -196,16 +205,31 @@ fn lowerAllLocalTypes(
     return lowered;
 }
 
+fn lowerAllLocalTypesBoxed(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    locals: []const model.LocalSymbol,
+    hidden_locals: []const ir.ValueType,
+    boxed_locals: []const bool,
+) ![]ir.ValueType {
+    const lowered = try lowerAllLocalTypes(allocator, program, locals, hidden_locals);
+    for (boxed_locals, 0..) |boxed, index| {
+        if (boxed and index < lowered.len) lowered[index] = .{ .kind = .raw_ptr, .name = "CaptureCell" };
+    }
+    return lowered;
+}
+
 fn lowerCallbackLocalTypes(
     allocator: std.mem.Allocator,
     program: model.Program,
     callback: model.hir.CallbackExpr,
     hidden_locals: []const ir.ValueType,
+    boxed_locals: []const bool,
 ) ![]ir.ValueType {
-    const lowered = try lowerAllLocalTypes(allocator, program, callback.locals, hidden_locals);
+    const lowered = try lowerAllLocalTypesBoxed(allocator, program, callback.locals, hidden_locals, boxed_locals);
     for (callback.captures, 0..) |_, index| {
         const param_slot = callback.params.len + index;
-        if (param_slot < lowered.len) lowered[param_slot] = try lowerResolvedType(program, callback.captures[index].ty);
+        if (param_slot < lowered.len) lowered[param_slot] = if (callback.captures[index].by_ref) .{ .kind = .raw_ptr, .name = "CaptureCell" } else try lowerResolvedType(program, callback.captures[index].ty);
     }
     return lowered;
 }
@@ -224,12 +248,90 @@ fn lowerCallbackParamTypes(allocator: std.mem.Allocator, program: model.Program,
         lowered[index] = try lowerResolvedType(program, param.ty);
     }
     for (callback.captures, 0..) |capture, index| {
-        lowered[callback.params.len + index] = try lowerResolvedType(program, capture.ty);
+        lowered[callback.params.len + index] = if (capture.by_ref) .{ .kind = .raw_ptr, .name = "CaptureCell" } else try lowerResolvedType(program, capture.ty);
     }
     return lowered;
 }
 
 const lowerResolvedTypeSlice = type_impl.lowerResolvedTypeSlice;
+
+fn collectBoxedLocals(allocator: std.mem.Allocator, local_count: usize, body: []const model.Statement) ![]bool {
+    _ = body;
+    const boxed = try allocator.alloc(bool, local_count);
+    @memset(boxed, false);
+    return boxed;
+}
+
+fn collectBoxedFromStatements(boxed: []bool, body: []const model.Statement) void {
+    for (body) |statement| switch (statement) {
+        .let_stmt => |node| if (node.value) |value| collectBoxedFromExpr(boxed, value),
+        .assign_stmt => |node| {
+            collectBoxedFromExpr(boxed, node.target);
+            collectBoxedFromExpr(boxed, node.value);
+        },
+        .expr_stmt => |node| collectBoxedFromExpr(boxed, node.expr),
+        .if_stmt => |node| {
+            collectBoxedFromExpr(boxed, node.condition);
+            collectBoxedFromStatements(boxed, node.then_body);
+            if (node.else_body) |else_body| collectBoxedFromStatements(boxed, else_body);
+        },
+        .for_stmt => |node| {
+            collectBoxedFromExpr(boxed, node.iterator);
+            collectBoxedFromStatements(boxed, node.body);
+        },
+        .while_stmt => |node| {
+            collectBoxedFromExpr(boxed, node.condition);
+            collectBoxedFromStatements(boxed, node.body);
+        },
+        .switch_stmt => |node| {
+            collectBoxedFromExpr(boxed, node.subject);
+            for (node.cases) |case| {
+                collectBoxedFromExpr(boxed, case.pattern);
+                collectBoxedFromStatements(boxed, case.body);
+            }
+            if (node.default_body) |default_body| collectBoxedFromStatements(boxed, default_body);
+        },
+        .return_stmt => |node| if (node.value) |value| collectBoxedFromExpr(boxed, value),
+        .break_stmt, .continue_stmt => {},
+    };
+}
+
+fn collectBoxedFromExpr(boxed: []bool, expr: *const model.Expr) void {
+    switch (expr.*) {
+        .callback => |node| {
+            for (node.captures) |capture| {
+                if (capture.by_ref and capture.source_local_id < boxed.len) boxed[capture.source_local_id] = true;
+            }
+        },
+        .binary => |node| {
+            collectBoxedFromExpr(boxed, node.lhs);
+            collectBoxedFromExpr(boxed, node.rhs);
+        },
+        .unary => |node| collectBoxedFromExpr(boxed, node.operand),
+        .conditional => |node| {
+            collectBoxedFromExpr(boxed, node.condition);
+            collectBoxedFromExpr(boxed, node.then_expr);
+            collectBoxedFromExpr(boxed, node.else_expr);
+        },
+        .construct => |node| for (node.fields) |field| collectBoxedFromExpr(boxed, field.value),
+        .call => |node| for (node.args) |arg| collectBoxedFromExpr(boxed, arg),
+        .call_value => |node| {
+            collectBoxedFromExpr(boxed, node.callee);
+            for (node.args) |arg| collectBoxedFromExpr(boxed, arg);
+        },
+        .array => |node| for (node.elements) |element| collectBoxedFromExpr(boxed, element),
+        .index => |node| {
+            collectBoxedFromExpr(boxed, node.object);
+            collectBoxedFromExpr(boxed, node.index);
+        },
+        .field => |node| collectBoxedFromExpr(boxed, node.object),
+        .parent_view => |node| collectBoxedFromExpr(boxed, node.object),
+        .native_state => |node| collectBoxedFromExpr(boxed, node.value),
+        .native_user_data => |node| collectBoxedFromExpr(boxed, node.state),
+        .native_recover => |node| collectBoxedFromExpr(boxed, node.value),
+        else => {},
+    }
+}
 
 fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
     switch (expr.*) {
@@ -283,6 +385,7 @@ pub const Lowerer = struct {
     next_local: u32,
     hidden_local_types: std.array_list.Managed(ir.ValueType),
     loop_stack: std.array_list.Managed(LoopLabels),
+    boxed_locals: []const bool,
 
     const LoopLabels = struct {
         break_label: u32,
@@ -306,6 +409,10 @@ pub const Lowerer = struct {
         self.next_local += 1;
         try self.hidden_local_types.append(ty);
         return local;
+    }
+
+    pub fn isBoxedLocal(self: *Lowerer, local: u32) bool {
+        return local < self.boxed_locals.len and self.boxed_locals[local];
     }
 
     fn lowerCallbackExpr(self: *Lowerer, node: model.hir.CallbackExpr) !u32 {
@@ -334,8 +441,17 @@ pub const Lowerer = struct {
     fn lowerStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statement: model.Statement) !bool {
         switch (statement) {
             .let_stmt => |node| {
+                if (self.isBoxedLocal(node.local_id)) {
+                    const ptr = self.freshRegister();
+                    try instructions.append(.{ .local_ptr = .{ .dst = ptr, .local = node.local_id } });
+                    try instructions.append(.{ .store_local = .{ .local = node.local_id, .src = ptr } });
+                }
                 if (node.value) |value| {
                     const reg = try self.lowerExpr(instructions, value);
+                    if (self.isBoxedLocal(node.local_id)) {
+                        try self.storeValueToLocal(instructions, node.local_id, try lowerResolvedType(self.program, node.ty), reg);
+                        return false;
+                    }
                     if ((try lowerResolvedType(self.program, node.ty)).kind == .ffi_struct) {
                         const dst_ptr = self.freshRegister();
                         try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = node.local_id } });
@@ -615,7 +731,15 @@ pub const Lowerer = struct {
                     defer captures.deinit();
                     for (node.captures) |capture| {
                         const reg = self.freshRegister();
-                        try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                        if (capture.by_ref) {
+                            if (self.isBoxedLocal(capture.source_local_id)) {
+                                try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                            } else {
+                                try instructions.append(.{ .local_ptr = .{ .dst = reg, .local = capture.source_local_id } });
+                            }
+                        } else {
+                            try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                        }
                         try captures.append(reg);
                     }
                     try instructions.append(.{ .const_closure = .{
@@ -839,7 +963,13 @@ pub const Lowerer = struct {
             },
             .local => |node| blk: {
                 const dst = self.freshRegister();
-                try instructions.append(.{ .load_local = .{ .dst = dst, .local = node.local_id } });
+                if (self.isBoxedLocal(node.local_id)) {
+                    const ptr = self.freshRegister();
+                    try instructions.append(.{ .load_local = .{ .dst = ptr, .local = node.local_id } });
+                    try instructions.append(.{ .load_indirect = .{ .dst = dst, .ptr = ptr, .ty = try lowerResolvedType(self.program, node.ty) } });
+                } else {
+                    try instructions.append(.{ .load_local = .{ .dst = dst, .local = node.local_id } });
+                }
                 break :blk dst;
             },
             .parent_view => |node| blk: {
@@ -1013,6 +1143,12 @@ pub const Lowerer = struct {
         ty: ir.ValueType,
         src: u32,
     ) !void {
+        if (self.isBoxedLocal(local)) {
+            const ptr = self.freshRegister();
+            try instructions.append(.{ .load_local = .{ .dst = ptr, .local = local } });
+            try instructions.append(.{ .store_indirect = .{ .ptr = ptr, .src = src, .ty = ty } });
+            return;
+        }
         if (ty.kind == .ffi_struct) {
             const dst_ptr = self.freshRegister();
             try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = local } });
