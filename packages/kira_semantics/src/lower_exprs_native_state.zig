@@ -130,7 +130,7 @@ fn resolveNativeRecoverType(
     type_expr: *syntax.ast.TypeExpr,
     span: source_pkg.Span,
 ) !model.ResolvedType {
-    const resolved = try shared.typeFromSyntax(ctx.allocator, type_expr.*);
+    const resolved = try shared.typeFromSyntaxChecked(ctx, type_expr.*);
     if (resolved.kind == .named and resolved.name != null and shared.namedTypeHeader(ctx, resolved) != null and shared.namedTypeInfo(ctx, resolved) == null) {
         return resolved;
     }

@@ -17,6 +17,7 @@ pub const Context = struct {
     diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
     imported_globals: ImportedGlobals = .{},
     annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
+    construct_headers: ?*const std.StringHashMapUnmanaged(ConstructHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
     callback_capture_frame: ?*CallbackCaptureFrame = null,
@@ -141,6 +142,7 @@ pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) any
     return switch (ty) {
         .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(allocator, info.element_type.*) },
         .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(allocator, info) },
+        .any => |info| .{ .kind = .named, .name = try typeTextFromSyntax(allocator, .{ .any = info }) },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
             if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
@@ -174,6 +176,7 @@ pub fn typeTextFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr)
     return switch (ty) {
         .array => |info| std.fmt.allocPrint(allocator, "[{s}]", .{try typeTextFromSyntax(allocator, info.element_type.*)}),
         .function => |info| functionTypeTextFromSyntax(allocator, info),
+        .any => |info| std.fmt.allocPrint(allocator, "any {s}", .{try typeTextFromSyntax(allocator, info.target.*)}),
         .named => |name| allocator.dupe(u8, name.segments[name.segments.len - 1].text),
     };
 }
@@ -241,6 +244,75 @@ pub fn typeLabel(ty: model.ResolvedType) []const u8 {
         .array => "[]",
         .unknown => "Unknown",
     };
+}
+
+pub fn typeFromSyntaxChecked(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
+    const resolved = try typeFromSyntax(ctx.allocator, ty);
+    try validateAnyConstructType(ctx, ty);
+    return resolved;
+}
+
+pub fn validateAnyConstructType(ctx: *Context, ty: syntax.ast.TypeExpr) !void {
+    switch (ty) {
+        .any => |info| {
+            try validateAnyConstructTarget(ctx, info.target.*, info.span);
+            try validateAnyConstructType(ctx, info.target.*);
+        },
+        .array => |info| try validateAnyConstructType(ctx, info.element_type.*),
+        .function => |info| {
+            for (info.params) |param| try validateAnyConstructType(ctx, param.*);
+            try validateAnyConstructType(ctx, info.result.*);
+        },
+        .named => {},
+    }
+}
+
+fn validateAnyConstructTarget(ctx: *Context, target: syntax.ast.TypeExpr, span: source_pkg.Span) !void {
+    const name = switch (target) {
+        .named => |qualified| qualified.segments[qualified.segments.len - 1].text,
+        else => {
+            try emitAnyRequiresConstruct(ctx, span, "target is not a construct");
+            return error.DiagnosticsEmitted;
+        },
+    };
+    if (ctx.construct_headers) |headers| if (headers.contains(name)) return;
+    if (ctx.imported_globals.hasConstruct(name)) return;
+    if (isBuiltinTypeName(name) or isResolvedNonConstructSymbol(ctx, name)) {
+        try emitAnyRequiresConstruct(ctx, span, "resolved target is not a construct");
+        return error.DiagnosticsEmitted;
+    }
+}
+
+fn isResolvedNonConstructSymbol(ctx: *const Context, name: []const u8) bool {
+    if (ctx.type_headers) |headers| if (headers.contains(name)) return true;
+    if (ctx.imported_globals.findType(name) != null) return true;
+    if (ctx.function_headers) |headers| if (headers.contains(name)) return true;
+    if (ctx.imported_globals.findFunction(name) != null) return true;
+    if (ctx.annotation_headers) |headers| if (headers.contains(name)) return true;
+    return false;
+}
+
+fn isBuiltinTypeName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Int") or std.mem.eql(u8, name, "Float") or
+        std.mem.eql(u8, name, "Bool") or std.mem.eql(u8, name, "String") or
+        std.mem.eql(u8, name, "Void") or std.mem.eql(u8, name, "I8") or
+        std.mem.eql(u8, name, "U8") or std.mem.eql(u8, name, "I16") or
+        std.mem.eql(u8, name, "U16") or std.mem.eql(u8, name, "I32") or
+        std.mem.eql(u8, name, "U32") or std.mem.eql(u8, name, "I64") or
+        std.mem.eql(u8, name, "U64") or std.mem.eql(u8, name, "F32") or
+        std.mem.eql(u8, name, "F64") or std.mem.eql(u8, name, "CBool") or
+        std.mem.eql(u8, name, "CString") or std.mem.eql(u8, name, "RawPtr");
+}
+
+fn emitAnyRequiresConstruct(ctx: *Context, span: source_pkg.Span, label: []const u8) !void {
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM097",
+        .title = "any requires a construct",
+        .message = "The `any` qualifier can only be applied to a construct name.",
+        .labels = &.{diagnostics.primaryLabel(span, label)},
+        .help = "Use `any ConstructName` with a declared construct, or remove `any` from non-construct types.",
+    });
 }
 
 pub fn namedTypeInfo(ctx: *const Context, ty: model.ResolvedType) ?model.NamedTypeInfo {

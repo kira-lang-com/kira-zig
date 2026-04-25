@@ -8,7 +8,7 @@ const parent = @import("lower_shared.zig");
 const Context = parent.Context;
 const qualifiedNameText = parent.qualifiedNameText;
 const qualifiedNameLeaf = parent.qualifiedNameLeaf;
-const typeFromSyntax = parent.typeFromSyntax;
+const typeFromSyntaxChecked = parent.typeFromSyntaxChecked;
 const typeLabel = parent.typeLabel;
 const annotationLiteralValue = parent.annotationLiteralValue;
 const annotationValueForParameter = parent.annotationValueForParameter;
@@ -34,7 +34,7 @@ pub fn lowerAnnotationDecl(ctx: *Context, decl: syntax.ast.AnnotationDecl, modul
         }
         try parameter_names.put(ctx.allocator, param.name, param.span);
 
-        const param_type = try typeFromSyntax(ctx.allocator, param.type_expr.*);
+        const param_type = try typeFromSyntaxChecked(ctx, param.type_expr.*);
         if (!isSupportedAnnotationParameterType(param_type)) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
@@ -110,7 +110,7 @@ pub fn lowerGeneratedFunctions(ctx: *Context, source_name: []const u8, members: 
                 var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
                 for (function_decl.params) |param| {
                     if (param.type_expr) |type_expr| {
-                        try params.append(try typeFromSyntax(ctx.allocator, type_expr.*));
+                        try params.append(try typeFromSyntaxChecked(ctx, type_expr.*));
                     } else {
                         try params.append(.{ .kind = .unknown });
                     }
@@ -119,7 +119,7 @@ pub fn lowerGeneratedFunctions(ctx: *Context, source_name: []const u8, members: 
                     .name = try ctx.allocator.dupe(u8, function_decl.name),
                     .overridable = generated_member.overridable,
                     .params = try params.toOwnedSlice(),
-                    .return_type = if (function_decl.return_type) |return_type| try typeFromSyntax(ctx.allocator, return_type.*) else .{ .kind = .unknown },
+                    .return_type = if (function_decl.return_type) |return_type| try typeFromSyntaxChecked(ctx, return_type.*) else .{ .kind = .unknown },
                     .source_annotation = try ctx.allocator.dupe(u8, source_name),
                     .span = generated_member.span,
                 });

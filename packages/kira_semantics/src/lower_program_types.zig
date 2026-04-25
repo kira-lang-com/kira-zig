@@ -568,7 +568,7 @@ pub fn applyLocalTypeMembers(
                 return error.DiagnosticsEmitted;
             }
             if (field_decl.type_expr) |type_expr| {
-                const explicit_type = try shared.typeFromSyntax(ctx.allocator, type_expr.*);
+                const explicit_type = try shared.typeFromSyntaxChecked(ctx, type_expr.*);
                 if (!shared.canAssignExactly(match.field.ty, explicit_type)) {
                     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                         .severity = .@"error",
@@ -821,7 +821,7 @@ pub fn makeDeclaredMethodMember(
     var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
     for (function_decl.params) |param| {
         if (param.type_expr) |type_expr| {
-            try params.append(try shared.typeFromSyntax(ctx.allocator, type_expr.*));
+            try params.append(try shared.typeFromSyntaxChecked(ctx, type_expr.*));
         } else {
             try params.append(.{ .kind = .unknown });
         }
@@ -832,7 +832,7 @@ pub fn makeDeclaredMethodMember(
         .receiver_type_name = try ctx.allocator.dupe(u8, owner_type_name),
         .receiver_offset = 0,
         .params = try params.toOwnedSlice(),
-        .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(ctx.allocator, return_type.*) else .{ .kind = .unknown },
+        .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else .{ .kind = .unknown },
         .span = function_decl.span,
     };
 }
@@ -851,7 +851,7 @@ pub fn registerTypeMethodHeaders(
         try param_types.append(.{ .kind = .named, .name = type_decl.name });
         for (function_decl.params) |param| {
             if (param.type_expr) |type_expr| {
-                try param_types.append(try shared.typeFromSyntax(ctx.allocator, type_expr.*));
+                try param_types.append(try shared.typeFromSyntaxChecked(ctx, type_expr.*));
             } else {
                 try param_types.append(.{ .kind = .unknown });
             }
@@ -861,7 +861,7 @@ pub fn registerTypeMethodHeaders(
             .id = @as(u32, @intCast(function_headers.count())),
             .params = try param_types.toOwnedSlice(),
             .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
-            .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(ctx.allocator, return_type.*) else .{ .kind = .unknown },
+            .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else .{ .kind = .unknown },
             .is_extern = foreign != null,
             .foreign = foreign,
             .span = function_decl.span,

@@ -370,6 +370,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
 pub fn typeSpan(ty: syntax.ast.TypeExpr) source_pkg.Span {
     return switch (ty) {
         .named => |node| node.span,
+        .any => |node| node.span,
         .array => |node| node.span,
         .function => |node| node.span,
     };
