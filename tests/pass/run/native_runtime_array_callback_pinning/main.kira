@@ -1,0 +1,11 @@
+@Native
+function sum(values: [Int]) -> Int {
+    return values[0] + values[1] + values[2]
+}
+
+@Main
+@Runtime
+function main() {
+    print(sum([4, 5, 6]))
+    return
+}

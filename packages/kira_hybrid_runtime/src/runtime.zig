@@ -47,7 +47,7 @@ pub const HybridRuntime = struct {
 
         switch (self.manifest.entry_execution) {
             .runtime => try self.invokeRuntime(&runtime_context, self.manifest.entry_function_id, &.{}, null),
-            .native => _ = try self.bridge.call(self.manifest.entry_function_id, &.{}),
+            .native => _ = try callNativeFunction(self, self.manifest.entry_function_id, &.{}),
             .inherited => unreachable,
         }
     }
@@ -96,6 +96,7 @@ pub const HybridRuntime = struct {
         }
 
         var bridge_result = runtime_abi.bridgeValueFromValue(result);
+        try self.vm.pinNativeBoundaryValue(result);
         if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = try self.vm.lowerStructToNativeLayout(
                 &self.module,
@@ -178,6 +179,9 @@ fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?h
 }
 
 fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
+    try self.vm.beginNativeBoundary();
+    defer self.vm.endNativeBoundary();
+
     const function_decl = findFunction(self.manifest.functions, function_id) orelse return error.UnknownFunction;
     const lowered_args = try self.allocator.alloc(runtime_abi.Value, args.len);
     defer self.allocator.free(lowered_args);
@@ -186,6 +190,7 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     @memset(native_arg_ptrs, 0);
 
     for (args, 0..) |arg, index| {
+        try self.vm.pinNativeBoundaryValue(arg);
         lowered_args[index] = arg;
         if (index >= function_decl.param_types.len) continue;
         const param_type = function_decl.param_types[index];
@@ -199,6 +204,7 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     }
 
     var result = try self.bridge.call(function_id, lowered_args);
+    self.vm.retainManagedValue(result);
     for (native_arg_ptrs, 0..) |native_ptr, index| {
         if (native_ptr == 0) continue;
         const param_type = function_decl.param_types[index];
@@ -217,6 +223,15 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
             result.raw_ptr,
         ) };
     }
+    return result;
+}
+
+fn callNativeFunction(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
+    try self.vm.beginNativeBoundary();
+    defer self.vm.endNativeBoundary();
+
+    const result = try self.bridge.call(function_id, args);
+    self.vm.retainManagedValue(result);
     return result;
 }
 
