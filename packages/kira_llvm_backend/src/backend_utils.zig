@@ -576,7 +576,7 @@ pub fn emitObjectFileViaZigCc(
         .data = ir_text,
     });
 
-    const process_environ: std.process.Environ = if (@import("builtin").os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
@@ -588,8 +588,27 @@ pub fn emitObjectFileViaZigCc(
     defer allocator.free(result.stderr);
 
     if (result.term != .exited or result.term.exited != 0) {
+        if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
         return error.ObjectEmissionFailed;
     }
+}
+
+pub fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, function_decl: ir.Function) ![]ir.ValueType {

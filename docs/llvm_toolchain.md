@@ -57,13 +57,14 @@ Each release asset is produced from an LLVM install tree, not from the raw build
 
 - `include/llvm/`
 - `include/llvm-c/`
+- `bin/clang` or `bin/clang.exe`
 - `lib/`
 - `bin/llvm-config` or `bin/llvm-config.exe` when LLVM installs it on that host
 - any supporting files installed alongside those directories by LLVM's normal install step
 
 On macOS, the shared runtime may appear as `libLLVM.dylib` rather than `libLLVM-C.dylib`; Kira accepts either layout.
 
-The workflow intentionally avoids building LLVM examples, tests, benchmarks, docs, bindings, and optional compression or XML dependencies. The goal is a usable LLVM integration bundle for Kira, not a full general-purpose LLVM workstation image.
+The workflow intentionally avoids building LLVM examples, tests, benchmarks, docs, bindings, and optional compression or XML dependencies. It does include `clang`, because Kira uses the compiler driver from the managed toolchain for native compilation steps. The goal is a focused LLVM-plus-clang integration bundle for Kira rather than a full general-purpose LLVM workstation image.
 
 ## Release workflow
 

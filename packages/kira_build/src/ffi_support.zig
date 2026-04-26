@@ -41,6 +41,9 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     if (library.build.sources.len == 0) return;
     const maybe_dir = std.fs.path.dirname(library.artifact_path) orelse ".";
     try makePath(maybe_dir);
+    if (builtin.os.tag == .macos and library.link_mode == .static) {
+        return compileStaticLibraryViaClang(allocator, library);
+    }
     const target_triple = try targetTriple(allocator, library.target);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
@@ -66,7 +69,7 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     }
     try argv.appendSlice(library.build.sources);
 
-    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
@@ -78,7 +81,87 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .exited or result.term.exited != 0) return error.NativeLibraryBuildFailed;
+    if (result.term != .exited or result.term.exited != 0) {
+        if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+        return error.NativeLibraryBuildFailed;
+    }
+}
+
+fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
+    var object_paths = std.array_list.Managed([]const u8).init(allocator);
+    defer {
+        for (object_paths.items) |path| {
+            std.Io.Dir.cwd().deleteFile(std.Options.debug_io, path) catch {};
+        }
+    }
+
+    for (library.build.sources, 0..) |source_path, index| {
+        const object_path = try sourceObjectPath(allocator, library.artifact_path, index);
+        try object_paths.append(object_path);
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        try argv.appendSlice(&.{ "clang", "-c", source_path, "-o", object_path });
+        for (library.headers.include_dirs) |include_dir| {
+            try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
+        }
+        for (library.build.include_dirs) |include_dir| {
+            try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
+        }
+        for (library.headers.defines) |define| {
+            try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
+        }
+        for (library.build.defines) |define| {
+            try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
+        }
+        try runCommand(allocator, argv.items);
+    }
+
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    std.Io.Dir.cwd().deleteFile(std.Options.debug_io, library.artifact_path) catch {};
+    try argv.appendSlice(&.{ "ar", "rcs", library.artifact_path });
+    try argv.appendSlice(object_paths.items);
+    try runCommand(allocator, argv.items);
+}
+
+fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.src-{d}.o", .{ artifact_path, index });
+}
+
+fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = argv,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term == .exited and result.term.exited == 0) return;
+    if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+    if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+    return error.NativeLibraryBuildFailed;
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 fn targetTriple(allocator: std.mem.Allocator, selector: native.TargetSelector) ![]const u8 {

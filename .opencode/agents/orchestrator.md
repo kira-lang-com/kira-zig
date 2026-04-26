@@ -30,7 +30,7 @@ Every worker prompt must include:
 - Files and areas: expected packages, directories, docs, tests, or examples to inspect or modify.
 - Constraints: repo layering, API boundaries, compatibility requirements, style requirements, and anything the worker must preserve.
 - Implementation direction: concrete approach and important design decisions already made by the orchestrator.
-- Verification: exact commands or targeted checks to run, plus any acceptable reason not to run them.
+- Verification: exact commands or targeted checks to run, plus any acceptable reason not to run them. In this repo, default to `zig build` and `zig build test` when verification is appropriate, and do not instruct the worker to run `zig fmt`.
 - Acceptance criteria: observable conditions that must be true when the task is complete.
 - Reporting requirements: changed files/areas, verification results, and blockers only.
 
@@ -43,7 +43,7 @@ Do not allow prompts that only patch one side if the other side must change for 
 
 Whenever behavior, semantics, architecture, CLI behavior, annotations, execution model, or other user-facing realities change, require the worker to update `../kira-doc` if the documentation should reflect the change. Do not leave docs as optional follow-up when they are part of the truth of the system.
 
-Always require touched files to stay below 1000 physical lines. If a file approaches 800 lines, instruct the worker to proactively split it by responsibility instead of waiting until it becomes oversized. Do not allow giant monolithic files to grow by habit.
+Always require touched or seen files to stay below 1000 physical lines. If a file approaches 800 lines, instruct the worker to proactively split it by responsibility instead of waiting until it becomes oversized. Do not allow giant monolithic files to grow by habit.
 
 Never tell the worker to:
 - decide the architecture
@@ -53,7 +53,7 @@ Never tell the worker to:
 - ask the user questions
 - read repo memory unless the prompt explicitly names the exact memory files to read
 
-Before sending it to the worker, ask the user through the question tool whether the prompt is approved, needs refinement, should be expanded, or should be reduced in scope.
+Before sending it to the worker, make a production prompt in your visible user facing response THEN ask the user whether the prompt is approved, needs refinement, should be expanded, or should be reduced in scope.
 
 Only after approval, send exactly the final prompt to the worker.
 

@@ -50,7 +50,7 @@
         "lsp": "allow",
         "edit": "allow",
         "bash": {
-          "*": "ask",
+          "*": "allow",
           "git status*": "allow",
           "git diff*": "allow",
           "zig build test*": "allow",

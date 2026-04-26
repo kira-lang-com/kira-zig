@@ -165,7 +165,7 @@ fn runExecutable(
     stdout: anytype,
     stderr: anytype,
 ) !void {
-    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     var environ_map = if (trace_execution) try std.process.Environ.createMap(process_environ, allocator) else null;
@@ -214,6 +214,23 @@ fn runExecutable(
         try stderr.writeAll("  note: Windows may report native fail-fast statuses through the low exit byte; running the executable directly can reveal the full NTSTATUS.\n");
     }
     return error.NativeRunFailed;
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 test "parseArgs recognizes trace execution" {

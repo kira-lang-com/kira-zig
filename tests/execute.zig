@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
@@ -259,7 +260,8 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     }
 
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = .{ .block = .global } });
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const child = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{executable.path},
@@ -297,7 +299,8 @@ fn runHybridPhase(
     }
 
     const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = .{ .block = .global } });
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const child = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{ runner, manifest_path },
@@ -338,6 +341,23 @@ fn makeTmpDir(allocator: std.mem.Allocator) !TmpDir {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, sub_path);
     const dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, sub_path, .{});
     return .{ .allocator = allocator, .sub_path = sub_path, .dir = dir };
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 fn buildOutputPath(allocator: std.mem.Allocator, tmp: TmpDir, backend: discovery.Backend) ![]const u8 {

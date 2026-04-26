@@ -2,22 +2,29 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
+const backend_utils = @import("backend_utils.zig");
+const toolchain = @import("toolchain.zig");
 
 pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {
     const helper_object = try helperObjectPath(allocator, object_path);
     const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
-    const target = try zigTargetTriple(allocator);
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     try ensureParentDir(helper_object);
-    try runCommand(allocator, &.{
-        build_options.zig_exe,
-        "cc",
-        "-target",
-        target,
-        "-c",
-        helper_source,
-        "-o",
-        helper_object,
-    });
+    if (builtin.os.tag == .macos) {
+        try runCommand(allocator, &.{ driver_path, "-c", helper_source, "-o", helper_object });
+    } else {
+        const target = try zigTargetTriple(allocator);
+        try runCommand(allocator, &.{
+            driver_path,
+            "-target",
+            target,
+            "-c",
+            helper_source,
+            "-o",
+            helper_object,
+        });
+    }
     return helper_object;
 }
 
@@ -28,10 +35,15 @@ pub fn linkExecutable(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) !void {
     try ensureParentDir(executable_path);
-    const target = try zigTargetTriple(allocator);
-
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-target", target, "-o", executable_path });
+    if (builtin.os.tag == .macos) {
+        try argv.appendSlice(&.{ driver_path, "-o", executable_path });
+    } else {
+        const target = try zigTargetTriple(allocator);
+        try argv.appendSlice(&.{ driver_path, "-target", target, "-o", executable_path });
+    }
     if (builtin.os.tag == .windows) {
         try argv.append("-Wl,/subsystem:console");
     }
@@ -57,10 +69,15 @@ pub fn linkSharedLibrary(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) !void {
     try ensureParentDir(library_path);
-    const target = try zigTargetTriple(allocator);
-
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ build_options.zig_exe, "cc", "-target", target, "-shared", "-o", library_path });
+    if (builtin.os.tag == .macos) {
+        try argv.appendSlice(&.{ driver_path, "-shared", "-o", library_path });
+    } else {
+        const target = try zigTargetTriple(allocator);
+        try argv.appendSlice(&.{ driver_path, "-target", target, "-shared", "-o", library_path });
+    }
     for (object_paths) |path| try argv.append(path);
 
     for (native_libraries) |library| {
@@ -84,7 +101,7 @@ fn helperObjectPath(allocator: std.mem.Allocator, object_path: []const u8) ![]co
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    const process_environ: std.process.Environ = if (@import("builtin").os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = backend_utils.inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{

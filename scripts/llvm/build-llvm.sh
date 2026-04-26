@@ -65,6 +65,7 @@ cmake -S "$source_dir/llvm" -B "$build_dir" -G "$cmake_generator" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_LINK_LLVM_DYLIB=ON \
+    -DLLVM_ENABLE_PROJECTS=clang \
     -DLLVM_ENABLE_BINDINGS=OFF \
     -DLLVM_ENABLE_LIBXML2=OFF \
     -DLLVM_ENABLE_ZLIB=OFF \

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("kira_llvm_build_options");
 const kira_toolchain = @import("kira_toolchain");
+const backend_utils = @import("backend_utils.zig");
 const toolchain_layout = @import("toolchain_layout.zig");
 
 pub const InitSymbols = struct {
@@ -75,6 +76,18 @@ pub const Toolchain = struct {
         );
         return error.LlvmToolchainUnavailable;
     }
+
+    pub fn compilerDriverPath(self: Toolchain, allocator: std.mem.Allocator) ![]const u8 {
+        const clang_name = if (builtin.os.tag == .windows) "clang.exe" else "clang";
+        const clang_path = try std.fs.path.join(allocator, &.{ self.bin_dir, clang_name });
+        if (fileExists(clang_path)) return clang_path;
+
+        std.debug.print(
+            "LLVM toolchain at '{s}' is missing required compiler driver '{s}'.\nExpected to find: {s}\n",
+            .{ self.home, clang_name, clang_path },
+        );
+        return error.LlvmCompilerDriverUnavailable;
+    }
 };
 
 fn fromHome(allocator: std.mem.Allocator, home: []const u8) !?Toolchain {
@@ -136,7 +149,7 @@ fn resolveWithLlvmConfig(
 }
 
 fn runLlvmConfig(allocator: std.mem.Allocator, llvm_config: []const u8, arg: []const u8) ![]const u8 {
-    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = backend_utils.inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{

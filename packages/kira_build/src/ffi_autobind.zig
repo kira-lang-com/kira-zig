@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
@@ -110,7 +111,7 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
         try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
     }
 
-    const process_environ: std.process.Environ = if (@import("builtin").os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
@@ -127,6 +128,23 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
     }
 
     return result.stdout;
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 fn buildAstIndex(allocator: std.mem.Allocator, ast_json: []const u8, headers: []const []const u8) !AstIndex {

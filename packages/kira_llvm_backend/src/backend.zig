@@ -69,6 +69,7 @@ pub const functionDeclNeedsTextIrFallback = backend_utils.functionDeclNeedsTextI
 pub const hostTargetTriple = backend_utils.hostTargetTriple;
 pub const ensureParentDir = backend_utils.ensureParentDir;
 pub const allocPrintZ = backend_utils.allocPrintZ;
+pub const inheritedProcessEnviron = backend_utils.inheritedProcessEnviron;
 
 pub fn compile(allocator: std.mem.Allocator, request: backend_api.CompileRequest) !backend_api.CompileResult {
     if (request.mode != .llvm_native and request.mode != .hybrid) return error.UnsupportedBackendMode;
@@ -532,7 +533,7 @@ fn emitObjectFileFromIr(
     object_path: []const u8,
 ) !void {
     const target = try zigCcTargetTriple(allocator);
-    const process_environ: std.process.Environ = if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+    const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = std.process.run(allocator, io_impl.io(), .{
@@ -544,6 +545,8 @@ fn emitObjectFileFromIr(
     defer allocator.free(result.stderr);
 
     if (result.term != .exited or result.term.exited != 0) {
+        if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
         return error.ObjectEmissionFailed;
     }
 }
