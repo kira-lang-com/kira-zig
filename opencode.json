@@ -17,11 +17,16 @@
         "lsp": "allow",
         "question": "allow",
         "todowrite": "allow",
-        "edit": "deny",
+        "edit": "allow",
         "bash": {
           "*": "deny",
           "git status*": "allow",
-          "git diff*": "allow"
+          "git diff*": "allow",
+          "git add*": "allow",
+          "git commit*": "allow",
+          "git merge*": "allow",
+          "git worktree*": "allow",
+          "git stash*": "allow"
         },
         "task": {
           "*": "deny",
@@ -35,7 +40,7 @@
     "worker": {
       "description": "Context-isolated implementation worker. Receives only the approved brief and executes it without inherited planning context.",
       "mode": "subagent",
-      "model": "openai/gpt-5.5",
+      "model": "openai/gpt-5.4",
       "temperature": 0.1,
       "reasoningEffort": "medium",
       "permission": {
