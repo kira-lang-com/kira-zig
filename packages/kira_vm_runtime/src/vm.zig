@@ -1241,6 +1241,77 @@ test "copies struct arguments by value for runtime calls" {
     try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 
+test "construct any values survive nested runtime calls without leaking" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const any_widget = bytecode.TypeRef{
+        .kind = .construct_any,
+        .name = "any Widget",
+        .construct_constraint = .{ .construct_name = "Widget" },
+    };
+    const module = bytecode.Module{
+        .constructs = &.{.{ .name = "Widget" }},
+        .construct_implementations = &.{
+            .{ .type_name = "Button", .construct_constraint = .{ .construct_name = "Widget" }, .fields = &.{}, .has_content = false, .lifecycle_hooks = &.{} },
+            .{ .type_name = "Label", .construct_constraint = .{ .construct_name = "Widget" }, .fields = &.{}, .has_content = false, .lifecycle_hooks = &.{} },
+        },
+        .types = &.{
+            .{ .name = "Button", .fields = &.{} },
+            .{ .name = "Label", .fields = &.{} },
+        },
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 2,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Button" } },
+                    .{ .call_runtime = .{ .function_id = 1, .args = &.{0} } },
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Label" } },
+                    .{ .call_runtime = .{ .function_id = 1, .args = &.{0} } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+            .{
+                .id = 1,
+                .name = "forward",
+                .param_count = 1,
+                .return_type = any_widget,
+                .register_count = 2,
+                .local_count = 1,
+                .local_types = &.{any_widget},
+                .instructions = &.{
+                    .{ .load_local = .{ .dst = 0, .local = 0 } },
+                    .{ .call_runtime = .{ .function_id = 2, .args = &.{0}, .dst = 1 } },
+                    .{ .ret = .{ .src = 1 } },
+                },
+            },
+            .{
+                .id = 2,
+                .name = "identity",
+                .param_count = 1,
+                .return_type = any_widget,
+                .register_count = 1,
+                .local_count = 1,
+                .local_types = &.{any_widget},
+                .instructions = &.{
+                    .{ .load_local = .{ .dst = 0, .local = 0 } },
+                    .{ .ret = .{ .src = 0 } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    try vm.runMain(&module, std.io.null_writer);
+    try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
+}
+
 test "native state recovery mutates persistent payload" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
