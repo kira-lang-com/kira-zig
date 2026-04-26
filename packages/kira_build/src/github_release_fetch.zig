@@ -84,64 +84,20 @@ pub fn downloadAssetToFile(
         try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, parent);
     }
 
-    downloadWithCurl(allocator, download_url, destination_path) catch |err| switch (err) {
-        error.FileNotFound => {
-            const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, destination_path, .{ .read = true, .truncate = true });
-            defer file.close(std.Options.debug_io);
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, destination_path, .{ .read = true, .truncate = true });
+    defer file.close(std.Options.debug_io);
 
-            var file_buffer: [16 * 1024]u8 = undefined;
-            var file_writer = file.writer(std.Options.debug_io, &file_buffer);
+    var file_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = file.writer(std.Options.debug_io, &file_buffer);
 
-            const response = try fetchWriter(allocator, download_url, false, &file_writer.interface);
-            try file_writer.interface.flush();
+    const response = try fetchWriter(allocator, download_url, false, &file_writer.interface);
+    try file_writer.interface.flush();
 
-            switch (response.status) {
-                .ok => return,
-                .not_found => return error.GitHubReleaseAssetNotFound,
-                else => return error.GitHubAssetDownloadFailed,
-            }
-        },
-        else => return err,
-    };
-}
-
-fn downloadWithCurl(
-    allocator: std.mem.Allocator,
-    download_url: []const u8,
-    destination_path: []const u8,
-) !void {
-    const token = githubToken(allocator) catch null;
-    defer if (token) |value| allocator.free(value);
-
-    var argv = std.array_list.Managed([]const u8).init(allocator);
-    defer argv.deinit();
-    try argv.append("curl");
-    try argv.append("--fail");
-    try argv.append("--location");
-    try argv.append("--output");
-    try argv.append(destination_path);
-    var auth_header_value: ?[]const u8 = null;
-    defer if (auth_header_value) |value| allocator.free(value);
-    if (token) |value| {
-        auth_header_value = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{value});
-        try argv.append("--header");
-        try argv.append(auth_header_value.?);
+    switch (response.status) {
+        .ok => return,
+        .not_found => return error.GitHubReleaseAssetNotFound,
+        else => return error.GitHubAssetDownloadFailed,
     }
-    try argv.append(download_url);
-
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv.items,
-        .expand_arg0 = .expand,
-        .stdout_limit = .limited(64 * 1024),
-        .stderr_limit = .limited(64 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term == .exited and result.term.exited == 0) return;
-    if (std.mem.indexOf(u8, result.stderr, "404")) |_| return error.GitHubReleaseAssetNotFound;
-    if (std.mem.indexOf(u8, result.stderr, "404")) |_| return error.GitHubReleaseAssetNotFound;
-    return error.GitHubAssetDownloadFailed;
 }
 
 const FetchResponse = struct {

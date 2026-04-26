@@ -117,7 +117,6 @@ pub fn run(
     try out.print("Downloading {s}\n", .{resolved_asset.download_url});
     github_release_fetch.downloadAssetToFile(allocator, resolved_asset.download_url, archive_path) catch |download_err| {
         switch (download_err) {
-            error.GitHubReleaseAssetNotFound => try err.print("Release asset download returned 404 for {s}.\n", .{resolved_asset.download_url}),
             else => try err.print("Failed to download LLVM archive from {s}: {s}\n", .{ resolved_asset.download_url, @errorName(download_err) }),
         }
         return download_err;

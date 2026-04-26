@@ -3,8 +3,9 @@ const fetch_llvm = @import("fetch_llvm.zig");
 const kira_toolchain = @import("kira_toolchain");
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
 
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
@@ -15,7 +16,7 @@ pub fn main() !void {
 
     const build_options = @import("fetch_llvm_build_options");
     _ = kira_toolchain;
-    fetch_llvm.run(arena.allocator(), &stdout.interface, &stderr.interface, build_options.repo_root) catch |err| {
+    fetch_llvm.run(allocator, &stdout.interface, &stderr.interface, build_options.repo_root) catch |err| {
         if (!(err == error.InvalidLlvmMetadata or
             err == error.UnsupportedLlvmHost or
             err == error.LlvmTargetNotPublished or
