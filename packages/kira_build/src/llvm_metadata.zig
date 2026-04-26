@@ -256,40 +256,17 @@ fn parsePlatform(value: []const u8) ?Platform {
     return null;
 }
 
-test "parses llvm metadata and resolves target" {
-    const metadata = try parse(std.testing.allocator,
-        \\schema_version = 1
-        \\
-        \\[llvm]
-        \\version = "22.1.2"
-        \\source_tag = "llvmorg-22.1.2"
-        \\release_tag = "llvm-v22.1.2-kira.2"
-        \\
-        \\[build]
-        \\build_type = "Release"
-        \\cmake_generator = "Ninja"
-        \\targets_to_build = "host"
-        \\
-        \\[target.x86_64-windows-msvc]
-        \\runner = "windows-2022"
-        \\platform = "windows"
-        \\archive = "zip"
-        \\asset = "llvm-22.1.2-x86_64-windows-msvc.zip"
-        \\
-        \\[target.x86_64-linux-gnu]
-        \\runner = "ubuntu-24.04"
-        \\platform = "linux"
-        \\archive = "tar.xz"
-        \\asset = "llvm-22.1.2-x86_64-linux-gnu.tar.xz"
-    );
+test "parses repo llvm metadata and resolves target" {
+    const metadata = try parseFile(std.testing.allocator, "llvm-metadata.toml");
     defer metadata.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u32, 1), metadata.schema_version);
-    try std.testing.expectEqualStrings("22.1.2", metadata.llvm_version);
 
     const linux = metadata.findTarget("x86_64-linux-gnu").?;
     try std.testing.expectEqualStrings("ubuntu-24.04", linux.runner);
-    try std.testing.expectEqualStrings("llvm-22.1.2-x86_64-linux-gnu.tar.xz", linux.asset);
+    const expected_asset = try std.fmt.allocPrint(std.testing.allocator, "llvm-{s}-x86_64-linux-gnu.tar.xz", .{metadata.llvm_version});
+    defer std.testing.allocator.free(expected_asset);
+    try std.testing.expectEqualStrings(expected_asset, linux.asset);
     try std.testing.expect(linux.archive == .tar_xz);
 }
 
@@ -298,9 +275,9 @@ test "rejects incorrect asset naming" {
         \\schema_version = 1
         \\
         \\[llvm]
-        \\version = "22.1.2"
-        \\source_tag = "llvmorg-22.1.2"
-        \\release_tag = "llvm-v22.1.2-kira.2"
+        \\version = "0.0.0"
+        \\source_tag = "llvmorg-0.0.0"
+        \\release_tag = "llvm-v0.0.0-kira.99"
         \\
         \\[build]
         \\build_type = "Release"

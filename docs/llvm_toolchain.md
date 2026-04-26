@@ -39,7 +39,7 @@ This flow intentionally does not use checksum verification.
 
 The workflow never invents release asset names on its own. It reads the metadata, builds that target matrix, and packages archives with names that must match the metadata exactly.
 
-At the time this file was introduced, the repo pin was updated to LLVM `22.1.2`, which was the latest released upstream LLVM version on April 2, 2026.
+The repo currently pins LLVM `22.1.4` and publishes matching bundle assets for the supported host targets.
 
 ## Supported host targets
 
@@ -100,9 +100,9 @@ On a tag push, the workflow validates that the pushed tag already matches `[llvm
 
 Asset names are deterministic and versioned:
 
-- `llvm-22.1.2-x86_64-windows-msvc.zip`
-- `llvm-22.1.2-x86_64-linux-gnu.tar.xz`
-- `llvm-22.1.2-aarch64-macos.tar.xz`
+- `llvm-22.1.4-x86_64-windows-msvc.zip`
+- `llvm-22.1.4-x86_64-linux-gnu.tar.xz`
+- `llvm-22.1.4-aarch64-macos.tar.xz`
 
 That naming convention is enforced by `scripts/llvm/llvm_release.py`, which validates that the metadata and workflow stay in sync.
 

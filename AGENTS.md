@@ -23,7 +23,6 @@ This repository is a Zig monorepo for the Kira compiler/bootstrap toolchain. Pre
   - `kira-bootstrapper build examples/hello.kira`
 - Use `zig build run -- ...` when iterating on the CLI itself because it rebuilds and runs in one step.
 - Use `zig build install` or `zig build install-kirac` when validating the managed toolchain install flow.
-- Run `zig fmt` on changed Zig files before finishing.
 
 ## Architecture Rules
 

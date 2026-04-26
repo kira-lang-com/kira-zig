@@ -226,12 +226,29 @@ test "builds managed toolchain layout" {
     defer std.testing.allocator.free(expected_root_suffix);
     try std.testing.expect(std.mem.endsWith(u8, root, expected_root_suffix));
 
-    const llvm_home = try managedLlvmHome(std.testing.allocator, "22.1.2", "x86_64-linux-gnu");
+    const llvm_version = try pinnedLlvmVersionForTests(std.testing.allocator);
+    defer std.testing.allocator.free(llvm_version);
+
+    const llvm_home = try managedLlvmHome(std.testing.allocator, llvm_version, "x86_64-linux-gnu");
     defer std.testing.allocator.free(llvm_home);
     const expected_llvm_suffix = try std.fs.path.join(
         std.testing.allocator,
-        &.{ ".kira", "toolchains", "llvm", "22.1.2", "x86_64-linux-gnu" },
+        &.{ ".kira", "toolchains", "llvm", llvm_version, "x86_64-linux-gnu" },
     );
     defer std.testing.allocator.free(expected_llvm_suffix);
     try std.testing.expect(std.mem.endsWith(u8, llvm_home, expected_llvm_suffix));
+}
+
+fn pinnedLlvmVersionForTests(allocator: std.mem.Allocator) ![]u8 {
+    const contents = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, "llvm-metadata.toml", allocator, .limited(16 * 1024));
+    defer allocator.free(contents);
+
+    const llvm_section = std.mem.indexOf(u8, contents, "[llvm]") orelse return error.InvalidLlvmMetadata;
+    const version_key = std.mem.indexOfPos(u8, contents, llvm_section, "version") orelse return error.InvalidLlvmMetadata;
+    const after_key = contents[version_key + "version".len ..];
+    const equals_index = std.mem.indexOfScalar(u8, after_key, '=') orelse return error.InvalidLlvmMetadata;
+    const after_equals = std.mem.trimStart(u8, after_key[equals_index + 1 ..], " \t\r\n");
+    if (after_equals.len < 2 or after_equals[0] != '"') return error.InvalidLlvmMetadata;
+    const closing_quote = std.mem.indexOfScalarPos(u8, after_equals, 1, '"') orelse return error.InvalidLlvmMetadata;
+    return allocator.dupe(u8, after_equals[1..closing_quote]);
 }

@@ -306,18 +306,22 @@ test "validates managed marker and install path" {
     try writeFile(tmp.dir, "include/llvm/Config/llvm-config.h", "");
     try writeFile(tmp.dir, library_relative_path, "");
 
+    const metadata = try llvm_metadata.parseFile(std.testing.allocator, "llvm-metadata.toml");
+    defer metadata.deinit(std.testing.allocator);
+    const target = metadata.findTarget("x86_64-windows-msvc").?;
+
     try writeInstallMarker(std.testing.allocator, install_home, .{
-        .llvm_version = "22.1.2",
-        .host_key = "x86_64-windows-msvc",
-        .release_tag = "llvm-v22.1.2-kira.2",
-        .asset_name = "llvm-22.1.2-x86_64-windows-msvc.zip",
+        .llvm_version = metadata.llvm_version,
+        .host_key = target.key,
+        .release_tag = metadata.llvm_release_tag,
+        .asset_name = target.asset,
     });
 
     try std.testing.expect(try isInstalledAndValid(std.testing.allocator, install_home, .{
-        .llvm_version = "22.1.2",
-        .host_key = "x86_64-windows-msvc",
-        .release_tag = "llvm-v22.1.2-kira.2",
-        .asset_name = "llvm-22.1.2-x86_64-windows-msvc.zip",
+        .llvm_version = metadata.llvm_version,
+        .host_key = target.key,
+        .release_tag = metadata.llvm_release_tag,
+        .asset_name = target.asset,
     }));
 }
 
