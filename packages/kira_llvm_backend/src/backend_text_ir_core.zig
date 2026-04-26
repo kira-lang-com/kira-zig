@@ -63,7 +63,7 @@ pub fn buildTextLlvmIr(
     var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
     defer freeSymbolNames(allocator, &symbol_names);
     for (request.program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
+        if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
         const name = try functionSymbolName(allocator, function_decl, request.mode);
         try symbol_names.put(allocator, function_decl.id, name);
     }
