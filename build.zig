@@ -118,6 +118,8 @@ pub fn build(b: *std.Build) void {
 
     const bootstrapper_options = b.addOptions();
     bootstrapper_options.addOption([]const u8, "version", kirac_version);
+    bootstrapper_options.addOption([]const u8, "llvm_version", llvm_version);
+    bootstrapper_options.addOption([]const u8, "llvm_host_key", llvm_host_key);
     const bootstrapper_module = b.createModule(.{
         .root_source_file = b.path("packages/kira_bootstrapper/src/main.zig"),
         .target = b.graph.host,

@@ -3,6 +3,7 @@ const impl = if (build_options.llvm_available) @import("real_root.zig") else @im
 
 pub const compile = impl.compile;
 pub const validate = impl.validate;
+pub const LlvmToolchain = impl.LlvmToolchain;
 pub const LlvmType = @import("types.zig").LlvmType;
 pub const LlvmTarget = @import("target.zig").LlvmTarget;
 pub const toolchainLayout = @import("toolchain_layout.zig");

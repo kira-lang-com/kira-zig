@@ -2,8 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ir = @import("kira_ir");
 const runtime_abi = @import("kira_runtime_abi");
-const build_options = @import("kira_llvm_build_options");
 const llvm = @import("llvm_c.zig");
+const toolchain = @import("toolchain.zig");
 
 pub fn freeStringList(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8)) void {
     for (list.items) |item| allocator.free(item);
@@ -31,7 +31,7 @@ pub fn writeTextFile(path: []const u8, data: []const u8) !void {
     });
 }
 
-pub fn emitObjectFileViaZigCc(
+pub fn emitObjectFileViaClang(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
     module_ref: llvm.c.LLVMModuleRef,
@@ -50,11 +50,14 @@ pub fn emitObjectFileViaZigCc(
         .data = ir_text,
     });
 
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const clang_path = try llvm_toolchain.clangPath(allocator);
+    defer allocator.free(clang_path);
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ build_options.zig_exe, "cc", "-c", "-x", "ir", "-o", object_path, ir_path },
+        .argv = &.{ clang_path, "-c", "-x", "ir", "-o", object_path, ir_path },
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     });

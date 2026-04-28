@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 const syntax = @import("kira_syntax_model");
+const llvm_backend = @import("kira_llvm_backend");
 const resolver = @import("native_lib_resolver.zig");
 const autobind = @import("ffi_autobind.zig");
 
@@ -41,56 +42,19 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     if (library.build.sources.len == 0) return;
     const maybe_dir = std.fs.path.dirname(library.artifact_path) orelse ".";
     try makePath(maybe_dir);
-    if (builtin.os.tag == .macos and library.link_mode == .static) {
-        return compileStaticLibraryViaClang(allocator, library);
-    }
-    const target_triple = try targetTriple(allocator, library.target);
-
-    var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{
-        "zig",
-        "build-lib",
-        "-O",
-        "ReleaseFast",
-        "-target",
-        target_triple,
-        "-static",
-        try std.fmt.allocPrint(allocator, "-femit-bin={s}", .{library.artifact_path}),
-    });
-    if (library.abi == .c) {
-        try argv.append("-lc");
-    }
-    for (library.headers.include_dirs) |include_dir| {
-        try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
-    }
-    for (library.build.include_dirs) |include_dir| {
-        try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
-    }
-    for (library.build.defines) |define| {
-        try argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
-    }
-    try argv.appendSlice(library.build.sources);
-
-    const process_environ = inheritedProcessEnviron();
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
-    defer io_impl.deinit();
-    const result = try std.process.run(allocator, io_impl.io(), .{
-        .argv = argv.items,
-        .expand_arg0 = .expand,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term != .exited or result.term.exited != 0) {
-        if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
-        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
-        return error.NativeLibraryBuildFailed;
-    }
+    if (library.link_mode != .static) return error.UnsupportedNativeLibraryBuildMode;
+    return compileStaticLibraryViaClang(allocator, library);
 }
 
 fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
+    const llvm_toolchain = try llvm_backend.LlvmToolchain.discover(allocator);
+    const clang_path = try llvm_toolchain.clangPath(allocator);
+    defer allocator.free(clang_path);
+    const llvm_ar_path = try llvm_toolchain.llvmArPath(allocator);
+    defer allocator.free(llvm_ar_path);
+    const target_triple = try targetTriple(allocator, library.target);
+    defer allocator.free(target_triple);
+
     var object_paths = std.array_list.Managed([]const u8).init(allocator);
     defer {
         for (object_paths.items) |path| {
@@ -103,7 +67,7 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
         try object_paths.append(object_path);
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
-        try appendClangCompileCommand(&argv, library.*, source_path, object_path);
+        try appendClangCompileCommand(&argv, clang_path, target_triple, library.*, source_path, object_path);
         for (library.headers.include_dirs) |include_dir| {
             try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         }
@@ -121,13 +85,23 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     std.Io.Dir.cwd().deleteFile(std.Options.debug_io, library.artifact_path) catch {};
-    try argv.appendSlice(&.{ "ar", "rcs", library.artifact_path });
+    try argv.appendSlice(&.{ llvm_ar_path, "rcs", library.artifact_path });
     try argv.appendSlice(object_paths.items);
     try runCommand(allocator, argv.items);
 }
 
-fn appendClangCompileCommand(argv: *std.array_list.Managed([]const u8), library: native.ResolvedNativeLibrary, source_path: []const u8, object_path: []const u8) !void {
-    try argv.appendSlice(&.{ "clang", "-c" });
+fn appendClangCompileCommand(
+    argv: *std.array_list.Managed([]const u8),
+    clang_path: []const u8,
+    target_triple: []const u8,
+    library: native.ResolvedNativeLibrary,
+    source_path: []const u8,
+    object_path: []const u8,
+) !void {
+    try argv.appendSlice(&.{ clang_path, "-c", "-O3" });
+    if (builtin.os.tag != .macos) {
+        try argv.appendSlice(&.{ "-target", target_triple });
+    }
     if (shouldCompileAsObjectiveC(builtin.os.tag, library, source_path)) {
         try argv.appendSlice(&.{ "-x", "objective-c" });
     }

@@ -77,16 +77,29 @@ pub const Toolchain = struct {
         return error.LlvmToolchainUnavailable;
     }
 
+    pub fn clangPath(self: Toolchain, allocator: std.mem.Allocator) ![]const u8 {
+        return self.toolPath(allocator, "clang");
+    }
+
+    pub fn llvmArPath(self: Toolchain, allocator: std.mem.Allocator) ![]const u8 {
+        return self.toolPath(allocator, "llvm-ar");
+    }
+
     pub fn compilerDriverPath(self: Toolchain, allocator: std.mem.Allocator) ![]const u8 {
-        const clang_name = if (builtin.os.tag == .windows) "clang.exe" else "clang";
-        const clang_path = try std.fs.path.join(allocator, &.{ self.bin_dir, clang_name });
-        if (fileExists(clang_path)) return clang_path;
+        return self.clangPath(allocator);
+    }
+
+    pub fn toolPath(self: Toolchain, allocator: std.mem.Allocator, tool_name: []const u8) ![]const u8 {
+        const executable = try kira_toolchain.executableName(allocator, tool_name);
+        defer allocator.free(executable);
+        const path = try std.fs.path.join(allocator, &.{ self.bin_dir, executable });
+        if (fileExists(path)) return path;
 
         std.debug.print(
-            "LLVM toolchain at '{s}' is missing required compiler driver '{s}'.\nExpected to find: {s}\n",
-            .{ self.home, clang_name, clang_path },
+            "LLVM toolchain at '{s}' is missing required tool '{s}'.\nExpected to find: {s}\n",
+            .{ self.home, executable, path },
         );
-        return error.LlvmCompilerDriverUnavailable;
+        return error.LlvmToolUnavailable;
     }
 };
 

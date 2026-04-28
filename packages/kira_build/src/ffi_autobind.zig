@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const native = @import("kira_native_lib_definition");
-const build_options = @import("kira_llvm_build_options");
+const llvm_backend = @import("kira_llvm_backend");
 
 const CParam = struct {
     name: []const u8,
@@ -94,8 +94,12 @@ pub fn ensureGeneratedBindings(allocator: std.mem.Allocator, library: native.Res
 }
 
 fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary, headers: []const []const u8) ![]const u8 {
+    const llvm_toolchain = try llvm_backend.LlvmToolchain.discover(allocator);
+    const clang_path = try llvm_toolchain.clangPath(allocator);
+    defer allocator.free(clang_path);
+
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    try argv.appendSlice(&.{ "clang", "-Xclang", "-ast-dump=json", "-fsyntax-only" });
+    try argv.appendSlice(&.{ clang_path, "-Xclang", "-ast-dump=json", "-fsyntax-only" });
 
     if (library.headers.entrypoint) |entrypoint| {
         try argv.append(entrypoint);

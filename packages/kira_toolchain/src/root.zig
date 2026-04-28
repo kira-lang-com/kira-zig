@@ -144,6 +144,29 @@ pub fn executableName(allocator: std.mem.Allocator, base: []const u8) ![]u8 {
     return allocator.dupe(u8, base);
 }
 
+pub fn managedLlvmToolPath(allocator: std.mem.Allocator, llvm_home: []const u8, tool_name: []const u8) ![]u8 {
+    const bin_dir = try std.fs.path.join(allocator, &.{ llvm_home, "bin" });
+    defer allocator.free(bin_dir);
+    const executable = try executableName(allocator, tool_name);
+    defer allocator.free(executable);
+    const path = try std.fs.path.join(allocator, &.{ bin_dir, executable });
+    if (fileExists(path)) return path;
+
+    std.debug.print(
+        "LLVM toolchain at '{s}' is missing required tool '{s}'.\nExpected to find: {s}\n",
+        .{ llvm_home, executable, path },
+    );
+    return error.LlvmToolUnavailable;
+}
+
+pub fn managedLlvmClangPath(allocator: std.mem.Allocator, llvm_home: []const u8) ![]u8 {
+    return managedLlvmToolPath(allocator, llvm_home, "clang");
+}
+
+pub fn managedLlvmArPath(allocator: std.mem.Allocator, llvm_home: []const u8) ![]u8 {
+    return managedLlvmToolPath(allocator, llvm_home, "llvm-ar");
+}
+
 pub fn toolchainRootFromExecutablePath(allocator: std.mem.Allocator, exe_path: []const u8) !?[]u8 {
     const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
     if (!std.mem.eql(u8, std.fs.path.basename(exe_dir), "bin")) return null;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const kira_toolchain = @import("kira_toolchain");
+const build_options = @import("kira_bootstrapper_build_options");
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -28,6 +29,13 @@ pub fn main(init: std.process.Init) !void {
         current.primary,
     );
 
+    if (!isFetchLlvmCommand(args)) {
+        validateManagedLlvmTools(allocator) catch {
+            try printBrokenLlvmToolchain();
+            std.process.exit(1);
+        };
+    }
+
     var child_args = try allocator.alloc([]const u8, args.len);
     child_args[0] = executable_path;
     for (args[1..], 1..) |arg, index| child_args[index] = arg;
@@ -53,6 +61,26 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+fn isFetchLlvmCommand(args: []const []const u8) bool {
+    return args.len > 1 and std.mem.eql(u8, args[1], "fetch-llvm");
+}
+
+fn validateManagedLlvmTools(allocator: std.mem.Allocator) !void {
+    if (build_options.llvm_version.len == 0 or std.mem.eql(u8, build_options.llvm_host_key, "unsupported-host")) {
+        return error.UnsupportedLlvmHost;
+    }
+    const llvm_home = try kira_toolchain.managedLlvmHome(
+        allocator,
+        build_options.llvm_version,
+        build_options.llvm_host_key,
+    );
+    defer allocator.free(llvm_home);
+    const clang_path = try kira_toolchain.managedLlvmClangPath(allocator, llvm_home);
+    defer allocator.free(clang_path);
+    const llvm_ar_path = try kira_toolchain.managedLlvmArPath(allocator, llvm_home);
+    defer allocator.free(llvm_ar_path);
+}
+
 fn printMissingToolchain(current_path: []const u8) !void {
     var stderr_buffer: [4096]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buffer);
@@ -70,6 +98,15 @@ fn printBrokenToolchain(current_path: []const u8) !void {
     try stderr.interface.print(
         "kira-bootstrapper found an invalid toolchain manifest at {s}\nhelp: run `zig build install-kirac` to refresh the active toolchain\n",
         .{current_path},
+    );
+}
+
+fn printBrokenLlvmToolchain() !void {
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buffer);
+    defer stderr.interface.flush() catch {};
+    try stderr.interface.writeAll(
+        "kira-bootstrapper found a broken managed LLVM toolchain install\nhelp: run `kira-bootstrapper fetch-llvm` to reinstall the pinned LLVM and Clang bundle\n",
     );
 }
 

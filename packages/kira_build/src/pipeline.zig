@@ -370,7 +370,7 @@ pub fn backendDiagnostic(allocator: std.mem.Allocator, source_path: []const u8, 
             .code = "KBUILD002",
             .title = "LLVM backend is unavailable",
             .message = "Kira could not start the native toolchain because LLVM is not available in this build.",
-            .help = "Set KIRA_LLVM_HOME or run `zig build fetch-llvm` to install the pinned LLVM toolchain.",
+            .help = "Set KIRA_LLVM_HOME or run `kira-bootstrapper fetch-llvm` to install the pinned LLVM toolchain.",
         },
         error.RuntimeEntrypointInNativeBuild => .{
             .severity = .@"error",

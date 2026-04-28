@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const ir = @import("kira_ir");
 const runtime_abi = @import("kira_runtime_abi");
 const backend_api = @import("kira_backend_api");
-const build_options = @import("kira_llvm_build_options");
 const llvm = @import("llvm_c.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
@@ -57,7 +56,7 @@ pub const countStringConstants = backend_utils.countStringConstants;
 pub const freeStringList = backend_utils.freeStringList;
 pub const freeSymbolNames = backend_utils.freeSymbolNames;
 pub const writeTextFile = backend_utils.writeTextFile;
-pub const emitObjectFileViaZigCc = backend_utils.emitObjectFileViaZigCc;
+pub const emitObjectFileViaClang = backend_utils.emitObjectFileViaClang;
 pub const inferRegisterTypes = backend_utils.inferRegisterTypes;
 pub const functionExecutionById = backend_utils.functionExecutionById;
 pub const functionById = backend_utils.functionById;
@@ -517,7 +516,7 @@ fn emitObjectFile(
     object_path: []const u8,
 ) !void {
     if (builtin.os.tag == .macos) {
-        return emitObjectFileViaZigCc(allocator, api, module_ref, object_path);
+        return emitObjectFileViaClang(allocator, api, module_ref, object_path);
     }
 
     const object_path_z = try allocator.dupeZ(u8, object_path);
@@ -533,12 +532,16 @@ fn emitObjectFileFromIr(
     ir_path: []const u8,
     object_path: []const u8,
 ) !void {
-    const target = try zigCcTargetTriple(allocator);
+    const target = try clangTargetTriple(allocator);
+    defer allocator.free(target);
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const clang_path = try llvm_toolchain.clangPath(allocator);
+    defer allocator.free(clang_path);
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ build_options.zig_exe, "cc", "-target", target, "-c", "-o", object_path, ir_path },
+        .argv = &.{ clang_path, "-target", target, "-c", "-o", object_path, ir_path },
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     }) catch |err| return err;
@@ -552,7 +555,7 @@ fn emitObjectFileFromIr(
     }
 }
 
-fn zigCcTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
+fn clangTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
     return switch (builtin.os.tag) {
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),

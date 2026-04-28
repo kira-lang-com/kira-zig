@@ -14,7 +14,7 @@ pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []co
     if (builtin.os.tag == .macos) {
         try runCommand(allocator, &.{ driver_path, "-c", helper_source, "-o", helper_object });
     } else {
-        const target = try zigTargetTriple(allocator);
+        const target = try clangTargetTriple(allocator);
         try runCommand(allocator, &.{
             driver_path,
             "-target",
@@ -41,7 +41,7 @@ pub fn linkExecutable(
     if (builtin.os.tag == .macos) {
         try argv.appendSlice(&.{ driver_path, "-o", executable_path });
     } else {
-        const target = try zigTargetTriple(allocator);
+        const target = try clangTargetTriple(allocator);
         try argv.appendSlice(&.{ driver_path, "-target", target, "-o", executable_path });
     }
     if (builtin.os.tag == .windows) {
@@ -75,7 +75,7 @@ pub fn linkSharedLibrary(
     if (builtin.os.tag == .macos) {
         try argv.appendSlice(&.{ driver_path, "-shared", "-o", library_path });
     } else {
-        const target = try zigTargetTriple(allocator);
+        const target = try clangTargetTriple(allocator);
         try argv.appendSlice(&.{ driver_path, "-target", target, "-shared", "-o", library_path });
     }
     for (object_paths) |path| try argv.append(path);
@@ -124,7 +124,7 @@ fn ensureParentDir(path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
 }
 
-fn zigTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
+fn clangTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
     return switch (builtin.os.tag) {
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),
