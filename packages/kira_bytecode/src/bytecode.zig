@@ -5,6 +5,7 @@ pub const Module = struct {
     constructs: []Construct = &.{},
     construct_implementations: []ConstructImplementation = &.{},
     types: []TypeDecl = &.{},
+    enums: []EnumTypeDecl = &.{},
     functions: []Function,
     entry_function_id: ?u32,
 
@@ -62,6 +63,17 @@ pub const TypeDecl = struct {
     fields: []Field,
 };
 
+pub const EnumTypeDecl = struct {
+    name: []const u8,
+    variants: []EnumVariantDecl,
+};
+
+pub const EnumVariantDecl = struct {
+    name: []const u8,
+    discriminant: u32,
+    payload_ty: ?instruction.TypeRef = null,
+};
+
 pub const Field = struct {
     name: []const u8,
     ty: instruction.TypeRef,
@@ -72,6 +84,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
+    try writer.writeInt(u32, @as(u32, @intCast(module.enums.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.functions.len)), .little);
     try writer.writeInt(i32, if (module.entry_function_id) |value| @as(i32, @intCast(value)) else -1, .little);
 
@@ -98,6 +111,17 @@ pub fn serialize(writer: anytype, module: Module) !void {
         for (type_decl.fields) |field_decl| {
             try writeString(writer, field_decl.name);
             try writeTypeRef(writer, field_decl.ty);
+        }
+    }
+
+    for (module.enums) |enum_decl| {
+        try writeString(writer, enum_decl.name);
+        try writer.writeInt(u32, @as(u32, @intCast(enum_decl.variants.len)), .little);
+        for (enum_decl.variants) |variant_decl| {
+            try writeString(writer, variant_decl.name);
+            try writer.writeInt(u32, variant_decl.discriminant, .little);
+            try writer.writeByte(if (variant_decl.payload_ty != null) 1 else 0);
+            if (variant_decl.payload_ty) |payload_ty| try writeTypeRef(writer, payload_ty);
         }
     }
 
@@ -147,6 +171,12 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .alloc_struct => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writeString(writer, value.type_name);
+                },
+                .alloc_enum => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writeString(writer, value.enum_type_name);
+                    try writer.writeInt(u32, value.discriminant, .little);
+                    try writer.writeInt(i32, if (value.payload_src) |payload_src| @as(i32, @intCast(payload_src)) else -1, .little);
                 },
                 .alloc_native_state => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -251,6 +281,15 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.index, .little);
                     try writer.writeInt(u32, value.src, .little);
                 },
+                .enum_tag => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                },
+                .enum_payload => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writeTypeRef(writer, value.payload_ty);
+                },
                 .load_indirect => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.ptr, .little);
@@ -300,11 +339,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     const construct_count = try reader.takeInt(u32, .little);
     const construct_implementation_count = try reader.takeInt(u32, .little);
     const type_count = try reader.takeInt(u32, .little);
+    const enum_count = try reader.takeInt(u32, .little);
     const function_count = try reader.takeInt(u32, .little);
     const raw_entry = try reader.takeInt(i32, .little);
     var constructs = std.array_list.Managed(Construct).init(allocator);
     var construct_implementations = std.array_list.Managed(ConstructImplementation).init(allocator);
     var types = std.array_list.Managed(TypeDecl).init(allocator);
+    var enums = std.array_list.Managed(EnumTypeDecl).init(allocator);
     var functions = std.array_list.Managed(Function).init(allocator);
 
     for (0..construct_count) |_| {
@@ -350,6 +391,26 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         try types.append(.{
             .name = name,
             .fields = try fields.toOwnedSlice(),
+        });
+    }
+
+    for (0..enum_count) |_| {
+        const name = try readString(allocator, reader);
+        const variant_count = try reader.takeInt(u32, .little);
+        var variants = std.array_list.Managed(EnumVariantDecl).init(allocator);
+        for (0..variant_count) |_| {
+            const variant_name = try readString(allocator, reader);
+            const discriminant = try reader.takeInt(u32, .little);
+            const has_payload = (try reader.takeByte()) != 0;
+            try variants.append(.{
+                .name = variant_name,
+                .discriminant = discriminant,
+                .payload_ty = if (has_payload) try readTypeRef(allocator, reader) else null,
+            });
+        }
+        try enums.append(.{
+            .name = name,
+            .variants = try variants.toOwnedSlice(),
         });
     }
 
@@ -408,6 +469,15 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
                     .dst = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
+                } }),
+                .alloc_enum => try instructions.append(.{ .alloc_enum = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .enum_type_name = try readString(allocator, reader),
+                    .discriminant = try reader.takeInt(u32, .little),
+                    .payload_src = blk: {
+                        const raw = try reader.takeInt(i32, .little);
+                        break :blk if (raw >= 0) @as(?u32, @intCast(raw)) else null;
+                    },
                 } }),
                 .alloc_native_state => try instructions.append(.{ .alloc_native_state = .{
                     .dst = try reader.takeInt(u32, .little),
@@ -512,6 +582,15 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .index = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
                 } }),
+                .enum_tag => try instructions.append(.{ .enum_tag = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                } }),
+                .enum_payload => try instructions.append(.{ .enum_payload = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                    .payload_ty = try readTypeRef(allocator, reader),
+                } }),
                 .load_indirect => try instructions.append(.{ .load_indirect = .{
                     .dst = try reader.takeInt(u32, .little),
                     .ptr = try reader.takeInt(u32, .little),
@@ -565,6 +644,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         .constructs = try constructs.toOwnedSlice(),
         .construct_implementations = try construct_implementations.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
+        .enums = try enums.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
     };

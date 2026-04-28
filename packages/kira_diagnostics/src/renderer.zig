@@ -2,44 +2,18 @@ const std = @import("std");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const Severity = @import("diagnostic.zig").Severity;
 const SourceFile = @import("kira_source").SourceFile;
+const Label = @import("label.zig").Label;
 
 pub fn render(writer: anytype, source: *const SourceFile, diagnostic: Diagnostic) !void {
     try renderHeader(writer, diagnostic);
     try writer.print("  {s}\n", .{diagnostic.message});
 
     if (diagnostic.primaryLabel()) |label| {
-        const clamped_start = @min(label.span.start, source.text.len);
-        const clamped_end = @min(@max(label.span.end, clamped_start), source.text.len);
-        const location = source.line_map.lineColumn(clamped_start);
-        const line_index = source.line_map.lineIndex(clamped_start);
-        const bounds = source.line_map.lineBounds(line_index, source.text);
-        const safe_end = @max(bounds.end, bounds.start);
-        const snippet = source.text[bounds.start..safe_end];
-        const line_number = line_index + 1;
-        const highlight_base = @min(@max(clamped_start, bounds.start), safe_end);
-        const highlight_start = highlight_base - bounds.start;
-        const line_end = safe_end;
-        const requested_end = if (clamped_end > clamped_start) clamped_end else @min(clamped_start + 1, source.text.len);
-        const highlight_end = @max(highlight_base, @min(requested_end, line_end));
-        const caret_width = @max(@as(usize, 1), highlight_end - highlight_base);
-
-        try writer.print("  --> {s}:{d}:{d}\n", .{ source.path, location.line, location.column });
-        try writer.print("   {d} | {s}\n", .{ line_number, snippet });
-        try writer.writeAll("     | ");
-        try writeSpaces(writer, highlight_start);
-        try writeCarets(writer, caret_width);
-        if (label.message.len > 0) {
-            try writer.print(" {s}", .{label.message});
-        }
-        try writer.writeByte('\n');
+        try renderPrimaryLabel(writer, source, label);
 
         for (diagnostic.labels) |secondary| {
             if (secondary.kind != .secondary) continue;
-            const secondary_location = source.line_map.lineColumn(secondary.span.start);
-            try writer.print(
-                "     = related: {s}:{d}:{d}: {s}\n",
-                .{ source.path, secondary_location.line, secondary_location.column, secondary.message },
-            );
+            try renderSecondaryLabel(writer, source, secondary);
         }
     } else {
         try writer.print("  --> {s}\n", .{source.path});
@@ -61,6 +35,68 @@ pub fn renderAll(writer: anytype, source: *const SourceFile, diagnostics: []cons
         if (index > 0) try writer.writeByte('\n');
         try render(writer, source, diagnostic);
     }
+}
+
+fn renderPrimaryLabel(writer: anytype, fallback_source: *const SourceFile, label: Label) !void {
+    if (try loadAlternateSourceForLabel(label, fallback_source)) |alternate_source| {
+        var owned_source = alternate_source;
+        defer owned_source.deinit();
+        try renderPrimaryLabelWithSource(writer, &owned_source, label);
+        return;
+    }
+    try renderPrimaryLabelWithSource(writer, fallback_source, label);
+}
+
+fn renderPrimaryLabelWithSource(writer: anytype, source: *const SourceFile, label: Label) !void {
+    const clamped_start = @min(label.span.start, source.text.len);
+    const clamped_end = @min(@max(label.span.end, clamped_start), source.text.len);
+    const location = source.line_map.lineColumn(clamped_start);
+    const line_index = source.line_map.lineIndex(clamped_start);
+    const bounds = source.line_map.lineBounds(line_index, source.text);
+    const safe_end = @max(bounds.end, bounds.start);
+    const snippet = source.text[bounds.start..safe_end];
+    const line_number = line_index + 1;
+    const highlight_base = @min(@max(clamped_start, bounds.start), safe_end);
+    const highlight_start = highlight_base - bounds.start;
+    const line_end = safe_end;
+    const requested_end = if (clamped_end > clamped_start) clamped_end else @min(clamped_start + 1, source.text.len);
+    const highlight_end = @max(highlight_base, @min(requested_end, line_end));
+    const caret_width = @max(@as(usize, 1), highlight_end - highlight_base);
+
+    try writer.print("  --> {s}:{d}:{d}\n", .{ source.path, location.line, location.column });
+    try writer.print("   {d} | {s}\n", .{ line_number, snippet });
+    try writer.writeAll("     | ");
+    try writeSpaces(writer, highlight_start);
+    try writeCarets(writer, caret_width);
+    if (label.message.len > 0) {
+        try writer.print(" {s}", .{label.message});
+    }
+    try writer.writeByte('\n');
+}
+
+fn renderSecondaryLabel(writer: anytype, fallback_source: *const SourceFile, label: Label) !void {
+    if (try loadAlternateSourceForLabel(label, fallback_source)) |alternate_source| {
+        var owned_source = alternate_source;
+        defer owned_source.deinit();
+        const location = owned_source.line_map.lineColumn(@min(label.span.start, owned_source.text.len));
+        try writer.print(
+            "     = related: {s}:{d}:{d}: {s}\n",
+            .{ owned_source.path, location.line, location.column, label.message },
+        );
+        return;
+    }
+
+    const location = fallback_source.line_map.lineColumn(@min(label.span.start, fallback_source.text.len));
+    try writer.print(
+        "     = related: {s}:{d}:{d}: {s}\n",
+        .{ fallback_source.path, location.line, location.column, label.message },
+    );
+}
+
+fn loadAlternateSourceForLabel(label: Label, fallback_source: *const SourceFile) !?SourceFile {
+    const source_path = label.span.source_path orelse return null;
+    if (std.mem.eql(u8, source_path, fallback_source.path)) return null;
+    return try SourceFile.fromPath(fallback_source.allocator, source_path);
 }
 
 fn renderHeader(writer: anytype, diagnostic: Diagnostic) !void {

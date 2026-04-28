@@ -1,0 +1,22 @@
+import Foundation
+
+enum ParseError {
+    InvalidFormat: String = "bad"
+    UnexpectedEnd
+}
+
+@Main
+function main() {
+    let success: Result<String, ParseError> = Result.Ok("ok")
+    let failure: Result<String, ParseError> = Result.Error(ParseError.InvalidFormat)
+
+    match success {
+        Ok(text) -> print(text);
+        Error(err) -> print(err);
+    }
+    match failure {
+        Ok(text) -> print(text);
+        Error(err) -> print(err);
+    }
+    return
+}

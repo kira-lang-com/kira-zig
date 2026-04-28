@@ -55,7 +55,21 @@ pub fn parseTypeExpr(self: *Parser) anyerror!*syntax.ast.TypeExpr {
 
     const name = try self.parseQualifiedName("expected type name");
     const node = try self.allocator.create(syntax.ast.TypeExpr);
-    node.* = .{ .named = name };
+    if (self.match(.less)) {
+        var args = std.array_list.Managed(*syntax.ast.TypeExpr).init(self.allocator);
+        while (!self.at(.greater) and !self.at(.eof)) {
+            try args.append(try self.parseTypeExpr());
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.greater, "expected '>' after generic type arguments", "close the generic type argument list here");
+        node.* = .{ .generic = .{
+            .base = name,
+            .args = try args.toOwnedSlice(),
+            .span = source_pkg.Span.init(name.span.start, close.span.end),
+        } };
+    } else {
+        node.* = .{ .named = name };
+    }
     return node;
 }
 

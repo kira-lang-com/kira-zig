@@ -1,0 +1,218 @@
+const bytecode = @import("kira_bytecode");
+const runtime_abi = @import("kira_runtime_abi");
+
+pub fn compareValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value, op: bytecode.CompareOp) !bool {
+    switch (lhs) {
+        .integer => |lhs_value| {
+            if (rhs != .integer) {
+                vm.rememberError("vm compare expects matching operand types");
+                return error.RuntimeFailure;
+            }
+            return switch (op) {
+                .equal => lhs_value == rhs.integer,
+                .not_equal => lhs_value != rhs.integer,
+                .less => lhs_value < rhs.integer,
+                .less_equal => lhs_value <= rhs.integer,
+                .greater => lhs_value > rhs.integer,
+                .greater_equal => lhs_value >= rhs.integer,
+            };
+        },
+        .float => |lhs_value| {
+            if (rhs != .float) {
+                vm.rememberError("vm compare expects matching operand types");
+                return error.RuntimeFailure;
+            }
+            return switch (op) {
+                .equal => lhs_value == rhs.float,
+                .not_equal => lhs_value != rhs.float,
+                .less => lhs_value < rhs.float,
+                .less_equal => lhs_value <= rhs.float,
+                .greater => lhs_value > rhs.float,
+                .greater_equal => lhs_value >= rhs.float,
+            };
+        },
+        .boolean => |lhs_value| {
+            if (rhs != .boolean) {
+                vm.rememberError("vm compare expects matching operand types");
+                return error.RuntimeFailure;
+            }
+            return switch (op) {
+                .equal => lhs_value == rhs.boolean,
+                .not_equal => lhs_value != rhs.boolean,
+                else => {
+                    vm.rememberError("vm compare does not support ordered boolean comparisons");
+                    return error.RuntimeFailure;
+                },
+            };
+        },
+        .raw_ptr => |lhs_value| {
+            if (rhs != .raw_ptr) {
+                vm.rememberError("vm compare expects matching operand types");
+                return error.RuntimeFailure;
+            }
+            return switch (op) {
+                .equal => lhs_value == rhs.raw_ptr,
+                .not_equal => lhs_value != rhs.raw_ptr,
+                else => {
+                    vm.rememberError("vm compare does not support ordered pointer comparisons");
+                    return error.RuntimeFailure;
+                },
+            };
+        },
+        else => {
+            vm.rememberError("vm compare does not support this value type");
+            return error.RuntimeFailure;
+        },
+    }
+}
+
+pub fn unaryValue(vm: anytype, value: runtime_abi.Value, op: bytecode.UnaryOp) !runtime_abi.Value {
+    return switch (op) {
+        .negate => switch (value) {
+            .integer => |inner| .{ .integer = -inner },
+            .float => |inner| .{ .float = -inner },
+            else => {
+                vm.rememberError("vm negate expects a numeric operand");
+                return error.RuntimeFailure;
+            },
+        },
+        .not => switch (value) {
+            .boolean => |inner| .{ .boolean = !inner },
+            else => {
+                vm.rememberError("vm logical not expects a boolean operand");
+                return error.RuntimeFailure;
+            },
+        },
+    };
+}
+
+pub fn addValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+    return switch (lhs) {
+        .integer => |lhs_value| blk: {
+            if (rhs != .integer) {
+                vm.rememberError("vm add expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .integer = lhs_value + rhs.integer };
+        },
+        .float => |lhs_value| blk: {
+            if (rhs != .float) {
+                vm.rememberError("vm add expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .float = lhs_value + rhs.float };
+        },
+        else => {
+            vm.rememberError("vm add expects numeric operands");
+            return error.RuntimeFailure;
+        },
+    };
+}
+
+pub fn subtractValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+    return switch (lhs) {
+        .integer => |lhs_value| blk: {
+            if (rhs != .integer) {
+                vm.rememberError("vm subtract expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .integer = lhs_value - rhs.integer };
+        },
+        .float => |lhs_value| blk: {
+            if (rhs != .float) {
+                vm.rememberError("vm subtract expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .float = lhs_value - rhs.float };
+        },
+        else => {
+            vm.rememberError("vm subtract expects numeric operands");
+            return error.RuntimeFailure;
+        },
+    };
+}
+
+pub fn multiplyValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+    return switch (lhs) {
+        .integer => |lhs_value| blk: {
+            if (rhs != .integer) {
+                vm.rememberError("vm multiply expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .integer = lhs_value * rhs.integer };
+        },
+        .float => |lhs_value| blk: {
+            if (rhs != .float) {
+                vm.rememberError("vm multiply expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .float = lhs_value * rhs.float };
+        },
+        else => {
+            vm.rememberError("vm multiply expects numeric operands");
+            return error.RuntimeFailure;
+        },
+    };
+}
+
+pub fn divideValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+    return switch (lhs) {
+        .integer => |lhs_value| blk: {
+            if (rhs != .integer) {
+                vm.rememberError("vm divide expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            if (rhs.integer == 0) {
+                vm.rememberError("vm divide does not allow division by zero");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .integer = @divTrunc(lhs_value, rhs.integer) };
+        },
+        .float => |lhs_value| blk: {
+            if (rhs != .float) {
+                vm.rememberError("vm divide expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            if (rhs.float == 0.0) {
+                vm.rememberError("vm divide does not allow division by zero");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .float = lhs_value / rhs.float };
+        },
+        else => {
+            vm.rememberError("vm divide expects numeric operands");
+            return error.RuntimeFailure;
+        },
+    };
+}
+
+pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+    return switch (lhs) {
+        .integer => |lhs_value| blk: {
+            if (rhs != .integer) {
+                vm.rememberError("vm modulo expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            if (rhs.integer == 0) {
+                vm.rememberError("vm modulo does not allow division by zero");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .integer = @mod(lhs_value, rhs.integer) };
+        },
+        .float => |lhs_value| blk: {
+            if (rhs != .float) {
+                vm.rememberError("vm modulo expects matching numeric operands");
+                return error.RuntimeFailure;
+            }
+            if (rhs.float == 0.0) {
+                vm.rememberError("vm modulo does not allow division by zero");
+                return error.RuntimeFailure;
+            }
+            break :blk .{ .float = @mod(lhs_value, rhs.float) };
+        },
+        else => {
+            vm.rememberError("vm modulo expects numeric operands");
+            return error.RuntimeFailure;
+        },
+    };
+}

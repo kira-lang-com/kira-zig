@@ -50,6 +50,8 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     try argv.appendSlice(&.{
         "zig",
         "build-lib",
+        "-O",
+        "ReleaseFast",
         "-target",
         target_triple,
         "-static",

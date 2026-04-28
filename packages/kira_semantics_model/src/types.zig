@@ -11,6 +11,7 @@ pub const Type = enum {
     callback,
     ffi_struct,
     named,
+    enum_instance,
     construct_any,
     array,
     native_state,
@@ -39,8 +40,12 @@ pub const ResolvedType = struct {
         } else if (other.construct_constraint != null) {
             return false;
         }
-        if (self.name == null or other.name == null) return true;
+        const require_exact_name = switch (self.kind) {
+            .named, .enum_instance, .ffi_struct, .callback, .construct_any, .array, .native_state, .native_state_view => true,
+            else => false,
+        };
         if (self.name == null and other.name == null) return true;
+        if (self.name == null or other.name == null) return !require_exact_name;
         return std.mem.eql(u8, self.name.?, other.name.?);
     }
 

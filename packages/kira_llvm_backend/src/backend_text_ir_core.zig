@@ -6,6 +6,7 @@ const backend_api = @import("kira_backend_api");
 const build_options = @import("kira_llvm_build_options");
 const llvm = @import("llvm_c.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
+const enum_ops = @import("backend_text_ir_enum_ops.zig");
 const parent = @import("backend.zig");
 const collectCallValueDispatchers = parent.collectCallValueDispatchers;
 const freeStringList = parent.freeStringList;
@@ -50,16 +51,10 @@ pub fn buildTextLlvmIr(
 ) ![]u8 {
     const dispatchers = try collectCallValueDispatchers(allocator, request.program.*);
     defer allocator.free(dispatchers);
-
     var globals = std.array_list.Managed([]const u8).init(allocator);
     defer freeStringList(allocator, &globals);
-
     const plan = try buildMonomorphizationPlan(allocator, request);
-    defer {
-        var owned = plan;
-        owned.deinit();
-    }
-
+    defer { var owned = plan; owned.deinit(); }
     var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
     defer freeSymbolNames(allocator, &symbol_names);
     for (request.program.functions) |function_decl| {
@@ -67,31 +62,20 @@ pub fn buildTextLlvmIr(
         const name = try functionSymbolName(allocator, function_decl, request.mode);
         try symbol_names.put(allocator, function_decl.id, name);
     }
-
     var function_bodies = std.array_list.Managed([]const u8).init(allocator);
     defer freeStringList(allocator, &function_bodies);
     var function_decls = std.array_list.Managed([]const u8).init(allocator);
     defer freeStringList(allocator, &function_decls);
-
     var string_counter: usize = 0;
     for (request.program.functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-        if (function_decl.is_extern) {
-            try function_decls.append(try buildTextExternDecl(allocator, request, &symbol_names, function_decl));
-        }
+        if (function_decl.is_extern) try function_decls.append(try buildTextExternDecl(allocator, request, &symbol_names, function_decl));
     }
     for (request.program.functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
         const register_types = try inferRegisterTypes(allocator, request.program.*, function_decl);
         defer allocator.free(register_types);
-        const base_variant = parent.FunctionVariant{
-            .function_id = function_decl.id,
-            .param_types = function_decl.param_types,
-            .local_types = function_decl.local_types,
-            .return_type = function_decl.return_type,
-            .register_types = register_types,
-            .symbol_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration,
-        };
+        const base_variant = parent.FunctionVariant{ .function_id = function_decl.id, .param_types = function_decl.param_types, .local_types = function_decl.local_types, .return_type = function_decl.return_type, .register_types = register_types, .symbol_name = symbol_names.get(function_decl.id) orelse return error.MissingFunctionDeclaration };
         const body = try buildTextFunctionBody(allocator, request, &plan, &symbol_names, &globals, function_decl, base_variant, string_counter);
         string_counter += countStringConstants(function_decl);
         try function_bodies.append(body);
@@ -102,18 +86,13 @@ pub fn buildTextLlvmIr(
         string_counter += countStringConstants(function_decl);
         try function_bodies.append(body);
     }
-
     if (request.mode == .llvm_native) {
         const entry_decl = request.program.functions[request.program.entry_index];
         if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
-        const entry_function_name = symbol_names.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
-        const main_body = try buildTextMainBody(allocator, entry_function_name);
-        try function_bodies.append(main_body);
+        try function_bodies.append(try parent.buildTextMainBody(allocator, symbol_names.get(entry_decl.id) orelse return error.MissingFunctionDeclaration));
     }
-
     var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
-
     var writer = &output.writer;
     try writer.print("; ModuleID = \"{s}\"\n", .{request.module_name});
     try writer.print("source_filename = \"{s}\"\n", .{request.module_name});
@@ -121,12 +100,10 @@ pub fn buildTextLlvmIr(
     try appendTypeDefinitions(allocator, writer, request.program);
     try writer.writeAll("%kira.string = type { ptr, i64 }\n\n");
     try writer.writeAll("%kira.bridge.value = type { i8, [7 x i8], i64, i64 }\n\n");
-
     try writer.writeAll("@kira_bool_true_data = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
     try writer.writeAll("@kira_bool_true = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([5 x i8], ptr @kira_bool_true_data, i64 0, i64 0), i64 4 }\n");
     try writer.writeAll("@kira_bool_false_data = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
     try writer.writeAll("@kira_bool_false = private unnamed_addr constant %kira.string { ptr getelementptr inbounds ([6 x i8], ptr @kira_bool_false_data, i64 0, i64 0), i64 5 }\n\n");
-
     try writer.writeAll("declare void @\"kira_native_write_i64\"(i64)\n");
     try writer.writeAll("declare void @\"kira_native_write_f64\"(double)\n");
     try writer.writeAll("declare void @\"kira_native_write_string\"(ptr, i64)\n");
@@ -151,39 +128,27 @@ pub fn buildTextLlvmIr(
         try writer.writeByte('\n');
     }
     try writer.writeByte('\n');
-
     if (function_bodies.items.len > 0) try writer.writeByte('\n');
-
     for (globals.items) |global_def| {
         try writer.writeAll(global_def);
         try writer.writeByte('\n');
     }
-
-    if (globals.items.len > 0 and function_bodies.items.len > 0) {
-        try writer.writeByte('\n');
-    }
-
+    if (globals.items.len > 0 and function_bodies.items.len > 0) try writer.writeByte('\n');
     for (function_bodies.items) |body| {
         try writer.writeAll(body);
         try writer.writeByte('\n');
     }
-
     for (dispatchers) |dispatcher| {
         try writer.writeAll(try buildCallValueDispatcher(allocator, request, &symbol_names, dispatcher));
         try writer.writeByte('\n');
     }
-
-    if (request.mode == .hybrid) {
-        for (request.program.functions) |function_decl| {
-            if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
-            try writer.writeAll(try buildHybridBridgeWrapper(allocator, &symbol_names, function_decl));
-            try writer.writeByte('\n');
-        }
-    }
-
+    if (request.mode == .hybrid) for (request.program.functions) |function_decl| {
+        if (!shouldLowerFunction(function_decl.execution, request.mode) or function_decl.is_extern) continue;
+        try writer.writeAll(try buildHybridBridgeWrapper(allocator, &symbol_names, function_decl));
+        try writer.writeByte('\n');
+    };
     return output.toOwnedSlice();
 }
-
 pub fn buildTextFunctionBody(
     allocator: std.mem.Allocator,
     request: backend_api.CompileRequest,
@@ -196,7 +161,6 @@ pub fn buildTextFunctionBody(
 ) ![]const u8 {
     var body: std.Io.Writer.Allocating = .init(allocator);
     errdefer body.deinit();
-
     var writer = &body.writer;
     const function_name = variant.symbol_name;
     try writer.writeAll("define ");
@@ -211,15 +175,12 @@ pub fn buildTextFunctionBody(
         try writer.print("{d}", .{index});
     }
     try writer.writeAll(") {\nentry:\n");
-
     const register_types = variant.register_types;
-
     const string_state = try allocator.alloc(usize, 1);
     defer allocator.free(string_state);
     string_state[0] = string_counter;
     var temp_counter: usize = 0;
     var block_terminated = false;
-
     for (variant.local_types, 0..) |local_type, index| {
         const storage_type = try llvmLocalStorageTypeText(allocator, request.program, local_type);
         try writer.writeAll("  %local");
@@ -245,7 +206,6 @@ pub fn buildTextFunctionBody(
         try writer.writeAll(", ptr %local");
         try writer.print("{d}\n", .{index});
     }
-
     for (function_decl.instructions) |instruction| {
         switch (instruction) {
             .const_int => |value| {
@@ -262,10 +222,7 @@ pub fn buildTextFunctionBody(
                 try writer.writeAll("\n");
             },
             .const_string => |value| {
-                const string_index = string_state[0];
-                string_state[0] += 1;
-                try appendStringGlobals(allocator, globals, string_index, value.value);
-
+                const string_index = string_state[0]; string_state[0] += 1; try appendStringGlobals(allocator, globals, string_index, value.value);
                 try writer.writeAll("  %r");
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" = load %kira.string, ptr @kira_str_");
@@ -295,6 +252,7 @@ pub fn buildTextFunctionBody(
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" to i64\n");
             },
+            .alloc_enum => |value| try enum_ops.emitAllocEnum(writer, register_types, value),
             .alloc_native_state => |value| {
                 const type_decl = findTypeDecl(request.program, value.type_name) orelse return error.UnsupportedExecutableFeature;
                 const struct_type_name = typeRefName(value.type_name);
@@ -370,7 +328,7 @@ pub fn buildTextFunctionBody(
                                 value.dst, index, value.dst, index, value.dst, index,
                             });
                         },
-                        .construct_any, .raw_ptr, .array => {
+                        .construct_any, .raw_ptr, .array, .enum_instance => {
                             try writer.print("  %native.state.load.ptr.{d}.{d} = load ptr, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
                                 value.dst, index, value.dst, index,
                             });
@@ -472,7 +430,7 @@ pub fn buildTextFunctionBody(
                     try writer.print("  %closure.slot.{d}.{d} = getelementptr inbounds %kira.bridge.value, ptr %closure.slots.{d}, i64 {d}\n", .{ value.dst, index, value.dst, index });
                     try writer.print("  %closure.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{ value.dst, index, bridgeTagValue(capture_ty) });
                     switch (capture_ty.kind) {
-                        .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                        .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                             try writer.print("  %closure.pack.{d}.{d} = insertvalue %kira.bridge.value %closure.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{ value.dst, index, value.dst, index, capture_reg });
                         },
                         .boolean => {
@@ -653,7 +611,7 @@ pub fn buildTextFunctionBody(
                 });
                 try writer.print("  %native.state.get.val.{d} = load %kira.bridge.value, ptr %native.state.get.slot.{d}\n", .{ temp_index, value.dst });
                 switch (value.field_ty.kind) {
-                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = extractvalue %kira.bridge.value %native.state.get.val.{d}, 2\n", .{temp_index});
@@ -705,7 +663,7 @@ pub fn buildTextFunctionBody(
                     bridgeTagValue(register_types[value.src]),
                 });
                 switch (register_types[value.src].kind) {
-                    .integer, .construct_any, .raw_ptr, .array => {
+                    .integer, .construct_any, .raw_ptr, .array, .enum_instance => {
                         try writer.print("  %native.state.set.pack.{d} = insertvalue %kira.bridge.value %native.state.set.pack.{d}.0, i64 %r{d}, 2\n", .{
                             temp_index, temp_index, value.src,
                         });
@@ -784,7 +742,7 @@ pub fn buildTextFunctionBody(
                 });
                 try writer.print("  %array.get.val.{d} = load %kira.bridge.value, ptr %array.get.val.ptr.{d}\n", .{ temp_index, temp_index });
                 switch (value.ty.kind) {
-                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = extractvalue %kira.bridge.value %array.get.val.{d}, 2\n", .{temp_index});
@@ -830,7 +788,7 @@ pub fn buildTextFunctionBody(
                     temp_index, bridgeTagValue(register_types[value.src]),
                 });
                 switch (register_types[value.src].kind) {
-                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.print("  %array.set.pack.{d} = insertvalue %kira.bridge.value %array.set.pack.{d}.0, i64 %r{d}, 2\n", .{
                             temp_index, temp_index, value.src,
                         });
@@ -871,6 +829,8 @@ pub fn buildTextFunctionBody(
                     value.src, value.index, temp_index,
                 });
             },
+            .enum_tag => |value| try enum_ops.emitEnumTag(writer, value),
+            .enum_payload => |value| try enum_ops.emitEnumPayload(writer, value),
             .load_indirect => |value| {
                 const abi_type = try llvmIndirectLoadTypeText(allocator, request.program, value.ty);
                 try writer.print("  %load.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.ptr });
@@ -891,7 +851,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = trunc i8 %load.raw.{d} to i1\n", .{value.dst});
                     },
-                    .construct_any, .raw_ptr => {
+                    .construct_any, .raw_ptr, .enum_instance => {
                         try writer.print("  %load.rawptr.{d} = load ptr, ptr %load.ptr.{d}\n", .{ value.dst, value.dst });
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
@@ -942,7 +902,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("  %store.bool.{d} = zext i1 %r{d} to i8\n", .{ value.src, value.src });
                         try writer.print("  store i8 %store.bool.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
                     },
-                    .construct_any, .raw_ptr => {
+                    .construct_any, .raw_ptr, .enum_instance => {
                         if (value.ty.name != null and std.mem.eql(u8, value.ty.name.?, "CString") and register_types[value.src].kind == .string) {
                             try writer.print("  %store.cstr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ value.src, value.src });
                             try writer.print("  store ptr %store.cstr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
@@ -1034,123 +994,7 @@ pub fn buildTextFunctionBody(
             },
         }
     }
-
-    if (!block_terminated) {
-        try writer.writeAll("  ret void\n");
-    }
+    if (!block_terminated) try writer.writeAll("  ret void\n");
     try writer.writeAll("}\n");
     return body.toOwnedSlice();
-}
-
-pub fn buildTextMainBody(
-    allocator: std.mem.Allocator,
-    entry_function_name: []const u8,
-) ![]const u8 {
-    var body: std.Io.Writer.Allocating = .init(allocator);
-    errdefer body.deinit();
-
-    var writer = &body.writer;
-    try writer.writeAll("define i32 @main() {\nentry:\n");
-    try writer.writeAll("  call void ");
-    try writeLlvmSymbol(writer, entry_function_name);
-    try writer.writeAll("()\n  ret i32 0\n}\n");
-    return body.toOwnedSlice();
-}
-
-test "emits native state helper calls in text llvm ir" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    var program = ir.Program{
-        .types = &.{.{
-            .name = "CounterState",
-            .fields = &.{.{ .name = "count", .ty = .{ .kind = .integer, .name = "I64" } }},
-        }},
-        .functions = &.{.{
-            .id = 0,
-            .name = "main",
-            .execution = .native,
-            .param_types = &.{},
-            .return_type = .{ .kind = .void },
-            .register_count = 3,
-            .local_count = 0,
-            .local_types = &.{},
-            .instructions = &.{
-                .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
-                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 77 } },
-                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 77 } },
-                .{ .ret = .{ .src = null } },
-            },
-        }},
-        .entry_index = 0,
-    };
-    const request = backend_api.CompileRequest{
-        .mode = .llvm_native,
-        .program = &program,
-        .module_name = "native_state_test",
-        .emit = .{
-            .object_path = "dummy.obj",
-        },
-    };
-
-    const text = try buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
-    try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_alloc") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "kira_native_state_recover") != null);
-}
-
-test "native state ffi struct field writes copy assigned values" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    var program = ir.Program{
-        .types = &.{
-            .{
-                .name = "Handle",
-                .fields = &.{.{ .name = "id", .ty = .{ .kind = .integer, .name = "I32" } }},
-                .ffi = .ffi_struct,
-            },
-            .{
-                .name = "AppState",
-                .fields = &.{.{ .name = "handle", .ty = .{ .kind = .ffi_struct, .name = "Handle" } }},
-            },
-        },
-        .functions = &.{.{
-            .id = 0,
-            .name = "main",
-            .execution = .native,
-            .param_types = &.{},
-            .return_type = .{ .kind = .void },
-            .register_count = 4,
-            .local_count = 0,
-            .local_types = &.{},
-            .instructions = &.{
-                .{ .alloc_struct = .{ .dst = 0, .type_name = "AppState" } },
-                .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "AppState", .type_id = 77 } },
-                .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "AppState", .type_id = 77 } },
-                .{ .alloc_struct = .{ .dst = 3, .type_name = "Handle" } },
-                .{ .native_state_field_set = .{
-                    .state = 2,
-                    .field_index = 0,
-                    .src = 3,
-                    .field_ty = .{ .kind = .ffi_struct, .name = "Handle" },
-                } },
-                .{ .ret = .{ .src = null } },
-            },
-        }},
-        .entry_index = 0,
-    };
-    const request = backend_api.CompileRequest{
-        .mode = .llvm_native,
-        .program = &program,
-        .module_name = "native_state_ffi_set_test",
-        .emit = .{
-            .object_path = "dummy.obj",
-        },
-    };
-
-    const text = try buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
-    try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.copy") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.ptrint") != null);
 }

@@ -9,13 +9,14 @@ const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
 const text_ir_core = @import("backend_text_ir_core.zig");
+const text_ir_tail = @import("backend_text_ir_tail.zig");
 const text_ir_calls = @import("backend_text_ir_calls.zig");
 const backend_utils = @import("backend_utils.zig");
 const monomorphization = @import("backend_monomorphization.zig");
 
 pub const buildTextLlvmIr = text_ir_core.buildTextLlvmIr;
 pub const buildTextFunctionBody = text_ir_core.buildTextFunctionBody;
-pub const buildTextMainBody = text_ir_core.buildTextMainBody;
+pub const buildTextMainBody = text_ir_tail.buildTextMainBody;
 
 pub const writeCallInstruction = text_ir_calls.writeCallInstruction;
 pub const writeIndirectCallInstruction = text_ir_calls.writeIndirectCallInstruction;

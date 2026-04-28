@@ -354,6 +354,7 @@ fn isTypeExecutionAnnotation(name: []const u8) bool {
 
 fn structAnnotationAllowed(header: AnnotationHeader, name: []const u8) bool {
     if (isTypeExecutionAnnotation(name)) return true;
+    if (std.mem.eql(u8, name, "Printable")) return true;
     return header.compiler_builtin and std.mem.startsWith(u8, header.decl.name, "FFI.");
 }
 

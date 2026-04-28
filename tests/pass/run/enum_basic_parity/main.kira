@@ -1,0 +1,30 @@
+enum ParseError {
+    InvalidFormat: String = "Not the expected format"
+    UnexpectedEnd
+    EmptyInput
+}
+
+@Main
+function main() {
+    let invalid = ParseError.InvalidFormat
+    let ended = ParseError.UnexpectedEnd
+    let empty = ParseError.EmptyInput
+
+    match invalid {
+        InvalidFormat(text) -> print(text);
+        UnexpectedEnd -> print("unexpected");
+        EmptyInput -> print("empty");
+    }
+    match ended {
+        InvalidFormat(text) -> print(text);
+        UnexpectedEnd -> print("end");
+        EmptyInput -> print("empty");
+    }
+    match empty {
+        InvalidFormat(text) -> print(text);
+        UnexpectedEnd -> print("end");
+        EmptyInput -> print("empty");
+    }
+    print(ParseError.UnexpectedEnd)
+    return
+}

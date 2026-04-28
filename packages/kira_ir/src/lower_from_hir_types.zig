@@ -18,6 +18,7 @@ pub fn lowerResolvedType(program: model.Program, ty: model.ResolvedType) !ir.Val
         .construct_any => .{ .kind = .construct_any, .name = ty.name, .construct_constraint = if (ty.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null },
         .array => .{ .kind = .array, .name = ty.name },
         .raw_ptr, .c_string, .callback, .native_state, .native_state_view => .{ .kind = .raw_ptr, .name = ty.name },
+        .enum_instance => .{ .kind = .enum_instance, .name = ty.name },
         .named => if (ty.name) |name| lowerNamedType(program, name) else return error.UnsupportedType,
         .ffi_struct, .unknown => return error.UnsupportedType,
     };
@@ -49,7 +50,7 @@ pub fn lowerExecutableCompareOperandType(program: model.Program, ty: model.Resol
             .equal, .not_equal => lowered,
             else => error.UnsupportedExecutableFeature,
         },
-        .raw_ptr, .ffi_struct => switch (op) {
+        .raw_ptr, .ffi_struct, .enum_instance => switch (op) {
             .equal, .not_equal => lowered,
             else => error.UnsupportedExecutableFeature,
         },

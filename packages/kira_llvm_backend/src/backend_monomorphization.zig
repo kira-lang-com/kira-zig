@@ -139,6 +139,7 @@ fn resolveVariant(
             .const_bool => |value| register_types[value.dst] = .{ .kind = .boolean },
             .const_null_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
             .alloc_struct => |value| register_types[value.dst] = .{ .kind = .ffi_struct, .name = value.type_name },
+            .alloc_enum => |value| register_types[value.dst] = .{ .kind = .enum_instance, .name = value.enum_type_name },
             .alloc_native_state => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.type_name },
             .alloc_array => |value| register_types[value.dst] = .{ .kind = .array },
             .const_function => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = if (value.representation == .callable_value) "Callable" else "RawPtr" },
@@ -161,6 +162,8 @@ fn resolveVariant(
             .native_state_field_get => |value| register_types[value.dst] = value.field_ty,
             .array_len => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
             .array_get => |value| register_types[value.dst] = value.ty,
+            .enum_tag => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
+            .enum_payload => |value| register_types[value.dst] = value.payload_ty,
             .load_indirect => |value| register_types[value.dst] = value.ty,
             .call => |value| if (value.dst) |dst| {
                 const callee_decl = functionById(program.*, value.callee) orelse return error.UnknownFunction;

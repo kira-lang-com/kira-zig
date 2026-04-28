@@ -241,6 +241,7 @@ pub fn resolveLocalTypeHeader(
         .methods = try methods.toOwnedSlice(),
         .parent_views = try parent_views.toOwnedSlice(),
         .ffi = ffi_type,
+        .is_printable = hasAnnotationNamed(type_decl.annotations, "Printable"),
         .span = type_decl.span,
     };
 }
@@ -290,6 +291,7 @@ pub fn resolveImportedTypeHeader(
         .methods = try methods.toOwnedSlice(),
         .parent_views = try parent_views.toOwnedSlice(),
         .ffi = type_decl.ffi,
+        .is_printable = false,
         .span = .{ .start = 0, .end = 0 },
     };
 }
@@ -546,6 +548,14 @@ pub fn appendGeneratedAnnotationMethods(
             });
         }
     }
+}
+
+fn hasAnnotationNamed(annotations: []const syntax.ast.Annotation, name: []const u8) bool {
+    for (annotations) |annotation| {
+        const leaf = annotation.name.segments[annotation.name.segments.len - 1].text;
+        if (std.mem.eql(u8, leaf, name)) return true;
+    }
+    return false;
 }
 
 pub fn applyLocalTypeMembers(

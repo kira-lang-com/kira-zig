@@ -20,6 +20,8 @@ pub const Context = struct {
     construct_headers: ?*const std.StringHashMapUnmanaged(ConstructHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
+    enum_headers: ?*const std.StringHashMapUnmanaged(model.EnumDecl) = null,
+    concrete_enums: ?*std.StringHashMapUnmanaged(model.EnumDecl) = null,
     callback_capture_frame: ?*CallbackCaptureFrame = null,
 };
 
@@ -79,6 +81,7 @@ pub const TypeHeader = struct {
     methods: []const MethodMember = &.{},
     parent_views: []const ParentView = &.{},
     ffi: ?model.NamedTypeInfo = null,
+    is_printable: bool = false,
     span: source_pkg.Span,
 };
 
@@ -99,6 +102,7 @@ pub fn registerBuiltinAnnotationHeaders(
     try putBuiltinAnnotation(allocator, headers, "Main", false);
     try putBuiltinAnnotation(allocator, headers, "Native", false);
     try putBuiltinAnnotation(allocator, headers, "Runtime", false);
+    try putBuiltinAnnotation(allocator, headers, "Printable", false);
     try putBuiltinAnnotation(allocator, headers, "FFI.Extern", true);
     try putBuiltinAnnotation(allocator, headers, "FFI.Struct", true);
     try putBuiltinAnnotation(allocator, headers, "FFI.Pointer", true);
@@ -138,17 +142,17 @@ pub fn qualifiedNameLeaf(allocator: std.mem.Allocator, name: syntax.ast.Qualifie
     return allocator.dupe(u8, name.segments[name.segments.len - 1].text);
 }
 
-pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
+pub fn typeFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
     return switch (ty) {
-        .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(allocator, info.element_type.*) },
-        .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(allocator, info) },
+        .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(ctx, info.element_type.*) },
+        .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(ctx, info) },
         .any => |info| switch (info.target.*) {
             .named => |name| .{
                 .kind = .construct_any,
-                .name = try typeTextFromSyntax(allocator, .{ .any = info }),
-                .construct_constraint = .{ .construct_name = try allocator.dupe(u8, name.segments[name.segments.len - 1].text) },
+                .name = try typeTextFromSyntax(ctx, .{ .any = info }),
+                .construct_constraint = .{ .construct_name = try ctx.allocator.dupe(u8, name.segments[name.segments.len - 1].text) },
             },
-            else => .{ .kind = .construct_any, .name = try typeTextFromSyntax(allocator, .{ .any = info }) },
+            else => .{ .kind = .construct_any, .name = try typeTextFromSyntax(ctx, .{ .any = info }) },
         },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
@@ -174,17 +178,27 @@ pub fn typeFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) any
             if (std.mem.eql(u8, leaf, "CBool")) break :blk .{ .kind = .boolean, .name = leaf };
             if (std.mem.eql(u8, leaf, "CString")) break :blk .{ .kind = .c_string, .name = leaf };
             if (std.mem.eql(u8, leaf, "RawPtr")) break :blk .{ .kind = .raw_ptr, .name = leaf };
+            if (ctx.enum_headers) |headers| {
+                if (headers.get(leaf)) |enum_decl| {
+                    if (enum_decl.type_params.len == 0) break :blk .{ .kind = .enum_instance, .name = leaf };
+                }
+            }
             break :blk .{ .kind = .named, .name = leaf };
+        },
+        .generic => |info| .{
+            .kind = .enum_instance,
+            .name = try genericTypeTextFromSyntax(ctx, info),
         },
     };
 }
 
-pub fn typeTextFromSyntax(allocator: std.mem.Allocator, ty: syntax.ast.TypeExpr) anyerror![]const u8 {
+pub fn typeTextFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror![]const u8 {
     return switch (ty) {
-        .array => |info| std.fmt.allocPrint(allocator, "[{s}]", .{try typeTextFromSyntax(allocator, info.element_type.*)}),
-        .function => |info| functionTypeTextFromSyntax(allocator, info),
-        .any => |info| std.fmt.allocPrint(allocator, "any {s}", .{try typeTextFromSyntax(allocator, info.target.*)}),
-        .named => |name| allocator.dupe(u8, name.segments[name.segments.len - 1].text),
+        .array => |info| std.fmt.allocPrint(ctx.allocator, "[{s}]", .{try typeTextFromSyntax(ctx, info.element_type.*)}),
+        .function => |info| functionTypeTextFromSyntax(ctx, info),
+        .any => |info| std.fmt.allocPrint(ctx.allocator, "any {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
+        .named => |name| ctx.allocator.dupe(u8, name.segments[name.segments.len - 1].text),
+        .generic => |info| genericTypeTextFromSyntax(ctx, info),
     };
 }
 
@@ -200,7 +214,7 @@ pub fn typeTextFromResolved(allocator: std.mem.Allocator, ty: model.ResolvedType
         .construct_any => if (ty.name) |name| allocator.dupe(u8, name) else std.fmt.allocPrint(allocator, "any {s}", .{(ty.construct_constraint orelse return allocator.dupe(u8, "any Unknown")).construct_name}),
         .native_state => std.fmt.allocPrint(allocator, "NativeState<{s}>", .{ty.name orelse "Unknown"}),
         .native_state_view => std.fmt.allocPrint(allocator, "NativeStateView<{s}>", .{ty.name orelse "Unknown"}),
-        .callback, .ffi_struct, .named => allocator.dupe(u8, ty.name orelse "Unknown"),
+        .callback, .ffi_struct, .named, .enum_instance => allocator.dupe(u8, ty.name orelse "Unknown"),
         .array => std.fmt.allocPrint(allocator, "[{s}]", .{ty.name orelse ""}),
         .unknown => allocator.dupe(u8, "Unknown"),
     };
@@ -250,14 +264,28 @@ pub fn typeLabel(ty: model.ResolvedType) []const u8 {
         .construct_any => "any Unknown",
         .native_state => "NativeState",
         .native_state_view => "NativeStateView",
-        .callback, .ffi_struct, .named => "Unknown",
+        .callback, .ffi_struct, .named, .enum_instance => "Unknown",
         .array => "[]",
         .unknown => "Unknown",
     };
 }
 
 pub fn typeFromSyntaxChecked(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
-    const resolved = try typeFromSyntax(ctx.allocator, ty);
+    const resolved = try typeFromSyntax(ctx, ty);
+    if (ty == .generic) {
+        const base_name = ty.generic.base.segments[ty.generic.base.segments.len - 1].text;
+        if (ctx.enum_headers == null or ctx.enum_headers.?.get(base_name) == null) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM031",
+                .title = "type mismatch",
+                .message = "Generic type syntax currently requires a declared enum base.",
+                .labels = &.{diagnostics.primaryLabel(ty.generic.span, "generic type base could not be resolved as an enum")},
+                .help = "Declare the enum first and use its generic type parameters in type positions only.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+    }
     try validateAnyConstructType(ctx, ty);
     return resolved;
 }
@@ -273,7 +301,7 @@ pub fn validateAnyConstructType(ctx: *Context, ty: syntax.ast.TypeExpr) !void {
             for (info.params) |param| try validateAnyConstructType(ctx, param.*);
             try validateAnyConstructType(ctx, info.result.*);
         },
-        .named => {},
+        .named, .generic => {},
     }
 }
 
@@ -774,10 +802,28 @@ pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
     return .{ .kind = .named, .name = text };
 }
 
-fn functionTypeTextFromSyntax(allocator: std.mem.Allocator, info: syntax.ast.FunctionTypeExpr) anyerror![]const u8 {
-    var params = std.array_list.Managed(model.ResolvedType).init(allocator);
-    for (info.params) |param| try params.append(try typeFromSyntax(allocator, param.*));
-    return function_types.signatureText(allocator, params.items, try typeFromSyntax(allocator, info.result.*));
+fn functionTypeTextFromSyntax(ctx: *const Context, info: syntax.ast.FunctionTypeExpr) anyerror![]const u8 {
+    var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
+    for (info.params) |param| try params.append(try typeFromSyntax(ctx, param.*));
+    return function_types.signatureText(ctx.allocator, params.items, try typeFromSyntax(ctx, info.result.*));
+}
+
+fn genericTypeTextFromSyntax(ctx: *const Context, info: syntax.ast.GenericTypeExpr) ![]const u8 {
+    const base_name = info.base.segments[info.base.segments.len - 1].text;
+    var text = std.array_list.Managed(u8).init(ctx.allocator);
+    try text.appendSlice(base_name);
+    for (info.args) |arg| {
+        try text.appendSlice("__");
+        const arg_text = try typeTextFromSyntax(ctx, arg.*);
+        for (arg_text) |byte| {
+            if (std.ascii.isAlphanumeric(byte)) {
+                try text.append(byte);
+            } else {
+                try text.append('_');
+            }
+        }
+    }
+    return text.toOwnedSlice();
 }
 
 fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {

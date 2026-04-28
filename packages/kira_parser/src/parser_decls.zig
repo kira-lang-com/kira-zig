@@ -37,6 +37,18 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
         }
         return .{ .capability_decl = try self.parseCapabilityDecl() };
     }
+    if (self.at(.kw_enum)) {
+        if (annotations.len != 0) {
+            try self.emitUnexpectedToken(
+                "enum declarations cannot be annotated",
+                self.peek(),
+                "enum declaration starts here",
+                "Remove the preceding annotation usage.",
+            );
+            return error.DiagnosticsEmitted;
+        }
+        return .{ .enum_decl = try self.parseEnumDecl() };
+    }
     if (self.at(.kw_function)) {
         return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, false) };
     }
@@ -85,7 +97,7 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
         "expected top-level declaration",
         token,
         "expected a declaration here",
-        "Start a declaration with `annotation`, `capability`, `class`, `struct`, `function`, `construct`, or a construct-defined declaration form such as `Widget Button(...) { ... }`.",
+        "Start a declaration with `annotation`, `capability`, `enum`, `class`, `struct`, `function`, `construct`, or a construct-defined declaration form such as `Widget Button(...) { ... }`.",
     );
     return error.DiagnosticsEmitted;
 }
@@ -177,6 +189,60 @@ pub fn parseCapabilityDecl(self: *Parser) !syntax.ast.CapabilityDecl {
         .name = name_token.lexeme,
         .generated_members = try generated_members.toOwnedSlice(),
         .span = source_pkg.Span.init(capability_token.span.start, close.span.end),
+    };
+}
+
+pub fn parseEnumDecl(self: *Parser) !syntax.ast.EnumDecl {
+    const enum_token = try self.expect(.kw_enum, "expected 'enum'", "enum declarations start with 'enum'");
+    const name_token = try self.expect(.identifier, "expected enum name", "name the enum here");
+    var type_params = std.array_list.Managed([]const u8).init(self.allocator);
+    if (self.match(.less)) {
+        while (!self.at(.greater) and !self.at(.eof)) {
+            const type_param = try self.expect(.identifier, "expected enum type parameter", "write the type parameter name here");
+            try type_params.append(type_param.lexeme);
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.expect(.greater, "expected '>' after enum type parameters", "close the enum type parameter list here");
+    }
+
+    _ = try self.expect(.l_brace, "expected '{' to start enum body", "open the enum body here");
+    var variants = std.array_list.Managed(syntax.ast.EnumVariantDecl).init(self.allocator);
+    while (!self.at(.r_brace) and !self.at(.eof)) {
+        const variant_name = try self.expect(.identifier, "expected enum variant name", "name the enum variant here");
+        var associated_type: ?*syntax.ast.TypeExpr = null;
+        var default_value: ?*syntax.ast.Expr = null;
+        var end = variant_name.span.end;
+
+        if (self.match(.colon)) {
+            associated_type = try self.parseTypeExpr();
+            end = typeSpan(associated_type.?.*).end;
+        } else if (self.match(.l_paren)) {
+            associated_type = try self.parseTypeExpr();
+            const close_payload = try self.expect(.r_paren, "expected ')' after enum payload type", "close the enum payload type here");
+            end = close_payload.span.end;
+        }
+
+        if (self.match(.equal)) {
+            default_value = try self.parseExpression();
+            end = exprSpan(default_value.?.*).end;
+        }
+
+        _ = self.match(.semicolon);
+        _ = self.match(.comma);
+        try variants.append(.{
+            .name = variant_name.lexeme,
+            .associated_type = associated_type,
+            .default_value = default_value,
+            .span = source_pkg.Span.init(variant_name.span.start, end),
+        });
+    }
+
+    const close = try self.expect(.r_brace, "expected '}' to close enum body", "enum body should end here");
+    return .{
+        .name = name_token.lexeme,
+        .type_params = try type_params.toOwnedSlice(),
+        .variants = try variants.toOwnedSlice(),
+        .span = source_pkg.Span.init(enum_token.span.start, close.span.end),
     };
 }
 
@@ -482,7 +548,7 @@ pub fn parseConstructSection(self: *Parser) !syntax.ast.ConstructSection {
         }
         if (self.at(.kw_function)) {
             const signature = try self.parseFunctionSignature();
-            _ = try self.expect(.semicolon, "expected ';' after construct function signature", "terminate the construct function signature with ';'");
+            _ = self.match(.semicolon);
             try entries.append(.{ .function_signature = signature });
             continue;
         }

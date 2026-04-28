@@ -7,6 +7,7 @@ const shared = @import("lower_shared.zig");
 const exprs = @import("lower_exprs.zig");
 const ImportedGlobals = @import("imported_globals.zig").ImportedGlobals;
 const type_impl = @import("lower_program_types.zig");
+const enum_impl = @import("lower_program_enums.zig");
 const ffi_boundary = @import("lower_program_ffi_boundary.zig");
 
 pub const lowerImports = type_impl.lowerImports;
@@ -95,6 +96,12 @@ pub fn lowerProgramWithOptions(
     var function_headers = std.StringHashMapUnmanaged(shared.FunctionHeader){};
     defer function_headers.deinit(allocator);
     ctx.function_headers = &function_headers;
+    var enum_headers = std.StringHashMapUnmanaged(model.EnumDecl){};
+    defer enum_headers.deinit(allocator);
+    ctx.enum_headers = &enum_headers;
+    var concrete_enums = std.StringHashMapUnmanaged(model.EnumDecl){};
+    defer concrete_enums.deinit(allocator);
+    ctx.concrete_enums = &concrete_enums;
     var type_headers = std.StringHashMapUnmanaged(shared.TypeHeader){};
     defer type_headers.deinit(allocator);
     ctx.type_headers = &type_headers;
@@ -184,6 +191,12 @@ pub fn lowerProgramWithOptions(
                 });
                 try constructs.append(lowered);
             },
+            .enum_decl => |enum_decl| {
+                try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, enum_decl.name, enum_decl.span);
+                const lowered = try enum_impl.lowerEnumDecl(&ctx, enum_decl);
+                try enum_headers.put(allocator, lowered.name, lowered);
+                if (lowered.type_params.len == 0) try concrete_enums.put(allocator, lowered.name, lowered);
+            },
             .type_decl => |type_decl| {
                 try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, type_decl.name, type_decl.span);
                 try local_types.put(allocator, type_decl.name, type_decl);
@@ -198,7 +211,7 @@ pub fn lowerProgramWithOptions(
                 var param_types = std.array_list.Managed(model.ResolvedType).init(allocator);
                 for (function_decl.params) |param| {
                     if (param.type_expr) |type_expr| {
-                        try param_types.append(try shared.typeFromSyntax(allocator, type_expr.*));
+                        try param_types.append(try shared.typeFromSyntax(&ctx, type_expr.*));
                     } else {
                         try param_types.append(.{ .kind = .unknown });
                     }
@@ -207,7 +220,7 @@ pub fn lowerProgramWithOptions(
                     .id = @as(u32, @intCast(function_headers.count())),
                     .params = try param_types.toOwnedSlice(),
                     .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
-                    .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(allocator, return_type.*) else .{ .kind = .unknown },
+                    .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(&ctx, return_type.*) else .{ .kind = .unknown },
                     .is_extern = foreign != null,
                     .foreign = foreign,
                     .span = function_decl.span,
@@ -215,6 +228,8 @@ pub fn lowerProgramWithOptions(
             },
         }
     }
+
+    try enum_impl.registerGenericEnumInstantiations(&ctx, program);
 
     for (imported_globals.types) |type_decl| {
         _ = try resolveTypeHeader(&ctx, &local_types, &resolver_states, &type_headers, .{ .imported = type_decl }, type_decl.name);
@@ -245,6 +260,7 @@ pub fn lowerProgramWithOptions(
             else => {},
         }
     }
+    try validatePrintableTypes(&ctx, &type_headers, &function_headers);
 
     var main_index: ?usize = null;
     var first_main_span: ?source_pkg.Span = null;
@@ -320,6 +336,7 @@ pub fn lowerProgramWithOptions(
         .imports = imports,
         .annotations = try annotations.toOwnedSlice(),
         .capabilities = try capabilities.toOwnedSlice(),
+        .enums = try ownedEnumSlice(allocator, &concrete_enums),
         .constructs = try constructs.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .forms = try forms.toOwnedSlice(),
@@ -758,6 +775,43 @@ fn flattenDefaultCalleeName(allocator: std.mem.Allocator, expr: *syntax.ast.Expr
         },
         else => allocator.dupe(u8, "<expr>"),
     };
+}
+
+fn ownedEnumSlice(
+    allocator: std.mem.Allocator,
+    concrete_enums: *const std.StringHashMapUnmanaged(model.EnumDecl),
+) ![]model.EnumDecl {
+    const owned = try allocator.alloc(model.EnumDecl, concrete_enums.count());
+    var iterator = concrete_enums.iterator();
+    var index: usize = 0;
+    while (iterator.next()) |entry| : (index += 1) {
+        owned[index] = entry.value_ptr.*;
+    }
+    return owned;
+}
+
+fn validatePrintableTypes(
+    ctx: *shared.Context,
+    type_headers: *const std.StringHashMapUnmanaged(shared.TypeHeader),
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !void {
+    var iterator = type_headers.iterator();
+    while (iterator.next()) |entry| {
+        if (!entry.value_ptr.is_printable) continue;
+        const method_key = try std.fmt.allocPrint(ctx.allocator, "{s}.onPrint", .{entry.key_ptr.*});
+        const header = function_headers.get(method_key);
+        if (header == null or header.?.return_type.kind != .string) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM102",
+                .title = "missing onPrint for @Printable type",
+                .message = try std.fmt.allocPrint(ctx.allocator, "The @Printable type '{s}' must declare `function onPrint() -> String`.", .{entry.key_ptr.*}),
+                .labels = &.{diagnostics.primaryLabel(entry.value_ptr.span, "@Printable type is missing a compatible onPrint method")},
+                .help = "Add `function onPrint() -> String` to the type, or remove @Printable.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+    }
 }
 
 fn qualifiedLeafText(name: []const u8) []const u8 {

@@ -144,7 +144,7 @@ pub fn writeCallInstruction(
                 try writer.writeByte(' ');
                 if (callee_decl.is_extern) {
                     switch (param_type.kind) {
-                        .construct_any, .array, .raw_ptr, .ffi_struct => {
+                    .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
                             try writer.writeAll("%call.arg.");
                             try writer.print("{d}.{d}", .{ callee_id, index });
                         },
@@ -234,7 +234,7 @@ pub fn writeCallInstruction(
                         callee_id, index, bridgeTagValue(register_types[arg]),
                     });
                     switch (register_types[arg].kind) {
-                        .integer, .construct_any, .raw_ptr, .ffi_struct => {
+                        .integer, .construct_any, .raw_ptr, .ffi_struct, .enum_instance => {
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{
                                 callee_id, index, callee_id, index, arg,
                             });
@@ -312,7 +312,7 @@ pub fn writeCallInstruction(
             if (call_inst.dst) |dst| {
                 try writer.print("  %rt.result.load.{d} = load %kira.bridge.value, ptr %rt.result.{d}\n", .{ callee_id, callee_id });
                 switch (callee_decl.return_type.kind) {
-                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
                         try writer.print(" = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{callee_id});
@@ -445,7 +445,7 @@ pub fn buildCallValueDispatcher(
                 if (function_decl.is_extern) {
                     for (function_decl.param_types, 0..) |param_type, index| {
                         switch (param_type.kind) {
-                            .array, .raw_ptr => {
+                            .array, .raw_ptr, .enum_instance => {
                                 try writer.print("  %dispatch.arg.{d}.{d} = inttoptr i64 %arg{d} to ptr\n", .{ case_index, index, index });
                             },
                             .integer => {
@@ -509,7 +509,7 @@ pub fn buildCallValueDispatcher(
                     try writer.writeByte(' ');
                     if (function_decl.is_extern) {
                         switch (param_type.kind) {
-                            .construct_any, .array, .raw_ptr, .ffi_struct => {
+                    .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
                                 try writer.writeAll("%dispatch.arg.");
                                 try writer.print("{d}.{d}", .{ case_index, index });
                             },
@@ -547,7 +547,7 @@ pub fn buildCallValueDispatcher(
 
                 switch (dispatcher.return_type.kind) {
                     .void => try writer.writeAll("  ret void\n"),
-                    .construct_any, .raw_ptr, .array => if (function_decl.is_extern) {
+                    .construct_any, .raw_ptr, .array, .enum_instance => if (function_decl.is_extern) {
                         try writer.print("  %dispatch.ret.{d} = ptrtoint ptr %dispatch.call.ptr.{d} to i64\n", .{ case_index, case_index });
                         try writer.print("  ret i64 %dispatch.ret.{d}\n", .{case_index});
                     } else {
@@ -592,7 +592,7 @@ pub fn buildCallValueDispatcher(
                             case_index, index, bridgeTagValue(param_type),
                         });
                         switch (param_type.kind) {
-                            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                                 try writer.print("  %dispatch.rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %dispatch.rt.pack.{d}.{d}.0, i64 %arg{d}, 2\n", .{
                                     case_index, index, case_index, index, index,
                                 });
@@ -661,7 +661,7 @@ pub fn buildCallValueDispatcher(
                 try writer.writeAll(")\n");
                 switch (dispatcher.return_type.kind) {
                     .void => try writer.writeAll("  ret void\n"),
-                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.print("  %dispatch.rt.result.load.{d} = load %kira.bridge.value, ptr %dispatch.rt.result.{d}\n", .{ case_index, case_index });
                         try writer.print("  %dispatch.rt.ret.{d} = extractvalue %kira.bridge.value %dispatch.rt.result.load.{d}, 2\n", .{ case_index, case_index });
                         try writer.print("  ret i64 %dispatch.rt.ret.{d}\n", .{case_index});
@@ -748,7 +748,7 @@ pub fn buildCallValueDispatcher(
         try writer.writeAll(")\n");
         switch (dispatcher.return_type.kind) {
             .void => try writer.writeAll("  ret void\n"),
-            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => try writer.print("  ret i64 %closure.call.{d}\n", .{case_index}),
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => try writer.print("  ret i64 %closure.call.{d}\n", .{case_index}),
             .float => try writer.print("  ret {s} %closure.call.{d}\n", .{ llvmValueTypeText(dispatcher.return_type), case_index }),
             .boolean => try writer.print("  ret i1 %closure.call.{d}\n", .{case_index}),
             .string => try writer.print("  ret %kira.string %closure.call.{d}\n", .{case_index}),
@@ -783,7 +783,7 @@ fn sameValueType(lhs: ir.ValueType, rhs: ir.ValueType) bool {
 
 fn writeUnpackBridgeValue(writer: anytype, value_type: ir.ValueType, case_index: usize, capture_index: usize) !void {
     switch (value_type.kind) {
-        .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+        .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
             try writer.print("  %closure.arg.{d}.{d} = extractvalue %kira.bridge.value %closure.value.{d}.{d}, 2\n", .{ case_index, capture_index, case_index, capture_index });
         },
         .boolean => {

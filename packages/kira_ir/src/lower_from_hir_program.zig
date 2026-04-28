@@ -7,6 +7,40 @@ const Lowerer = parent.Lowerer;
 const lowerProgram = parent.lowerProgram;
 const lowerResolvedType = parent.lowerResolvedType;
 
+pub fn lowerEnumTypeDecls(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable_functions: std.AutoHashMapUnmanaged(u32, void),
+) ![]ir.EnumTypeDecl {
+    var referenced = std.StringHashMapUnmanaged(void){};
+    defer referenced.deinit(allocator);
+
+    for (program.functions) |function_decl| {
+        if (!reachable_functions.contains(function_decl.id)) continue;
+        for (function_decl.params) |param| try markReferencedType(allocator, program, &referenced, param.ty);
+        try markReferencedType(allocator, program, &referenced, function_decl.return_type);
+        for (function_decl.locals) |local| try markReferencedType(allocator, program, &referenced, local.ty);
+    }
+
+    var enums = std.array_list.Managed(ir.EnumTypeDecl).init(allocator);
+    for (program.enums) |enum_decl| {
+        if (!referenced.contains(enum_decl.name)) continue;
+        var variants = std.array_list.Managed(ir.EnumVariantIr).init(allocator);
+        for (enum_decl.variants) |variant_decl| {
+            try variants.append(.{
+                .name = try allocator.dupe(u8, variant_decl.name),
+                .discriminant = variant_decl.discriminant,
+                .payload_ty = if (variant_decl.payload_ty) |payload_ty| try lowerResolvedType(program, payload_ty) else null,
+            });
+        }
+        try enums.append(.{
+            .name = try allocator.dupe(u8, enum_decl.name),
+            .variants = try variants.toOwnedSlice(),
+        });
+    }
+    return enums.toOwnedSlice();
+}
+
 pub fn lowerConstructs(allocator: std.mem.Allocator, program: model.Program) ![]ir.Construct {
     const lowered = try allocator.alloc(ir.Construct, program.constructs.len);
     for (program.constructs, 0..) |construct_decl, index| {
@@ -108,6 +142,14 @@ pub fn markReachableStatement(
             for (node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
         },
         .break_stmt, .continue_stmt => {},
+        .match_stmt => |node| {
+            try markReachableExpr(allocator, program, reachable, node.subject);
+            for (node.arms) |arm| {
+                try markReachablePattern(allocator, program, reachable, arm.pattern);
+                if (arm.guard) |guard| try markReachableExpr(allocator, program, reachable, guard);
+                for (arm.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
+            }
+        },
         .switch_stmt => |node| {
             try markReachableExpr(allocator, program, reachable, node.subject);
             for (node.cases) |case_node| {
@@ -130,6 +172,9 @@ pub fn markReachableExpr(
         .construct => |node| {
             for (node.fields) |field| try markReachableExpr(allocator, program, reachable, field.value);
         },
+        .construct_enum_variant => |node| {
+            if (node.payload) |payload| try markReachableExpr(allocator, program, reachable, payload);
+        },
         .native_state => |node| try markReachableExpr(allocator, program, reachable, node.value),
         .native_user_data => |node| try markReachableExpr(allocator, program, reachable, node.state),
         .native_recover => |node| try markReachableExpr(allocator, program, reachable, node.value),
@@ -146,6 +191,7 @@ pub fn markReachableExpr(
             for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
         },
         .parent_view => |node| try markReachableExpr(allocator, program, reachable, node.object),
+        .array_len => |node| try markReachableExpr(allocator, program, reachable, node.object),
         .field => |node| try markReachableExpr(allocator, program, reachable, node.object),
         .binary => |node| {
             try markReachableExpr(allocator, program, reachable, node.lhs);
@@ -173,7 +219,7 @@ pub fn markReferencedType(
     ty: model.ResolvedType,
 ) !void {
     const name = switch (ty.kind) {
-        .named, .native_state, .native_state_view => ty.name orelse return,
+        .named, .enum_instance, .native_state, .native_state_view => ty.name orelse return,
         else => return,
     };
     if (referenced.contains(name)) return;
@@ -193,6 +239,13 @@ pub fn markReferencedType(
                 },
                 .ffi_struct => {},
             }
+        }
+        break;
+    }
+    for (program.enums) |enum_decl| {
+        if (!std.mem.eql(u8, enum_decl.name, name)) continue;
+        for (enum_decl.variants) |variant_decl| {
+            if (variant_decl.payload_ty) |payload_ty| try markReferencedType(allocator, program, referenced, payload_ty);
         }
         break;
     }
@@ -315,6 +368,18 @@ pub fn findTypeFieldDefaultExpr(program: model.Program, type_name: []const u8, f
 
 pub fn fieldDeclIsTypeConstant(field_decl: model.Field, owner_type_name: []const u8) bool {
     return field_decl.storage == .immutable and field_decl.ty.kind == .named and field_decl.ty.name != null and std.mem.eql(u8, field_decl.ty.name.?, owner_type_name);
+}
+
+fn markReachablePattern(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    pattern: model.MatchPattern,
+) anyerror!void {
+    switch (pattern) {
+        .variant => |node| if (node.inner) |inner| try markReachablePattern(allocator, program, reachable, inner.*),
+        .binding => {},
+    }
 }
 
 test "lowers zero-argument expression-statement calls even when return type is not resolved to void" {

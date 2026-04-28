@@ -10,6 +10,7 @@ pub const Program = struct {
     imports: []Import,
     annotations: []AnnotationDecl,
     capabilities: []CapabilityDecl = &.{},
+    enums: []EnumDecl = &.{},
     constructs: []Construct,
     types: []TypeDecl,
     forms: []ConstructForm,
@@ -45,6 +46,21 @@ pub const CapabilityDecl = struct {
     name: []const u8,
     generated_functions: []GeneratedFunction = &.{},
     module_path: []const u8 = "",
+    span: source_pkg.Span,
+};
+
+pub const EnumDecl = struct {
+    name: []const u8,
+    type_params: [][]const u8 = &.{},
+    variants: []EnumVariantHir,
+    span: source_pkg.Span,
+};
+
+pub const EnumVariantHir = struct {
+    name: []const u8,
+    discriminant: u32,
+    payload_ty: ?ResolvedType = null,
+    default_value: ?*Expr = null,
     span: source_pkg.Span,
 };
 
@@ -170,6 +186,7 @@ pub const Statement = union(enum) {
     while_stmt: WhileStatement,
     break_stmt: BreakStatement,
     continue_stmt: ContinueStatement,
+    match_stmt: MatchStatement,
     switch_stmt: SwitchStatement,
     return_stmt: ReturnStatement,
 };
@@ -220,6 +237,42 @@ pub const BreakStatement = struct {
 };
 
 pub const ContinueStatement = struct {
+    span: source_pkg.Span,
+};
+
+pub const MatchStatement = struct {
+    subject: *Expr,
+    arms: []MatchArm,
+    enum_name: []const u8,
+    span: source_pkg.Span,
+};
+
+pub const MatchArm = struct {
+    pattern: MatchPattern,
+    guard: ?*Expr,
+    body: []Statement,
+    span: source_pkg.Span,
+};
+
+pub const MatchPattern = union(enum) {
+    variant: VariantMatchPattern,
+    binding: BindingMatchPattern,
+};
+
+pub const VariantMatchPattern = struct {
+    variant_name: []const u8,
+    discriminant: u32,
+    payload_ty: ?ResolvedType = null,
+    inner: ?*MatchPattern = null,
+    as_binding_local_id: ?u32 = null,
+    as_binding_ty: ?ResolvedType = null,
+    span: source_pkg.Span,
+};
+
+pub const BindingMatchPattern = struct {
+    local_id: u32,
+    name: []const u8,
+    ty: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -296,6 +349,7 @@ pub const Expr = union(enum) {
     local: LocalExpr,
     namespace_ref: NamespaceRefExpr,
     parent_view: ParentViewExpr,
+    array_len: ArrayLenExpr,
     field: FieldExpr,
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
@@ -304,6 +358,7 @@ pub const Expr = union(enum) {
     unary: UnaryExpr,
     conditional: ConditionalExpr,
     construct: ConstructExpr,
+    construct_enum_variant: ConstructEnumVariantExpr,
     call: CallExpr,
     call_value: CallValueExpr,
     array: ArrayExpr,
@@ -374,6 +429,12 @@ pub const ParentViewExpr = struct {
     span: source_pkg.Span,
 };
 
+pub const ArrayLenExpr = struct {
+    object: *Expr,
+    ty: ResolvedType = .{ .kind = .integer },
+    span: source_pkg.Span,
+};
+
 pub const FieldExpr = struct {
     object: *Expr,
     container_type_name: []const u8,
@@ -429,6 +490,15 @@ pub const ConstructExpr = struct {
     type_name: []const u8,
     fields: []ConstructFieldInit,
     fill_mode: ConstructFillMode,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const ConstructEnumVariantExpr = struct {
+    enum_name: []const u8,
+    variant_name: []const u8,
+    discriminant: u32,
+    payload: ?*Expr,
     ty: ResolvedType,
     span: source_pkg.Span,
 };
@@ -532,6 +602,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .local => |node| node.ty,
         .namespace_ref => |node| node.ty,
         .parent_view => |node| node.ty,
+        .array_len => |node| node.ty,
         .field => |node| node.ty,
         .native_state => |node| node.ty,
         .native_user_data => |node| node.ty,
@@ -540,6 +611,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .unary => |node| node.ty,
         .conditional => |node| node.ty,
         .construct => |node| node.ty,
+        .construct_enum_variant => |node| node.ty,
         .call => |node| node.ty,
         .call_value => |node| node.ty,
         .array => |node| node.ty,

@@ -6,8 +6,22 @@ const backend_api = @import("kira_backend_api");
 const build_options = @import("kira_llvm_build_options");
 const llvm = @import("llvm_c.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
+const runtime_utils = @import("backend_runtime_utils.zig");
+const platform_utils = @import("backend_platform_utils.zig");
 const parent = @import("backend.zig");
 const shouldLowerFunction = parent.shouldLowerFunction;
+pub const freeStringList = runtime_utils.freeStringList;
+pub const freeSymbolNames = runtime_utils.freeSymbolNames;
+pub const writeTextFile = runtime_utils.writeTextFile;
+pub const emitObjectFileViaZigCc = runtime_utils.emitObjectFileViaZigCc;
+pub const inheritedProcessEnviron = runtime_utils.inheritedProcessEnviron;
+pub const inferRegisterTypes = runtime_utils.inferRegisterTypes;
+pub const functionExecutionById = runtime_utils.functionExecutionById;
+pub const functionById = runtime_utils.functionById;
+pub const resolveExecution = platform_utils.resolveExecution;
+pub const hostTargetTriple = platform_utils.hostTargetTriple;
+pub const ensureParentDir = platform_utils.ensureParentDir;
+pub const allocPrintZ = platform_utils.allocPrintZ;
 const PrintValueRef = struct {
     ty: ir.ValueType,
     ssa_name: []const u8,
@@ -59,6 +73,7 @@ fn writePrintedValue(
         },
         .string => try writeStringValue(writer, value_ref.ssa_name, temp_counter),
         .boolean => try writeBooleanValue(writer, value_ref.ssa_name, temp_counter),
+        .enum_instance => try writeEnumValue(allocator, writer, program, globals, value_ref, string_state, temp_counter),
         .construct_any, .raw_ptr => {
             try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
         },
@@ -110,6 +125,142 @@ fn writeStructValue(
     }
 
     try writePrintLiteral(allocator, writer, globals, ")", string_state, temp_counter);
+}
+
+fn writeEnumValue(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: *const ir.Program,
+    globals: *std.array_list.Managed([]const u8),
+    value_ref: PrintValueRef,
+    string_state: *usize,
+    temp_counter: *usize,
+) anyerror!void {
+    const enum_name = value_ref.ty.name orelse {
+        try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+        return;
+    };
+    const enum_decl = findEnumDecl(program, enum_name) orelse {
+        try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+        return;
+    };
+
+    const temp_index = temp_counter.*;
+    temp_counter.* += 1;
+    try writer.print("  %print.enum.ptr.{d} = inttoptr i64 {s} to ptr\n", .{ temp_index, value_ref.ssa_name });
+    try writer.print("  %print.enum.tag.ptr.{d} = getelementptr inbounds i64, ptr %print.enum.ptr.{d}, i64 0\n", .{ temp_index, temp_index });
+    try writer.print("  %print.enum.tag.{d} = load i64, ptr %print.enum.tag.ptr.{d}\n", .{ temp_index, temp_index });
+    try writer.print("  %print.enum.payload.ptr.{d} = getelementptr inbounds i64, ptr %print.enum.ptr.{d}, i64 1\n", .{ temp_index, temp_index });
+    try writer.print("  %print.enum.payload.raw.{d} = load i64, ptr %print.enum.payload.ptr.{d}\n", .{ temp_index, temp_index });
+
+    const done_label = temp_counter.*;
+    temp_counter.* += 1;
+    const default_label = temp_counter.*;
+    temp_counter.* += 1;
+    var case_labels = std.array_list.Managed(usize).init(allocator);
+    defer case_labels.deinit();
+    var next_labels = std.array_list.Managed(usize).init(allocator);
+    defer next_labels.deinit();
+    for (enum_decl.variants) |_| {
+        try case_labels.append(temp_counter.*);
+        temp_counter.* += 1;
+    }
+    if (enum_decl.variants.len > 1) {
+        for (0..enum_decl.variants.len - 1) |_| {
+            try next_labels.append(temp_counter.*);
+            temp_counter.* += 1;
+        }
+    }
+
+    for (enum_decl.variants, 0..) |variant_decl, index| {
+        try writer.print("  %print.enum.expected.{d}.{d} = add i64 0, {d}\n", .{ temp_index, index, variant_decl.discriminant });
+        try writer.print("  %print.enum.cmp.{d}.{d} = icmp eq i64 %print.enum.tag.{d}, %print.enum.expected.{d}.{d}\n", .{
+            temp_index, index, temp_index, temp_index, index,
+        });
+        if (index + 1 < enum_decl.variants.len) {
+            try writer.print("  br i1 %print.enum.cmp.{d}.{d}, label %print_enum_case_{d}, label %print_enum_next_{d}\n", .{
+                temp_index, index, case_labels.items[index], next_labels.items[index],
+            });
+            try writer.print("print_enum_next_{d}:\n", .{next_labels.items[index]});
+        } else {
+            try writer.print("  br i1 %print.enum.cmp.{d}.{d}, label %print_enum_case_{d}, label %print_enum_default_{d}\n", .{
+                temp_index, index, case_labels.items[index], default_label,
+            });
+        }
+    }
+
+    for (enum_decl.variants, 0..) |variant_decl, index| {
+        try writer.print("print_enum_case_{d}:\n", .{case_labels.items[index]});
+        const full_name = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ enum_name, variant_decl.name });
+        defer allocator.free(full_name);
+        try writePrintLiteral(allocator, writer, globals, full_name, string_state, temp_counter);
+        if (variant_decl.payload_ty) |payload_ty| {
+            try writePrintLiteral(allocator, writer, globals, "(", string_state, temp_counter);
+            const payload_ref = try unpackEnumPayloadValue(allocator, writer, payload_ty, temp_index, temp_counter);
+            defer allocator.free(payload_ref.ssa_name);
+            try writePrintedValue(allocator, writer, program, globals, payload_ref, string_state, temp_counter);
+            try writePrintLiteral(allocator, writer, globals, ")", string_state, temp_counter);
+        }
+        try writer.print("  br label %print_enum_done_{d}\n", .{done_label});
+    }
+
+    try writer.print("print_enum_default_{d}:\n", .{default_label});
+    try writer.print("  call void @\"kira_native_write_ptr\"(i64 {s})\n", .{value_ref.ssa_name});
+    try writer.print("  br label %print_enum_done_{d}\n", .{done_label});
+    try writer.print("print_enum_done_{d}:\n", .{done_label});
+}
+
+fn unpackEnumPayloadValue(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    payload_ty: ir.ValueType,
+    temp_index: usize,
+    temp_counter: *usize,
+) anyerror!PrintValueRef {
+    switch (payload_ty.kind) {
+        .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
+            return .{
+                .ty = payload_ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.enum.payload.raw.{d}", .{temp_index}),
+            };
+        },
+        .boolean => {
+            const bool_index = temp_counter.*;
+            temp_counter.* += 1;
+            try writer.print("  %print.enum.payload.bool.{d} = trunc i64 %print.enum.payload.raw.{d} to i1\n", .{ bool_index, temp_index });
+            return .{
+                .ty = payload_ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.enum.payload.bool.{d}", .{bool_index}),
+            };
+        },
+        .float => {
+            const float_index = temp_counter.*;
+            temp_counter.* += 1;
+            try writer.print("  %print.enum.payload.float64.{d} = bitcast i64 %print.enum.payload.raw.{d} to double\n", .{ float_index, temp_index });
+            if (payload_ty.name != null and std.mem.eql(u8, payload_ty.name.?, "F32")) {
+                try writer.print("  %print.enum.payload.float.{d} = fptrunc double %print.enum.payload.float64.{d} to float\n", .{ float_index, float_index });
+                return .{
+                    .ty = payload_ty,
+                    .ssa_name = try std.fmt.allocPrint(allocator, "%print.enum.payload.float.{d}", .{float_index}),
+                };
+            }
+            return .{
+                .ty = payload_ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.enum.payload.float64.{d}", .{float_index}),
+            };
+        },
+        .string => {
+            const string_index = temp_counter.*;
+            temp_counter.* += 1;
+            try writer.print("  %print.enum.payload.string.ptr.{d} = inttoptr i64 %print.enum.payload.raw.{d} to ptr\n", .{ string_index, temp_index });
+            try writer.print("  %print.enum.payload.string.{d} = load %kira.string, ptr %print.enum.payload.string.ptr.{d}\n", .{ string_index, string_index });
+            return .{
+                .ty = payload_ty,
+                .ssa_name = try std.fmt.allocPrint(allocator, "%print.enum.payload.string.{d}", .{string_index}),
+            };
+        },
+        .void => return error.UnsupportedExecutableFeature,
+    }
 }
 
 fn loadFieldValue(
@@ -178,7 +329,7 @@ fn loadFieldValue(
                 .ssa_name = try std.fmt.allocPrint(allocator, "%print.field.value.{d}", .{temp_index}),
             };
         },
-        .construct_any, .raw_ptr, .array => {
+        .construct_any, .raw_ptr, .array, .enum_instance => {
             try writer.print("  %print.field.rawptr.{d} = load ptr, ptr %print.field.ptr.{d}\n", .{ temp_index, temp_index });
             try writer.print("  %print.field.value.{d} = ptrtoint ptr %print.field.rawptr.{d} to i64\n", .{ temp_index, temp_index });
             return .{
@@ -348,12 +499,19 @@ pub fn findTypeDecl(program: *const ir.Program, name: []const u8) ?ir.TypeDecl {
     return null;
 }
 
+fn findEnumDecl(program: *const ir.Program, name: []const u8) ?ir.EnumTypeDecl {
+    for (program.enums) |enum_decl| {
+        if (std.mem.eql(u8, enum_decl.name, name)) return enum_decl;
+    }
+    return null;
+}
+
 pub fn llvmFieldAbiTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     switch (value_type.kind) {
         .void => return allocator.dupe(u8, "void"),
         .string => return allocator.dupe(u8, "%kira.string"),
         .boolean => return allocator.dupe(u8, "i8"),
-        .construct_any, .raw_ptr => {
+        .construct_any, .raw_ptr, .enum_instance => {
             if (value_type.name) |name| {
                 if (findTypeDecl(program, name)) |type_decl| {
                     if (type_decl.ffi) |ffi_info| {
@@ -397,13 +555,13 @@ pub fn llvmValueTypeText(value_type: ir.ValueType) []const u8 {
         .float => floatAbiTypeName(value_type.name),
         .string => "%kira.string",
         .boolean => "i1",
-        .construct_any, .array, .raw_ptr, .ffi_struct => "i64",
+        .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => "i64",
     };
 }
 
 pub fn llvmCompareValueTypeText(value_type: ir.ValueType) []const u8 {
     return switch (value_type.kind) {
-        .integer, .construct_any, .array, .raw_ptr, .ffi_struct => "i64",
+        .integer, .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => "i64",
         .float => floatAbiTypeName(value_type.name),
         .boolean => "i1",
         else => unreachable,
@@ -428,7 +586,7 @@ pub fn llvmComparePredicate(value_type: ir.ValueType, op: ir.CompareOp) ![]const
             .greater => "ogt",
             .greater_equal => "oge",
         },
-        .boolean, .construct_any, .array, .raw_ptr, .ffi_struct => switch (op) {
+        .boolean, .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => switch (op) {
             .equal => "eq",
             .not_equal => "ne",
             else => error.UnsupportedExecutableFeature,
@@ -440,7 +598,7 @@ pub fn llvmComparePredicate(value_type: ir.ValueType, op: ir.CompareOp) ![]const
 pub fn llvmCallTypeText(value_type: ir.ValueType, is_extern: bool) []const u8 {
     if (!is_extern) return llvmValueTypeText(value_type);
     return switch (value_type.kind) {
-        .construct_any, .array, .raw_ptr => "ptr",
+        .construct_any, .array, .raw_ptr, .enum_instance => "ptr",
         .integer => integerAbiTypeName(value_type.name),
         .float => floatAbiTypeName(value_type.name),
         .boolean => "i1",
@@ -478,13 +636,13 @@ pub fn externParamAbiTypeText(allocator: std.mem.Allocator, program: *const ir.P
 pub fn llvmLocalStorageTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     _ = program;
     return switch (value_type.kind) {
-        .construct_any, .array, .ffi_struct => allocator.dupe(u8, "i64"),
+        .construct_any, .array, .ffi_struct, .enum_instance => allocator.dupe(u8, "i64"),
         else => allocator.dupe(u8, llvmValueTypeText(value_type)),
     };
 }
 
 pub fn isPointerLikeValueType(value_type: ir.ValueType) bool {
-    return value_type.kind == .construct_any or value_type.kind == .array or value_type.kind == .raw_ptr or value_type.kind == .ffi_struct;
+    return value_type.kind == .construct_any or value_type.kind == .array or value_type.kind == .raw_ptr or value_type.kind == .ffi_struct or value_type.kind == .enum_instance;
 }
 
 pub fn fieldIndex(program: *const ir.Program, owner_type_name: []const u8, field_name: []const u8) ?usize {
@@ -505,7 +663,7 @@ pub fn fieldType(program: *const ir.Program, owner_type_name: []const u8, field_
 
 pub fn llvmIndirectLoadTypeText(allocator: std.mem.Allocator, program: *const ir.Program, value_type: ir.ValueType) ![]const u8 {
     return switch (value_type.kind) {
-        .integer, .float, .boolean, .construct_any, .raw_ptr, .ffi_struct => llvmFieldAbiTypeText(allocator, program, value_type),
+        .integer, .float, .boolean, .construct_any, .raw_ptr, .ffi_struct, .enum_instance => llvmFieldAbiTypeText(allocator, program, value_type),
         else => allocator.dupe(u8, llvmValueTypeText(value_type)),
     };
 }
@@ -531,149 +689,6 @@ pub fn countStringConstants(function_decl: ir.Function) usize {
     return count;
 }
 
-pub fn freeStringList(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8)) void {
-    for (list.items) |item| allocator.free(item);
-    list.deinit();
-}
-
-pub fn freeSymbolNames(allocator: std.mem.Allocator, symbols: *std.AutoHashMapUnmanaged(u32, []const u8)) void {
-    var iterator = symbols.iterator();
-    while (iterator.next()) |entry| {
-        allocator.free(entry.value_ptr.*);
-    }
-    symbols.deinit(allocator);
-}
-
-pub fn writeTextFile(path: []const u8, data: []const u8) !void {
-    if (std.fs.path.isAbsolute(path)) {
-        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
-        defer file.close(std.Options.debug_io);
-        try file.writeStreamingAll(std.Options.debug_io, data);
-        return;
-    }
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = path,
-        .data = data,
-    });
-}
-
-pub fn emitObjectFileViaZigCc(
-    allocator: std.mem.Allocator,
-    api: *const llvm.Api,
-    module_ref: llvm.c.LLVMModuleRef,
-    object_path: []const u8,
-) !void {
-    const ir_text_z = api.LLVMPrintModuleToString(module_ref);
-    defer api.LLVMDisposeMessage(ir_text_z);
-
-    const ir_text = std.mem.span(ir_text_z);
-    const ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{object_path});
-    defer allocator.free(ir_path);
-    defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, ir_path) catch {};
-
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ir_path,
-        .data = ir_text,
-    });
-
-    const process_environ = inheritedProcessEnviron();
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
-    defer io_impl.deinit();
-    const result = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ build_options.zig_exe, "cc", "-c", "-x", "ir", "-o", object_path, ir_path },
-        .stdout_limit = .limited(512 * 1024),
-        .stderr_limit = .limited(512 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term != .exited or result.term.exited != 0) {
-        if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
-        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
-        return error.ObjectEmissionFailed;
-    }
-}
-
-pub fn inheritedProcessEnviron() std.process.Environ {
-    return switch (builtin.os.tag) {
-        .windows => .{ .block = .global },
-        .wasi, .emscripten, .freestanding, .other => .empty,
-        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
-    };
-}
-
-fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
-    if (!builtin.link_libc) return &.{};
-
-    const environ = std.c.environ;
-    var len: usize = 0;
-    while (environ[len] != null) : (len += 1) {}
-    return environ[0..len :null];
-}
-
-pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, function_decl: ir.Function) ![]ir.ValueType {
-    const register_types = try allocator.alloc(ir.ValueType, function_decl.register_count);
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_int => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
-            .const_float => |value| register_types[value.dst] = .{ .kind = .float, .name = "F64" },
-            .const_string => |value| register_types[value.dst] = .{ .kind = .string },
-            .const_bool => |value| register_types[value.dst] = .{ .kind = .boolean },
-            .const_null_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "RawPtr" },
-            .alloc_struct => |value| register_types[value.dst] = .{ .kind = .ffi_struct, .name = value.type_name },
-            .alloc_native_state => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.type_name },
-            .alloc_array => |value| register_types[value.dst] = .{ .kind = .array },
-            .const_function => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = if (value.representation == .callable_value) "Callable" else "RawPtr" },
-            .const_closure => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "Closure" },
-            .add => |value| register_types[value.dst] = register_types[value.lhs],
-            .subtract => |value| register_types[value.dst] = register_types[value.lhs],
-            .multiply => |value| register_types[value.dst] = register_types[value.lhs],
-            .divide => |value| register_types[value.dst] = register_types[value.lhs],
-            .modulo => |value| register_types[value.dst] = register_types[value.lhs],
-            .compare => |value| register_types[value.dst] = .{ .kind = .boolean },
-            .unary => |value| register_types[value.dst] = switch (value.op) {
-                .negate => register_types[value.src],
-                .not => .{ .kind = .boolean },
-            },
-            .store_local => {},
-            .load_local => |value| register_types[value.dst] = function_decl.local_types[value.local],
-            .local_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "LocalPtr" },
-            .subobject_ptr => |value| register_types[value.dst] = register_types[value.base],
-            .field_ptr => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.field_ty.name },
-            .recover_native_state => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = value.type_name },
-            .native_state_field_get => |value| register_types[value.dst] = value.field_ty,
-            .array_len => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
-            .array_get => |value| register_types[value.dst] = value.ty,
-            .array_set, .native_state_field_set => {},
-            .load_indirect => |value| register_types[value.dst] = value.ty,
-            .store_indirect, .copy_indirect, .branch, .jump, .label => {},
-            .print => {},
-            .call => |value| if (value.dst) |dst| {
-                const callee_decl = functionById(program, value.callee) orelse return error.UnknownFunction;
-                register_types[dst] = callee_decl.return_type;
-            },
-            .call_value => |value| if (value.dst) |dst| {
-                register_types[dst] = value.return_type;
-            },
-            .ret => {},
-        }
-    }
-    return register_types;
-}
-
-pub fn functionExecutionById(program: ir.Program, function_id: u32) ?runtime_abi.FunctionExecution {
-    for (program.functions) |function_decl| {
-        if (function_decl.id == function_id) return function_decl.execution;
-    }
-    return null;
-}
-
-pub fn functionById(program: ir.Program, function_id: u32) ?ir.Function {
-    for (program.functions) |function_decl| {
-        if (function_decl.id == function_id) return function_decl;
-    }
-    return null;
-}
 
 pub fn buildTextExternDecl(
     allocator: std.mem.Allocator,
@@ -727,7 +742,7 @@ fn valueTypeLayout(program: *const ir.Program, value_type: ir.ValueType) anyerro
         else
             .{ .size = 8, .alignment = 8 },
         .string => .{ .size = 16, .alignment = 8 },
-        .construct_any, .array, .raw_ptr => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
+        .construct_any, .array, .raw_ptr, .enum_instance => .{ .size = @sizeOf(usize), .alignment = @alignOf(usize) },
         .ffi_struct => try ffiTypeLayout(program, value_type.name orelse return error.UnsupportedExecutableFeature),
     };
 }
@@ -806,7 +821,7 @@ pub fn buildHybridBridgeWrapper(
         try writer.writeAll(" = load %kira.bridge.value, ptr %bridge.slot.");
         try writer.print("{d}\n", .{index});
         switch (param_type.kind) {
-            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                 try writer.writeAll("  %bridge.word0.");
                 try writer.print("{d}", .{index});
                 try writer.writeAll(" = extractvalue %kira.bridge.value %bridge.load.");
@@ -897,7 +912,7 @@ pub fn buildHybridBridgeWrapper(
         try writer.writeAll(llvmValueTypeText(param_type));
         try writer.writeByte(' ');
         switch (param_type.kind) {
-            .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                 try writer.writeAll("%bridge.word0.");
                 try writer.print("{d}", .{index});
             },
@@ -925,7 +940,7 @@ pub fn buildHybridBridgeWrapper(
         .void => {
             try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
         },
-        .integer, .construct_any, .raw_ptr, .ffi_struct, .array => {
+            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
             try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.call, 2\n");
             try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
         },
@@ -964,120 +979,14 @@ pub fn bridgeTagValue(value_type: ir.ValueType) u8 {
         .float => 2,
         .string => 3,
         .boolean => 4,
-        .construct_any, .array, .raw_ptr, .ffi_struct => 5,
-    };
-}
-
-pub fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: backend_api.BackendMode) runtime_abi.FunctionExecution {
-    return switch (execution) {
-        .inherited => switch (mode) {
-            .llvm_native => .native,
-            .hybrid => .runtime,
-            .vm_bytecode => .runtime,
-        },
-        else => execution,
+        .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => 5,
     };
 }
 
 pub fn requiresTextIrFallback(program: ir.Program, mode: backend_api.BackendMode) bool {
-    if (mode == .vm_bytecode) return false;
-
-    for (program.functions) |function_decl| {
-        if (!shouldLowerFunction(function_decl.execution, mode)) continue;
-        if (functionDeclNeedsTextIrFallback(program, function_decl, mode)) return true;
-    }
-    return false;
+    return platform_utils.requiresTextIrFallback(shouldLowerFunction, functionExecutionById, program, mode);
 }
 
 pub fn functionDeclNeedsTextIrFallback(program: ir.Program, function_decl: ir.Function, mode: backend_api.BackendMode) bool {
-    if (function_decl.is_extern) return true;
-    if (function_decl.param_types.len != 0) return true;
-    if (function_decl.return_type.kind != .void) return true;
-
-    for (function_decl.local_types) |local_type| {
-        if (local_type.kind == .ffi_struct or local_type.kind == .array) return true;
-    }
-
-    for (function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .const_int, .const_string, .const_bool, .const_null_ptr, .add, .subtract, .multiply, .divide, .modulo, .unary, .store_local, .load_local, .local_ptr => {},
-            .const_float => return true,
-            .compare, .branch, .jump, .label => return true,
-            .alloc_struct, .alloc_native_state, .alloc_array, .const_function, .const_closure, .subobject_ptr, .field_ptr, .recover_native_state, .native_state_field_get, .native_state_field_set, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return true,
-            .print => |value| if (value.ty.kind != .integer and value.ty.kind != .string and value.ty.kind != .float) return true,
-            .call => |value| {
-                if (value.args.len != 0 or value.dst != null) return true;
-                const callee_execution = functionExecutionById(program, value.callee) orelse return true;
-                if (resolveExecution(callee_execution, mode) == .runtime and mode != .hybrid) return true;
-            },
-            .call_value => return true,
-            .ret => |value| if (value.src != null) return true,
-        }
-    }
-
-    return false;
-}
-
-test "detects fallback features for llvm c api lowering" {
-    const program = ir.Program{
-        .types = &.{},
-        .functions = &.{
-            .{
-                .id = 0,
-                .name = "main",
-                .execution = .native,
-                .param_types = &.{},
-                .return_type = .{ .kind = .void },
-                .register_count = 1,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{
-                    .{ .const_function = .{ .dst = 0, .function_id = 1 } },
-                    .{ .ret = .{ .src = null } },
-                },
-            },
-            .{
-                .id = 1,
-                .name = "callback",
-                .execution = .native,
-                .param_types = &.{},
-                .return_type = .{ .kind = .void },
-                .register_count = 0,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{.{ .ret = .{ .src = null } }},
-            },
-        },
-        .entry_index = 0,
-    };
-
-    try std.testing.expect(requiresTextIrFallback(program, .llvm_native));
-}
-
-pub fn hostTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
-    return switch (builtin.os.tag) {
-        .windows => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-pc-windows-gnu" else "x86_64-pc-windows-msvc"),
-            else => error.UnsupportedTarget,
-        },
-        .linux => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, "x86_64-pc-linux-gnu"),
-            else => error.UnsupportedTarget,
-        },
-        .macos => switch (builtin.cpu.arch) {
-            .aarch64 => allocator.dupe(u8, "arm64-apple-macosx"),
-            else => error.UnsupportedTarget,
-        },
-        else => error.UnsupportedTarget,
-    };
-}
-
-pub fn ensureParentDir(path: []const u8) !void {
-    const maybe_dir = std.fs.path.dirname(path) orelse return;
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
-}
-
-pub fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
-    const rendered = try std.fmt.allocPrint(allocator, fmt, args);
-    return allocator.dupeZ(u8, rendered);
+    return platform_utils.functionDeclNeedsTextIrFallback(shouldLowerFunction, functionExecutionById, program, function_decl, mode);
 }

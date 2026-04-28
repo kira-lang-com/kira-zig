@@ -94,6 +94,27 @@ pub const ExecutablePipelineResult = struct {
     }
 };
 
+fn diagnosticsOwnedOrFallback(
+    allocator: std.mem.Allocator,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    stage: FrontendStage,
+) ![]const diagnostics.Diagnostic {
+    if (diags.items.len == 0) {
+        try diags.append(.{
+            .severity = .@"error",
+            .code = "KICE002",
+            .title = "compiler stage failed without a diagnostic",
+            .message = try std.fmt.allocPrint(
+                allocator,
+                "Kira stopped during the {s} stage without reporting a normal diagnostic.",
+                .{@tagName(stage)},
+            ),
+            .help = "This is a compiler bug. Please report the command and source file that triggered it.",
+        });
+    }
+    return diags.toOwnedSlice();
+}
+
 pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !FrontendPipelineResult {
     const parsed = try parseFile(allocator, path);
     if (parsed.program == null) {
@@ -114,7 +135,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         error.DiagnosticsEmitted => {
             return .{
                 .source = parsed.source,
-                .diagnostics = try diags.toOwnedSlice(),
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .graph),
                 .ir_program = null,
                 .native_libraries = parsed.native_libraries,
                 .failure_stage = .graph,
@@ -127,7 +148,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         error.DiagnosticsEmitted => {
             return .{
                 .source = parsed.source,
-                .diagnostics = try diags.toOwnedSlice(),
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
                 .ir_program = null,
                 .native_libraries = parsed.native_libraries,
                 .failure_stage = .semantics,
@@ -140,7 +161,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         error.DiagnosticsEmitted => {
             return .{
                 .source = parsed.source,
-                .diagnostics = try diags.toOwnedSlice(),
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
                 .ir_program = null,
                 .native_libraries = parsed.native_libraries,
                 .failure_stage = .semantics,

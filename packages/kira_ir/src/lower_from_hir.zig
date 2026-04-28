@@ -4,8 +4,11 @@ const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const program_impl = @import("lower_from_hir_program.zig");
 const type_impl = @import("lower_from_hir_types.zig");
+const statement_impl = @import("lower_from_hir_statements.zig");
+const boxed_impl = @import("lower_from_hir_boxed.zig");
 
 pub const lowerTypeDecls = program_impl.lowerTypeDecls;
+pub const lowerEnumTypeDecls = program_impl.lowerEnumTypeDecls;
 pub const lowerConstructs = program_impl.lowerConstructs;
 pub const lowerConstructImplementations = program_impl.lowerConstructImplementations;
 pub const markReachableFunction = program_impl.markReachableFunction;
@@ -37,6 +40,7 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
     const constructs = try lowerConstructs(allocator, program);
     const construct_implementations = try lowerConstructImplementations(allocator, program);
     const types = try lowerTypeDecls(allocator, program, reachable);
+    const enums = try lowerEnumTypeDecls(allocator, program, reachable);
     var state = ProgramLoweringState{
         .next_generated_function_id = nextGeneratedFunctionId(program),
         .generated_functions = std.array_list.Managed(ir.Function).init(allocator),
@@ -54,6 +58,7 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
         .constructs = constructs,
         .construct_implementations = construct_implementations,
         .types = types,
+        .enums = enums,
         .functions = try functions.toOwnedSlice(),
         .entry_index = entry_index orelse return error.UnsupportedExecutableFeature,
     };
@@ -261,83 +266,7 @@ fn lowerCallbackParamTypes(allocator: std.mem.Allocator, program: model.Program,
 
 const lowerResolvedTypeSlice = type_impl.lowerResolvedTypeSlice;
 
-fn collectBoxedLocals(allocator: std.mem.Allocator, local_count: usize, body: []const model.Statement) ![]bool {
-    _ = body;
-    const boxed = try allocator.alloc(bool, local_count);
-    @memset(boxed, false);
-    return boxed;
-}
-
-fn collectBoxedFromStatements(boxed: []bool, body: []const model.Statement) void {
-    for (body) |statement| switch (statement) {
-        .let_stmt => |node| if (node.value) |value| collectBoxedFromExpr(boxed, value),
-        .assign_stmt => |node| {
-            collectBoxedFromExpr(boxed, node.target);
-            collectBoxedFromExpr(boxed, node.value);
-        },
-        .expr_stmt => |node| collectBoxedFromExpr(boxed, node.expr),
-        .if_stmt => |node| {
-            collectBoxedFromExpr(boxed, node.condition);
-            collectBoxedFromStatements(boxed, node.then_body);
-            if (node.else_body) |else_body| collectBoxedFromStatements(boxed, else_body);
-        },
-        .for_stmt => |node| {
-            collectBoxedFromExpr(boxed, node.iterator);
-            collectBoxedFromStatements(boxed, node.body);
-        },
-        .while_stmt => |node| {
-            collectBoxedFromExpr(boxed, node.condition);
-            collectBoxedFromStatements(boxed, node.body);
-        },
-        .switch_stmt => |node| {
-            collectBoxedFromExpr(boxed, node.subject);
-            for (node.cases) |case| {
-                collectBoxedFromExpr(boxed, case.pattern);
-                collectBoxedFromStatements(boxed, case.body);
-            }
-            if (node.default_body) |default_body| collectBoxedFromStatements(boxed, default_body);
-        },
-        .return_stmt => |node| if (node.value) |value| collectBoxedFromExpr(boxed, value),
-        .break_stmt, .continue_stmt => {},
-    };
-}
-
-fn collectBoxedFromExpr(boxed: []bool, expr: *const model.Expr) void {
-    switch (expr.*) {
-        .callback => |node| {
-            for (node.captures) |capture| {
-                if (capture.by_ref and capture.source_local_id < boxed.len) boxed[capture.source_local_id] = true;
-            }
-        },
-        .binary => |node| {
-            collectBoxedFromExpr(boxed, node.lhs);
-            collectBoxedFromExpr(boxed, node.rhs);
-        },
-        .unary => |node| collectBoxedFromExpr(boxed, node.operand),
-        .conditional => |node| {
-            collectBoxedFromExpr(boxed, node.condition);
-            collectBoxedFromExpr(boxed, node.then_expr);
-            collectBoxedFromExpr(boxed, node.else_expr);
-        },
-        .construct => |node| for (node.fields) |field| collectBoxedFromExpr(boxed, field.value),
-        .call => |node| for (node.args) |arg| collectBoxedFromExpr(boxed, arg),
-        .call_value => |node| {
-            collectBoxedFromExpr(boxed, node.callee);
-            for (node.args) |arg| collectBoxedFromExpr(boxed, arg);
-        },
-        .array => |node| for (node.elements) |element| collectBoxedFromExpr(boxed, element),
-        .index => |node| {
-            collectBoxedFromExpr(boxed, node.object);
-            collectBoxedFromExpr(boxed, node.index);
-        },
-        .field => |node| collectBoxedFromExpr(boxed, node.object),
-        .parent_view => |node| collectBoxedFromExpr(boxed, node.object),
-        .native_state => |node| collectBoxedFromExpr(boxed, node.value),
-        .native_user_data => |node| collectBoxedFromExpr(boxed, node.state),
-        .native_recover => |node| collectBoxedFromExpr(boxed, node.value),
-        else => {},
-    }
-}
+const collectBoxedLocals = boxed_impl.collectBoxedLocals;
 
 fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
     switch (expr.*) {
@@ -404,13 +333,13 @@ pub const Lowerer = struct {
         return reg;
     }
 
-    fn freshLabel(self: *Lowerer) u32 {
+    pub fn freshLabel(self: *Lowerer) u32 {
         const label = self.next_label;
         self.next_label += 1;
         return label;
     }
 
-    fn freshHiddenLocal(self: *Lowerer, ty: ir.ValueType) !u32 {
+    pub fn freshHiddenLocal(self: *Lowerer, ty: ir.ValueType) !u32 {
         const local = self.next_local;
         self.next_local += 1;
         try self.hidden_local_types.append(ty);
@@ -437,7 +366,7 @@ pub const Lowerer = struct {
         return function_id;
     }
 
-    fn lowerStatements(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statements: []const model.Statement) !bool {
+    pub fn lowerStatements(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statements: []const model.Statement) !bool {
         for (statements) |statement| {
             if (try self.lowerStatement(instructions, statement)) return true;
         }
@@ -480,9 +409,9 @@ pub const Lowerer = struct {
                 try lowerExprStatement(self, instructions, node.expr);
                 return false;
             },
-            .if_stmt => |node| return self.lowerIfStatement(instructions, node),
-            .for_stmt => |node| return self.lowerForStatement(instructions, node),
-            .while_stmt => |node| return self.lowerWhileStatement(instructions, node),
+            .if_stmt => |node| return statement_impl.lowerIfStatement(self, instructions, node),
+            .for_stmt => |node| return statement_impl.lowerForStatement(self, instructions, node),
+            .while_stmt => |node| return statement_impl.lowerWhileStatement(self, instructions, node),
             .break_stmt => {
                 const labels = self.loop_stack.getLast();
                 try instructions.append(.{ .jump = .{ .label = labels.break_label } });
@@ -493,199 +422,14 @@ pub const Lowerer = struct {
                 try instructions.append(.{ .jump = .{ .label = labels.continue_label } });
                 return true;
             },
-            .switch_stmt => |node| return self.lowerSwitchStatement(instructions, node),
+            .match_stmt => |node| return statement_impl.lowerMatchStatement(self, instructions, node),
+            .switch_stmt => |node| return statement_impl.lowerSwitchStatement(self, instructions, node),
             .return_stmt => |node| {
                 const src = if (node.value) |value| try self.lowerExpr(instructions, value) else null;
                 try instructions.append(.{ .ret = .{ .src = src } });
                 return true;
             },
         }
-    }
-
-    fn lowerIfStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.IfStatement) !bool {
-        const condition_reg = try self.lowerExpr(instructions, node.condition);
-        const then_label = self.freshLabel();
-        const else_label = self.freshLabel();
-        try instructions.append(.{ .branch = .{
-            .condition = condition_reg,
-            .true_label = then_label,
-            .false_label = else_label,
-        } });
-
-        try instructions.append(.{ .label = .{ .id = then_label } });
-        const then_terminated = try self.lowerStatements(instructions, node.then_body);
-
-        if (node.else_body) |else_body| {
-            const needs_end_label = !then_terminated;
-            const end_label = if (needs_end_label) self.freshLabel() else 0;
-
-            if (!then_terminated) {
-                try instructions.append(.{ .jump = .{ .label = end_label } });
-            }
-
-            try instructions.append(.{ .label = .{ .id = else_label } });
-            const else_terminated = try self.lowerStatements(instructions, else_body);
-
-            if (!then_terminated) {
-                try instructions.append(.{ .label = .{ .id = end_label } });
-            }
-
-            return then_terminated and else_terminated;
-        }
-
-        try instructions.append(.{ .label = .{ .id = else_label } });
-        return false;
-    }
-
-    fn lowerSwitchStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.SwitchStatement) !bool {
-        const subject_reg = try self.lowerExpr(instructions, node.subject);
-        const subject_ty = try lowerExecutableCompareOperandType(self.program, model.hir.exprType(node.subject.*), .equal);
-
-        var need_end_label = false;
-        const end_label = self.freshLabel();
-        var all_cases_terminated = true;
-
-        for (node.cases) |case_node| {
-            const pattern_reg = try self.lowerExpr(instructions, case_node.pattern);
-            const pattern_ty = try lowerExecutableCompareOperandType(self.program, model.hir.exprType(case_node.pattern.*), .equal);
-            if (!valueTypesEqual(subject_ty, pattern_ty)) return error.UnsupportedExecutableFeature;
-
-            const compare_reg = self.freshRegister();
-            const case_label = self.freshLabel();
-            const next_label = self.freshLabel();
-
-            try instructions.append(.{ .compare = .{
-                .dst = compare_reg,
-                .lhs = subject_reg,
-                .rhs = pattern_reg,
-                .op = .equal,
-            } });
-            try instructions.append(.{ .branch = .{
-                .condition = compare_reg,
-                .true_label = case_label,
-                .false_label = next_label,
-            } });
-
-            try instructions.append(.{ .label = .{ .id = case_label } });
-            const case_terminated = try self.lowerStatements(instructions, case_node.body);
-            all_cases_terminated = all_cases_terminated and case_terminated;
-            if (!case_terminated) {
-                need_end_label = true;
-                try instructions.append(.{ .jump = .{ .label = end_label } });
-            }
-
-            try instructions.append(.{ .label = .{ .id = next_label } });
-        }
-
-        const default_terminated = if (node.default_body) |default_body|
-            try self.lowerStatements(instructions, default_body)
-        else
-            false;
-
-        if (need_end_label) {
-            try instructions.append(.{ .label = .{ .id = end_label } });
-        }
-
-        return node.default_body != null and all_cases_terminated and default_terminated;
-    }
-
-    fn lowerForStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.ForStatement) !bool {
-        switch (node.iterator.*) {
-            .array => |iterator| {
-                if (iterator.elements.len == 0) return false;
-                const binding_ty = try lowerResolvedType(self.program, node.binding_ty);
-                for (iterator.elements) |element| {
-                    const element_reg = try self.lowerExpr(instructions, element);
-                    try self.storeValueToLocal(instructions, node.binding_local_id, binding_ty, element_reg);
-                    const end_label = self.freshLabel();
-                    try self.loop_stack.append(.{ .break_label = end_label, .continue_label = end_label });
-                    const body_terminated = try self.lowerStatements(instructions, node.body);
-                    _ = self.loop_stack.pop();
-                    try instructions.append(.{ .label = .{ .id = end_label } });
-                    if (body_terminated) return true;
-                }
-                return false;
-            },
-            else => {
-                const binding_ty = try lowerResolvedType(self.program, node.binding_ty);
-                const array_reg = try self.lowerExpr(instructions, node.iterator);
-                const len_reg = self.freshRegister();
-                try instructions.append(.{ .array_len = .{ .dst = len_reg, .array = array_reg } });
-
-                const index_local = try self.freshHiddenLocal(.{ .kind = .integer, .name = "I64" });
-                const zero_reg = self.freshRegister();
-                try instructions.append(.{ .const_int = .{ .dst = zero_reg, .value = 0 } });
-                try instructions.append(.{ .store_local = .{ .local = index_local, .src = zero_reg } });
-
-                const loop_label = self.freshLabel();
-                const body_label = self.freshLabel();
-                const end_label = self.freshLabel();
-
-                try instructions.append(.{ .label = .{ .id = loop_label } });
-                const index_reg = self.freshRegister();
-                try instructions.append(.{ .load_local = .{ .dst = index_reg, .local = index_local } });
-                const cmp_reg = self.freshRegister();
-                try instructions.append(.{ .compare = .{
-                    .dst = cmp_reg,
-                    .lhs = index_reg,
-                    .rhs = len_reg,
-                    .op = .less,
-                } });
-                try instructions.append(.{ .branch = .{
-                    .condition = cmp_reg,
-                    .true_label = body_label,
-                    .false_label = end_label,
-                } });
-
-                try instructions.append(.{ .label = .{ .id = body_label } });
-                const item_reg = self.freshRegister();
-                try instructions.append(.{ .array_get = .{
-                    .dst = item_reg,
-                    .array = array_reg,
-                    .index = index_reg,
-                    .ty = binding_ty,
-                } });
-                try self.storeValueToLocal(instructions, node.binding_local_id, binding_ty, item_reg);
-                try self.loop_stack.append(.{ .break_label = end_label, .continue_label = loop_label });
-                const body_terminated = try self.lowerStatements(instructions, node.body);
-                _ = self.loop_stack.pop();
-                if (!body_terminated) {
-                    const one_reg = self.freshRegister();
-                    try instructions.append(.{ .const_int = .{ .dst = one_reg, .value = 1 } });
-                    const next_reg = self.freshRegister();
-                    try instructions.append(.{ .add = .{ .dst = next_reg, .lhs = index_reg, .rhs = one_reg } });
-                    try instructions.append(.{ .store_local = .{ .local = index_local, .src = next_reg } });
-                    try instructions.append(.{ .jump = .{ .label = loop_label } });
-                    try instructions.append(.{ .label = .{ .id = end_label } });
-                    return false;
-                }
-                return true;
-            },
-        }
-    }
-
-    fn lowerWhileStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.WhileStatement) !bool {
-        const loop_label = self.freshLabel();
-        const body_label = self.freshLabel();
-        const end_label = self.freshLabel();
-
-        try instructions.append(.{ .label = .{ .id = loop_label } });
-        const condition_reg = try self.lowerExpr(instructions, node.condition);
-        try instructions.append(.{ .branch = .{
-            .condition = condition_reg,
-            .true_label = body_label,
-            .false_label = end_label,
-        } });
-
-        try instructions.append(.{ .label = .{ .id = body_label } });
-        try self.loop_stack.append(.{ .break_label = end_label, .continue_label = loop_label });
-        const body_terminated = try self.lowerStatements(instructions, node.body);
-        _ = self.loop_stack.pop();
-        if (!body_terminated) {
-            try instructions.append(.{ .jump = .{ .label = loop_label } });
-        }
-        try instructions.append(.{ .label = .{ .id = end_label } });
-        return false;
     }
 
     pub fn lowerExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
@@ -953,6 +697,16 @@ pub const Lowerer = struct {
 
                 break :blk dst;
             },
+            .construct_enum_variant => |node| blk: {
+                const dst = self.freshRegister();
+                try instructions.append(.{ .alloc_enum = .{
+                    .dst = dst,
+                    .enum_type_name = node.enum_name,
+                    .discriminant = node.discriminant,
+                    .payload_src = if (node.payload) |payload| try self.lowerExpr(instructions, payload) else null,
+                } });
+                break :blk dst;
+            },
             .call => |node| blk: {
                 if (node.function_id == null) return error.UnsupportedExecutableFeature;
                 if (node.ty.kind == .void) return error.UnsupportedExecutableFeature;
@@ -986,6 +740,15 @@ pub const Lowerer = struct {
                     .dst = dst,
                     .base = base,
                     .offset = node.offset,
+                } });
+                break :blk dst;
+            },
+            .array_len => |node| blk: {
+                const array_reg = try self.lowerExpr(instructions, node.object);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .array_len = .{
+                    .dst = dst,
+                    .array = array_reg,
                 } });
                 break :blk dst;
             },
@@ -1142,7 +905,7 @@ pub const Lowerer = struct {
         return dst;
     }
 
-    fn storeValueToLocal(
+    pub fn storeValueToLocal(
         self: *Lowerer,
         instructions: *std.array_list.Managed(ir.Instruction),
         local: u32,

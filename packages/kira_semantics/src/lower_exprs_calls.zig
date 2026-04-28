@@ -294,6 +294,27 @@ pub fn lowerCallExpr(
             });
             return error.DiagnosticsEmitted;
         }
+        const arg_ty = model.hir.exprType(args.items[0].*);
+        if (arg_ty.kind == .named) {
+            if (shared.namedTypeHeader(ctx, arg_ty)) |type_header| {
+                if (type_header.is_printable) {
+                    const method_key = try std.fmt.allocPrint(ctx.allocator, "{s}.onPrint", .{arg_ty.name.?});
+                    const header = function_headers.?.get(method_key) orelse return error.DiagnosticsEmitted;
+                    const lowered_receiver = args.items[0];
+                    const lowered_call = try ctx.allocator.create(model.Expr);
+                    const call_args = try ctx.allocator.alloc(*model.Expr, 1);
+                    call_args[0] = lowered_receiver;
+                    lowered_call.* = .{ .call = .{
+                        .callee_name = method_key,
+                        .function_id = header.id,
+                        .args = call_args,
+                        .ty = header.return_type,
+                        .span = node.span,
+                    } };
+                    args.items[0] = lowered_call;
+                }
+            }
+        }
         lowered.* = .{ .call = .{
             .callee_name = callee_name,
             .function_id = null,

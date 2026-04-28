@@ -15,6 +15,7 @@ pub const ValueType = struct {
         array,
         raw_ptr,
         ffi_struct,
+        enum_instance,
     };
 };
 
@@ -26,6 +27,7 @@ pub const Program = struct {
     constructs: []Construct = &.{},
     construct_implementations: []ConstructImplementation = &.{},
     types: []TypeDecl = &.{},
+    enums: []EnumTypeDecl = &.{},
     functions: []Function,
     entry_index: usize,
 };
@@ -51,6 +53,17 @@ pub const TypeDecl = struct {
     execution: runtime_abi.FunctionExecution = .inherited,
     fields: []Field,
     ffi: ?FfiTypeInfo = null,
+};
+
+pub const EnumTypeDecl = struct {
+    name: []const u8,
+    variants: []EnumVariantIr,
+};
+
+pub const EnumVariantIr = struct {
+    name: []const u8,
+    discriminant: u32,
+    payload_ty: ?ValueType = null,
 };
 
 pub const Field = struct {
@@ -113,6 +126,7 @@ pub const Instruction = union(enum) {
     const_function: ConstFunction,
     const_closure: ConstClosure,
     alloc_struct: AllocStruct,
+    alloc_enum: AllocEnum,
     alloc_native_state: AllocNativeState,
     alloc_array: AllocArray,
     add: Binary,
@@ -133,6 +147,8 @@ pub const Instruction = union(enum) {
     array_len: ArrayLen,
     array_get: ArrayGet,
     array_set: ArraySet,
+    enum_tag: EnumTag,
+    enum_payload: EnumPayload,
     load_indirect: LoadIndirect,
     store_indirect: StoreIndirect,
     copy_indirect: CopyIndirect,
@@ -194,6 +210,13 @@ pub const FunctionConstRepresentation = enum {
 pub const AllocStruct = struct {
     dst: u32,
     type_name: []const u8,
+};
+
+pub const AllocEnum = struct {
+    dst: u32,
+    enum_type_name: []const u8,
+    discriminant: u32,
+    payload_src: ?u32 = null,
 };
 
 pub const AllocNativeState = struct {
@@ -302,6 +325,17 @@ pub const ArraySet = struct {
     array: u32,
     index: u32,
     src: u32,
+};
+
+pub const EnumTag = struct {
+    dst: u32,
+    src: u32,
+};
+
+pub const EnumPayload = struct {
+    dst: u32,
+    src: u32,
+    payload_ty: ValueType,
 };
 
 pub const LoadIndirect = struct {

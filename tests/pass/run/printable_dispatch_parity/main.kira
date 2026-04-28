@@ -1,0 +1,15 @@
+@Printable
+struct Person {
+    let name: String
+
+    function onPrint() -> String {
+        return name
+    }
+}
+
+@Main
+function main() {
+    let person = Person(name: "Ada")
+    print(person)
+    return
+}

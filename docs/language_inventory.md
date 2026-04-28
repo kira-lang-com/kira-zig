@@ -4,7 +4,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 
 ## Implemented Frontend Surface
 
-- Top-level declarations: `import`, `construct`, `class`, `struct`, `annotation`, `capability`, `function`, and construct-defined declaration forms such as `Widget Button(...) { ... }`
+- Top-level declarations: `import`, `construct`, `class`, `struct`, `enum`, `annotation`, `capability`, `function`, and construct-defined declaration forms such as `Widget Button(...) { ... }`
 - Documentation comments: consecutive `///` lines immediately preceding a declaration or member
 - Annotation syntax: bare annotations, namespaced annotations, annotation arguments, and block-form annotations
 - Annotation declarations: parameter schemas, `targets: ...`, `uses CapabilityName`, and explicit `generated { ... }` function members
@@ -13,10 +13,11 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Type execution annotations: `@Native` and `@Runtime` on `struct` and `class`, with structs reserved for execution-boundary and compiler FFI annotations only
 - FFI annotations with compiler semantics: `@FFI.Extern`, `@FFI.Callback`, `@FFI.Pointer`, `@FFI.Struct`, plus zero-filled explicit construction for `@FFI.Struct { layout: c; }` values
 - Native callback-state expressions with compiler semantics: `nativeState(value)`, `nativeUserData(state)`, and `nativeRecover<Type>(raw_ptr)`
-- Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`/`var`, inferred local declarations, explicit typed local declarations with or without initializer expressions, strict declared-type matching for annotated initializers, expression statements, `return`, calls, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
+- Function syntax: parameters, function types such as `(Float) -> Void`, optional return types, blocks, `let`/`var`, inferred local declarations, explicit typed local declarations with or without initializer expressions, strict declared-type matching for annotated initializers, expression statements, `return`, calls, `match`, and direct trailing callback blocks such as `app.onFrame { frame in ... }`
 - Construct-qualified `any ConstructName` type qualifiers for executable code; the VM/hybrid runtime path keeps runtime dispatch metadata, while `@Native` lowering monomorphizes concrete construct implementations. `any` is rejected for classes, primitives, aliases, and other non-construct symbols.
 - Class inheritance: comma-separated `extends` lists, inherited field/method lookup, parent-qualified member access, exact-signature method overrides, and inherited field-default overrides
-- Struct declarations: non-inheriting value shapes with stored members, default values, and methods
+- Struct declarations: non-inheriting value shapes with stored members, default values, methods, and compiler-validated `@Printable` dispatch through `onPrint() -> String`
+- Enum declarations: payload-less variants, single-payload variants, default payload values, generic type parameters in type position, qualified construction outside `match`, and inferred unqualified variant names inside `match`
 - Expressions: integer, float, string, boolean, arrays, named/nested struct literals, unary operators, binary operators, grouped expressions, member access, namespaced references, indexing, call syntax, named function references, inline callback values, and callable-value invocations
 - Conditional expressions `condition ? then : else`
 - Trailing callbacks are native call syntax, for example `graphics.run { frame in frame.draw() }`,
@@ -24,7 +25,7 @@ This file tracks the frontend surface implemented in the compiler today. The lan
   Trailing callbacks may capture surrounding locals: immutable `let` bindings are captured by value, while mutable `var` bindings are captured as shared mutable storage.
   Nested callbacks and multiple callbacks share mutable captures according to lexical scope across `vm`, `hybrid`, and `llvm`.
   This syntax does not introduce standalone callback literals beyond the existing inline callback-value surface.
-- Control flow syntax: `if`, `else if`, `for`, `while`, `break`, `continue`, and `switch` in statement position, plus `if`/`else if`, `for`, and `switch` in builder/content contexts
+- Control flow syntax: `if`, `else if`, `for`, `while`, `break`, `continue`, `match`, and `switch` in statement position, plus `if`/`else if`, `for`, and `switch` in builder/content contexts
 - Construct sections: `annotations`, `modifiers`, `requires`, `lifecycle`, `builder`, `representation`, plus custom sections preserved structurally
 - Builder/content blocks with sequential composition, control-flow builder items, and preserved nested trailing-builder child trees on call expressions
 - Lifecycle hook forms such as `onAppear()`, `onDisappear()`, and `onChange(of: value) { ... }`
@@ -53,11 +54,13 @@ The frontend and semantic model understand the broader language surface above. T
 - statement-form `while`, `break`, and `continue`
 - statement-form `for` over array literals
 - statement-form `switch`
-- builtin `print`, including named-struct formatting and array summaries across `vm`, `llvm`, and `hybrid`
+- statement-form `match` with exhaustive enum coverage, nested destructuring, payload binding, and duplicate-arm diagnostics
+- builtin `print`, including named-struct formatting, enum formatting, `@Printable` method dispatch, and array summaries across `vm`, `llvm`, and `hybrid`
 - direct function calls with arguments and results in the lowered scalar/pointer subset
 - `return` with or without a value in the lowered scalar/pointer subset
 - block statements
 - lowered named-struct construction, field access, and struct methods across `vm`, `llvm`, and `hybrid`
+- lowered enum construction, enum payload transport, generic `Result<Value, Failure>` instantiation, and enum tag/payload branching across `vm`, `llvm`, and `hybrid`
 - lowered zero-filled `@FFI.Struct { layout: c; }` construction through both `Type()` and `Type { ... }`, with omitted C-layout fields preserved as zero
 - lowered inheritance dispatch across `vm`, `llvm`, and `hybrid`, including multiple parents, imported parents, parent-qualified field/method access, inherited method calls, and inherited field-default overrides
 - explicit FFI extern declarations

@@ -50,6 +50,14 @@ fn findDirectFfiUseInStatement(
             if (findDirectFfiUseInExpr(node.condition.*, function_headers)) |use| return use;
             if (findDirectFfiUseInStatements(node.body, function_headers)) |use| return use;
         },
+        .match_stmt => |node| {
+            if (findDirectFfiUseInExpr(node.subject.*, function_headers)) |use| return use;
+            for (node.arms) |arm| {
+                if (findDirectFfiUseInMatchPattern(arm.pattern, function_headers)) |use| return use;
+                if (arm.guard) |guard| if (findDirectFfiUseInExpr(guard.*, function_headers)) |use| return use;
+                if (findDirectFfiUseInStatements(arm.body, function_headers)) |use| return use;
+            }
+        },
         .switch_stmt => |node| {
             if (findDirectFfiUseInExpr(node.subject.*, function_headers)) |use| return use;
             for (node.cases) |case| {
@@ -87,6 +95,7 @@ fn findDirectFfiUseInExpr(
                 };
             }
         },
+        .array_len => |node| return findDirectFfiUseInExpr(node.object.*, function_headers),
         .field => |node| return findDirectFfiUseInExpr(node.object.*, function_headers),
         .native_state => |node| return findDirectFfiUseInExpr(node.value.*, function_headers),
         .native_user_data => |node| return findDirectFfiUseInExpr(node.state.*, function_headers),
@@ -105,6 +114,9 @@ fn findDirectFfiUseInExpr(
             for (node.fields) |field| {
                 if (findDirectFfiUseInExpr(field.value.*, function_headers)) |use| return use;
             }
+        },
+        .construct_enum_variant => |node| {
+            if (node.payload) |payload| return findDirectFfiUseInExpr(payload.*, function_headers);
         },
         .call => |node| {
             if (externHeaderForCall(node, function_headers)) |header| {
@@ -147,6 +159,16 @@ fn findDirectFfiUseInExpr(
         => {},
     }
     return null;
+}
+
+fn findDirectFfiUseInMatchPattern(
+    pattern: model.MatchPattern,
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) ?DirectFfiUse {
+    return switch (pattern) {
+        .variant => |node| if (node.inner) |inner| findDirectFfiUseInMatchPattern(inner.*, function_headers) else null,
+        .binding => null,
+    };
 }
 
 fn findDirectFfiUseInBuilder(

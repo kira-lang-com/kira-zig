@@ -4,6 +4,9 @@ const source_pkg = @import("kira_source");
 const syntax = @import("kira_syntax_model");
 
 pub fn parse(allocator: std.mem.Allocator, tokens: []const syntax.Token, out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic)) !syntax.ast.Program {
+    const default_source_path = if (tokens.len > 0) tokens[0].span.source_path else null;
+    const previous_source_path = source_pkg.Span.setDefaultSourcePath(default_source_path);
+    defer _ = source_pkg.Span.setDefaultSourcePath(previous_source_path);
     var parser = Parser{
         .allocator = allocator,
         .tokens = tokens,
@@ -26,6 +29,7 @@ pub const Parser = struct {
     pub const parseTopLevelDecl = decl_impl.parseTopLevelDecl;
     pub const parseAnnotationDecl = decl_impl.parseAnnotationDecl;
     pub const parseCapabilityDecl = decl_impl.parseCapabilityDecl;
+    pub const parseEnumDecl = decl_impl.parseEnumDecl;
     pub const parseAnnotationTarget = decl_impl.parseAnnotationTarget;
     pub const parseGeneratedBlock = decl_impl.parseGeneratedBlock;
     pub const parseGeneratedMember = decl_impl.parseGeneratedMember;
@@ -53,6 +57,7 @@ pub const Parser = struct {
     pub const finishIfStatement = statement_impl.finishIfStatement;
     pub const finishForStatement = statement_impl.finishForStatement;
     pub const finishWhileStatement = statement_impl.finishWhileStatement;
+    pub const finishMatchStatement = statement_impl.finishMatchStatement;
     pub const finishSwitchStatement = statement_impl.finishSwitchStatement;
 
     pub const parseBuilderBlock = block_impl.parseBuilderBlock;
@@ -229,7 +234,7 @@ pub const Parser = struct {
     }
 
     pub fn isStatementBoundary(self: *Parser) bool {
-        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_switch) or
+        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_while) or self.at(.kw_match) or self.at(.kw_switch) or
             self.at(.identifier) or self.at(.integer) or self.at(.float) or self.at(.string) or self.at(.kw_true) or self.at(.kw_false) or self.at(.l_paren) or self.at(.l_bracket) or self.at(.bang) or self.at(.minus);
     }
 
@@ -300,7 +305,7 @@ pub const Parser = struct {
 
     pub fn recoverToTopLevel(self: *Parser) void {
         if (!self.at(.eof)) _ = self.advance();
-        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
+        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_enum) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
             _ = self.advance();
         }
     }
@@ -370,6 +375,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
 pub fn typeSpan(ty: syntax.ast.TypeExpr) source_pkg.Span {
     return switch (ty) {
         .named => |node| node.span,
+        .generic => |node| node.span,
         .any => |node| node.span,
         .array => |node| node.span,
         .function => |node| node.span,
@@ -403,6 +409,7 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .kw_capability => "'capability'",
         .kw_class => "'class'",
         .kw_construct => "'construct'",
+        .kw_enum => "'enum'",
         .kw_struct => "'struct'",
         .kw_type => "'type'",
         .kw_extends => "'extends'",
@@ -424,6 +431,7 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .kw_while => "'while'",
         .kw_break => "'break'",
         .kw_continue => "'continue'",
+        .kw_match => "'match'",
         .kw_switch => "'switch'",
         .kw_case => "'case'",
         .kw_default => "'default'",

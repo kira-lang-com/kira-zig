@@ -1,0 +1,13 @@
+enum ParseError {
+    InvalidFormat: String = "bad"
+    UnexpectedEnd
+}
+
+@Main
+function main() {
+    let value = ParseError.UnexpectedEnd
+    match value {
+        InvalidFormat(text) -> print(text);
+    }
+    return
+}

@@ -105,7 +105,13 @@ pub fn lowerExpectedValue(
     scope: *model.Scope,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
     span: source_pkg.Span,
-) !*model.Expr {
+) anyerror!*model.Expr {
+    if (expected_type.kind == .enum_instance) {
+        if (try parent.lowerEnumVariantExprExpected(ctx, syntax_arg, expected_type, imports, scope, function_headers)) |lowered_enum| {
+            return lowered_enum;
+        }
+    }
+
     if (shared.callbackInfo(ctx, expected_type)) |callback_info| {
         if (syntax_arg.* == .callback) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
@@ -464,7 +470,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
         .bool => .{ .kind = .boolean },
         .array => |node| try resolveSyntaxArrayLiteralType(ctx, node.elements, node.span),
         .callback => .{ .kind = .unknown },
-        .struct_literal => |node| try shared.typeFromSyntax(ctx.allocator, .{ .named = node.type_name }),
+        .struct_literal => |node| try shared.typeFromSyntax(ctx, .{ .named = node.type_name }),
         .native_state => |node| blk: {
             const value_ty = try resolveSyntaxExprType(ctx, node.value, span);
             break :blk if (value_ty.kind == .named and value_ty.name != null)

@@ -47,6 +47,22 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
         });
     }
 
+    var enums = std.array_list.Managed(bytecode.EnumTypeDecl).init(allocator);
+    for (program.enums) |enum_decl| {
+        var variants = std.array_list.Managed(bytecode.EnumVariantDecl).init(allocator);
+        for (enum_decl.variants) |variant_decl| {
+            try variants.append(.{
+                .name = variant_decl.name,
+                .discriminant = variant_decl.discriminant,
+                .payload_ty = if (variant_decl.payload_ty) |payload_ty| lowerTypeRef(payload_ty) else null,
+            });
+        }
+        try enums.append(.{
+            .name = enum_decl.name,
+            .variants = try variants.toOwnedSlice(),
+        });
+    }
+
     var functions = std.array_list.Managed(bytecode.Function).init(allocator);
     var entry_function_id: ?u32 = null;
 
@@ -64,6 +80,12 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .const_bool => |value| try instructions.append(.{ .const_bool = .{ .dst = value.dst, .value = value.value } }),
                 .const_null_ptr => |value| try instructions.append(.{ .const_null_ptr = .{ .dst = value.dst } }),
                 .alloc_struct => |value| try instructions.append(.{ .alloc_struct = .{ .dst = value.dst, .type_name = value.type_name } }),
+                .alloc_enum => |value| try instructions.append(.{ .alloc_enum = .{
+                    .dst = value.dst,
+                    .enum_type_name = value.enum_type_name,
+                    .discriminant = value.discriminant,
+                    .payload_src = value.payload_src,
+                } }),
                 .alloc_array => |value| try instructions.append(.{ .alloc_array = .{ .dst = value.dst, .len = value.len } }),
                 .const_function => |value| try instructions.append(.{ .const_function = .{
                     .dst = value.dst,
@@ -142,6 +164,12 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .index = value.index,
                     .src = value.src,
                 } }),
+                .enum_tag => |value| try instructions.append(.{ .enum_tag = .{ .dst = value.dst, .src = value.src } }),
+                .enum_payload => |value| try instructions.append(.{ .enum_payload = .{
+                    .dst = value.dst,
+                    .src = value.src,
+                    .payload_ty = lowerTypeRef(value.payload_ty),
+                } }),
                 .load_indirect => |value| try instructions.append(.{ .load_indirect = .{
                     .dst = value.dst,
                     .ptr = value.ptr,
@@ -208,6 +236,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
         .constructs = try constructs.toOwnedSlice(),
         .construct_implementations = try construct_implementations.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
+        .enums = try enums.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = entry_function_id,
     };

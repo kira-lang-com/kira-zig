@@ -129,6 +129,42 @@ test "parses native callback state builtins" {
     try std.testing.expect(entry_statements[1].let_stmt.value.?.* == .native_user_data);
 }
 
+test "parses enum declarations generic type references and match statements" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const program = try parseSource(
+        allocator,
+        "enum ParseError {\n" ++
+            "    InvalidFormat: String = \"bad\"\n" ++
+            "    UnexpectedEnd\n" ++
+            "}\n" ++
+            "enum Result<Value, Failure> {\n" ++
+            "    Ok(Value)\n" ++
+            "    Error(Failure)\n" ++
+            "}\n" ++
+            "@Main function entry() {\n" ++
+            "    let value: Result<String, ParseError> = Result.Ok(\"ok\");\n" ++
+            "    match value {\n" ++
+            "        Ok(text) -> print(text);\n" ++
+            "        Error(inner) as whole -> { print(\"bad\"); print(whole); }\n" ++
+            "    }\n" ++
+            "    return;\n" ++
+            "}",
+        &diags,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 3), program.decls.len);
+    try std.testing.expect(program.decls[0] == .enum_decl);
+    try std.testing.expectEqual(@as(usize, 2), program.decls[1].enum_decl.type_params.len);
+    try std.testing.expect(program.functions[0].body.?.statements[0].let_stmt.type_expr.?.* == .generic);
+    try std.testing.expect(program.functions[0].body.?.statements[1] == .match_stmt);
+    try std.testing.expectEqual(@as(usize, 2), program.functions[0].body.?.statements[1].match_stmt.arms.len);
+}
+
 test "parses inheritance declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

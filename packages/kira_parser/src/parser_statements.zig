@@ -82,6 +82,9 @@ pub fn parseStatement(self: *Parser) anyerror!?syntax.ast.Statement {
     if (self.match(.kw_while)) {
         return .{ .while_stmt = try self.finishWhileStatement(self.previous().span.start) };
     }
+    if (self.match(.kw_match)) {
+        return .{ .match_stmt = try self.finishMatchStatement(self.previous().span.start) };
+    }
     if (self.match(.kw_break)) {
         const token = self.previous();
         const end = try self.consumeStatementTerminator(token.span.end, "expected ';' after break", "terminate the break statement with ';'");
@@ -163,6 +166,57 @@ pub fn finishWhileStatement(self: *Parser, start: usize) anyerror!syntax.ast.Whi
     };
 }
 
+pub fn finishMatchStatement(self: *Parser, start: usize) anyerror!syntax.ast.MatchStatement {
+    const subject = try self.parseExpressionWithoutTrailingBlockCall();
+    _ = try self.expect(.l_brace, "expected '{' to start match body", "open the match body here");
+    var arms = std.array_list.Managed(syntax.ast.MatchArm).init(self.allocator);
+    var end = start;
+
+    while (!self.at(.r_brace) and !self.at(.eof)) {
+        var patterns = std.array_list.Managed(syntax.ast.MatchPattern).init(self.allocator);
+        while (true) {
+            try patterns.append(try parseMatchPattern(self));
+            if (!self.match(.comma)) break;
+        }
+        const guard = if (self.match(.kw_if)) try self.parseExpressionWithoutTrailingBlockCall() else null;
+        _ = try self.expect(.arrow, "expected '->' after match arm pattern", "introduce the match arm body with `->`");
+        const body = if (self.at(.l_brace)) blk: {
+            break :blk try self.parseBlock();
+        } else blk: {
+            const statement = (try self.parseStatement()) orelse {
+                try self.emitUnexpectedToken(
+                    "expected match arm body",
+                    self.peek(),
+                    "expected a statement or block after `->`",
+                    "Write a block `{ ... }` or a single statement such as `print(value);`.",
+                );
+                return error.DiagnosticsEmitted;
+            };
+            const statements = try self.allocator.alloc(syntax.ast.Statement, 1);
+            statements[0] = statement;
+            break :blk syntax.ast.Block{
+                .statements = statements,
+                .span = statementSpan(statement),
+            };
+        };
+        end = body.span.end;
+        try arms.append(.{
+            .patterns = try patterns.toOwnedSlice(),
+            .guard = guard,
+            .body = body,
+            .span = source_pkg.Span.init(start, body.span.end),
+        });
+    }
+
+    const close = try self.expect(.r_brace, "expected '}' to close match body", "match body should end here");
+    end = close.span.end;
+    return .{
+        .subject = subject,
+        .arms = try arms.toOwnedSlice(),
+        .span = source_pkg.Span.init(start, end),
+    };
+}
+
 pub fn finishSwitchStatement(self: *Parser, start: usize) anyerror!syntax.ast.SwitchStatement {
     const subject = try self.parseExpressionWithoutTrailingBlockCall();
     _ = try self.expect(.l_brace, "expected '{' to start switch body", "open the switch body here");
@@ -205,5 +259,67 @@ pub fn finishSwitchStatement(self: *Parser, start: usize) anyerror!syntax.ast.Sw
         .cases = try cases.toOwnedSlice(),
         .default_block = default_block,
         .span = source_pkg.Span.init(start, end),
+    };
+}
+
+fn parseMatchPattern(self: *Parser) anyerror!syntax.ast.MatchPattern {
+    const name_token = try self.expect(.identifier, "expected match pattern", "write a variant or binding name here");
+    var pattern: syntax.ast.MatchPattern = .{
+        .bare_variant = .{
+            .name = name_token.lexeme,
+            .span = name_token.span,
+        },
+    };
+
+    if (self.match(.l_paren)) {
+        const inner = try self.allocator.create(syntax.ast.MatchPattern);
+        inner.* = try parseMatchPattern(self);
+        const close = try self.expect(.r_paren, "expected ')' after match pattern", "close the nested match pattern here");
+        pattern = .{
+            .destructure = .{
+                .variant_name = name_token.lexeme,
+                .inner = inner,
+                .span = source_pkg.Span.init(name_token.span.start, close.span.end),
+            },
+        };
+    }
+
+    if (self.match(.kw_as)) {
+        const binding_name = try self.expect(.identifier, "expected binding name after 'as'", "write the binding name here");
+        const inner = try self.allocator.create(syntax.ast.MatchPattern);
+        inner.* = pattern;
+        pattern = .{
+            .as_binding = .{
+                .inner = inner,
+                .binding_name = binding_name.lexeme,
+                .span = source_pkg.Span.init(matchPatternSpan(pattern).start, binding_name.span.end),
+            },
+        };
+    }
+
+    return pattern;
+}
+
+fn matchPatternSpan(pattern: syntax.ast.MatchPattern) source_pkg.Span {
+    return switch (pattern) {
+        .bare_variant => |node| node.span,
+        .destructure => |node| node.span,
+        .as_binding => |node| node.span,
+    };
+}
+
+fn statementSpan(statement: syntax.ast.Statement) source_pkg.Span {
+    return switch (statement) {
+        .let_stmt => |node| node.span,
+        .assign_stmt => |node| node.span,
+        .expr_stmt => |node| node.span,
+        .return_stmt => |node| node.span,
+        .if_stmt => |node| node.span,
+        .for_stmt => |node| node.span,
+        .while_stmt => |node| node.span,
+        .break_stmt => |node| node.span,
+        .continue_stmt => |node| node.span,
+        .match_stmt => |node| node.span,
+        .switch_stmt => |node| node.span,
     };
 }

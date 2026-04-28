@@ -4,6 +4,8 @@ const source_pkg = @import("kira_source");
 const syntax = @import("kira_syntax_model");
 
 pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFile, out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic)) ![]syntax.Token {
+    const previous_source_path = source_pkg.Span.setDefaultSourcePath(source.path);
+    defer _ = source_pkg.Span.setDefaultSourcePath(previous_source_path);
     var tokens = std.array_list.Managed(syntax.Token).init(allocator);
     var index: usize = 0;
 
@@ -250,6 +252,7 @@ fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "capability")) return .kw_capability;
     if (std.mem.eql(u8, lexeme, "class")) return .kw_class;
     if (std.mem.eql(u8, lexeme, "construct")) return .kw_construct;
+    if (std.mem.eql(u8, lexeme, "enum")) return .kw_enum;
     if (std.mem.eql(u8, lexeme, "struct")) return .kw_struct;
     if (std.mem.eql(u8, lexeme, "type")) return .kw_type;
     if (std.mem.eql(u8, lexeme, "extends")) return .kw_extends;
@@ -271,6 +274,7 @@ fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "while")) return .kw_while;
     if (std.mem.eql(u8, lexeme, "break")) return .kw_break;
     if (std.mem.eql(u8, lexeme, "continue")) return .kw_continue;
+    if (std.mem.eql(u8, lexeme, "match")) return .kw_match;
     if (std.mem.eql(u8, lexeme, "switch")) return .kw_switch;
     if (std.mem.eql(u8, lexeme, "case")) return .kw_case;
     if (std.mem.eql(u8, lexeme, "default")) return .kw_default;

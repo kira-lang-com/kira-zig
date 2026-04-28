@@ -4,25 +4,18 @@ const runtime_abi = @import("kira_runtime_abi");
 const builtins = @import("builtins.zig");
 const ownership = @import("ownership.zig");
 const native_layout = @import("native_layout.zig");
+const helper_impl = @import("vm_helpers.zig");
+const value_impl = @import("vm_values.zig");
 
 const ArrayObject = ownership.ArrayObject;
 const ClosureObject = ownership.ClosureObject;
 
-const NativeStateBox = extern struct {
-    type_id: u64,
-    payload: usize,
-    runtime_payload: usize,
-};
+const NativeStateBox = extern struct { type_id: u64, payload: usize, runtime_payload: usize };
 
 pub const NativeCallHook = *const fn (?*anyopaque, u32, []const runtime_abi.Value) anyerror!runtime_abi.Value;
 pub const ResolveFunctionHook = *const fn (?*anyopaque, u32) anyerror!usize;
 
-pub const Hooks = struct {
-    context: ?*anyopaque = null,
-    call_native: ?NativeCallHook = null,
-    resolve_function: ?ResolveFunctionHook = null,
-    copy_struct_args_by_value: bool = true,
-};
+pub const Hooks = struct { context: ?*anyopaque = null, call_native: ?NativeCallHook = null, resolve_function: ?ResolveFunctionHook = null, copy_struct_args_by_value: bool = true };
 
 pub const Vm = struct {
     allocator: std.mem.Allocator,
@@ -133,7 +126,7 @@ pub const Vm = struct {
             self.allocator.free(local_owned);
             self.allocator.free(locals);
         }
-        const label_offsets = try buildLabelOffsets(self.allocator, function_decl.instructions);
+        const label_offsets = try helper_impl.buildLabelOffsets(self.allocator, function_decl.instructions);
         defer self.allocator.free(label_offsets);
 
         for (registers) |*slot| slot.* = .{ .void = {} };
@@ -164,7 +157,7 @@ pub const Vm = struct {
                         self.rememberError("struct local type is missing a name");
                         return error.RuntimeFailure;
                     };
-                    const type_decl = findType(module, type_name) orelse {
+                    const type_decl = helper_impl.findType(module, type_name) orelse {
                         self.rememberError("struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
@@ -189,12 +182,13 @@ pub const Vm = struct {
                 .const_function => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = switch (value.representation) {
                     .callable_value => value.function_id,
                     .native_callback => if (hooks.resolve_function) |resolve_function|
-                        try resolveFunctionPointer(hooks, resolve_function, value.function_id)
+                        try helper_impl.resolveFunctionPointer(hooks, resolve_function, value.function_id)
                     else
                         value.function_id,
                 } }),
                 .const_closure => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateClosure(registers, value.function_id, value.captures) }),
                 .alloc_struct => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateStruct(module, value.type_name) }),
+                .alloc_enum => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateEnum(registers, value.discriminant, value.payload_src) }),
                 .alloc_native_state => |value| {
                     const src_value = registers[value.src];
                     if (src_value != .raw_ptr or src_value.raw_ptr == 0) {
@@ -214,33 +208,33 @@ pub const Vm = struct {
                 .add => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.addValues(lhs, rhs));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.addValues(self, lhs, rhs));
                 },
                 .subtract => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.subtractValues(lhs, rhs));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.subtractValues(self, lhs, rhs));
                 },
                 .multiply => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.multiplyValues(lhs, rhs));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.multiplyValues(self, lhs, rhs));
                 },
                 .divide => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.divideValues(lhs, rhs));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(self, lhs, rhs));
                 },
                 .modulo => |value| {
                     const lhs = registers[value.lhs];
                     const rhs = registers[value.rhs];
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.moduloValues(lhs, rhs));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(self, lhs, rhs));
                 },
                 .compare => |value| {
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .boolean = try self.compareValues(registers[value.lhs], registers[value.rhs], value.op) });
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .boolean = try value_impl.compareValues(self, registers[value.lhs], registers[value.rhs], value.op) });
                 },
                 .unary => |value| {
-                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.unaryValue(registers[value.src], value.op));
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.unaryValue(self, registers[value.src], value.op));
                 },
                 .store_local => |value| self.setSlotBorrowed(&locals[value.local], &local_owned[value.local], registers[value.src]),
                 .load_local => |value| self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], locals[value.local]),
@@ -341,6 +335,29 @@ pub const Vm = struct {
                     }
                     self.heap.replaceArrayItem(&array_ptr.items[index], registers[value.src]);
                 },
+                .enum_tag => |value| {
+                    const enum_value = registers[value.src];
+                    if (enum_value != .raw_ptr or enum_value.raw_ptr == 0) {
+                        self.rememberError("enum tag access requires a valid enum value");
+                        return error.RuntimeFailure;
+                    }
+                    const enum_ptr: [*]const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
+                    if (enum_ptr[0] != .integer) {
+                        self.rememberError("enum tag slot is not an integer");
+                        return error.RuntimeFailure;
+                    }
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], enum_ptr[0]);
+                },
+                .enum_payload => |value| {
+                    const enum_value = registers[value.src];
+                    if (enum_value != .raw_ptr or enum_value.raw_ptr == 0) {
+                        self.rememberError("enum payload access requires a valid enum value");
+                        return error.RuntimeFailure;
+                    }
+                    const enum_ptr: [*]const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
+                    self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], enum_ptr[1]);
+                    _ = value.payload_ty;
+                },
                 .load_indirect => |value| {
                     const ptr = registers[value.ptr];
                     if (ptr != .raw_ptr or ptr.raw_ptr == 0) {
@@ -371,7 +388,7 @@ pub const Vm = struct {
                         self.rememberError("struct copy requires valid pointers");
                         return error.RuntimeFailure;
                     }
-                    const type_decl = findType(module, value.type_name) orelse {
+                    const type_decl = helper_impl.findType(module, value.type_name) orelse {
                         self.rememberError("struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
@@ -385,17 +402,17 @@ pub const Vm = struct {
                         self.rememberError("vm branch expects a boolean condition");
                         return error.RuntimeFailure;
                     }
-                    pc = try resolveLabelOffset(label_offsets, if (condition.boolean) value.true_label else value.false_label);
+                    pc = try helper_impl.resolveLabelOffset(label_offsets, if (condition.boolean) value.true_label else value.false_label);
                     continue;
                 },
                 .jump => |value| {
-                    pc = try resolveLabelOffset(label_offsets, value.label);
+                    pc = try helper_impl.resolveLabelOffset(label_offsets, value.label);
                     continue;
                 },
                 .label => {},
                 .print => |value| try builtins.printValue(writer, module, registers[value.src], value.ty),
                 .call_runtime => |value| {
-                    const call_args = try collectArgs(self.allocator, registers, value.args);
+                    const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
                     const result = try self.runFunctionById(module, value.function_id, call_args, writer, hooks);
                     if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
@@ -405,7 +422,7 @@ pub const Vm = struct {
                         self.rememberError("vm native bridge was not installed");
                         return error.RuntimeFailure;
                     };
-                    const call_args = try collectArgs(self.allocator, registers, value.args);
+                    const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
                     var result = try callback(hooks.context, value.function_id, call_args);
                     result = try self.materializeNativeResult(module, value.return_ty, result);
@@ -417,7 +434,7 @@ pub const Vm = struct {
                         self.rememberError("indirect call requires a callable function value");
                         return error.RuntimeFailure;
                     }
-                    const call_args = try collectArgs(self.allocator, registers, value.args);
+                    const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
                     const result = if (callee_value.raw_ptr <= std.math.maxInt(u32)) direct: {
                         const function_id: u32 = @intCast(callee_value.raw_ptr);
@@ -450,7 +467,7 @@ pub const Vm = struct {
         return .{ .void = {} };
     }
 
-    fn rememberError(self: *Vm, message: []const u8) void {
+    pub fn rememberError(self: *Vm, message: []const u8) void {
         const length = @min(message.len, self.last_error_buffer.len);
         @memcpy(self.last_error_buffer[0..length], message[0..length]);
         self.last_error_len = length;
@@ -496,7 +513,7 @@ pub const Vm = struct {
     }
 
     fn allocateStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8) !usize {
-        const type_decl = findType(module, type_name) orelse {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
@@ -508,7 +525,7 @@ pub const Vm = struct {
     }
 
     fn allocateNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, type_id: u64, src_payload: usize) !usize {
-        const type_decl = findType(module, type_name) orelse {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("native state type could not be resolved");
             return error.RuntimeFailure;
         };
@@ -554,7 +571,7 @@ pub const Vm = struct {
     }
 
     fn materializeNativeStatePayload(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_payload_ptr: usize) !usize {
-        const type_decl = findType(module, type_name) orelse {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("native state type could not be resolved");
             return error.RuntimeFailure;
         };
@@ -581,7 +598,7 @@ pub const Vm = struct {
             .float => .{ .float = 0.0 },
             .string => .{ .string = "" },
             .boolean => .{ .boolean = false },
-            .construct_any, .array, .raw_ptr => .{ .raw_ptr = 0 },
+            .construct_any, .array, .raw_ptr, .enum_instance => .{ .raw_ptr = 0 },
             .ffi_struct => blk: {
                 const nested_name = value_type.name orelse {
                     self.rememberError("struct field type is missing a name");
@@ -603,9 +620,16 @@ pub const Vm = struct {
         return self.heap.registerArray(object);
     }
 
+    fn allocateEnum(self: *Vm, registers: []const runtime_abi.Value, discriminant: u32, payload_src: ?u32) !usize {
+        const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+        slots[0] = .{ .integer = @as(i64, @intCast(discriminant)) };
+        slots[1] = if (payload_src) |src| registers[src] else .{ .void = {} };
+        return self.heap.registerStruct(slots);
+    }
+
     fn typeFieldCount(self: *Vm, module: *const bytecode.Module, type_name: []const u8) ?usize {
         _ = self;
-        const type_decl = findType(module, type_name) orelse return null;
+        const type_decl = helper_impl.findType(module, type_name) orelse return null;
         return type_decl.fields.len;
     }
 
@@ -622,7 +646,7 @@ pub const Vm = struct {
                     self.rememberError("struct field type is missing a name");
                     return error.RuntimeFailure;
                 };
-                const nested_type = findType(module, nested_name) orelse {
+                const nested_type = helper_impl.findType(module, nested_name) orelse {
                     self.rememberError("struct type could not be resolved");
                     return error.RuntimeFailure;
                 };
@@ -656,20 +680,20 @@ pub const Vm = struct {
         }, value.raw_ptr) };
     }
 
-    fn copyStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
-        const type_decl = findType(module, type_name) orelse {
+    pub fn copyStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
         const fields = try self.allocator.alloc(runtime_abi.Value, type_decl.fields.len);
         for (type_decl.fields, 0..) |field_decl, index| {
-            fields[index] = try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr);
+            fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
         }
         return self.heap.registerStruct(fields);
     }
 
     fn copyStructFromNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
-        const type_decl = findType(module, type_name) orelse {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
@@ -688,7 +712,7 @@ pub const Vm = struct {
                     }
                     try self.copyStructFromNativeLayoutInto(module, nested_name, fields[index].raw_ptr, address);
                 },
-                else => self.heap.assignOwned(&fields[index], try self.readNativeFieldValue(module, type_name, field_decl, index, native_ptr)),
+                else => self.heap.assignOwned(&fields[index], try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr)),
             }
         }
     }
@@ -702,359 +726,19 @@ pub const Vm = struct {
         return @intFromPtr(words.ptr);
     }
 
-    fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
-        const type_decl = findType(module, type_name) orelse {
+    pub fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
         const fields: [*]const runtime_abi.Value = @ptrFromInt(runtime_ptr);
         for (type_decl.fields, 0..) |field_decl, index| {
             const offset = try native_layout.fieldOffset(module, type_name, index);
-            try self.writeNativeFieldValue(module, field_decl.ty, fields[index], native_ptr + offset);
+            try helper_impl.writeNativeFieldValue(self, module, field_decl.ty, fields[index], native_ptr + offset);
         }
     }
 
-    fn writeNativeFieldValue(self: *Vm, module: *const bytecode.Module, field_ty: bytecode.TypeRef, value: runtime_abi.Value, address: usize) anyerror!void {
-        try switch (field_ty.kind) {
-            .void => {},
-            .integer => native_layout.writeInteger(field_ty.name, address, value),
-            .float => native_layout.writeFloat(field_ty.name, address, value),
-            .string => {
-                if (value != .string) {
-                    self.rememberError("runtime string field cannot be lowered to native memory");
-                    return error.RuntimeFailure;
-                }
-                const string_ptr: *runtime_abi.BridgeString = @ptrFromInt(address);
-                string_ptr.* = .{
-                    .ptr = if (value.string.len == 0) null else value.string.ptr,
-                    .len = value.string.len,
-                };
-            },
-            .boolean => {
-                if (value != .boolean) {
-                    self.rememberError("runtime boolean field cannot be lowered to native memory");
-                    return error.RuntimeFailure;
-                }
-                (@as(*u8, @ptrFromInt(address))).* = if (value.boolean) 1 else 0;
-            },
-            .construct_any, .array, .raw_ptr => {
-                if (value != .raw_ptr) {
-                    self.rememberError("runtime pointer field cannot be lowered to native memory");
-                    return error.RuntimeFailure;
-                }
-                (@as(*usize, @ptrFromInt(address))).* = value.raw_ptr;
-            },
-            .ffi_struct => {
-                const nested_name = field_ty.name orelse {
-                    self.rememberError("nested struct field type is missing a name");
-                    return error.RuntimeFailure;
-                };
-                if (value != .raw_ptr or value.raw_ptr == 0) {
-                    self.rememberError("runtime struct field cannot be lowered to native memory");
-                    return error.RuntimeFailure;
-                }
-                try self.copyStructToNativeLayoutInto(module, nested_name, value.raw_ptr, address);
-            },
-        };
-    }
-
-    fn readNativeFieldValue(
-        self: *Vm,
-        module: *const bytecode.Module,
-        owner_type_name: []const u8,
-        field_decl: bytecode.Field,
-        field_index: usize,
-        native_ptr: usize,
-    ) anyerror!runtime_abi.Value {
-        const offset = try native_layout.fieldOffset(module, owner_type_name, field_index);
-        const address = native_ptr + offset;
-        return switch (field_decl.ty.kind) {
-            .void => .{ .void = {} },
-            .integer => .{ .integer = native_layout.readInteger(field_decl.ty.name, address) },
-            .float => .{ .float = native_layout.readFloat(field_decl.ty.name, address) },
-            .string => blk: {
-                const value_ptr: *const runtime_abi.BridgeString = @ptrFromInt(address);
-                break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
-            },
-            .boolean => .{ .boolean = (@as(*const u8, @ptrFromInt(address))).* != 0 },
-            .construct_any, .array, .raw_ptr => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
-            .ffi_struct => .{ .raw_ptr = try self.copyStructFromNativeLayout(module, field_decl.ty.name orelse {
-                self.rememberError("nested struct field type is missing a name");
-                return error.RuntimeFailure;
-            }, address) },
-        };
-    }
-
-    fn compareValues(
-        self: *Vm,
-        lhs: runtime_abi.Value,
-        rhs: runtime_abi.Value,
-        op: bytecode.CompareOp,
-    ) !bool {
-        switch (lhs) {
-            .integer => |lhs_value| {
-                if (rhs != .integer) {
-                    self.rememberError("vm compare expects matching operand types");
-                    return error.RuntimeFailure;
-                }
-                return switch (op) {
-                    .equal => lhs_value == rhs.integer,
-                    .not_equal => lhs_value != rhs.integer,
-                    .less => lhs_value < rhs.integer,
-                    .less_equal => lhs_value <= rhs.integer,
-                    .greater => lhs_value > rhs.integer,
-                    .greater_equal => lhs_value >= rhs.integer,
-                };
-            },
-            .float => |lhs_value| {
-                if (rhs != .float) {
-                    self.rememberError("vm compare expects matching operand types");
-                    return error.RuntimeFailure;
-                }
-                return switch (op) {
-                    .equal => lhs_value == rhs.float,
-                    .not_equal => lhs_value != rhs.float,
-                    .less => lhs_value < rhs.float,
-                    .less_equal => lhs_value <= rhs.float,
-                    .greater => lhs_value > rhs.float,
-                    .greater_equal => lhs_value >= rhs.float,
-                };
-            },
-            .boolean => |lhs_value| {
-                if (rhs != .boolean) {
-                    self.rememberError("vm compare expects matching operand types");
-                    return error.RuntimeFailure;
-                }
-                return switch (op) {
-                    .equal => lhs_value == rhs.boolean,
-                    .not_equal => lhs_value != rhs.boolean,
-                    else => {
-                        self.rememberError("vm compare does not support ordered boolean comparisons");
-                        return error.RuntimeFailure;
-                    },
-                };
-            },
-            .raw_ptr => |lhs_value| {
-                if (rhs != .raw_ptr) {
-                    self.rememberError("vm compare expects matching operand types");
-                    return error.RuntimeFailure;
-                }
-                return switch (op) {
-                    .equal => lhs_value == rhs.raw_ptr,
-                    .not_equal => lhs_value != rhs.raw_ptr,
-                    else => {
-                        self.rememberError("vm compare does not support ordered pointer comparisons");
-                        return error.RuntimeFailure;
-                    },
-                };
-            },
-            else => {
-                self.rememberError("vm compare does not support this value type");
-                return error.RuntimeFailure;
-            },
-        }
-    }
-
-    fn unaryValue(self: *Vm, value: runtime_abi.Value, op: bytecode.UnaryOp) !runtime_abi.Value {
-        return switch (op) {
-            .negate => switch (value) {
-                .integer => |inner| .{ .integer = -inner },
-                .float => |inner| .{ .float = -inner },
-                else => {
-                    self.rememberError("vm negate expects a numeric operand");
-                    return error.RuntimeFailure;
-                },
-            },
-            .not => switch (value) {
-                .boolean => |inner| .{ .boolean = !inner },
-                else => {
-                    self.rememberError("vm logical not expects a boolean operand");
-                    return error.RuntimeFailure;
-                },
-            },
-        };
-    }
-
-    fn addValues(self: *Vm, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
-        return switch (lhs) {
-            .integer => |lhs_value| blk: {
-                if (rhs != .integer) {
-                    self.rememberError("vm add expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .integer = lhs_value + rhs.integer };
-            },
-            .float => |lhs_value| blk: {
-                if (rhs != .float) {
-                    self.rememberError("vm add expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .float = lhs_value + rhs.float };
-            },
-            else => {
-                self.rememberError("vm add expects numeric operands");
-                return error.RuntimeFailure;
-            },
-        };
-    }
-
-    fn subtractValues(self: *Vm, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
-        return switch (lhs) {
-            .integer => |lhs_value| blk: {
-                if (rhs != .integer) {
-                    self.rememberError("vm subtract expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .integer = lhs_value - rhs.integer };
-            },
-            .float => |lhs_value| blk: {
-                if (rhs != .float) {
-                    self.rememberError("vm subtract expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .float = lhs_value - rhs.float };
-            },
-            else => {
-                self.rememberError("vm subtract expects numeric operands");
-                return error.RuntimeFailure;
-            },
-        };
-    }
-
-    fn multiplyValues(self: *Vm, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
-        return switch (lhs) {
-            .integer => |lhs_value| blk: {
-                if (rhs != .integer) {
-                    self.rememberError("vm multiply expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .integer = lhs_value * rhs.integer };
-            },
-            .float => |lhs_value| blk: {
-                if (rhs != .float) {
-                    self.rememberError("vm multiply expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .float = lhs_value * rhs.float };
-            },
-            else => {
-                self.rememberError("vm multiply expects numeric operands");
-                return error.RuntimeFailure;
-            },
-        };
-    }
-
-    fn divideValues(self: *Vm, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
-        return switch (lhs) {
-            .integer => |lhs_value| blk: {
-                if (rhs != .integer) {
-                    self.rememberError("vm divide expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                if (rhs.integer == 0) {
-                    self.rememberError("vm divide does not allow division by zero");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .integer = @divTrunc(lhs_value, rhs.integer) };
-            },
-            .float => |lhs_value| blk: {
-                if (rhs != .float) {
-                    self.rememberError("vm divide expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                if (rhs.float == 0.0) {
-                    self.rememberError("vm divide does not allow division by zero");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .float = lhs_value / rhs.float };
-            },
-            else => {
-                self.rememberError("vm divide expects numeric operands");
-                return error.RuntimeFailure;
-            },
-        };
-    }
-
-    fn moduloValues(self: *Vm, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
-        return switch (lhs) {
-            .integer => |lhs_value| blk: {
-                if (rhs != .integer) {
-                    self.rememberError("vm modulo expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                if (rhs.integer == 0) {
-                    self.rememberError("vm modulo does not allow division by zero");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .integer = @mod(lhs_value, rhs.integer) };
-            },
-            .float => |lhs_value| blk: {
-                if (rhs != .float) {
-                    self.rememberError("vm modulo expects matching numeric operands");
-                    return error.RuntimeFailure;
-                }
-                if (rhs.float == 0.0) {
-                    self.rememberError("vm modulo does not allow division by zero");
-                    return error.RuntimeFailure;
-                }
-                break :blk .{ .float = @mod(lhs_value, rhs.float) };
-            },
-            else => {
-                self.rememberError("vm modulo expects numeric operands");
-                return error.RuntimeFailure;
-            },
-        };
-    }
 };
-
-fn collectArgs(allocator: std.mem.Allocator, registers: []const runtime_abi.Value, argument_registers: []const u32) ![]runtime_abi.Value {
-    const values = try allocator.alloc(runtime_abi.Value, argument_registers.len);
-    for (argument_registers, 0..) |register_index, index| {
-        values[index] = registers[register_index];
-    }
-    return values;
-}
-
-fn resolveFunctionPointer(hooks: Hooks, resolve_function: ResolveFunctionHook, function_id: u32) !usize {
-    return resolve_function(hooks.context, function_id);
-}
-
-fn buildLabelOffsets(allocator: std.mem.Allocator, instructions: []const bytecode.Instruction) ![]usize {
-    var max_label: usize = 0;
-    var has_label = false;
-    for (instructions) |inst| {
-        if (inst != .label) continue;
-        has_label = true;
-        max_label = @max(max_label, @as(usize, @intCast(inst.label.id)));
-    }
-
-    if (!has_label) return allocator.alloc(usize, 0);
-
-    const offsets = try allocator.alloc(usize, max_label + 1);
-    @memset(offsets, std.math.maxInt(usize));
-
-    for (instructions, 0..) |inst, index| {
-        if (inst != .label) continue;
-        offsets[@as(usize, @intCast(inst.label.id))] = index;
-    }
-
-    return offsets;
-}
-
-fn resolveLabelOffset(label_offsets: []const usize, label: u32) !usize {
-    const label_index = @as(usize, @intCast(label));
-    if (label_index >= label_offsets.len) return error.RuntimeFailure;
-    const offset = label_offsets[label_index];
-    if (offset == std.math.maxInt(usize)) return error.RuntimeFailure;
-    return offset;
-}
-
-fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl {
-    for (module.types) |type_decl| {
-        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
-    }
-    return null;
-}
 
 test "executes nested runtime calls" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
