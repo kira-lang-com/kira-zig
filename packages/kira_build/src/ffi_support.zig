@@ -103,7 +103,7 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
         try object_paths.append(object_path);
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
-        try argv.appendSlice(&.{ "clang", "-c", source_path, "-o", object_path });
+        try appendClangCompileCommand(&argv, library.*, source_path, object_path);
         for (library.headers.include_dirs) |include_dir| {
             try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         }
@@ -124,6 +124,23 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
     try argv.appendSlice(&.{ "ar", "rcs", library.artifact_path });
     try argv.appendSlice(object_paths.items);
     try runCommand(allocator, argv.items);
+}
+
+fn appendClangCompileCommand(argv: *std.array_list.Managed([]const u8), library: native.ResolvedNativeLibrary, source_path: []const u8, object_path: []const u8) !void {
+    try argv.appendSlice(&.{ "clang", "-c" });
+    if (shouldCompileAsObjectiveC(builtin.os.tag, library, source_path)) {
+        try argv.appendSlice(&.{ "-x", "objective-c" });
+    }
+    try argv.appendSlice(&.{ source_path, "-o", object_path });
+}
+
+fn shouldCompileAsObjectiveC(os_tag: std.Target.Os.Tag, library: native.ResolvedNativeLibrary, source_path: []const u8) bool {
+    if (os_tag != .macos) return false;
+    if (library.link.frameworks.len == 0 and library.headers.frameworks.len == 0) return false;
+
+    const extension = std.fs.path.extension(source_path);
+    if (std.mem.eql(u8, extension, ".m") or std.mem.eql(u8, extension, ".mm")) return false;
+    return std.mem.eql(u8, extension, ".c");
 }
 
 fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize) ![]const u8 {
@@ -252,4 +269,20 @@ fn fileExists(path: []const u8) bool {
 
 fn makePath(path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
+}
+
+test "macOS framework-backed C source compiles as Objective-C" {
+    const library: native.ResolvedNativeLibrary = .{
+        .name = "sokol",
+        .link_mode = .static,
+        .abi = .c,
+        .artifact_path = "/tmp/libsokol.a",
+        .target = undefined,
+        .headers = .{},
+        .link = .{ .frameworks = &.{"AppKit"} },
+    };
+
+    try std.testing.expect(shouldCompileAsObjectiveC(.macos, library, "/tmp/sokol_impl.c"));
+    try std.testing.expect(!shouldCompileAsObjectiveC(.macos, library, "/tmp/sokol_impl.m"));
+    try std.testing.expect(!shouldCompileAsObjectiveC(.linux, library, "/tmp/sokol_impl.c"));
 }

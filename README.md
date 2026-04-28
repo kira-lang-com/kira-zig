@@ -165,6 +165,10 @@ zig build test
 
 Run `zig fmt` on changed Zig files before finishing code changes. Do not hand-edit generated output under `generated/`, `.zig-cache/`, `zig-out/`, or `.kira/`.
 
+## License
+
+Kira is licensed under Apache 2.0 with the Kira Runtime Library Exception. See [LICENSE](LICENSE) for the full text, including the exception that covers ordinary runtime/library portions incorporated into resulting products built with Kira.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
