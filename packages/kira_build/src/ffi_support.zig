@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 const syntax = @import("kira_syntax_model");
+const kira_toolchain = @import("kira_toolchain");
 const llvm_backend = @import("kira_llvm_backend");
 const resolver = @import("native_lib_resolver.zig");
 const autobind = @import("ffi_autobind.zig");
@@ -67,7 +68,7 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
         try object_paths.append(object_path);
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
-        try appendClangCompileCommand(&argv, clang_path, target_triple, library.*, source_path, object_path);
+        try appendClangCompileCommand(allocator, &argv, clang_path, target_triple, library.*, source_path, object_path);
         for (library.headers.include_dirs) |include_dir| {
             try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         }
@@ -91,6 +92,7 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
 }
 
 fn appendClangCompileCommand(
+    allocator: std.mem.Allocator,
     argv: *std.array_list.Managed([]const u8),
     clang_path: []const u8,
     target_triple: []const u8,
@@ -101,11 +103,18 @@ fn appendClangCompileCommand(
     try argv.appendSlice(&.{ clang_path, "-c", "-O3" });
     if (builtin.os.tag != .macos) {
         try argv.appendSlice(&.{ "-target", target_triple });
+    } else {
+        try appendMacosSdkArgs(allocator, argv);
     }
     if (shouldCompileAsObjectiveC(builtin.os.tag, library, source_path)) {
         try argv.appendSlice(&.{ "-x", "objective-c" });
     }
     try argv.appendSlice(&.{ source_path, "-o", object_path });
+}
+
+fn appendMacosSdkArgs(allocator: std.mem.Allocator, argv: *std.array_list.Managed([]const u8)) !void {
+    const sdk_path = try kira_toolchain.macosSdkPath(allocator) orelse return;
+    try argv.appendSlice(&.{ "-isysroot", sdk_path });
 }
 
 fn shouldCompileAsObjectiveC(os_tag: std.Target.Os.Tag, library: native.ResolvedNativeLibrary, source_path: []const u8) bool {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
+const kira_toolchain = @import("kira_toolchain");
 const build_options = @import("kira_llvm_build_options");
 const backend_utils = @import("backend_utils.zig");
 const toolchain = @import("toolchain.zig");
@@ -11,20 +12,16 @@ pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []co
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     try ensureParentDir(helper_object);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    try argv.append(driver_path);
     if (builtin.os.tag == .macos) {
-        try runCommand(allocator, &.{ driver_path, "-c", helper_source, "-o", helper_object });
+        try appendMacosSdkArgs(allocator, &argv);
     } else {
         const target = try clangTargetTriple(allocator);
-        try runCommand(allocator, &.{
-            driver_path,
-            "-target",
-            target,
-            "-c",
-            helper_source,
-            "-o",
-            helper_object,
-        });
+        try argv.appendSlice(&.{ "-target", target });
     }
+    try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
+    try runCommand(allocator, argv.items);
     return helper_object;
 }
 
@@ -40,6 +37,7 @@ pub fn linkExecutable(
     var argv = std.array_list.Managed([]const u8).init(allocator);
     if (builtin.os.tag == .macos) {
         try argv.appendSlice(&.{ driver_path, "-o", executable_path });
+        try appendMacosSdkArgs(allocator, &argv);
     } else {
         const target = try clangTargetTriple(allocator);
         try argv.appendSlice(&.{ driver_path, "-target", target, "-o", executable_path });
@@ -74,6 +72,7 @@ pub fn linkSharedLibrary(
     var argv = std.array_list.Managed([]const u8).init(allocator);
     if (builtin.os.tag == .macos) {
         try argv.appendSlice(&.{ driver_path, "-shared", "-o", library_path });
+        try appendMacosSdkArgs(allocator, &argv);
     } else {
         const target = try clangTargetTriple(allocator);
         try argv.appendSlice(&.{ driver_path, "-target", target, "-shared", "-o", library_path });
@@ -122,6 +121,11 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 fn ensureParentDir(path: []const u8) !void {
     const maybe_dir = std.fs.path.dirname(path) orelse return;
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
+}
+
+fn appendMacosSdkArgs(allocator: std.mem.Allocator, argv: *std.array_list.Managed([]const u8)) !void {
+    const sdk_path = try kira_toolchain.macosSdkPath(allocator) orelse return;
+    try argv.appendSlice(&.{ "-isysroot", sdk_path });
 }
 
 fn clangTargetTriple(allocator: std.mem.Allocator) ![]const u8 {

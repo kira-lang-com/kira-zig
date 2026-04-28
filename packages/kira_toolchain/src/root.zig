@@ -167,6 +167,35 @@ pub fn managedLlvmArPath(allocator: std.mem.Allocator, llvm_home: []const u8) ![
     return managedLlvmToolPath(allocator, llvm_home, "llvm-ar");
 }
 
+pub fn macosSdkPath(allocator: std.mem.Allocator) !?[]u8 {
+    if (builtin.os.tag != .macos) return null;
+
+    if (envVarOwned(allocator, "SDKROOT")) |sdkroot| {
+        if (directoryExists(sdkroot)) return sdkroot;
+        allocator.free(sdkroot);
+    } else |_| {}
+
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" },
+        .stdout_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .exited or result.term.exited != 0) {
+        if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+        return error.MacosSdkUnavailable;
+    }
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) return error.MacosSdkUnavailable;
+    return try allocator.dupe(u8, trimmed);
+}
+
 pub fn toolchainRootFromExecutablePath(allocator: std.mem.Allocator, exe_path: []const u8) !?[]u8 {
     const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
     if (!std.mem.eql(u8, std.fs.path.basename(exe_dir), "bin")) return null;
@@ -227,6 +256,32 @@ fn fileExists(path: []const u8) bool {
     var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
     file.close(std.Options.debug_io);
     return true;
+}
+
+fn directoryExists(path: []const u8) bool {
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false
+    else
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
+    return true;
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 test "writes and parses current toolchain toml" {

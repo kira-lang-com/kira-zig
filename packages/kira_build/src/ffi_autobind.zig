@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const native = @import("kira_native_lib_definition");
+const kira_toolchain = @import("kira_toolchain");
 const llvm_backend = @import("kira_llvm_backend");
 
 const CParam = struct {
@@ -100,6 +101,7 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.appendSlice(&.{ clang_path, "-Xclang", "-ast-dump=json", "-fsyntax-only" });
+    try appendMacosSdkArgs(allocator, &argv);
 
     if (library.headers.entrypoint) |entrypoint| {
         try argv.append(entrypoint);
@@ -132,6 +134,11 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
     }
 
     return result.stdout;
+}
+
+fn appendMacosSdkArgs(allocator: std.mem.Allocator, argv: *std.array_list.Managed([]const u8)) !void {
+    const sdk_path = try kira_toolchain.macosSdkPath(allocator) orelse return;
+    try argv.appendSlice(&.{ "-isysroot", sdk_path });
 }
 
 fn inheritedProcessEnviron() std.process.Environ {
