@@ -4,10 +4,13 @@ zig-out/
 
 generated/*
 !generated/.gitkeep
+**/generated/*
+!**/generated/.gitkeep
 
 *.kbc
 *.obj
 *.o
+*.a
 *.lib
 *.dll
 *.exe

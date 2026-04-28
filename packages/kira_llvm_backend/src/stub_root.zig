@@ -26,3 +26,4 @@ pub const LlvmToolchain = struct {
         return error.LlvmBackendUnavailable;
     }
 };
+pub const clangDriver = @import("clang_driver.zig");

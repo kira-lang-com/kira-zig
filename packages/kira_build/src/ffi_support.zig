@@ -99,7 +99,9 @@ fn appendClangCompileCommand(
     object_path: []const u8,
 ) !void {
     try argv.appendSlice(&.{ clang_path, "-c", "-O3" });
-    if (builtin.os.tag != .macos) {
+    if (builtin.os.tag == .macos) {
+        try llvm_backend.clangDriver.appendHostClangDriverArgs(argv.allocator, argv);
+    } else {
         try argv.appendSlice(&.{ "-target", target_triple });
     }
     if (shouldCompileAsObjectiveC(builtin.os.tag, library, source_path)) {
