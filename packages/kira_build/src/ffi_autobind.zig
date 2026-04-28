@@ -100,6 +100,7 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.appendSlice(&.{ clang_path, "-Xclang", "-ast-dump=json", "-fsyntax-only" });
+    try llvm_backend.clangDriver.appendHostClangDriverArgs(allocator, &argv);
 
     if (library.headers.entrypoint) |entrypoint| {
         try argv.append(entrypoint);

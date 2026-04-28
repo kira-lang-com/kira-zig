@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 const backend_utils = @import("backend_utils.zig");
+const clang_driver = @import("clang_driver.zig");
 const toolchain = @import("toolchain.zig");
 
 pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {
@@ -11,20 +12,11 @@ pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []co
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     try ensureParentDir(helper_object);
-    if (builtin.os.tag == .macos) {
-        try runCommand(allocator, &.{ driver_path, "-c", helper_source, "-o", helper_object });
-    } else {
-        const target = try clangTargetTriple(allocator);
-        try runCommand(allocator, &.{
-            driver_path,
-            "-target",
-            target,
-            "-c",
-            helper_source,
-            "-o",
-            helper_object,
-        });
-    }
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    try argv.append(driver_path);
+    try clang_driver.appendHostClangDriverArgs(allocator, &argv);
+    try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
+    try runCommand(allocator, argv.items);
     return helper_object;
 }
 
@@ -38,12 +30,9 @@ pub fn linkExecutable(
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    if (builtin.os.tag == .macos) {
-        try argv.appendSlice(&.{ driver_path, "-o", executable_path });
-    } else {
-        const target = try clangTargetTriple(allocator);
-        try argv.appendSlice(&.{ driver_path, "-target", target, "-o", executable_path });
-    }
+    try argv.append(driver_path);
+    try clang_driver.appendHostClangDriverArgs(allocator, &argv);
+    try argv.appendSlice(&.{ "-o", executable_path });
     if (builtin.os.tag == .windows) {
         try argv.append("-Wl,/subsystem:console");
     }
@@ -72,12 +61,9 @@ pub fn linkSharedLibrary(
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    if (builtin.os.tag == .macos) {
-        try argv.appendSlice(&.{ driver_path, "-shared", "-o", library_path });
-    } else {
-        const target = try clangTargetTriple(allocator);
-        try argv.appendSlice(&.{ driver_path, "-target", target, "-shared", "-o", library_path });
-    }
+    try argv.append(driver_path);
+    try clang_driver.appendHostClangDriverArgs(allocator, &argv);
+    try argv.appendSlice(&.{ "-shared", "-o", library_path });
     for (object_paths) |path| try argv.append(path);
 
     for (native_libraries) |library| {
@@ -122,22 +108,4 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 fn ensureParentDir(path: []const u8) !void {
     const maybe_dir = std.fs.path.dirname(path) orelse return;
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, maybe_dir);
-}
-
-fn clangTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
-    return switch (builtin.os.tag) {
-        .windows => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),
-            else => error.UnsupportedTarget,
-        },
-        .macos => switch (builtin.cpu.arch) {
-            .aarch64 => allocator.dupe(u8, "aarch64-macos-none"),
-            else => error.UnsupportedTarget,
-        },
-        .linux => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, "x86_64-linux-gnu"),
-            else => error.UnsupportedTarget,
-        },
-        else => error.UnsupportedTarget,
-    };
 }

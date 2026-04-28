@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const ir = @import("kira_ir");
 const runtime_abi = @import("kira_runtime_abi");
 const llvm = @import("llvm_c.zig");
+const clang_driver = @import("clang_driver.zig");
 const toolchain = @import("toolchain.zig");
 
 pub fn freeStringList(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8)) void {
@@ -53,11 +54,15 @@ pub fn emitObjectFileViaClang(
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const clang_path = try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    try argv.append(clang_path);
+    try clang_driver.appendHostClangDriverArgs(allocator, &argv);
+    try argv.appendSlice(&.{ "-c", "-x", "ir", "-o", object_path, ir_path });
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ clang_path, "-c", "-x", "ir", "-o", object_path, ir_path },
+        .argv = argv.items,
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     });

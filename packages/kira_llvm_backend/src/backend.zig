@@ -532,16 +532,18 @@ fn emitObjectFileFromIr(
     ir_path: []const u8,
     object_path: []const u8,
 ) !void {
-    const target = try clangTargetTriple(allocator);
-    defer allocator.free(target);
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const clang_path = try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    try argv.append(clang_path);
+    try @import("clang_driver.zig").appendHostClangDriverArgs(allocator, &argv);
+    try argv.appendSlice(&.{ "-c", "-o", object_path, ir_path });
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ clang_path, "-target", target, "-c", "-o", object_path, ir_path },
+        .argv = argv.items,
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     }) catch |err| return err;
@@ -553,24 +555,6 @@ fn emitObjectFileFromIr(
         if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
         return error.ObjectEmissionFailed;
     }
-}
-
-fn clangTargetTriple(allocator: std.mem.Allocator) ![]const u8 {
-    return switch (builtin.os.tag) {
-        .windows => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, if (builtin.abi == .gnu) "x86_64-windows-gnu" else "x86_64-windows-msvc"),
-            else => error.UnsupportedTarget,
-        },
-        .macos => switch (builtin.cpu.arch) {
-            .aarch64 => allocator.dupe(u8, "aarch64-macos-none"),
-            else => error.UnsupportedTarget,
-        },
-        .linux => switch (builtin.cpu.arch) {
-            .x86_64 => allocator.dupe(u8, "x86_64-linux-gnu"),
-            else => error.UnsupportedTarget,
-        },
-        else => error.UnsupportedTarget,
-    };
 }
 
 pub const CallValueDispatcher = struct {
