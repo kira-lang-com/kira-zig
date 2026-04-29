@@ -17,10 +17,10 @@ layout(location = 0) in vec2 kira_attr_position;
 out vec4 kira_varying_color;
 
 VertexOut BasicTriangle__vertex__entry(VertexIn input) {
-    VertexOut out;
-    out.clip_position = vec4(input.position, 0, 1);
-    out.color = vec4(1, 0.25, 0.25, 1);
-    return out;
+    VertexOut kira_out;
+    kira_out.clip_position = vec4(input.position, 0, 1);
+    kira_out.color = vec4(1, 0.25, 0.25, 1);
+    return kira_out;
 }
 
 void main() {

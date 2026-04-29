@@ -39,10 +39,10 @@ layout(location = 1) in vec2 kira_attr_uv;
 out vec2 kira_varying_uv;
 
 VertexToFragment TexturedQuad__vertex__entry(VertexIn input) {
-    VertexToFragment out;
-    out.clip_position = (camera.view_projection * vec4(input.position, 1));
-    out.uv = input.uv;
-    return out;
+    VertexToFragment kira_out;
+    kira_out.clip_position = (camera.view_projection * vec4(input.position, 1));
+    kira_out.uv = input.uv;
+    return kira_out;
 }
 
 void main() {

@@ -1,0 +1,13 @@
+import Foundation
+
+@Main
+function main() {
+    let file = openFile("AGENTS.md")
+    let contents = file.readAll()
+    file.close()
+
+    if contents.ok {
+        return
+    }
+    return
+}

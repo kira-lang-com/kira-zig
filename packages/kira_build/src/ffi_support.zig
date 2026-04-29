@@ -3,6 +3,8 @@ const builtin = @import("builtin");
 const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 const syntax = @import("kira_syntax_model");
+const package_manager = @import("kira_package_manager");
+const program_graph = @import("kira_program_graph");
 const llvm_backend = @import("kira_llvm_backend");
 const resolver = @import("native_lib_resolver.zig");
 const autobind = @import("ffi_autobind.zig");
@@ -26,8 +28,46 @@ pub fn prepareNativeLibraries(
     return libraries.toOwnedSlice();
 }
 
+pub fn prepareImportedNativeLibraries(
+    allocator: std.mem.Allocator,
+    existing: []const native.ResolvedNativeLibrary,
+    imports: []const syntax.ast.ImportDecl,
+    module_map: package_manager.ModuleMap,
+) ![]const native.ResolvedNativeLibrary {
+    const selector = try hostTargetSelector(allocator);
+    var libraries = std.array_list.Managed(native.ResolvedNativeLibrary).init(allocator);
+    var seen = std.StringHashMap(void).init(allocator);
+
+    for (existing) |library| {
+        try libraries.append(library);
+        try seen.put(try allocator.dupe(u8, library.artifact_path), {});
+    }
+
+    for (imports) |import_decl| {
+        const owner = program_graph.packageRootOwnerForImport(module_map, import_decl.module_name) orelse continue;
+        const package_root = std.fs.path.dirname(owner.source_root) orelse continue;
+        const manifest_paths = try loadNativeManifestPathsFromProjectRoot(allocator, package_root);
+        for (manifest_paths) |manifest_path| {
+            var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
+            if (seen.contains(library.artifact_path)) continue;
+            try ensureNativeArtifact(allocator, &library);
+            try autobind.ensureGeneratedBindings(allocator, library);
+            try seen.put(try allocator.dupe(u8, library.artifact_path), {});
+            try libraries.append(library);
+        }
+    }
+
+    return libraries.toOwnedSlice();
+}
+
 fn loadProjectNativeManifestPaths(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {
     const project_manifest_path = try discoverProjectManifestPath(allocator, source_path) orelse return &.{};
+    const project_root = std.fs.path.dirname(project_manifest_path) orelse ".";
+    return loadNativeManifestPathsFromProjectRoot(allocator, project_root);
+}
+
+fn loadNativeManifestPathsFromProjectRoot(allocator: std.mem.Allocator, project_root: []const u8) ![]const []const u8 {
+    const project_manifest_path = try findManifestInDirectory(allocator, project_root) orelse return &.{};
     const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, project_manifest_path, allocator, .limited(1024 * 1024));
     const project_manifest = try manifest.parseProjectManifest(allocator, manifest_text);
 

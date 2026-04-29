@@ -17,9 +17,9 @@ in vec4 kira_varying_color;
 layout(location = 0) out vec4 kira_frag_color;
 
 FragmentOut BasicTriangle__fragment__entry(VertexOut input) {
-    FragmentOut out;
-    out.color = input.color;
-    return out;
+    FragmentOut kira_out;
+    kira_out.color = input.color;
+    return kira_out;
 }
 
 void main() {

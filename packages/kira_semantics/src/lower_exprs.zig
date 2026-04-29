@@ -816,6 +816,10 @@ pub fn lowerExpr(
         },
         .binary => |node| {
             const lhs = try lowerExpr(ctx, node.lhs, imports, scope, function_headers);
+            if (try lowerBinaryOperatorMethod(ctx, node, lhs, imports, scope, function_headers)) |operator_call| {
+                lowered.* = operator_call;
+                return lowered;
+            }
             const rhs = try lowerExpr(ctx, node.rhs, imports, scope, function_headers);
             const ty = try resolveBinaryType(ctx, node.op, lhs, rhs, node.span);
             lowered.* = .{ .binary = .{
@@ -870,4 +874,46 @@ pub fn lowerExpr(
         .call => |node| try lowerCallExpr(ctx, lowered, node, imports, scope, function_headers),
     }
     return lowered;
+}
+
+fn lowerBinaryOperatorMethod(
+    ctx: *shared.Context,
+    node: syntax.ast.BinaryExpr,
+    lhs: *model.Expr,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !?model.Expr {
+    const method_name = binaryOperatorMethodName(node.op) orelse return null;
+    const lhs_type = model.hir.exprType(lhs.*);
+    if (lhs_type.kind != .named and lhs_type.kind != .native_state_view) return null;
+
+    const resolved_method = (try resolveMethodMemberOrNull(ctx, lhs_type, method_name, node.span)) orelse return null;
+    const receiver = try adjustMethodReceiver(ctx, lhs, lhs_type, resolved_method, node.span);
+    const lowered = try ctx.allocator.create(model.Expr);
+    const args = try ctx.allocator.alloc(syntax.ast.CallArg, 1);
+    args[0] = .{
+        .label = null,
+        .value = node.rhs,
+        .span = exprSpan(node.rhs.*),
+    };
+    const fake_call = syntax.ast.CallExpr{
+        .callee = node.lhs,
+        .args = args,
+        .trailing_builder = null,
+        .trailing_callback = null,
+        .span = node.span,
+    };
+    try lowerResolvedMethodCall(ctx, lowered, resolved_method, receiver, fake_call, imports, scope, function_headers);
+    return lowered.*;
+}
+
+fn binaryOperatorMethodName(op: syntax.ast.BinaryOp) ?[]const u8 {
+    return switch (op) {
+        .add => "add",
+        .subtract => "subtract",
+        .multiply => "multiply",
+        .divide => "divide",
+        else => null,
+    };
 }

@@ -38,14 +38,14 @@ in vec2 kira_varying_uv;
 layout(location = 0) out vec4 kira_frag_color;
 
 FragmentOut TexturedQuad__fragment__entry(VertexToFragment input) {
-    FragmentOut out;
+    FragmentOut kira_out;
     vec4 sampled = texture(albedo, input.uv);
     if (use_tint) {
-        out.color = (sampled * surface.tint);
+        kira_out.color = (sampled * surface.tint);
     } else {
-        out.color = sampled;
+        kira_out.color = sampled;
     }
-    return out;
+    return kira_out;
 }
 
 void main() {

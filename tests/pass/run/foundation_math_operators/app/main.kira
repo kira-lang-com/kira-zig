@@ -1,0 +1,17 @@
+import Foundation
+
+@Main
+function main() {
+    let left = Vec3(1.0, 2.0, 3.0)
+    let right = Vec3(4.0, 5.0, 6.0)
+    let sum = left + right
+    let product = mat4Identity() * mat4Translate(Vec3(1.0, 2.0, 3.0))
+
+    print(sum.x)
+    print(sum.y)
+    print(sum.z)
+    print(product.m03)
+    print(product.m13)
+    print(product.m23)
+    return
+}

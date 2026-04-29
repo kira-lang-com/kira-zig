@@ -1,0 +1,29 @@
+[library]
+name = "fs"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "FS/fs.h"
+include_dirs = ["FS"]
+
+[autobinding]
+module = "fs"
+output = "../app/fs.kira"
+headers = ["FS/fs.h"]
+
+[bindings]
+mode = "all_public"
+
+[build]
+sources = ["FS/fs.c"]
+include_dirs = ["FS"]
+
+[target.aarch64-macos-none]
+static_lib = "../generated/native/aarch64-macos/libfs.a"
+
+[target.x86_64-linux-gnu]
+static_lib = "../generated/native/x86_64-linux-gnu/libfs.a"
+
+[target.x86_64-windows-msvc]
+static_lib = "../generated/native/x86_64-windows-msvc/fs.lib"

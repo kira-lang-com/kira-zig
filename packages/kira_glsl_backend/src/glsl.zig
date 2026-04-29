@@ -483,7 +483,70 @@ fn findType(types: []const shader_ir.TypeDecl, name: []const u8) ?shader_ir.Type
 }
 
 fn sanitizeName(name: []const u8) []const u8 {
+    if (reservedGlslReplacement(name)) |replacement| return replacement;
     return name;
+}
+
+fn reservedGlslReplacement(name: []const u8) ?[]const u8 {
+    const reserved = [_]struct { name: []const u8, replacement: []const u8 }{
+        .{ .name = "attribute", .replacement = "kira_attribute" },
+        .{ .name = "const", .replacement = "kira_const" },
+        .{ .name = "in", .replacement = "kira_in" },
+        .{ .name = "inout", .replacement = "kira_inout" },
+        .{ .name = "out", .replacement = "kira_out" },
+        .{ .name = "uniform", .replacement = "kira_uniform" },
+        .{ .name = "varying", .replacement = "kira_varying" },
+        .{ .name = "buffer", .replacement = "kira_buffer" },
+        .{ .name = "shared", .replacement = "kira_shared" },
+        .{ .name = "coherent", .replacement = "kira_coherent" },
+        .{ .name = "volatile", .replacement = "kira_volatile" },
+        .{ .name = "restrict", .replacement = "kira_restrict" },
+        .{ .name = "readonly", .replacement = "kira_readonly" },
+        .{ .name = "writeonly", .replacement = "kira_writeonly" },
+        .{ .name = "layout", .replacement = "kira_layout" },
+        .{ .name = "centroid", .replacement = "kira_centroid" },
+        .{ .name = "flat", .replacement = "kira_flat" },
+        .{ .name = "smooth", .replacement = "kira_smooth" },
+        .{ .name = "noperspective", .replacement = "kira_noperspective" },
+        .{ .name = "patch", .replacement = "kira_patch" },
+        .{ .name = "sample", .replacement = "kira_sample" },
+        .{ .name = "break", .replacement = "kira_break" },
+        .{ .name = "continue", .replacement = "kira_continue" },
+        .{ .name = "do", .replacement = "kira_do" },
+        .{ .name = "for", .replacement = "kira_for" },
+        .{ .name = "while", .replacement = "kira_while" },
+        .{ .name = "switch", .replacement = "kira_switch" },
+        .{ .name = "case", .replacement = "kira_case" },
+        .{ .name = "default", .replacement = "kira_default" },
+        .{ .name = "if", .replacement = "kira_if" },
+        .{ .name = "else", .replacement = "kira_else" },
+        .{ .name = "subroutine", .replacement = "kira_subroutine" },
+        .{ .name = "discard", .replacement = "kira_discard" },
+        .{ .name = "return", .replacement = "kira_return" },
+        .{ .name = "struct", .replacement = "kira_struct" },
+        .{ .name = "void", .replacement = "kira_void" },
+        .{ .name = "bool", .replacement = "kira_bool" },
+        .{ .name = "int", .replacement = "kira_int" },
+        .{ .name = "uint", .replacement = "kira_uint" },
+        .{ .name = "float", .replacement = "kira_float" },
+        .{ .name = "double", .replacement = "kira_double" },
+        .{ .name = "vec2", .replacement = "kira_vec2" },
+        .{ .name = "vec3", .replacement = "kira_vec3" },
+        .{ .name = "vec4", .replacement = "kira_vec4" },
+        .{ .name = "mat2", .replacement = "kira_mat2" },
+        .{ .name = "mat3", .replacement = "kira_mat3" },
+        .{ .name = "mat4", .replacement = "kira_mat4" },
+        .{ .name = "sampler", .replacement = "kira_sampler" },
+        .{ .name = "sampler2D", .replacement = "kira_sampler2D" },
+        .{ .name = "samplerCube", .replacement = "kira_samplerCube" },
+        .{ .name = "sampler2DShadow", .replacement = "kira_sampler2DShadow" },
+        .{ .name = "true", .replacement = "kira_true" },
+        .{ .name = "false", .replacement = "kira_false" },
+    };
+    for (reserved) |entry| {
+        if (std.mem.eql(u8, name, entry.name)) return entry.replacement;
+    }
+    return null;
 }
 
 fn prefixedName(allocator: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]const u8 {
@@ -498,4 +561,10 @@ fn resourceBlockName(group_name: []const u8, resource_name: []const u8) []const 
 fn sampledUniformName(texture_name: []const u8, sampler_name: []const u8) []const u8 {
     _ = sampler_name;
     return texture_name;
+}
+
+test "sanitizes GLSL reserved local names" {
+    try std.testing.expectEqualStrings("kira_out", sanitizeName("out"));
+    try std.testing.expectEqualStrings("kira_inout", sanitizeName("inout"));
+    try std.testing.expectEqualStrings("result", sanitizeName("result"));
 }

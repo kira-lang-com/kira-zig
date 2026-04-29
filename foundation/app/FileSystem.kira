@@ -1,0 +1,93 @@
+struct FileContents {
+    var ok: Bool = false
+    var text: CString
+    var size: U64 = 0
+}
+
+struct File {
+    var handle: RawPtr
+
+    @Native
+    function isOpen() -> Bool {
+        return fs_is_open(handle)
+    }
+
+    @Native
+    function readAll() -> FileContents {
+        let result = fs_read_all_from_handle(handle)
+        let contents = FileContents {
+            ok: result.ok
+            text: result.data
+            size: result.size
+        }
+        fs_free_buffer(result.data)
+        return contents
+    }
+
+    @Native
+    function close(): Void {
+        fs_close(handle)
+        return
+    }
+}
+
+struct DirectoryListing {
+    var handle: RawPtr
+
+    @Native
+    function count() -> Int {
+        return fs_directory_count(handle)
+    }
+
+    @Native
+    function entry(index: Int) -> CString {
+        return fs_directory_entry(handle, index)
+    }
+
+    @Native
+    function close(): Void {
+        fs_free_directory_listing(handle)
+        return
+    }
+}
+
+@Native
+function openFile(path: String) -> File {
+    return File {
+        handle: fs_open_read(path)
+    }
+}
+
+@Native
+function readFile(path: String) -> FileContents {
+    let result = fs_read_file(path)
+    let contents = FileContents {
+        ok: result.ok
+        text: result.data
+        size: result.size
+    }
+    fs_free_buffer(result.data)
+    return contents
+}
+
+@Native
+function writeFile(path: String, text: String) -> Bool {
+    return fs_write_file(path, text)
+}
+
+@Native
+function fileExists(path: String) -> Bool {
+    return fs_file_exists(path)
+}
+
+@Native
+function fileSize(path: String) -> U64 {
+    return fs_file_size(path)
+}
+
+@Native
+function listDirectory(path: String) -> DirectoryListing {
+    return DirectoryListing {
+        handle: fs_list_directory(path)
+    }
+}

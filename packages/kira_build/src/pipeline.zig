@@ -143,6 +143,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         },
         else => return err,
     };
+    const native_libraries = try ffi_support.prepareImportedNativeLibraries(allocator, parsed.native_libraries, merged_program.imports, module_map);
 
     validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -150,7 +151,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
                 .ir_program = null,
-                .native_libraries = parsed.native_libraries,
+                .native_libraries = native_libraries,
                 .failure_stage = .semantics,
             };
         },
@@ -163,7 +164,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
                 .ir_program = null,
-                .native_libraries = parsed.native_libraries,
+                .native_libraries = native_libraries,
                 .failure_stage = .semantics,
             };
         },
@@ -183,7 +184,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
                 .ir_program = null,
-                .native_libraries = parsed.native_libraries,
+                .native_libraries = native_libraries,
                 .failure_stage = .ir,
             };
         },
@@ -193,7 +194,7 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         .source = parsed.source,
         .diagnostics = try diags.toOwnedSlice(),
         .ir_program = ir_program,
-        .native_libraries = parsed.native_libraries,
+        .native_libraries = native_libraries,
     };
 }
 
