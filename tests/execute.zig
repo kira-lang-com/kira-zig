@@ -3,19 +3,47 @@ const std = @import("std");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
-const hybrid_runtime = @import("kira_hybrid_runtime");
 const vm_runtime = @import("kira_vm_runtime");
 const compare = @import("compare.zig");
 const discovery = @import("discovery.zig");
 
 pub const Options = struct {
     hybrid_runner_path: ?[]const u8 = null,
+    profile: bool = false,
 };
+
+pub const JobReport = struct {
+    output: []const u8,
+    passed: usize,
+    failed: usize,
+};
+
+pub fn runBackendJob(
+    allocator: std.mem.Allocator,
+    case: discovery.Case,
+    backend: discovery.Backend,
+    options: Options,
+) !JobReport {
+    var reporter = BufferedReporter.init(allocator);
+    var system = build.BuildSystem.init(allocator);
+    var profiles: [3]PhaseProfile = .{ .{}, .{}, .{} };
+
+    runBackendMatrix(allocator, &system, case, backend, &reporter, options, &profiles) catch |err| {
+        if (reporter.failed == 0) {
+            const label = try backendLabel(allocator, case.name, backend);
+            reporter.fail(label, err);
+        }
+    };
+
+    if (options.profile) reporter.writeTimingSummary(case.name, backend, &profiles);
+    return reporter.finish();
+}
 
 pub fn runCase(allocator: std.mem.Allocator, case: discovery.Case, reporter: anytype, options: Options) !void {
     var system = build.BuildSystem.init(allocator);
     for (case.expectation.backends) |backend| {
-        try runBackendMatrix(allocator, &system, case, backend, reporter, options);
+        var profiles: [3]PhaseProfile = .{ .{}, .{}, .{} };
+        runBackendMatrix(allocator, &system, case, backend, reporter, options, &profiles) catch {};
     }
 }
 
@@ -26,15 +54,17 @@ fn runBackendMatrix(
     backend: discovery.Backend,
     reporter: anytype,
     options: Options,
+    profiles: *[3]PhaseProfile,
 ) !void {
     var stopped = false;
     if (case.expectation.check.result == .pass and case.expectation.build.result == .pass) {
+        profiles[phaseIndex(.check)] = .{ .kind = .assumed_pass };
         reporter.pass(try matrixLabel(allocator, case.name, backend, .check));
     } else {
-        try runExpectedPhase(allocator, system, case, backend, .check, case.expectation.check, &stopped, reporter, options);
+        try runExpectedPhase(allocator, system, case, backend, .check, case.expectation.check, &stopped, reporter, options, &profiles[phaseIndex(.check)]);
     }
-    try runExpectedPhase(allocator, system, case, backend, .build, case.expectation.build, &stopped, reporter, options);
-    try runExpectedPhase(allocator, system, case, backend, .run, case.expectation.run, &stopped, reporter, options);
+    try runExpectedPhase(allocator, system, case, backend, .build, case.expectation.build, &stopped, reporter, options, &profiles[phaseIndex(.build)]);
+    try runExpectedPhase(allocator, system, case, backend, .run, case.expectation.run, &stopped, reporter, options, &profiles[phaseIndex(.run)]);
 }
 
 fn runExpectedPhase(
@@ -47,8 +77,10 @@ fn runExpectedPhase(
     stopped: *bool,
     reporter: anytype,
     options: Options,
+    profile: *PhaseProfile,
 ) !void {
     if (expected.result == .blocked) {
+        profile.* = .{ .kind = .blocked };
         const label = try matrixLabel(allocator, case.name, backend, phase);
         if (!stopped.*) {
             const detail = try std.fmt.allocPrint(
@@ -79,6 +111,7 @@ fn runExpectedPhase(
         reporter.fail(label, err);
         return err;
     };
+    profile.* = actual.profile;
     if (actual.result == .fail) stopped.* = true;
 
     comparePhase(allocator, case.name, backend, phase, expected, actual, reporter) catch |err| {
@@ -91,6 +124,22 @@ const PhaseActual = struct {
     stdout: ?[]const u8 = null,
     diagnostics: []const diagnostics.Diagnostic = &.{},
     stage: ?discovery.Stage = null,
+    profile: PhaseProfile = .{},
+};
+
+const PhaseProfile = struct {
+    kind: Kind = .not_run,
+    duration_ns: u64 = 0,
+    cache_status: build.CacheStatus = .not_checked,
+    cache_restore_ns: u64 = 0,
+    cache_store_ns: u64 = 0,
+
+    const Kind = enum {
+        not_run,
+        assumed_pass,
+        blocked,
+        executed,
+    };
 };
 
 fn runPhase(
@@ -102,22 +151,31 @@ fn runPhase(
     options: Options,
 ) !PhaseActual {
     return switch (phase) {
-        .check => runCheckPhase(allocator, case, backend),
+        .check => runCheckPhase(allocator, system, case, backend),
         .build => runBuildPhase(allocator, system, case, backend),
         .run => runRunPhase(allocator, system, case, backend, options),
     };
 }
 
 fn runCheckPhase(
-    allocator: std.mem.Allocator,
+    _: std.mem.Allocator,
+    system: *build.BuildSystem,
     case: discovery.Case,
     backend: discovery.Backend,
 ) !PhaseActual {
-    const result = try build.checkFileForBackend(allocator, case.source_path, executionTarget(backend));
+    const start = nowTimestamp();
+    const result = try system.checkForBackend(case.source_path, executionTarget(backend));
     return .{
         .result = if (result.failed()) .fail else .pass,
         .diagnostics = result.diagnostics,
         .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = elapsedNs(start),
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
     };
 }
 
@@ -130,17 +188,14 @@ fn runBuildPhase(
     var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
+    const start = nowTimestamp();
     const output_path = try buildOutputPath(allocator, tmp, backend);
     const result = try system.build(.{
         .source_path = case.source_path,
         .output_path = output_path,
         .target = .{ .execution = executionTarget(backend) },
     });
-    return .{
-        .result = if (result.failed()) .fail else .pass,
-        .diagnostics = result.diagnostics,
-        .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
-    };
+    return actualFromBuildOutcome(result, elapsedNs(start));
 }
 
 fn runRunPhase(
@@ -226,22 +281,35 @@ fn comparePhase(
 }
 
 fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
-    const result = try system.compileVm(case.source_path);
+    var tmp = try makeTmpDir(allocator);
+    defer tmp.cleanup();
+
+    const start = nowTimestamp();
+    const output_path = try buildOutputPath(allocator, tmp, .vm);
+    const result = try system.build(.{
+        .source_path = case.source_path,
+        .output_path = output_path,
+        .target = .{ .execution = .vm },
+    });
     if (result.failed() or result.diagnostics.len != 0) {
-        return .{
-            .result = .fail,
-            .diagnostics = result.diagnostics,
-            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
-        };
+        return actualFromBuildOutcome(result, elapsedNs(start));
     }
 
+    const module = try system.readBytecode(output_path);
     var output: std.Io.Writer.Allocating = .init(allocator);
 
     var vm = vm_runtime.Vm.init(allocator);
-    try vm.runMain(&result.bytecode_module.?, &output.writer);
+    try vm.runMain(&module, &output.writer);
     return .{
         .result = .pass,
         .stdout = try output.toOwnedSlice(),
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = elapsedNs(start),
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
     };
 }
 
@@ -249,18 +317,15 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
+    const start = nowTimestamp();
     const output_path = try makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension());
-    const result = try system.buildNativeArtifact(.{
+    const result = try system.build(.{
         .source_path = case.source_path,
         .output_path = output_path,
         .target = .{ .execution = .llvm_native },
     });
     if (result.failed() or result.diagnostics.len != 0) {
-        return .{
-            .result = .fail,
-            .diagnostics = result.diagnostics,
-            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
-        };
+        return actualFromBuildOutcome(result, elapsedNs(start));
     }
 
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
@@ -276,6 +341,13 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     return .{
         .result = .pass,
         .stdout = child.stdout,
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = elapsedNs(start),
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
     };
 }
 
@@ -288,18 +360,15 @@ fn runHybridPhase(
     var tmp = try makeTmpDir(allocator);
     defer tmp.cleanup();
 
+    const start = nowTimestamp();
     const manifest_path = try makeBackendOutputPath(allocator, tmp, "hybrid", ".khm");
-    const result = try system.buildHybridArtifact(.{
+    const result = try system.build(.{
         .source_path = case.source_path,
         .output_path = manifest_path,
         .target = .{ .execution = .hybrid },
     });
     if (result.failed() or result.diagnostics.len != 0) {
-        return .{
-            .result = .fail,
-            .diagnostics = result.diagnostics,
-            .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
-        };
+        return actualFromBuildOutcome(result, elapsedNs(start));
     }
 
     const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
@@ -315,6 +384,28 @@ fn runHybridPhase(
     return .{
         .result = .pass,
         .stdout = child.stdout,
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = elapsedNs(start),
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
+    };
+}
+
+fn actualFromBuildOutcome(result: build.BuildArtifactOutcome, duration_ns: u64) PhaseActual {
+    return .{
+        .result = if (result.failed()) .fail else .pass,
+        .diagnostics = result.diagnostics,
+        .stage = if (result.failure_stage) |stage| fromBuildStage(stage) else null,
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = duration_ns,
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
     };
 }
 
@@ -400,6 +491,14 @@ fn matrixLabel(
     return std.fmt.allocPrint(allocator, "{s} [{s} {s}]", .{ case_name, backendName(backend), phaseName(phase) });
 }
 
+fn backendLabel(
+    allocator: std.mem.Allocator,
+    case_name: []const u8,
+    backend: discovery.Backend,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s} [{s}]", .{ case_name, backendName(backend) });
+}
+
 fn backendName(backend: discovery.Backend) []const u8 {
     return switch (backend) {
         .vm => "vm",
@@ -454,6 +553,14 @@ fn fromBuildStage(stage: build.FrontendStage) discovery.Stage {
     };
 }
 
+fn phaseIndex(phase: discovery.Phase) usize {
+    return switch (phase) {
+        .check => 0,
+        .build => 1,
+        .run => 2,
+    };
+}
+
 const DiagnosticSummary = struct {
     code: []const u8,
     title: []const u8,
@@ -465,6 +572,133 @@ fn firstDiagnostic(items: []const diagnostics.Diagnostic) DiagnosticSummary {
         .code = items[0].code orelse "<none>",
         .title = items[0].title,
     };
+}
+
+const BufferedReporter = struct {
+    output: std.Io.Writer.Allocating,
+    passed: usize = 0,
+    failed: usize = 0,
+    write_error: ?anyerror = null,
+
+    fn init(allocator: std.mem.Allocator) BufferedReporter {
+        return .{ .output = .init(allocator) };
+    }
+
+    pub fn pass(self: *BufferedReporter, label: []const u8) void {
+        self.passed += 1;
+        self.print("PASS {s}\n", .{label});
+    }
+
+    pub fn fail(self: *BufferedReporter, label: []const u8, err: anyerror) void {
+        self.failed += 1;
+        self.print("FAIL {s}: {s}\n", .{ label, @errorName(err) });
+    }
+
+    fn print(self: *BufferedReporter, comptime fmt: []const u8, args: anytype) void {
+        if (self.write_error != null) return;
+        self.output.writer.print(fmt, args) catch |err| {
+            self.write_error = err;
+        };
+    }
+
+    fn writeTimingSummary(self: *BufferedReporter, case_name: []const u8, backend: discovery.Backend, profiles: *const [3]PhaseProfile) void {
+        if (self.write_error != null) return;
+
+        self.output.writer.print("TIME {s} [{s}]: ", .{ case_name, backendName(backend) }) catch |err| {
+            self.write_error = err;
+            return;
+        };
+
+        const phases = [_]discovery.Phase{ .check, .build, .run };
+        for (phases, 0..) |phase, index| {
+            if (index != 0) {
+                self.output.writer.writeAll(", ") catch |err| {
+                    self.write_error = err;
+                    return;
+                };
+            }
+            writePhaseProfile(&self.output.writer, phase, profiles[index]) catch |err| {
+                self.write_error = err;
+                return;
+            };
+        }
+
+        self.output.writer.writeByte('\n') catch |err| {
+            self.write_error = err;
+        };
+    }
+
+    fn finish(self: *BufferedReporter) !JobReport {
+        if (self.write_error) |err| return err;
+        return .{
+            .output = try self.output.toOwnedSlice(),
+            .passed = self.passed,
+            .failed = self.failed,
+        };
+    }
+};
+
+fn writePhaseProfile(writer: *std.Io.Writer, phase: discovery.Phase, profile: PhaseProfile) !void {
+    try writer.print("{s}=", .{phaseName(phase)});
+    switch (profile.kind) {
+        .not_run => try writer.writeAll("not-run"),
+        .assumed_pass => try writer.writeAll("assumed-pass"),
+        .blocked => try writer.writeAll("blocked"),
+        .executed => {
+            try writeDuration(writer, profile.duration_ns);
+            if (profile.cache_status != .not_checked) {
+                try writer.writeAll(" cache=");
+                try writer.writeAll(cacheStatusName(profile.cache_status));
+                if (profile.cache_restore_ns != 0) {
+                    try writer.writeAll("(restore=");
+                    try writeDuration(writer, profile.cache_restore_ns);
+                    try writer.writeByte(')');
+                }
+                if (profile.cache_store_ns != 0) {
+                    try writer.writeAll("(store=");
+                    try writeDuration(writer, profile.cache_store_ns);
+                    try writer.writeByte(')');
+                }
+            }
+        },
+    }
+}
+
+fn writeDuration(writer: *std.Io.Writer, ns: u64) !void {
+    if (ns >= std.time.ns_per_ms) {
+        const whole = ns / std.time.ns_per_ms;
+        const tenths = (ns % std.time.ns_per_ms) / (std.time.ns_per_ms / 10);
+        if (tenths == 0) {
+            try writer.print("{d}ms", .{whole});
+        } else {
+            try writer.print("{d}.{d}ms", .{ whole, tenths });
+        }
+        return;
+    }
+    if (ns >= std.time.ns_per_us) {
+        const whole = ns / std.time.ns_per_us;
+        try writer.print("{d}us", .{whole});
+        return;
+    }
+    try writer.print("{d}ns", .{ns});
+}
+
+fn cacheStatusName(status: build.CacheStatus) []const u8 {
+    return switch (status) {
+        .not_checked => "none",
+        .hit => "hit",
+        .miss => "miss",
+        .stored => "stored",
+    };
+}
+
+fn nowTimestamp() std.Io.Clock.Timestamp {
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
+}
+
+fn elapsedNs(start: std.Io.Clock.Timestamp) u64 {
+    const duration_ns = start.durationTo(std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake)).raw.toNanoseconds();
+    return @intCast(@max(duration_ns, 0));
 }
 
 test "phase comparison catches unexpected run failure" {

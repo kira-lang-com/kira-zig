@@ -6,6 +6,7 @@ pub const executableExtension = @import("build_system.zig").executableExtension;
 pub const fetchLlvm = @import("fetch_llvm.zig").run;
 pub const sharedLibraryExtension = @import("build_system.zig").sharedLibraryExtension;
 pub const CheckPipelineResult = @import("pipeline.zig").CheckPipelineResult;
+pub const CacheStatus = @import("pipeline.zig").CacheStatus;
 pub const ExecutablePipelineResult = @import("pipeline.zig").ExecutablePipelineResult;
 pub const FrontendStage = @import("pipeline.zig").FrontendStage;
 pub const FrontendPipelineResult = @import("pipeline.zig").FrontendPipelineResult;

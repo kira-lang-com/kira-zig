@@ -22,6 +22,9 @@ pub const BuildArtifactOutcome = struct {
     artifacts: []const build_def.Artifact = &.{},
     failure_kind: ?BuildFailureKind = null,
     failure_stage: ?pipeline.FrontendStage = null,
+    cache_status: pipeline.CacheStatus = .not_checked,
+    cache_restore_ns: u64 = 0,
+    cache_store_ns: u64 = 0,
 
     pub fn failed(self: BuildArtifactOutcome) bool {
         return diagnostics.hasErrors(self.diagnostics);
@@ -52,12 +55,17 @@ pub const BuildSystem = struct {
                             .source = try source_pkg.SourceFile.fromPath(self.allocator, path),
                             .diagnostics = &.{},
                             .failure_stage = null,
+                            .cache_status = .hit,
                         };
                     }
 
-                    const result = try pipeline.checkFileForBackend(self.allocator, path, target);
+                    var result = try pipeline.checkFileForBackend(self.allocator, path, target);
+                    result.cache_status = .miss;
                     if (!result.failed()) {
+                        const store_start = nowTimestamp();
                         entry.storeCheckSuccess() catch {};
+                        result.cache_status = .stored;
+                        result.cache_store_ns = elapsedNs(store_start);
                     }
                     return result;
                 }
@@ -89,12 +97,21 @@ pub const BuildSystem = struct {
                 const maybe_entry = build_cache.entryForBuild(request.source_path, request.target.execution) catch null;
                 if (maybe_entry) |entry| {
                     if (entry.hasArtifacts()) {
-                        return .{ .artifacts = try entry.restoreTo(request.output_path) };
+                        const restore_start = nowTimestamp();
+                        return .{
+                            .artifacts = try entry.restoreTo(request.output_path),
+                            .cache_status = .hit,
+                            .cache_restore_ns = elapsedNs(restore_start),
+                        };
                     }
 
-                    const uncached = try self.buildUncached(request);
+                    var uncached = try self.buildUncached(request);
+                    uncached.cache_status = .miss;
                     if (!uncached.failed()) {
+                        const store_start = nowTimestamp();
                         entry.storeFrom(request.output_path) catch {};
+                        uncached.cache_status = .stored;
+                        uncached.cache_store_ns = elapsedNs(store_start);
                     }
                     return uncached;
                 }
@@ -341,4 +358,13 @@ fn lowerHybridTypeRef(value_type: @import("kira_ir").ValueType) hybrid.TypeRef {
         .kind = @enumFromInt(@intFromEnum(value_type.kind)),
         .name = value_type.name,
     };
+}
+
+fn nowTimestamp() std.Io.Clock.Timestamp {
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
+}
+
+fn elapsedNs(start: std.Io.Clock.Timestamp) u64 {
+    const duration_ns = start.durationTo(std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake)).raw.toNanoseconds();
+    return @intCast(@max(duration_ns, 0));
 }

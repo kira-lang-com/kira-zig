@@ -31,6 +31,8 @@ pub const Entry = struct {
     root_path: []const u8,
     target: build_def.ExecutionTarget,
 
+    const complete_marker_name = "complete.ok";
+
     fn init(allocator: std.mem.Allocator, root_path: []const u8, target: build_def.ExecutionTarget) Entry {
         return .{
             .allocator = allocator,
@@ -48,6 +50,7 @@ pub const Entry = struct {
     }
 
     pub fn hasArtifacts(self: Entry) bool {
+        if (!fileExistsJoin(self.root_path, complete_marker_name)) return false;
         return switch (self.target) {
             .vm => fileExistsJoin(self.root_path, "main.kbc"),
             .llvm_native => fileExistsJoin(self.root_path, objectName()) and fileExistsJoin(self.root_path, executableNamePage("main")),
@@ -63,7 +66,7 @@ pub const Entry = struct {
     }
 
     pub fn storeCheckSuccess(self: Entry) !void {
-        try writeFile(try self.join("check.ok"), "ok\n");
+        try publishTextFileAtomic(try self.join("check.ok"), "ok\n");
     }
 
     pub fn restoreTo(self: Entry, output_path: []const u8) ![]build_def.Artifact {
@@ -75,23 +78,47 @@ pub const Entry = struct {
     }
 
     pub fn storeFrom(self: Entry, output_path: []const u8) !void {
+        if (self.hasArtifacts()) return;
+
+        var stage = try StageDir.init(self.allocator, self.root_path);
+        defer stage.cleanup();
+
         switch (self.target) {
-            .vm => try copyFile(output_path, try self.join("main.kbc")),
+            .vm => {
+                try copyFile(output_path, try stage.join("main.kbc"));
+                try publishStagedFileAtomic(try stage.join("main.kbc"), try self.join("main.kbc"));
+            },
             .llvm_native => {
-                try copyFile(try defaultObjectPath(self.allocator, output_path), try self.join(objectName()));
-                try copyFile(output_path, try self.join(executableNamePage("main")));
+                const object_stage = try stage.join(objectName());
+                const executable_stage = try stage.join(executableNamePage("main"));
+                try copyFile(try defaultObjectPath(self.allocator, output_path), object_stage);
+                try copyFile(output_path, executable_stage);
+                try publishStagedFileAtomic(object_stage, try self.join(objectName()));
+                try publishStagedFileAtomic(executable_stage, try self.join(executableNamePage("main")));
             },
             .hybrid => {
-                try copyFile(try replaceExtension(self.allocator, output_path, ".kbc"), try self.join("main.kbc"));
-                try copyFile(try replaceExtension(self.allocator, output_path, objectExtension()), try self.join(objectName()));
-                try copyFile(try replaceExtension(self.allocator, output_path, sharedLibraryExtension()), try self.join(sharedLibraryName()));
+                const bytecode_stage = try stage.join("main.kbc");
+                const object_stage = try stage.join(objectName());
+                const library_stage = try stage.join(sharedLibraryName());
+                const manifest_stage = try stage.join("main.khm");
+
+                try copyFile(try replaceExtension(self.allocator, output_path, ".kbc"), bytecode_stage);
+                try copyFile(try replaceExtension(self.allocator, output_path, objectExtension()), object_stage);
+                try copyFile(try replaceExtension(self.allocator, output_path, sharedLibraryExtension()), library_stage);
 
                 var manifest = try hybrid.HybridModuleManifest.readFromFile(self.allocator, output_path);
                 manifest.bytecode_path = try self.join("main.kbc");
                 manifest.native_library_path = try self.join(sharedLibraryName());
-                try manifest.writeToFile(try self.join("main.khm"));
+                try manifest.writeToFile(manifest_stage);
+
+                try publishStagedFileAtomic(bytecode_stage, try self.join("main.kbc"));
+                try publishStagedFileAtomic(object_stage, try self.join(objectName()));
+                try publishStagedFileAtomic(library_stage, try self.join(sharedLibraryName()));
+                try publishStagedFileAtomic(manifest_stage, try self.join("main.khm"));
             },
         }
+
+        try publishTextFileAtomic(try self.join(complete_marker_name), "ok\n");
     }
 
     fn restoreVm(self: Entry, output_path: []const u8) ![]build_def.Artifact {
@@ -136,6 +163,29 @@ pub const Entry = struct {
 
     fn join(self: Entry, name: []const u8) ![]const u8 {
         return std.fs.path.join(self.allocator, &.{ self.root_path, name });
+    }
+};
+
+const StageDir = struct {
+    allocator: std.mem.Allocator,
+    path: []const u8,
+
+    fn init(allocator: std.mem.Allocator, root_path: []const u8) !StageDir {
+        var bytes: [8]u8 = undefined;
+        std.Options.debug_io.random(&bytes);
+        const suffix = std.mem.readInt(u64, &bytes, .little);
+        const path = try std.fmt.allocPrint(allocator, "{s}{c}staging{c}{x}", .{ root_path, std.fs.path.sep, std.fs.path.sep, suffix });
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, path);
+        return .{ .allocator = allocator, .path = path };
+    }
+
+    fn cleanup(self: *StageDir) void {
+        deleteTreeAbsolute(self.path) catch {};
+        self.allocator.free(self.path);
+    }
+
+    fn join(self: StageDir, name: []const u8) ![]const u8 {
+        return std.fs.path.join(self.allocator, &.{ self.path, name });
     }
 };
 
@@ -303,19 +353,49 @@ fn copyFile(source_path: []const u8, destination_path: []const u8) !void {
     try file.writeStreamingAll(std.Options.debug_io, data);
 }
 
-fn writeFile(path: []const u8, data: []const u8) !void {
+fn publishStagedFileAtomic(source_path: []const u8, destination_path: []const u8) !void {
+    const data = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, source_path, std.heap.page_allocator, .limited(256 * 1024 * 1024));
+    defer std.heap.page_allocator.free(data);
+    try publishFileAtomic(destination_path, data);
+}
+
+fn publishTextFileAtomic(path: []const u8, data: []const u8) !void {
+    try publishFileAtomic(path, data);
+}
+
+fn publishFileAtomic(path: []const u8, data: []const u8) !void {
     try ensureParentDir(path);
-    const file = if (std.fs.path.isAbsolute(path))
-        try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true })
+    const parent_path = std.fs.path.dirname(path) orelse return error.InvalidCachePath;
+    const base_name = std.fs.path.basename(path);
+    var parent_dir = if (std.fs.path.isAbsolute(parent_path))
+        try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{})
     else
-        try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
-    defer file.close(std.Options.debug_io);
-    try file.writeStreamingAll(std.Options.debug_io, data);
+        try std.Io.Dir.cwd().openDir(std.Options.debug_io, parent_path, .{});
+    defer parent_dir.close(std.Options.debug_io);
+
+    var atomic_file = try parent_dir.createFileAtomic(std.Options.debug_io, base_name, .{
+        .replace = false,
+        .make_path = false,
+    });
+    defer atomic_file.deinit(std.Options.debug_io);
+    try atomic_file.file.writeStreamingAll(std.Options.debug_io, data);
+    atomic_file.link(std.Options.debug_io) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
 }
 
 fn ensureParentDir(path: []const u8) !void {
     const dir = std.fs.path.dirname(path) orelse return;
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir);
+}
+
+fn deleteTreeAbsolute(path: []const u8) !void {
+    const parent_path = std.fs.path.dirname(path) orelse return;
+    const base_name = std.fs.path.basename(path);
+    var parent_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{});
+    defer parent_dir.close(std.Options.debug_io);
+    try parent_dir.deleteTree(std.Options.debug_io, base_name);
 }
 
 fn fileExistsAt(root: []const u8, name: []const u8) bool {

@@ -50,10 +50,20 @@ pub const CheckPipelineResult = struct {
     source: source_pkg.SourceFile,
     diagnostics: []const diagnostics.Diagnostic,
     failure_stage: ?FrontendStage = null,
+    cache_status: CacheStatus = .not_checked,
+    cache_restore_ns: u64 = 0,
+    cache_store_ns: u64 = 0,
 
     pub fn failed(self: CheckPipelineResult) bool {
         return diagnostics.hasErrors(self.diagnostics);
     }
+};
+
+pub const CacheStatus = enum {
+    not_checked,
+    hit,
+    miss,
+    stored,
 };
 
 pub const FrontendPipelineResult = struct {

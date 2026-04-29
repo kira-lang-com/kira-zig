@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const ir = @import("ir.zig");
 const model = @import("kira_semantics_model");
@@ -33,6 +34,14 @@ pub const fieldIndexByName = type_impl.fieldIndexByName;
 pub const nativeStateTypeId = type_impl.nativeStateTypeId;
 
 pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Program {
+    return lowerProgramWithOptions(allocator, program, .{});
+}
+
+const LowerProgramOptions = struct {
+    worker_count_override: ?usize = null,
+};
+
+fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Program, options: LowerProgramOptions) !ir.Program {
     var reachable = std.AutoHashMapUnmanaged(u32, void){};
     defer reachable.deinit(allocator);
     try markReachableFunction(allocator, program, &reachable, program.functions[program.entry_index].id);
@@ -41,32 +50,78 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
     const construct_implementations = try lowerConstructImplementations(allocator, program);
     const types = try lowerTypeDecls(allocator, program, reachable);
     const enums = try lowerEnumTypeDecls(allocator, program, reachable);
-    var state = ProgramLoweringState{
-        .next_generated_function_id = nextGeneratedFunctionId(program),
-        .generated_functions = std.array_list.Managed(ir.Function).init(allocator),
-    };
-    defer state.generated_functions.deinit();
-    var functions = std.array_list.Managed(ir.Function).init(allocator);
+
+    const plans = try buildFunctionPlans(allocator, program, reachable);
+    const batches = if (shouldParallelLower(options, plans.len))
+        try lowerFunctionPlansParallel(allocator, program, plans, options)
+    else
+        try lowerFunctionPlansSerial(allocator, program, plans);
+    defer allocator.free(batches);
+
+    var function_count: usize = 0;
+    for (batches) |batch| function_count += 1 + batch.generated_functions.len;
+    const functions = try allocator.alloc(ir.Function, function_count);
+
     var entry_index: ?usize = null;
-    for (program.functions) |function_decl| {
-        if (!reachable.contains(function_decl.id)) continue;
-        if (function_decl.id == program.functions[program.entry_index].id) entry_index = functions.items.len;
-        try functions.append(try lowerFunction(allocator, program, function_decl, &state));
+    var primary_index: usize = 0;
+    const entry_function_id = program.functions[program.entry_index].id;
+    for (batches) |batch| {
+        if (batch.primary.id == entry_function_id) entry_index = primary_index;
+        functions[primary_index] = batch.primary;
+        primary_index += 1;
     }
-    for (state.generated_functions.items) |function_decl| try functions.append(function_decl);
+    var generated_index = primary_index;
+    for (batches) |batch| {
+        for (batch.generated_functions) |function_decl| {
+            functions[generated_index] = function_decl;
+            generated_index += 1;
+        }
+    }
+
     return .{
         .constructs = constructs,
         .construct_implementations = construct_implementations,
         .types = types,
         .enums = enums,
-        .functions = try functions.toOwnedSlice(),
+        .functions = functions,
         .entry_index = entry_index orelse return error.UnsupportedExecutableFeature,
     };
 }
 
-const ProgramLoweringState = struct {
+const FunctionPlan = struct {
+    function_decl: model.Function,
+    first_generated_id: u32,
+    generated_count: u32,
+};
+
+fn buildFunctionPlans(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: std.AutoHashMapUnmanaged(u32, void),
+) ![]FunctionPlan {
+    var plans = std.array_list.Managed(FunctionPlan).init(allocator);
+    var next_generated_id = nextGeneratedFunctionId(program);
+    for (program.functions) |function_decl| {
+        if (!reachable.contains(function_decl.id)) continue;
+        const generated_count = countCallbacksInStatements(function_decl.body);
+        try plans.append(.{
+            .function_decl = function_decl,
+            .first_generated_id = next_generated_id,
+            .generated_count = generated_count,
+        });
+        next_generated_id += generated_count;
+    }
+    return plans.toOwnedSlice();
+}
+
+const FunctionLoweringState = struct {
     next_generated_function_id: u32,
     generated_functions: std.array_list.Managed(ir.Function),
+};
+
+const LoweredFunctionBatch = struct {
+    primary: ir.Function,
+    generated_functions: []ir.Function,
 };
 
 fn nextGeneratedFunctionId(program: model.Program) u32 {
@@ -77,11 +132,163 @@ fn nextGeneratedFunctionId(program: model.Program) u32 {
     return next_id;
 }
 
+fn lowerFunctionPlansSerial(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    plans: []const FunctionPlan,
+) ![]LoweredFunctionBatch {
+    const batches = try allocator.alloc(LoweredFunctionBatch, plans.len);
+    for (plans, 0..) |plan, index| {
+        batches[index] = try lowerFunctionBatch(allocator, program, plan);
+    }
+    return batches;
+}
+
+fn lowerFunctionBatch(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    plan: FunctionPlan,
+) !LoweredFunctionBatch {
+    var state = FunctionLoweringState{
+        .next_generated_function_id = plan.first_generated_id,
+        .generated_functions = std.array_list.Managed(ir.Function).init(allocator),
+    };
+    errdefer state.generated_functions.deinit();
+
+    const primary = try lowerFunction(allocator, program, plan.function_decl, &state);
+    const generated_functions = try state.generated_functions.toOwnedSlice();
+    if (state.next_generated_function_id != plan.first_generated_id + plan.generated_count) {
+        return error.GeneratedCallbackPlanMismatch;
+    }
+    return .{
+        .primary = primary,
+        .generated_functions = generated_functions,
+    };
+}
+
+fn shouldParallelLower(options: LowerProgramOptions, plan_count: usize) bool {
+    const worker_count = resolveLowerWorkerCount(options, plan_count);
+    return worker_count > 1;
+}
+
+fn resolveLowerWorkerCount(options: LowerProgramOptions, plan_count: usize) usize {
+    if (plan_count < 4) return 1;
+    if (options.worker_count_override) |override| {
+        if (override == 0) return 1;
+        return @min(override, plan_count);
+    }
+
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const cap = switch (builtin.os.tag) {
+        .windows => @min(cpu_count, 4),
+        else => @min(cpu_count, 8),
+    };
+    return @max(@min(cap, plan_count), 1);
+}
+
+const ParallelLowerResult = struct {
+    arena: ?*std.heap.ArenaAllocator = null,
+    batch: ?LoweredFunctionBatch = null,
+    err: ?anyerror = null,
+
+    fn deinit(self: *ParallelLowerResult) void {
+        if (self.arena) |arena_ptr| {
+            arena_ptr.deinit();
+            std.heap.smp_allocator.destroy(arena_ptr);
+        }
+        self.* = .{};
+    }
+};
+
+const ParallelLowerShared = struct {
+    program: model.Program,
+    plans: []const FunctionPlan,
+    results: []ParallelLowerResult,
+    next_index: std.atomic.Value(usize) = .init(0),
+
+    fn runUntilDone(self: *ParallelLowerShared) void {
+        while (true) {
+            const index = self.next_index.fetchAdd(1, .monotonic);
+            if (index >= self.plans.len) break;
+            self.runJob(index);
+        }
+    }
+
+    fn runJob(self: *ParallelLowerShared, index: usize) void {
+        const result = &self.results[index];
+        const arena_ptr = std.heap.smp_allocator.create(std.heap.ArenaAllocator) catch {
+            result.err = error.OutOfMemory;
+            return;
+        };
+        arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        const allocator = arena_ptr.allocator();
+
+        const batch = lowerFunctionBatch(allocator, self.program, self.plans[index]) catch |err| {
+            result.arena = arena_ptr;
+            result.err = err;
+            return;
+        };
+
+        result.arena = arena_ptr;
+        result.batch = batch;
+    }
+};
+
+fn parallelLowerWorkerMain(shared: *ParallelLowerShared) void {
+    shared.runUntilDone();
+}
+
+fn lowerFunctionPlansParallel(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    plans: []const FunctionPlan,
+    options: LowerProgramOptions,
+) ![]LoweredFunctionBatch {
+    const worker_count = resolveLowerWorkerCount(options, plans.len);
+    if (worker_count <= 1) return lowerFunctionPlansSerial(allocator, program, plans);
+
+    const results = try allocator.alloc(ParallelLowerResult, plans.len);
+    for (results) |*result| result.* = .{};
+    defer {
+        for (results) |*result| result.deinit();
+        allocator.free(results);
+    }
+
+    var shared = ParallelLowerShared{
+        .program = program,
+        .plans = plans,
+        .results = results,
+    };
+
+    const extra_workers = worker_count - 1;
+    const threads = try allocator.alloc(std.Thread, extra_workers);
+    defer allocator.free(threads);
+    var spawned: usize = 0;
+    errdefer {
+        shared.runUntilDone();
+        for (threads[0..spawned]) |thread| thread.join();
+    }
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parallelLowerWorkerMain, .{&shared});
+        spawned += 1;
+    }
+    shared.runUntilDone();
+    for (threads) |thread| thread.join();
+
+    const batches = try allocator.alloc(LoweredFunctionBatch, plans.len);
+    errdefer allocator.free(batches);
+    for (results, 0..) |*result, index| {
+        if (result.err) |err| return err;
+        batches[index] = try cloneLoweredFunctionBatch(allocator, result.batch.?);
+    }
+    return batches;
+}
+
 fn lowerFunction(
     allocator: std.mem.Allocator,
     program: model.Program,
     function_decl: model.Function,
-    state: *ProgramLoweringState,
+    state: *FunctionLoweringState,
 ) !ir.Function {
     if (function_decl.is_extern) {
         return .{
@@ -145,7 +352,7 @@ fn lowerFunction(
 fn lowerGeneratedCallbackFunction(
     allocator: std.mem.Allocator,
     program: model.Program,
-    state: *ProgramLoweringState,
+    state: *FunctionLoweringState,
     function_id: u32,
     function_name: []const u8,
     execution: runtime_abi.FunctionExecution,
@@ -197,6 +404,93 @@ fn lowerGeneratedCallbackFunction(
         .local_count = lowerer.next_local,
         .local_types = try lowerCallbackLocalTypes(allocator, program, callback, lowerer.hidden_local_types.items, boxed_locals),
         .instructions = try instructions.toOwnedSlice(),
+    };
+}
+
+fn countCallbacksInStatements(statements: []const model.Statement) u32 {
+    var count: u32 = 0;
+    for (statements) |statement| count += countCallbacksInStatement(statement);
+    return count;
+}
+
+fn countCallbacksInStatement(statement: model.Statement) u32 {
+    return switch (statement) {
+        .let_stmt => |node| if (node.value) |value| countCallbacksInExpr(value) else 0,
+        .assign_stmt => |node| countCallbacksInExpr(node.target) + countCallbacksInExpr(node.value),
+        .expr_stmt => |node| countCallbacksInExpr(node.expr),
+        .if_stmt => |node| blk: {
+            var count = countCallbacksInExpr(node.condition) + countCallbacksInStatements(node.then_body);
+            if (node.else_body) |else_body| count += countCallbacksInStatements(else_body);
+            break :blk count;
+        },
+        .for_stmt => |node| countCallbacksInExpr(node.iterator) + countCallbacksInStatements(node.body),
+        .while_stmt => |node| countCallbacksInExpr(node.condition) + countCallbacksInStatements(node.body),
+        .break_stmt, .continue_stmt => 0,
+        .match_stmt => |node| blk: {
+            var count = countCallbacksInExpr(node.subject);
+            for (node.arms) |arm| {
+                count += countCallbacksInPattern(arm.pattern);
+                if (arm.guard) |guard| count += countCallbacksInExpr(guard);
+                count += countCallbacksInStatements(arm.body);
+            }
+            break :blk count;
+        },
+        .switch_stmt => |node| blk: {
+            var count = countCallbacksInExpr(node.subject);
+            for (node.cases) |case_node| {
+                count += countCallbacksInExpr(case_node.pattern);
+                count += countCallbacksInStatements(case_node.body);
+            }
+            if (node.default_body) |default_body| count += countCallbacksInStatements(default_body);
+            break :blk count;
+        },
+        .return_stmt => |node| if (node.value) |value| countCallbacksInExpr(value) else 0,
+    };
+}
+
+fn countCallbacksInPattern(pattern: model.MatchPattern) u32 {
+    return switch (pattern) {
+        .variant => |node| if (node.inner) |inner| countCallbacksInPattern(inner.*) else 0,
+        .binding => 0,
+    };
+}
+
+fn countCallbacksInExpr(expr: *model.Expr) u32 {
+    return switch (expr.*) {
+        .callback => |node| 1 + countCallbacksInStatements(node.body),
+        .construct => |node| blk: {
+            var count: u32 = 0;
+            for (node.fields) |field| count += countCallbacksInExpr(field.value);
+            break :blk count;
+        },
+        .construct_enum_variant => |node| if (node.payload) |payload| countCallbacksInExpr(payload) else 0,
+        .native_state => |node| countCallbacksInExpr(node.value),
+        .native_user_data => |node| countCallbacksInExpr(node.state),
+        .native_recover => |node| countCallbacksInExpr(node.value),
+        .call => |node| blk: {
+            var count: u32 = 0;
+            for (node.args) |arg| count += countCallbacksInExpr(arg);
+            break :blk count;
+        },
+        .call_value => |node| blk: {
+            var count = countCallbacksInExpr(node.callee);
+            for (node.args) |arg| count += countCallbacksInExpr(arg);
+            break :blk count;
+        },
+        .parent_view => |node| countCallbacksInExpr(node.object),
+        .c_string_to_string => |node| countCallbacksInExpr(node.value),
+        .array_len => |node| countCallbacksInExpr(node.object),
+        .field => |node| countCallbacksInExpr(node.object),
+        .binary => |node| countCallbacksInExpr(node.lhs) + countCallbacksInExpr(node.rhs),
+        .conditional => |node| countCallbacksInExpr(node.condition) + countCallbacksInExpr(node.then_expr) + countCallbacksInExpr(node.else_expr),
+        .unary => |node| countCallbacksInExpr(node.operand),
+        .array => |node| blk: {
+            var count: u32 = 0;
+            for (node.elements) |element| count += countCallbacksInExpr(element);
+            break :blk count;
+        },
+        .index => |node| countCallbacksInExpr(node.object) + countCallbacksInExpr(node.index),
+        else => 0,
     };
 }
 
@@ -312,7 +606,7 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
 pub const Lowerer = struct {
     allocator: std.mem.Allocator,
     program: model.Program,
-    state: *ProgramLoweringState,
+    state: *FunctionLoweringState,
     execution: runtime_abi.FunctionExecution,
     function_name: []const u8,
     next_register: u32,
@@ -953,6 +1247,79 @@ fn lowerCompareOp(op: model.hir.BinaryOp) ir.CompareOp {
     };
 }
 
+fn cloneLoweredFunctionBatch(allocator: std.mem.Allocator, batch: LoweredFunctionBatch) !LoweredFunctionBatch {
+    const generated_functions = try allocator.alloc(ir.Function, batch.generated_functions.len);
+    for (batch.generated_functions, 0..) |function_decl, index| {
+        generated_functions[index] = try cloneFunction(allocator, function_decl);
+    }
+    return .{
+        .primary = try cloneFunction(allocator, batch.primary),
+        .generated_functions = generated_functions,
+    };
+}
+
+fn cloneFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !ir.Function {
+    return .{
+        .id = function_decl.id,
+        .name = function_decl.name,
+        .execution = function_decl.execution,
+        .is_extern = function_decl.is_extern,
+        .foreign = function_decl.foreign,
+        .param_types = try cloneValueTypeSlice(allocator, function_decl.param_types),
+        .return_type = function_decl.return_type,
+        .register_count = function_decl.register_count,
+        .local_count = function_decl.local_count,
+        .local_types = try cloneValueTypeSlice(allocator, function_decl.local_types),
+        .instructions = try cloneInstructionSlice(allocator, function_decl.instructions),
+    };
+}
+
+fn cloneValueTypeSlice(allocator: std.mem.Allocator, items: []const ir.ValueType) ![]const ir.ValueType {
+    if (items.len == 0) return &.{};
+    const cloned = try allocator.alloc(ir.ValueType, items.len);
+    @memcpy(cloned, items);
+    return cloned;
+}
+
+fn cloneInstructionSlice(allocator: std.mem.Allocator, items: []const ir.Instruction) ![]ir.Instruction {
+    if (items.len == 0) return &.{};
+    const cloned = try allocator.alloc(ir.Instruction, items.len);
+    for (items, 0..) |instruction, index| {
+        cloned[index] = try cloneInstruction(allocator, instruction);
+    }
+    return cloned;
+}
+
+fn cloneInstruction(allocator: std.mem.Allocator, instruction: ir.Instruction) !ir.Instruction {
+    return switch (instruction) {
+        .const_closure => |value| .{ .const_closure = .{
+            .dst = value.dst,
+            .function_id = value.function_id,
+            .captures = try cloneU32Slice(allocator, value.captures),
+        } },
+        .call => |value| .{ .call = .{
+            .callee = value.callee,
+            .args = try cloneU32Slice(allocator, value.args),
+            .dst = value.dst,
+        } },
+        .call_value => |value| .{ .call_value = .{
+            .callee = value.callee,
+            .args = try cloneU32Slice(allocator, value.args),
+            .param_types = try cloneValueTypeSlice(allocator, value.param_types),
+            .return_type = value.return_type,
+            .dst = value.dst,
+        } },
+        else => instruction,
+    };
+}
+
+fn cloneU32Slice(allocator: std.mem.Allocator, items: []const u32) ![]const u32 {
+    if (items.len == 0) return &.{};
+    const cloned = try allocator.alloc(u32, items.len);
+    @memcpy(cloned, items);
+    return cloned;
+}
+
 test "lowers sparse FFI construction by zero-filling omitted fields" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1031,4 +1398,171 @@ test "lowers sparse FFI construction by zero-filling omitted fields" {
 
     try std.testing.expect(saw_field_b);
     try std.testing.expect(!touched_other_field);
+}
+
+test "parallel root-function lowering preserves deterministic callback ids" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const callback_ty: model.ResolvedType = .{ .kind = .callback, .name = "Callback" };
+
+    const callback_body = &.{model.Statement{
+        .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } },
+    }};
+
+    const callback_exprs = try allocator.alloc(*model.Expr, 4);
+    for (callback_exprs) |*slot| {
+        const expr = try allocator.create(model.Expr);
+        expr.* = .{ .callback = .{
+            .params = &.{},
+            .captures = &.{},
+            .locals = &.{},
+            .body = callback_body,
+            .return_type = .{ .kind = .void },
+            .ty = callback_ty,
+            .span = .{ .start = 0, .end = 0 },
+        } };
+        slot.* = expr;
+    }
+
+    const call_exprs = try allocator.alloc(*model.Expr, 3);
+    for (call_exprs, 0..) |*slot, index| {
+        const expr = try allocator.create(model.Expr);
+        expr.* = .{ .call = .{
+            .callee_name = switch (index) {
+                0 => "helper_one",
+                1 => "helper_two",
+                else => "helper_three",
+            },
+            .function_id = @as(u32, @intCast(index + 1)),
+            .args = &.{},
+            .ty = .{ .kind = .void },
+            .span = .{ .start = 0, .end = 0 },
+        } };
+        slot.* = expr;
+    }
+
+    const callback_local: model.LocalSymbol = .{
+        .id = 0,
+        .name = "cb",
+        .ty = callback_ty,
+        .span = .{ .start = 0, .end = 0 },
+    };
+
+    const entry_body = &.{
+        model.Statement{ .let_stmt = .{
+            .local_id = 0,
+            .ty = callback_ty,
+            .explicit_type = false,
+            .value = callback_exprs[0],
+            .span = .{ .start = 0, .end = 0 },
+        } },
+        model.Statement{ .expr_stmt = .{ .expr = call_exprs[0], .span = .{ .start = 0, .end = 0 } } },
+        model.Statement{ .expr_stmt = .{ .expr = call_exprs[1], .span = .{ .start = 0, .end = 0 } } },
+        model.Statement{ .expr_stmt = .{ .expr = call_exprs[2], .span = .{ .start = 0, .end = 0 } } },
+        model.Statement{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+    };
+
+    const helper_one_body = &.{
+        model.Statement{ .let_stmt = .{
+            .local_id = 0,
+            .ty = callback_ty,
+            .explicit_type = false,
+            .value = callback_exprs[1],
+            .span = .{ .start = 0, .end = 0 },
+        } },
+        model.Statement{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+    };
+    const helper_two_body = &.{
+        model.Statement{ .let_stmt = .{
+            .local_id = 0,
+            .ty = callback_ty,
+            .explicit_type = false,
+            .value = callback_exprs[2],
+            .span = .{ .start = 0, .end = 0 },
+        } },
+        model.Statement{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+    };
+    const helper_three_body = &.{
+        model.Statement{ .let_stmt = .{
+            .local_id = 0,
+            .ty = callback_ty,
+            .explicit_type = false,
+            .value = callback_exprs[3],
+            .span = .{ .start = 0, .end = 0 },
+        } },
+        model.Statement{ .return_stmt = .{ .value = null, .span = .{ .start = 0, .end = 0 } } },
+    };
+
+    const program = model.Program{
+        .imports = &.{},
+        .annotations = &.{},
+        .capabilities = &.{},
+        .constructs = &.{},
+        .types = &.{},
+        .forms = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "entry",
+                .is_main = true,
+                .execution = .runtime,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{callback_local},
+                .return_type = .{ .kind = .void },
+                .body = entry_body,
+                .span = .{ .start = 0, .end = 0 },
+            },
+            .{
+                .id = 1,
+                .name = "helper_one",
+                .is_main = false,
+                .execution = .runtime,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{callback_local},
+                .return_type = .{ .kind = .void },
+                .body = helper_one_body,
+                .span = .{ .start = 0, .end = 0 },
+            },
+            .{
+                .id = 2,
+                .name = "helper_two",
+                .is_main = false,
+                .execution = .runtime,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{callback_local},
+                .return_type = .{ .kind = .void },
+                .body = helper_two_body,
+                .span = .{ .start = 0, .end = 0 },
+            },
+            .{
+                .id = 3,
+                .name = "helper_three",
+                .is_main = false,
+                .execution = .runtime,
+                .annotations = &.{},
+                .params = &.{},
+                .locals = &.{callback_local},
+                .return_type = .{ .kind = .void },
+                .body = helper_three_body,
+                .span = .{ .start = 0, .end = 0 },
+            },
+        },
+        .entry_index = 0,
+    };
+
+    const lowered = try lowerProgramWithOptions(allocator, program, .{ .worker_count_override = 2 });
+    try std.testing.expectEqual(@as(usize, 8), lowered.functions.len);
+    try std.testing.expectEqual(@as(usize, 0), lowered.entry_index);
+
+    for (lowered.functions[0..4], 0..) |function_decl, index| {
+        try std.testing.expectEqual(@as(u32, @intCast(index)), function_decl.id);
+    }
+    for (lowered.functions[4..], 0..) |function_decl, index| {
+        try std.testing.expectEqual(@as(u32, @intCast(index + 4)), function_decl.id);
+    }
 }
