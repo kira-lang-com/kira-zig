@@ -152,6 +152,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .src = value.src,
                     .field_ty = lowerTypeRef(value.field_ty),
                 } }),
+                .c_string_to_string => |value| try instructions.append(.{ .c_string_to_string = .{ .dst = value.dst, .src = value.src } }),
                 .array_len => |value| try instructions.append(.{ .array_len = .{ .dst = value.dst, .array = value.array } }),
                 .array_get => |value| try instructions.append(.{ .array_get = .{
                     .dst = value.dst,

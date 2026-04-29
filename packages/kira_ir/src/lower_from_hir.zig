@@ -575,6 +575,15 @@ pub const Lowerer = struct {
                 } });
                 break :blk dst;
             },
+            .c_string_to_string => |node| blk: {
+                const src = try self.lowerExpr(instructions, node.value);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .c_string_to_string = .{
+                    .dst = dst,
+                    .src = src,
+                } });
+                break :blk dst;
+            },
             .index => |node| blk: {
                 const array_reg = try self.lowerExpr(instructions, node.object);
                 const index_reg = try self.lowerExpr(instructions, node.index);

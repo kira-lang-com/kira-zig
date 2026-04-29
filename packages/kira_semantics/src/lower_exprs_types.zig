@@ -155,6 +155,14 @@ pub fn lowerExpectedValue(
         try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, expected_type, actual_type);
         return error.DiagnosticsEmitted;
     }
+    if (expected_type.kind == .string and actual_type.kind == .c_string) {
+        const converted = try ctx.allocator.create(model.Expr);
+        converted.* = .{ .c_string_to_string = .{
+            .value = lowered,
+            .span = span,
+        } };
+        return converted;
+    }
     return lowered;
 }
 
@@ -684,6 +692,7 @@ fn typesCompatibleForContext(
         return callbackTypesCompatible(expected, actual);
     }
     if (expected.kind == .c_string and actual.kind == .string) return true;
+    if (expected.kind == .string and actual.kind == .c_string) return true;
     if (shared.isPointerLike(ctx, expected) and actual.kind == .raw_ptr) return true;
     if (expected.kind == .raw_ptr and actual.kind == .named) {
         if (shared.namedTypeInfo(ctx, actual)) |info| {

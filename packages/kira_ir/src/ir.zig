@@ -144,6 +144,7 @@ pub const Instruction = union(enum) {
     recover_native_state: RecoverNativeState,
     native_state_field_get: NativeStateFieldGet,
     native_state_field_set: NativeStateFieldSet,
+    c_string_to_string: CStringToString,
     array_len: ArrayLen,
     array_get: ArrayGet,
     array_set: ArraySet,
@@ -307,6 +308,11 @@ pub const NativeStateFieldSet = struct {
     field_index: u32,
     src: u32,
     field_ty: ValueType,
+};
+
+pub const CStringToString = struct {
+    dst: u32,
+    src: u32,
 };
 
 pub const ArrayLen = struct {

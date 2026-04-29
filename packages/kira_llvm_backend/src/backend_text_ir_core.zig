@@ -119,6 +119,8 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("declare ptr @\"kira_native_state_alloc\"(i64, i64)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_payload\"(ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_recover\"(ptr, i64)\n");
+    try writer.writeAll("declare i64 @strlen(ptr)\n");
+    try writer.writeAll("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)\n");
     try writer.writeAll("declare ptr @malloc(i64)\n");
     if (request.mode == .hybrid) {
         try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32, ptr, i32, ptr)\n");
@@ -727,6 +729,14 @@ pub fn buildTextFunctionBody(
                     temp_index,
                     value.src,
                 });
+            },
+            .c_string_to_string => |value| {
+                try writer.print("  %cstring.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.src });
+                try writer.print("  %cstring.len.{d} = call i64 @strlen(ptr %cstring.ptr.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  %cstring.copy.{d} = call ptr @malloc(i64 %cstring.len.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  call void @llvm.memcpy.p0.p0.i64(ptr %cstring.copy.{d}, ptr %cstring.ptr.{d}, i64 %cstring.len.{d}, i1 false)\n", .{ value.dst, value.dst, value.dst });
+                try writer.print("  %r{d}.0 = insertvalue %kira.string zeroinitializer, ptr %cstring.copy.{d}, 0\n", .{ value.dst, value.dst });
+                try writer.print("  %r{d} = insertvalue %kira.string %r{d}.0, i64 %cstring.len.{d}, 1\n", .{ value.dst, value.dst, value.dst });
             },
             .array_len => |value| {
                 try writer.print("  %array.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.array });

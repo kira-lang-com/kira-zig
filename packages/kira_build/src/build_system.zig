@@ -8,6 +8,7 @@ const runtime_abi = @import("kira_runtime_abi");
 const llvm_backend = @import("kira_llvm_backend");
 const pipeline = @import("pipeline.zig");
 const builtin = @import("builtin");
+const cache = @import("cache.zig");
 
 pub const BuildFailureKind = enum {
     frontend,
@@ -29,6 +30,7 @@ pub const BuildArtifactOutcome = struct {
 
 pub const BuildSystem = struct {
     allocator: std.mem.Allocator,
+    use_cache: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) BuildSystem {
         return .{ .allocator = allocator };
@@ -37,6 +39,31 @@ pub const BuildSystem = struct {
     pub fn check(self: BuildSystem, path: []const u8) ![]const diagnostics.Diagnostic {
         const result = try pipeline.checkFile(self.allocator, path);
         return result.diagnostics;
+    }
+
+    pub fn checkForBackend(self: BuildSystem, path: []const u8, target: build_def.ExecutionTarget) !pipeline.CheckPipelineResult {
+        if (self.use_cache) {
+            const maybe_cache = cache.Cache.initForSource(self.allocator, path) catch null;
+            if (maybe_cache) |build_cache| {
+                const maybe_entry = build_cache.entryForBuild(path, target) catch null;
+                if (maybe_entry) |entry| {
+                    if (entry.hasCheckSuccess()) {
+                        return .{
+                            .source = try source_pkg.SourceFile.fromPath(self.allocator, path),
+                            .diagnostics = &.{},
+                            .failure_stage = null,
+                        };
+                    }
+
+                    const result = try pipeline.checkFileForBackend(self.allocator, path, target);
+                    if (!result.failed()) {
+                        entry.storeCheckSuccess() catch {};
+                    }
+                    return result;
+                }
+            }
+        }
+        return pipeline.checkFileForBackend(self.allocator, path, target);
     }
 
     pub fn checkPackageRoot(self: BuildSystem, source_root: []const u8) !pipeline.CheckPipelineResult {
@@ -56,6 +83,27 @@ pub const BuildSystem = struct {
     }
 
     pub fn build(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        if (self.use_cache) {
+            const maybe_cache = cache.Cache.initForSource(self.allocator, request.source_path) catch null;
+            if (maybe_cache) |build_cache| {
+                const maybe_entry = build_cache.entryForBuild(request.source_path, request.target.execution) catch null;
+                if (maybe_entry) |entry| {
+                    if (entry.hasArtifacts()) {
+                        return .{ .artifacts = try entry.restoreTo(request.output_path) };
+                    }
+
+                    const uncached = try self.buildUncached(request);
+                    if (!uncached.failed()) {
+                        entry.storeFrom(request.output_path) catch {};
+                    }
+                    return uncached;
+                }
+            }
+        }
+        return self.buildUncached(request);
+    }
+
+    fn buildUncached(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
         return switch (request.target.execution) {
             .vm => self.buildBytecodeArtifact(request),
             .llvm_native => self.buildNativeArtifact(request),

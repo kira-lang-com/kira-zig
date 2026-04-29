@@ -1,6 +1,6 @@
 struct FileContents {
     var ok: Bool = false
-    var text: CString
+    var text: String
     var size: U64 = 0
 }
 
@@ -40,7 +40,7 @@ struct DirectoryListing {
     }
 
     @Native
-    function entry(index: Int) -> CString {
+    function entry(index: Int) -> String {
         return fs_directory_entry(handle, index)
     }
 

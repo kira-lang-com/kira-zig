@@ -394,7 +394,7 @@ fn lowerFunction(
             .store_local => |value| _ = api.LLVMBuildStore(builder, register_values[value.src], locals[value.local]),
             .load_local => |value| register_values[value.dst] = api.LLVMBuildLoad2(builder, types.llvmType(function_decl.local_types[value.local]), locals[value.local], "load"),
             .local_ptr => return error.UnsupportedExecutableFeature,
-            .subobject_ptr, .field_ptr, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
+            .subobject_ptr, .field_ptr, .c_string_to_string, .array_len, .array_get, .array_set, .load_indirect, .store_indirect, .copy_indirect => return error.UnsupportedExecutableFeature,
             .print => |value| try lowerPrint(api, builder, runtime_decls, register_types[value.src], register_values[value.src]),
             .call => |value| {
                 if (value.args.len != 0 or value.dst != null) return error.UnsupportedExecutableFeature;

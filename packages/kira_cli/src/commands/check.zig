@@ -21,7 +21,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         .application => |app| blk: {
             try support.logFrontendStarted(stderr, "check", app.source_path);
             const backend = parsed.backend orelse app.default_backend orelse .vm;
-            break :blk try build.checkFileForBackend(allocator, app.source_path, backend);
+            var system = build.BuildSystem.init(allocator);
+            break :blk try system.checkForBackend(app.source_path, backend);
         },
         .library => |library| blk: {
             try support.logFrontendStarted(stderr, "check", library.source_root);

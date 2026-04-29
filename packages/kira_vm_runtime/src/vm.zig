@@ -295,6 +295,9 @@ pub const Vm = struct {
                     payload[@intCast(value.field_index)] = runtime_abi.bridgeValueFromValue(registers[value.src]);
                     _ = value.field_ty;
                 },
+                .c_string_to_string => |value| {
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.copyCString(registers[value.src]));
+                },
                 .array_len => |value| {
                     const array_value = registers[value.array];
                     if (array_value != .raw_ptr or array_value.raw_ptr == 0) {
@@ -501,6 +504,17 @@ pub const Vm = struct {
 
     fn releaseTrackedSlots(self: *Vm, slots: []runtime_abi.Value, owned: []const bool) void {
         for (slots, owned) |slot, is_owned| if (is_owned) self.heap.releaseValue(slot);
+    }
+
+    fn copyCString(self: *Vm, value: runtime_abi.Value) !runtime_abi.Value {
+        if (value != .raw_ptr or value.raw_ptr == 0) return .{ .string = "" };
+        const source: [*:0]const u8 = @ptrFromInt(value.raw_ptr);
+        const bytes = std.mem.span(source);
+        if (bytes.len == 0) return .{ .string = "" };
+        const owned = try self.allocator.dupe(u8, bytes);
+        errdefer self.allocator.free(owned);
+        try self.heap.registerString(owned);
+        return .{ .string = owned };
     }
 
     fn allocateClosure(self: *Vm, registers: []const runtime_abi.Value, function_id: u32, capture_registers: []const u32) !usize {

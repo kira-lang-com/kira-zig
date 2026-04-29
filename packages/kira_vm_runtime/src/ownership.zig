@@ -15,6 +15,7 @@ const ObjectKind = union(enum) {
     array: *ArrayObject,
     closure: *ClosureObject,
     struct_fields: []runtime_abi.Value,
+    string_bytes: []u8,
 };
 
 const ObjectRecord = struct {
@@ -67,6 +68,15 @@ pub const Heap = struct {
         return ptr;
     }
 
+    pub fn registerString(self: *Heap, bytes: []u8) !void {
+        if (bytes.len == 0) {
+            self.allocator.free(bytes);
+            return;
+        }
+        const ptr = @intFromPtr(bytes.ptr);
+        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .string_bytes = bytes } });
+    }
+
     pub fn beginBoundaryPinScope(self: *Heap) !void {
         try self.pin_frames.append(self.allocator, .{});
     }
@@ -94,14 +104,20 @@ pub const Heap = struct {
 
     pub fn retainValue(self: *Heap, value: runtime_abi.Value) void {
         if (value == .raw_ptr) self.retainPtr(value.raw_ptr);
+        if (value == .string and value.string.len != 0) self.retainPtr(@intFromPtr(value.string.ptr));
     }
 
     pub fn releaseValue(self: *Heap, value: runtime_abi.Value) void {
         if (value == .raw_ptr) self.releasePtr(value.raw_ptr);
+        if (value == .string and value.string.len != 0) self.releasePtr(@intFromPtr(value.string.ptr));
     }
 
     pub fn isManagedValue(self: *const Heap, value: runtime_abi.Value) bool {
-        return value == .raw_ptr and self.objects.contains(value.raw_ptr);
+        return switch (value) {
+            .raw_ptr => |ptr| self.objects.contains(ptr),
+            .string => |bytes| bytes.len != 0 and self.objects.contains(@intFromPtr(bytes.ptr)),
+            else => false,
+        };
     }
 
     pub fn assignOwned(self: *Heap, slot: *runtime_abi.Value, value: runtime_abi.Value) void {
@@ -165,6 +181,7 @@ pub const Heap = struct {
             .struct_fields => |fields| {
                 for (fields) |field| try self.pinValueRecursive(field, frame, visited);
             },
+            .string_bytes => {},
         }
     }
 
@@ -195,6 +212,7 @@ pub const Heap = struct {
                 self.releaseSlots(fields);
                 self.allocator.free(fields);
             },
+            .string_bytes => |bytes| self.allocator.free(bytes),
         }
     }
 };

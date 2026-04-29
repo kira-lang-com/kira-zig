@@ -2,11 +2,13 @@ import Foundation
 
 @Main
 function main() {
-    let file = openFile("AGENTS.md")
+    let file = openFile("tests/pass/run/foundation_filesystem_compile/app/sample.txt")
     let contents = file.readAll()
+    let text: String = contents.text
     file.close()
 
     if contents.ok {
+        print(text)
         return
     }
     return

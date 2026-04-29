@@ -349,6 +349,7 @@ pub const Expr = union(enum) {
     local: LocalExpr,
     namespace_ref: NamespaceRefExpr,
     parent_view: ParentViewExpr,
+    c_string_to_string: CStringToStringExpr,
     array_len: ArrayLenExpr,
     field: FieldExpr,
     native_state: NativeStateExpr,
@@ -426,6 +427,12 @@ pub const ParentViewExpr = struct {
     object: *Expr,
     ty: ResolvedType,
     offset: u32,
+    span: source_pkg.Span,
+};
+
+pub const CStringToStringExpr = struct {
+    value: *Expr,
+    ty: ResolvedType = .{ .kind = .string },
     span: source_pkg.Span,
 };
 
@@ -602,6 +609,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .local => |node| node.ty,
         .namespace_ref => |node| node.ty,
         .parent_view => |node| node.ty,
+        .c_string_to_string => |node| node.ty,
         .array_len => |node| node.ty,
         .field => |node| node.ty,
         .native_state => |node| node.ty,

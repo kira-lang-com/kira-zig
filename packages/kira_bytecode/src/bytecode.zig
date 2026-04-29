@@ -266,6 +266,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.src, .little);
                     try writeTypeRef(writer, value.field_ty);
                 },
+                .c_string_to_string => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                },
                 .array_len => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.array, .little);
@@ -566,6 +570,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .field_index = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
+                } }),
+                .c_string_to_string => try instructions.append(.{ .c_string_to_string = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
                 } }),
                 .array_len => try instructions.append(.{ .array_len = .{
                     .dst = try reader.takeInt(u32, .little),

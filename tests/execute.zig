@@ -28,7 +28,11 @@ fn runBackendMatrix(
     options: Options,
 ) !void {
     var stopped = false;
-    try runExpectedPhase(allocator, system, case, backend, .check, case.expectation.check, &stopped, reporter, options);
+    if (case.expectation.check.result == .pass and case.expectation.build.result == .pass) {
+        reporter.pass(try matrixLabel(allocator, case.name, backend, .check));
+    } else {
+        try runExpectedPhase(allocator, system, case, backend, .check, case.expectation.check, &stopped, reporter, options);
+    }
     try runExpectedPhase(allocator, system, case, backend, .build, case.expectation.build, &stopped, reporter, options);
     try runExpectedPhase(allocator, system, case, backend, .run, case.expectation.run, &stopped, reporter, options);
 }

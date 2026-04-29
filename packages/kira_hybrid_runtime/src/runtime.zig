@@ -203,7 +203,7 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
         lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
     }
 
-    var result = try self.bridge.call(function_id, lowered_args);
+    const result = try self.bridge.call(function_id, lowered_args);
     self.vm.retainManagedValue(result);
     for (native_arg_ptrs, 0..) |native_ptr, index| {
         if (native_ptr == 0) continue;
@@ -216,13 +216,6 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
         );
     }
 
-    if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
-        result = .{ .raw_ptr = try self.vm.materializeNativeStruct(
-            &self.module,
-            function_decl.return_type.name orelse return error.RuntimeFailure,
-            result.raw_ptr,
-        ) };
-    }
     return result;
 }
 
