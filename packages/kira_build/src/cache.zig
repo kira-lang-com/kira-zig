@@ -132,6 +132,7 @@ pub const Entry = struct {
         const object_path = try defaultObjectPath(self.allocator, output_path);
         try copyFile(try self.join(objectName()), object_path);
         try copyFile(try self.join(executableNamePage("main")), output_path);
+        try makeExecutable(output_path);
 
         const artifacts = try self.allocator.alloc(build_def.Artifact, 2);
         artifacts[0] = .{ .kind = .native_object, .path = object_path };
@@ -351,6 +352,22 @@ fn copyFile(source_path: []const u8, destination_path: []const u8) !void {
         try std.Io.Dir.cwd().createFile(std.Options.debug_io, destination_path, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
     try file.writeStreamingAll(std.Options.debug_io, data);
+}
+
+fn makeExecutable(path: []const u8) !void {
+    if (!std.Io.File.Permissions.has_executable_bit) return;
+
+    const permissions: std.Io.File.Permissions = @enumFromInt(0o755);
+    if (std.fs.path.isAbsolute(path)) {
+        const parent_path = std.fs.path.dirname(path) orelse return error.InvalidCachePath;
+        const base_name = std.fs.path.basename(path);
+        var parent_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{});
+        defer parent_dir.close(std.Options.debug_io);
+        try parent_dir.setFilePermissions(std.Options.debug_io, base_name, permissions, .{});
+        return;
+    }
+
+    try std.Io.Dir.cwd().setFilePermissions(std.Options.debug_io, path, permissions, .{});
 }
 
 fn publishStagedFileAtomic(source_path: []const u8, destination_path: []const u8) !void {

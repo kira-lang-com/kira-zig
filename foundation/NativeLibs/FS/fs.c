@@ -145,6 +145,32 @@ fs_read_result fs_read_all_from_handle(void* handle) {
 #endif
 }
 
+const char* fs_read_all_text_from_handle(void* handle) {
+    fs_read_result result = fs_read_all_from_handle(handle);
+    return result.data;
+}
+
+uint64_t fs_file_handle_size(void* handle) {
+    if (handle == NULL) {
+        return 0;
+    }
+
+    fs_file_handle* file = (fs_file_handle*)handle;
+#ifdef _WIN32
+    LARGE_INTEGER size_value;
+    if (!GetFileSizeEx(file->handle, &size_value) || size_value.QuadPart < 0) {
+        return 0;
+    }
+    return (uint64_t)size_value.QuadPart;
+#else
+    struct stat info;
+    if (fstat(file->fd, &info) != 0 || info.st_size < 0) {
+        return 0;
+    }
+    return (uint64_t)info.st_size;
+#endif
+}
+
 void fs_close(void* handle) {
     if (handle == NULL) {
         return;

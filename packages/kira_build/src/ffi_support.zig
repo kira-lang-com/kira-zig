@@ -102,8 +102,14 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
         }
     }
 
+    var bytes: [8]u8 = undefined;
+    std.Options.debug_io.random(&bytes);
+    const build_suffix = std.mem.readInt(u64, &bytes, .little);
+    const staged_artifact_path = try stagedArtifactPath(allocator, library.artifact_path, build_suffix);
+    defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, staged_artifact_path) catch {};
+
     for (library.build.sources, 0..) |source_path, index| {
-        const object_path = try sourceObjectPath(allocator, library.artifact_path, index);
+        const object_path = try sourceObjectPath(allocator, library.artifact_path, index, build_suffix);
         try object_paths.append(object_path);
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
@@ -124,10 +130,10 @@ fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.R
     }
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
-    std.Io.Dir.cwd().deleteFile(std.Options.debug_io, library.artifact_path) catch {};
-    try argv.appendSlice(&.{ llvm_ar_path, "rcs", library.artifact_path });
+    try argv.appendSlice(&.{ llvm_ar_path, "rcs", staged_artifact_path });
     try argv.appendSlice(object_paths.items);
     try runCommand(allocator, argv.items);
+    try publishStagedArtifact(staged_artifact_path, library.artifact_path);
 }
 
 fn appendClangCompileCommand(
@@ -159,8 +165,21 @@ fn shouldCompileAsObjectiveC(os_tag: std.Target.Os.Tag, library: native.Resolved
     return std.mem.eql(u8, extension, ".c");
 }
 
-fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "{s}.src-{d}.o", .{ artifact_path, index });
+fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize, build_suffix: u64) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.src-{x}-{d}.o", .{ artifact_path, build_suffix, index });
+}
+
+fn stagedArtifactPath(allocator: std.mem.Allocator, artifact_path: []const u8, build_suffix: u64) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.stage-{x}", .{ artifact_path, build_suffix });
+}
+
+fn publishStagedArtifact(staged_path: []const u8, artifact_path: []const u8) !void {
+    if (std.fs.path.isAbsolute(staged_path) and std.fs.path.isAbsolute(artifact_path)) {
+        try std.Io.Dir.renameAbsolute(staged_path, artifact_path, std.Options.debug_io);
+        return;
+    }
+
+    try std.Io.Dir.cwd().rename(staged_path, std.Io.Dir.cwd(), artifact_path, std.Options.debug_io);
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {

@@ -17,6 +17,8 @@ typedef struct fs_read_result {
 void* fs_open_read(const char* path);
 bool fs_is_open(void* handle);
 fs_read_result fs_read_all_from_handle(void* handle);
+const char* fs_read_all_text_from_handle(void* handle);
+uint64_t fs_file_handle_size(void* handle);
 void fs_close(void* handle);
 
 fs_read_result fs_read_file(const char* path);
