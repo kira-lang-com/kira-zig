@@ -56,6 +56,16 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const bytecode_artifact = findBytecode(result.artifacts) orelse return error.MissingBytecodeArtifact;
             const module = try system.readBytecode(bytecode_artifact.path);
             var vm = vm_runtime.Vm.init(allocator);
+            var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+            defer {
+                if (input.project_root) |_| std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+                original_cwd.close(std.Options.debug_io);
+            }
+            if (input.project_root) |root| {
+                var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, root, .{});
+                defer dir.close(std.Options.debug_io);
+                try std.process.setCurrentDir(std.Options.debug_io, dir);
+            }
             try vm.runMain(&module, stdout);
         },
         .llvm_native => {
@@ -67,7 +77,25 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const manifest = try hybrid_runtime.loadHybridModule(allocator, manifest_artifact.path);
             var runtime = try hybrid_runtime.HybridRuntime.init(allocator, manifest);
             defer runtime.deinit();
-            try runtime.run();
+            var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+            defer {
+                if (input.project_root) |_| std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+                original_cwd.close(std.Options.debug_io);
+            }
+            if (input.project_root) |root| {
+                var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, root, .{});
+                defer dir.close(std.Options.debug_io);
+                try std.process.setCurrentDir(std.Options.debug_io, dir);
+            }
+            runtime.run() catch |err| {
+                if (err == error.RuntimeFailure) {
+                    if (runtime.vm.lastError()) |message| {
+                        try stderr.print("hybrid runtime failure: {s}\n", .{message});
+                        return error.CommandFailed;
+                    }
+                }
+                return err;
+            };
         },
     }
 }

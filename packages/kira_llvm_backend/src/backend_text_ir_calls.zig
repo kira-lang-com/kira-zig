@@ -31,6 +31,7 @@ pub fn writeCallInstruction(
     program: *const ir.Program,
     register_types: []const ir.ValueType,
     call_inst: ir.Call,
+    temp_counter: *usize,
 ) !void {
     const callee_id = call_inst.callee;
     const callee_decl = functionById(program.*, callee_id) orelse return error.UnknownFunction;
@@ -48,7 +49,19 @@ pub fn writeCallInstruction(
                     switch (param_type.kind) {
                         .array, .raw_ptr => {
                             if (arg_type.kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) {
-                                try writer.print("  %call.arg.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ callee_id, index, arg });
+                                const cstring_temp = temp_counter.*;
+                                temp_counter.* += 1;
+                                try writer.print("  %call.arg.str.ptr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ cstring_temp, arg });
+                                try writer.print("  %call.arg.str.len.{d} = extractvalue %kira.string %r{d}, 1\n", .{ cstring_temp, arg });
+                                try writer.print("  %call.arg.str.alloclen.{d} = add i64 %call.arg.str.len.{d}, 1\n", .{ cstring_temp, cstring_temp });
+                                try writer.print("  %call.arg.{d}.{d} = call ptr @malloc(i64 %call.arg.str.alloclen.{d})\n", .{ callee_id, index, cstring_temp });
+                                try writer.print("  call void @llvm.memcpy.p0.p0.i64(ptr %call.arg.{d}.{d}, ptr %call.arg.str.ptr.{d}, i64 %call.arg.str.len.{d}, i1 false)\n", .{
+                                    callee_id, index, cstring_temp, cstring_temp,
+                                });
+                                try writer.print("  %call.arg.str.null.{d} = getelementptr inbounds i8, ptr %call.arg.{d}.{d}, i64 %call.arg.str.len.{d}\n", .{
+                                    cstring_temp, callee_id, index, cstring_temp,
+                                });
+                                try writer.print("  store i8 0, ptr %call.arg.str.null.{d}\n", .{cstring_temp});
                             } else {
                                 try writer.print("  %call.arg.{d}.{d} = inttoptr i64 %r{d} to ptr\n", .{ callee_id, index, arg });
                             }
@@ -224,128 +237,130 @@ pub fn writeCallInstruction(
         },
         .runtime => {
             if (request.mode != .hybrid) return error.RuntimeCallInNativeBuild;
+            const rt_temp = temp_counter.*;
+            temp_counter.* += 1;
             if (call_inst.args.len > 0) {
-                try writer.print("  %rt.args.{d} = alloca [{d} x %kira.bridge.value]\n", .{ callee_id, call_inst.args.len });
+                try writer.print("  %rt.args.{d} = alloca [{d} x %kira.bridge.value]\n", .{ rt_temp, call_inst.args.len });
                 for (call_inst.args, 0..) |arg, index| {
                     try writer.print("  %rt.slot.{d}.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr %rt.args.{d}, i64 0, i64 {d}\n", .{
-                        callee_id, index, call_inst.args.len, callee_id, index,
+                        rt_temp, index, call_inst.args.len, rt_temp, index,
                     });
                     try writer.print("  %rt.pack.{d}.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{
-                        callee_id, index, bridgeTagValue(register_types[arg]),
+                        rt_temp, index, bridgeTagValue(register_types[arg]),
                     });
                     switch (register_types[arg].kind) {
                         .integer, .construct_any, .raw_ptr, .ffi_struct, .enum_instance => {
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{
-                                callee_id, index, callee_id, index, arg,
+                                rt_temp, index, rt_temp, index, arg,
                             });
                             try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
                         },
                         .array => {
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %r{d}, 2\n", .{
-                                callee_id, index, callee_id, index, arg,
+                                rt_temp, index, rt_temp, index, arg,
                             });
                             try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
                         },
                         .boolean => {
-                            try writer.print("  %rt.bool.{d}.{d} = zext i1 %r{d} to i64\n", .{ callee_id, index, arg });
+                            try writer.print("  %rt.bool.{d}.{d} = zext i1 %r{d} to i64\n", .{ rt_temp, index, arg });
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %rt.bool.{d}.{d}, 2\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index, rt_temp, index,
                             });
                             try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
                         },
                         .string => {
-                            try writer.print("  %rt.str.ptr.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ callee_id, index, arg });
+                            try writer.print("  %rt.str.ptr.{d}.{d} = extractvalue %kira.string %r{d}, 0\n", .{ rt_temp, index, arg });
                             try writer.print("  %rt.str.ptrint.{d}.{d} = ptrtoint ptr %rt.str.ptr.{d}.{d} to i64\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
-                            try writer.print("  %rt.str.len.{d}.{d} = extractvalue %kira.string %r{d}, 1\n", .{ callee_id, index, arg });
+                            try writer.print("  %rt.str.len.{d}.{d} = extractvalue %kira.string %r{d}, 1\n", .{ rt_temp, index, arg });
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %rt.str.ptrint.{d}.{d}, 2\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index, rt_temp, index,
                             });
                             try writer.print("  %rt.pack.{d}.{d}.2 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.1, i64 %rt.str.len.{d}.{d}, 3\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index, rt_temp, index,
                             });
                             try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.2, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
                         },
                         .float => {
                             if (register_types[arg].name != null and std.mem.eql(u8, register_types[arg].name.?, "F32")) {
-                                try writer.print("  %rt.float.ext.{d}.{d} = fpext float %r{d} to double\n", .{ callee_id, index, arg });
+                                try writer.print("  %rt.float.ext.{d}.{d} = fpext float %r{d} to double\n", .{ rt_temp, index, arg });
                                 try writer.print("  %rt.float.bits.{d}.{d} = bitcast double %rt.float.ext.{d}.{d} to i64\n", .{
-                                    callee_id, index, callee_id, index,
+                                    rt_temp, index, rt_temp, index,
                                 });
                             } else {
-                                try writer.print("  %rt.float.bits.{d}.{d} = bitcast double %r{d} to i64\n", .{ callee_id, index, arg });
+                                try writer.print("  %rt.float.bits.{d}.{d} = bitcast double %r{d} to i64\n", .{ rt_temp, index, arg });
                             }
                             try writer.print("  %rt.pack.{d}.{d}.1 = insertvalue %kira.bridge.value %rt.pack.{d}.{d}.0, i64 %rt.float.bits.{d}.{d}, 2\n", .{
-                                callee_id, index, callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index, rt_temp, index,
                             });
                             try writer.print("  store %kira.bridge.value %rt.pack.{d}.{d}.1, ptr %rt.slot.{d}.{d}\n", .{
-                                callee_id, index, callee_id, index,
+                                rt_temp, index, rt_temp, index,
                             });
                         },
                         .void => return error.UnsupportedExecutableFeature,
                     }
                 }
             }
-            try writer.print("  %rt.result.{d} = alloca %kira.bridge.value\n", .{callee_id});
+            try writer.print("  %rt.result.{d} = alloca %kira.bridge.value\n", .{rt_temp});
             try writer.writeAll("  call void @\"kira_hybrid_call_runtime\"(i32 ");
             try writer.print("{d}", .{callee_id});
             try writer.writeAll(", ptr ");
             if (call_inst.args.len == 0) {
                 try writer.writeAll("null");
             } else {
-                try writer.print("%rt.args.{d}", .{callee_id});
+                try writer.print("%rt.args.{d}", .{rt_temp});
             }
             try writer.writeAll(", i32 ");
             try writer.print("{d}", .{call_inst.args.len});
             try writer.writeAll(", ptr ");
-            try writer.print("%rt.result.{d}", .{callee_id});
+            try writer.print("%rt.result.{d}", .{rt_temp});
             try writer.writeAll(")\n");
             if (call_inst.dst) |dst| {
-                try writer.print("  %rt.result.load.{d} = load %kira.bridge.value, ptr %rt.result.{d}\n", .{ callee_id, callee_id });
+                try writer.print("  %rt.result.load.{d} = load %kira.bridge.value, ptr %rt.result.{d}\n", .{ rt_temp, rt_temp });
                 switch (callee_decl.return_type.kind) {
                     .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
-                        try writer.print(" = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{callee_id});
+                        try writer.print(" = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{rt_temp});
                     },
                     .boolean => {
-                        try writer.print("  %rt.result.word.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ callee_id, callee_id });
+                        try writer.print("  %rt.result.word.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ rt_temp, rt_temp });
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
-                        try writer.print(" = trunc i64 %rt.result.word.{d} to i1\n", .{callee_id});
+                        try writer.print(" = trunc i64 %rt.result.word.{d} to i1\n", .{rt_temp});
                     },
                     .float => {
-                        try writer.print("  %rt.result.bits.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ callee_id, callee_id });
+                        try writer.print("  %rt.result.bits.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ rt_temp, rt_temp });
                         if (callee_decl.return_type.name != null and std.mem.eql(u8, callee_decl.return_type.name.?, "F32")) {
-                            try writer.print("  %rt.result.float64.{d} = bitcast i64 %rt.result.bits.{d} to double\n", .{ callee_id, callee_id });
+                            try writer.print("  %rt.result.float64.{d} = bitcast i64 %rt.result.bits.{d} to double\n", .{ rt_temp, rt_temp });
                             try writer.writeAll("  %r");
                             try writer.print("{d}", .{dst});
-                            try writer.print(" = fptrunc double %rt.result.float64.{d} to float\n", .{callee_id});
+                            try writer.print(" = fptrunc double %rt.result.float64.{d} to float\n", .{rt_temp});
                         } else {
                             try writer.writeAll("  %r");
                             try writer.print("{d}", .{dst});
-                            try writer.print(" = bitcast i64 %rt.result.bits.{d} to double\n", .{callee_id});
+                            try writer.print(" = bitcast i64 %rt.result.bits.{d} to double\n", .{rt_temp});
                         }
                     },
                     .string => {
-                        try writer.print("  %rt.result.ptrint.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ callee_id, callee_id });
-                        try writer.print("  %rt.result.len.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 3\n", .{ callee_id, callee_id });
-                        try writer.print("  %rt.result.ptr.{d} = inttoptr i64 %rt.result.ptrint.{d} to ptr\n", .{ callee_id, callee_id });
+                        try writer.print("  %rt.result.ptrint.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 2\n", .{ rt_temp, rt_temp });
+                        try writer.print("  %rt.result.len.{d} = extractvalue %kira.bridge.value %rt.result.load.{d}, 3\n", .{ rt_temp, rt_temp });
+                        try writer.print("  %rt.result.ptr.{d} = inttoptr i64 %rt.result.ptrint.{d} to ptr\n", .{ rt_temp, rt_temp });
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
-                        try writer.print(".0 = insertvalue %kira.string zeroinitializer, ptr %rt.result.ptr.{d}, 0\n", .{callee_id});
+                        try writer.print(".0 = insertvalue %kira.string zeroinitializer, ptr %rt.result.ptr.{d}, 0\n", .{rt_temp});
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{dst});
-                        try writer.print(" = insertvalue %kira.string %r{d}.0, i64 %rt.result.len.{d}, 1\n", .{ dst, callee_id });
+                        try writer.print(" = insertvalue %kira.string %r{d}.0, i64 %rt.result.len.{d}, 1\n", .{ dst, rt_temp });
                     },
                     .void => {},
                 }

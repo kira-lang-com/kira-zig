@@ -1261,10 +1261,14 @@ fn cloneLoweredFunctionBatch(allocator: std.mem.Allocator, batch: LoweredFunctio
 fn cloneFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !ir.Function {
     return .{
         .id = function_decl.id,
-        .name = function_decl.name,
+        .name = try allocator.dupe(u8, function_decl.name),
         .execution = function_decl.execution,
         .is_extern = function_decl.is_extern,
-        .foreign = function_decl.foreign,
+        .foreign = if (function_decl.foreign) |foreign| .{
+            .library_name = try allocator.dupe(u8, foreign.library_name),
+            .symbol_name = try allocator.dupe(u8, foreign.symbol_name),
+            .calling_convention = foreign.calling_convention,
+        } else null,
         .param_types = try cloneValueTypeSlice(allocator, function_decl.param_types),
         .return_type = function_decl.return_type,
         .register_count = function_decl.register_count,

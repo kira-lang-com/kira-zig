@@ -87,11 +87,19 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
                 vm.rememberError("nested struct field type is missing a name");
                 return error.RuntimeFailure;
             };
-            if (value != .raw_ptr or value.raw_ptr == 0) {
-                vm.rememberError("runtime struct field cannot be lowered to native memory");
-                return error.RuntimeFailure;
+            const nested_ptr: usize = switch (value) {
+                .raw_ptr => |ptr| ptr,
+                .integer => |inner| if (inner <= 0) 0 else @intCast(@min(@as(u64, @intCast(inner)), std.math.maxInt(usize))),
+                .void => 0,
+                else => 0,
+            };
+            if (nested_ptr == 0) {
+                const layout = try native_layout.structLayout(module, nested_name);
+                const size = @max(@as(usize, layout.size), 1);
+                @memset(@as([*]u8, @ptrFromInt(address))[0..size], 0);
+                return;
             }
-            try vm.copyStructToNativeLayoutInto(module, nested_name, value.raw_ptr, address);
+            try vm.copyStructToNativeLayoutInto(module, nested_name, nested_ptr, address);
         },
     };
 }

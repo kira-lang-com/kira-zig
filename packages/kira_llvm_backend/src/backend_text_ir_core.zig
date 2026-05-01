@@ -985,7 +985,7 @@ pub fn buildTextFunctionBody(
                 );
             },
             .call => |value| {
-                try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, value);
+                try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, value, &temp_counter);
             },
             .call_value => |value| {
                 try writeIndirectCallInstruction(writer, request, symbol_names, request.program, register_types, value);

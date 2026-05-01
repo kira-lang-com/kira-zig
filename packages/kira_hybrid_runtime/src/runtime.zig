@@ -68,6 +68,31 @@ pub const HybridRuntime = struct {
             runtime_args[index] = runtime_abi.bridgeValueToValue(arg);
             if (index >= function_decl.param_count) continue;
             const local_ty = function_decl.local_types[index];
+            runtime_abi.emitExecutionTrace("CALLBACK", "ARGTYPE", "fn={d} arg={d} kind={s} name={s} raw=0x{x}", .{
+                function_id,
+                index,
+                @tagName(local_ty.kind),
+                local_ty.name orelse "<none>",
+                if (runtime_args[index] == .raw_ptr) runtime_args[index].raw_ptr else 0,
+            });
+            if (local_ty.kind == .raw_ptr and local_ty.name != null and isCallbackTypeName(local_ty.name.?) and runtime_args[index] == .raw_ptr and runtime_args[index].raw_ptr > std.math.maxInt(u32)) {
+                if (self.vm.heap.getClosure(runtime_args[index].raw_ptr) != null) {
+                    // Already a managed runtime closure pointer; do not reinterpret native memory.
+                    continue;
+                }
+                const native_function_id: i64 = (@as(*const i64, @ptrFromInt(runtime_args[index].raw_ptr))).*;
+                const runtime_present = if (native_function_id >= 0 and native_function_id <= std.math.maxInt(u32)) self.module.findFunctionById(@intCast(native_function_id)) != null else false;
+                const manifest_function = if (native_function_id >= 0 and native_function_id <= std.math.maxInt(u32)) findFunction(self.manifest.functions, @intCast(native_function_id)) else null;
+                runtime_abi.emitExecutionTrace("CALLBACK", "CLOSURE_ARG", "fn={d} arg={d} closure_fn={d} runtime_present={d} manifest_exec={s}", .{
+                    function_id,
+                    index,
+                    native_function_id,
+                    if (runtime_present) @as(i32, 1) else @as(i32, 0),
+                    if (manifest_function) |item| @tagName(item.execution) else "<missing>",
+                });
+                runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeClosure(&self.module, runtime_args[index].raw_ptr) };
+                continue;
+            }
             if (local_ty.kind != .ffi_struct or runtime_args[index] != .raw_ptr or runtime_args[index].raw_ptr == 0) continue;
             native_arg_ptrs[index] = runtime_args[index].raw_ptr;
             runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeStruct(
@@ -131,7 +156,16 @@ fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32, []const ru
     return struct {
         fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: *runtime_abi.BridgeValue) !void {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-            try runtime_context.runtime.invokeRuntime(runtime_context, function_id, args, out_result);
+            runtime_context.runtime.invokeRuntime(runtime_context, function_id, args, out_result) catch |err| {
+                if (err == error.RuntimeFailure) {
+                    if (runtime_context.runtime.vm.lastError()) |message| {
+                        std.debug.panic("hybrid runtime failure in fn={d}: {s}", .{ function_id, message });
+                    } else {
+                        std.debug.panic("hybrid runtime failure in fn={d}: <no vm lastError>", .{function_id});
+                    }
+                }
+                return err;
+            };
         }
     }.invoke;
 }
@@ -176,6 +210,10 @@ fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?h
         if (function_decl.id == function_id) return function_decl;
     }
     return null;
+}
+
+fn isCallbackTypeName(name: []const u8) bool {
+    return std.mem.indexOf(u8, name, "->") != null;
 }
 
 fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {

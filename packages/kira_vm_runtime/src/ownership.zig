@@ -8,6 +8,7 @@ pub const ArrayObject = extern struct {
 
 pub const ClosureObject = struct {
     function_id: u32,
+    is_native: bool = false,
     captures: []runtime_abi.Value,
 };
 
@@ -117,6 +118,14 @@ pub const Heap = struct {
             .raw_ptr => |ptr| self.objects.contains(ptr),
             .string => |bytes| bytes.len != 0 and self.objects.contains(@intFromPtr(bytes.ptr)),
             else => false,
+        };
+    }
+
+    pub fn getClosure(self: *const Heap, ptr: usize) ?*const ClosureObject {
+        const record = self.objects.getPtr(ptr) orelse return null;
+        return switch (record.kind) {
+            .closure => |closure| closure,
+            else => null,
         };
     }
 

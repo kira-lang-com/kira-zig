@@ -8,6 +8,7 @@ pub const BridgeValueTag = enum(u8) {
     string = @intFromEnum(value.ValueTag.string),
     boolean = @intFromEnum(value.ValueTag.boolean),
     raw_ptr = @intFromEnum(value.ValueTag.raw_ptr),
+    _,
 };
 
 pub const BridgeString = extern struct {
@@ -51,6 +52,7 @@ pub fn toValue(v: BridgeValue) value.Value {
         .string => .{ .string = if (v.payload.string.ptr) |ptr| ptr[0..v.payload.string.len] else "" },
         .boolean => .{ .boolean = v.payload.boolean != 0 },
         .raw_ptr => .{ .raw_ptr = v.payload.raw_ptr },
+        _ => .{ .void = {} },
     };
 }
 
@@ -76,4 +78,13 @@ test "round-trips bridge values" {
             .raw_ptr => |inner| try std.testing.expectEqual(inner, raised.raw_ptr),
         }
     }
+}
+
+test "invalid bridge tag degrades to void" {
+    const invalid = BridgeValue{
+        .tag = @enumFromInt(255),
+        .payload = .{ .raw_ptr = 1234 },
+    };
+    const converted = toValue(invalid);
+    try std.testing.expect(converted == .void);
 }

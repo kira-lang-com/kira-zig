@@ -89,6 +89,38 @@ pub const Vm = struct {
         return self.copyStructFromNativeLayout(module, type_name, native_ptr);
     }
 
+    pub fn materializeNativeClosure(self: *Vm, module: *const bytecode.Module, native_ptr: usize) !usize {
+        if (native_ptr == 0) return 0;
+        if (self.heap.getClosure(native_ptr) != null) return native_ptr;
+        const function_id_ptr: *const i64 = @ptrFromInt(native_ptr);
+        const capture_count_ptr: *const i64 = @ptrFromInt(native_ptr + 8);
+        const function_id_i64 = function_id_ptr.*;
+        const capture_count_i64 = capture_count_ptr.*;
+        if (function_id_i64 < 0 or function_id_i64 > std.math.maxInt(u32)) {
+            return native_ptr;
+        }
+        if (capture_count_i64 < 0) {
+            self.rememberError("native closure capture count is negative");
+            return error.RuntimeFailure;
+        }
+
+        const capture_count: usize = @intCast(capture_count_i64);
+        const native_slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_ptr + 16);
+        const closure = try self.allocator.create(ClosureObject);
+        const captures = try self.allocator.alloc(runtime_abi.Value, capture_count);
+        for (captures) |*capture| capture.* = .{ .void = {} };
+        for (0..capture_count) |index| {
+            self.heap.assignBorrowed(&captures[index], runtime_abi.bridgeValueToValue(native_slots[index]));
+        }
+        closure.* = .{
+            .function_id = @intCast(function_id_i64),
+            .is_native = module.findFunctionById(@intCast(function_id_i64)) == null,
+            .captures = captures,
+        };
+        runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime closure fn={d} captures={d} ptr=0x{x}", .{ closure.function_id, capture_count, native_ptr });
+        return self.heap.registerClosure(closure);
+    }
+
     pub fn lowerStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) !usize {
         runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "runtime->native type={s} ptr=0x{x}", .{ type_name, runtime_ptr });
         return self.copyStructToNativeLayout(module, type_name, runtime_ptr);
@@ -179,14 +211,22 @@ pub const Vm = struct {
                 .const_string => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .string = value.value }),
                 .const_bool => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .boolean = value.value }),
                 .const_null_ptr => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = 0 }),
-                .const_function => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = switch (value.representation) {
-                    .callable_value => value.function_id,
-                    .native_callback => if (hooks.resolve_function) |resolve_function|
-                        try helper_impl.resolveFunctionPointer(hooks, resolve_function, value.function_id)
-                    else
-                        value.function_id,
-                } }),
-                .const_closure => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateClosure(registers, value.function_id, value.captures) }),
+                .const_function => |value| {
+                    const raw_ptr = switch (value.representation) {
+                        .callable_value => value.function_id,
+                        .native_callback => if (hooks.resolve_function) |resolve_function|
+                            try helper_impl.resolveFunctionPointer(hooks, resolve_function, value.function_id)
+                        else
+                            value.function_id,
+                    };
+                    runtime_abi.emitExecutionTrace("CALLABLE", "CONST_FUNCTION", "dst={d} fn={d} raw=0x{x} repr={s}", .{ value.dst, value.function_id, raw_ptr, @tagName(value.representation) });
+                    self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = raw_ptr });
+                },
+                .const_closure => |value| {
+                    const closure_ptr = try self.allocateClosure(registers, value.function_id, value.captures);
+                    runtime_abi.emitExecutionTrace("CALLABLE", "CONST_CLOSURE", "dst={d} fn={d} raw=0x{x} captures={d}", .{ value.dst, value.function_id, closure_ptr, value.captures.len });
+                    self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = closure_ptr });
+                },
                 .alloc_struct => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateStruct(module, value.type_name) }),
                 .alloc_enum => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateEnum(registers, value.discriminant, value.payload_src) }),
                 .alloc_native_state => |value| {
@@ -439,7 +479,21 @@ pub const Vm = struct {
                     }
                     const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
                     defer self.allocator.free(call_args);
-                    const result = if (callee_value.raw_ptr <= std.math.maxInt(u32)) direct: {
+                    const result = if (self.heap.getClosure(callee_value.raw_ptr)) |closure| closure_call: {
+                        runtime_abi.emitExecutionTrace("CALLABLE", "INVOKE_CLOSURE", "raw=0x{x} fn={d} captures={d}", .{ callee_value.raw_ptr, closure.function_id, closure.captures.len });
+                        var closure_args = try self.allocator.alloc(runtime_abi.Value, call_args.len + closure.captures.len);
+                        defer self.allocator.free(closure_args);
+                        @memcpy(closure_args[0..call_args.len], call_args);
+                        @memcpy(closure_args[call_args.len..], closure.captures);
+                        if (!closure.is_native) {
+                            break :closure_call try self.runFunctionById(module, closure.function_id, closure_args, writer, hooks);
+                        }
+                        const callback = hooks.call_native orelse {
+                            self.rememberError("native closure call requires a native call hook");
+                            return error.RuntimeFailure;
+                        };
+                        break :closure_call try callback(hooks.context, closure.function_id, closure_args);
+                    } else if (callee_value.raw_ptr <= std.math.maxInt(u32)) direct: {
                         const function_id: u32 = @intCast(callee_value.raw_ptr);
                         if (module.findFunctionById(function_id) != null) {
                             break :direct try self.runFunctionById(module, function_id, call_args, writer, hooks);
@@ -449,13 +503,9 @@ pub const Vm = struct {
                             return error.RuntimeFailure;
                         };
                         break :direct try callback(hooks.context, function_id, call_args);
-                    } else closure_call: {
-                        const closure: *const ClosureObject = @ptrFromInt(callee_value.raw_ptr);
-                        var closure_args = try self.allocator.alloc(runtime_abi.Value, call_args.len + closure.captures.len);
-                        defer self.allocator.free(closure_args);
-                        @memcpy(closure_args[0..call_args.len], call_args);
-                        @memcpy(closure_args[call_args.len..], closure.captures);
-                        break :closure_call try self.runFunctionById(module, closure.function_id, closure_args, writer, hooks);
+                    } else {
+                        self.rememberError("indirect call received an unmanaged raw pointer that is not a runtime closure");
+                        return error.RuntimeFailure;
                     };
                     if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
                 },
@@ -664,9 +714,17 @@ pub const Vm = struct {
                     self.rememberError("struct type could not be resolved");
                     return error.RuntimeFailure;
                 };
-                if (dst_ptr[index] != .raw_ptr or src_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0 or src_ptr[index].raw_ptr == 0) {
-                    self.rememberError("nested struct copy requires valid pointers");
+                if (src_ptr[index] != .raw_ptr) {
+                    self.rememberError("nested struct copy source must be a pointer");
                     return error.RuntimeFailure;
+                }
+                if (dst_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0) {
+                    self.heap.assignOwned(&dst_ptr[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
+                }
+                if (src_ptr[index].raw_ptr == 0) {
+                    // Treat null nested pointers as zero/default nested structs.
+                    self.heap.assignOwned(&dst_ptr[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
+                    continue;
                 }
                 const nested_dst: [*]runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
                 const nested_src: [*]runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
@@ -937,6 +995,63 @@ test "copies struct arguments by value for runtime calls" {
 
     const result = try vm.runFunctionById(&module, 0, &.{}, std.io.null_writer, .{});
     try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "copyStruct tolerates null nested ffi struct pointers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const module = bytecode.Module{
+        .types = &.{
+            .{
+                .name = "Child",
+                .fields = &.{.{ .name = "x", .ty = .{ .kind = .integer, .name = "I64" } }},
+            },
+            .{
+                .name = "Parent",
+                .fields = &.{.{ .name = "child", .ty = .{ .kind = .ffi_struct, .name = "Child" } }},
+            },
+        },
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 7,
+                .local_count = 1,
+                .local_types = &.{.{ .kind = .ffi_struct, .name = "Parent" }},
+                .instructions = &.{
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Parent" } },
+                    .{ .field_ptr = .{ .dst = 1, .base = 0, .base_type_name = "Parent", .field_index = 0, .field_ty = .{ .kind = .ffi_struct, .name = "Child" } } },
+                    .{ .const_ptr = .{ .dst = 2, .value = 0 } },
+                    .{ .store_indirect = .{ .ptr = 1, .src = 2, .ty = .{ .kind = .ffi_struct, .name = "Child" } } },
+                    .{ .call_runtime = .{ .function_id = 1, .args = &.{0} } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+            .{
+                .id = 1,
+                .name = "touch",
+                .param_count = 1,
+                .register_count = 4,
+                .local_count = 1,
+                .local_types = &.{.{ .kind = .ffi_struct, .name = "Parent" }},
+                .instructions = &.{
+                    .{ .load_local = .{ .dst = 0, .local = 0 } },
+                    .{ .field_ptr = .{ .dst = 1, .base = 0, .base_type_name = "Parent", .field_index = 0, .field_ty = .{ .kind = .ffi_struct, .name = "Child" } } },
+                    .{ .load_indirect = .{ .dst = 2, .ptr = 1, .ty = .{ .kind = .ffi_struct, .name = "Child" } } },
+                    .{ .field_ptr = .{ .dst = 3, .base = 2, .base_type_name = "Child", .field_index = 0, .field_ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .const_int = .{ .dst = 2, .value = 7 } },
+                    .{ .store_indirect = .{ .ptr = 3, .src = 2, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    try vm.runMain(&module, std.io.null_writer);
 }
 
 test "construct any values survive nested runtime calls without leaking" {

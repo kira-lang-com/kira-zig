@@ -1,0 +1,26 @@
+@Runtime
+struct Child {
+    var value: Int
+}
+
+@Runtime
+struct Parent {
+    var child: Child
+}
+
+@Native
+function mutateAndSum(parent: Parent, values: [Int]) -> Int {
+    var next = parent
+    next.child.value = next.child.value + values[0]
+    return next.child.value + values[1] + values[2]
+}
+
+@Main
+@Runtime
+function main() {
+    var parent = Parent { child: Child { value: 5 } }
+    print(parent.child.value)
+    print(mutateAndSum(parent, [1, 2, 3]))
+    print(parent.child.value)
+    return
+}
