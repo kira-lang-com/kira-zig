@@ -648,13 +648,14 @@ pub const Lowerer = struct {
         const function_id = self.state.next_generated_function_id;
         self.state.next_generated_function_id += 1;
         const function_name = try std.fmt.allocPrint(self.allocator, "{s}$callback_{d}", .{ self.function_name, function_id });
+        const nested_callback = std.mem.indexOf(u8, self.function_name, "$callback_") != null;
         try self.state.generated_functions.append(try lowerGeneratedCallbackFunction(
             self.allocator,
             self.program,
             self.state,
             function_id,
             function_name,
-            self.execution,
+            if (nested_callback) .runtime else self.execution,
             node,
         ));
         return function_id;

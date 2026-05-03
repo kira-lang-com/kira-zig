@@ -105,16 +105,29 @@ pub const Vm = struct {
         }
 
         const capture_count: usize = @intCast(capture_count_i64);
+        const function_id: u32 = @intCast(function_id_i64);
+        const function_decl = module.findFunctionById(function_id);
         const native_slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_ptr + 16);
         const closure = try self.allocator.create(ClosureObject);
         const captures = try self.allocator.alloc(runtime_abi.Value, capture_count);
         for (captures) |*capture| capture.* = .{ .void = {} };
         for (0..capture_count) |index| {
-            self.heap.assignBorrowed(&captures[index], runtime_abi.bridgeValueToValue(native_slots[index]));
+            var capture_value = runtime_abi.bridgeValueToValue(native_slots[index]);
+            if (function_decl) |decl| {
+                const param_index = decl.param_count - @as(u32, @intCast(capture_count)) + @as(u32, @intCast(index));
+                const capture_ty = decl.local_types[param_index];
+                if (capture_ty.kind == .ffi_struct and capture_value == .raw_ptr and capture_value.raw_ptr != 0) {
+                    capture_value = .{ .raw_ptr = try self.copyStructFromNativeLayout(module, capture_ty.name orelse {
+                        self.rememberError("native closure capture type is missing a name");
+                        return error.RuntimeFailure;
+                    }, capture_value.raw_ptr) };
+                }
+            }
+            self.heap.assignBorrowed(&captures[index], capture_value);
         }
         closure.* = .{
-            .function_id = @intCast(function_id_i64),
-            .is_native = module.findFunctionById(@intCast(function_id_i64)) == null,
+            .function_id = function_id,
+            .is_native = function_decl == null,
             .captures = captures,
         };
         runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime closure fn={d} captures={d} ptr=0x{x}", .{ closure.function_id, capture_count, native_ptr });
@@ -193,8 +206,8 @@ pub const Vm = struct {
                         self.rememberError("struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
-                    const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
-                    const src_ptr: [*]runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
+                    const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(locals[index].raw_ptr);
+                    const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(arg.raw_ptr);
                     try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
                 } else self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
             } else {
@@ -285,7 +298,7 @@ pub const Vm = struct {
                         self.rememberError("subobject access requires a valid struct pointer");
                         return error.RuntimeFailure;
                     }
-                    const base_ptr: [*]runtime_abi.Value = @ptrFromInt(base.raw_ptr);
+                    const base_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(base.raw_ptr);
                     self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(base_ptr + value.offset) });
                 },
                 .field_ptr => |value| {
@@ -294,7 +307,7 @@ pub const Vm = struct {
                         self.rememberError("field access requires a valid struct pointer");
                         return error.RuntimeFailure;
                     }
-                    const base_ptr: [*]runtime_abi.Value = @ptrFromInt(base.raw_ptr);
+                    const base_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(base.raw_ptr);
                     const field_index: usize = @intCast(value.field_index);
                     const slot_ptr = base_ptr + field_index;
                     if (value.field_ty.kind == .ffi_struct) {
@@ -384,7 +397,7 @@ pub const Vm = struct {
                         self.rememberError("enum tag access requires a valid enum value");
                         return error.RuntimeFailure;
                     }
-                    const enum_ptr: [*]const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
+                    const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
                     if (enum_ptr[0] != .integer) {
                         self.rememberError("enum tag slot is not an integer");
                         return error.RuntimeFailure;
@@ -397,7 +410,7 @@ pub const Vm = struct {
                         self.rememberError("enum payload access requires a valid enum value");
                         return error.RuntimeFailure;
                     }
-                    const enum_ptr: [*]const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
+                    const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
                     self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], enum_ptr[1]);
                     _ = value.payload_ty;
                 },
@@ -435,8 +448,8 @@ pub const Vm = struct {
                         self.rememberError("struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
-                    const dst_ptr: [*]runtime_abi.Value = @ptrFromInt(dst_ptr_value.raw_ptr);
-                    const src_ptr: [*]runtime_abi.Value = @ptrFromInt(src_ptr_value.raw_ptr);
+                    const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr_value.raw_ptr);
+                    const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr_value.raw_ptr);
                     try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
                 },
                 .branch => |value| {
@@ -593,7 +606,7 @@ pub const Vm = struct {
             self.rememberError("native state type could not be resolved");
             return error.RuntimeFailure;
         };
-        const src_ptr: [*]runtime_abi.Value = @ptrFromInt(src_payload);
+        const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_payload);
         const runtime_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
         const native_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
         for (type_decl.fields, 0..) |field_decl, index| {
@@ -624,7 +637,7 @@ pub const Vm = struct {
             self.rememberError("nativeRecover used a userdata token for the wrong state type");
             return error.RuntimeFailure;
         }
-        if (box.payload != 0) {
+        if (box.runtime_payload == 0 and box.payload != 0) {
             box.runtime_payload = try self.materializeNativeStatePayload(module, type_name, box.payload);
         }
         if (box.runtime_payload == 0) {
@@ -701,8 +714,8 @@ pub const Vm = struct {
         self: *Vm,
         module: *const bytecode.Module,
         type_decl: bytecode.TypeDecl,
-        dst_ptr: [*]runtime_abi.Value,
-        src_ptr: [*]runtime_abi.Value,
+        dst_ptr: [*]align(1) runtime_abi.Value,
+        src_ptr: [*]align(1) runtime_abi.Value,
     ) !void {
         for (type_decl.fields, 0..) |field_decl, index| {
             if (field_decl.ty.kind == .ffi_struct) {
@@ -719,18 +732,25 @@ pub const Vm = struct {
                     return error.RuntimeFailure;
                 }
                 if (dst_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0) {
-                    self.heap.assignOwned(&dst_ptr[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
+                    const old = dst_ptr[index];
+                    dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                    self.heap.releaseValue(old);
                 }
                 if (src_ptr[index].raw_ptr == 0) {
                     // Treat null nested pointers as zero/default nested structs.
-                    self.heap.assignOwned(&dst_ptr[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
+                    const old = dst_ptr[index];
+                    dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                    self.heap.releaseValue(old);
                     continue;
                 }
-                const nested_dst: [*]runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
-                const nested_src: [*]runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
+                    const nested_dst: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
+                    const nested_src: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
                 try self.copyStruct(module, nested_type, nested_dst, nested_src);
             } else {
-                self.heap.assignBorrowed(&dst_ptr[index], src_ptr[index]);
+                self.heap.retainValue(src_ptr[index]);
+                const old = dst_ptr[index];
+                dst_ptr[index] = src_ptr[index];
+                self.heap.releaseValue(old);
             }
         }
     }
@@ -769,7 +789,7 @@ pub const Vm = struct {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
-        const fields: [*]runtime_abi.Value = @ptrFromInt(runtime_ptr);
+        const fields: [*]align(1) runtime_abi.Value = @ptrFromInt(runtime_ptr);
         for (type_decl.fields, 0..) |field_decl, index| {
             const offset = try native_layout.fieldOffset(module, type_name, index);
             const address = native_ptr + offset;
@@ -780,11 +800,17 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     };
                     if (fields[index] != .raw_ptr or fields[index].raw_ptr == 0) {
-                        self.heap.assignOwned(&fields[index], .{ .raw_ptr = try self.allocateStruct(module, nested_name) });
+                        const old = fields[index];
+                        fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                        self.heap.releaseValue(old);
                     }
                     try self.copyStructFromNativeLayoutInto(module, nested_name, fields[index].raw_ptr, address);
                 },
-                else => self.heap.assignOwned(&fields[index], try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr)),
+                else => {
+                    const old = fields[index];
+                    fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
+                    self.heap.releaseValue(old);
+                },
             }
         }
     }
@@ -803,7 +829,7 @@ pub const Vm = struct {
             self.rememberError("struct type could not be resolved");
             return error.RuntimeFailure;
         };
-        const fields: [*]const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+        const fields: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
         for (type_decl.fields, 0..) |field_decl, index| {
             const offset = try native_layout.fieldOffset(module, type_name, index);
             try helper_impl.writeNativeFieldValue(self, module, field_decl.ty, fields[index], native_ptr + offset);

@@ -101,6 +101,9 @@ pub const HybridRuntime = struct {
                 runtime_args[index].raw_ptr,
             ) };
         }
+        for (runtime_args) |value| {
+            try self.vm.pinNativeBoundaryValue(value);
+        }
 
         const result = try self.vm.runFunctionById(&self.module, function_decl.id, runtime_args, context.writer, .{
             .context = @as(?*anyopaque, @ptrCast(context)),
