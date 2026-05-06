@@ -90,8 +90,10 @@ pub fn lowerTypeDecls(
         if (!referenced.contains(type_decl.name)) continue;
         try types.append(.{
             .name = try allocator.dupe(u8, type_decl.name),
+            .kind = @enumFromInt(@intFromEnum(type_decl.kind)),
             .execution = type_decl.execution,
             .fields = try lowerFieldTypes(allocator, program, type_decl.fields),
+            .methods = try lowerMethodMembers(allocator, program, type_decl.methods),
             .ffi = if (type_decl.ffi) |ffi_info| try lowerFfiTypeInfo(allocator, program, ffi_info) else null,
         });
     }
@@ -168,6 +170,7 @@ pub fn markReachableExpr(
     reachable: *std.AutoHashMapUnmanaged(u32, void),
     expr: *model.Expr,
 ) anyerror!void {
+    try markReachableClassMethodsForExpr(allocator, program, reachable, expr);
     switch (expr.*) {
         .construct => |node| {
             for (node.fields) |field| try markReachableExpr(allocator, program, reachable, field.value);
@@ -180,6 +183,10 @@ pub fn markReachableExpr(
         .native_recover => |node| try markReachableExpr(allocator, program, reachable, node.value),
         .call => |node| {
             if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
+            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
+        },
+        .virtual_call => |node| {
+            try markReachableExpr(allocator, program, reachable, node.receiver);
             for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
         },
         .function_ref => |node| try markReachableFunction(allocator, program, reachable, node.function_id),
@@ -250,6 +257,30 @@ pub fn markReferencedType(
         }
         break;
     }
+}
+
+fn markReachableClassMethodsForExpr(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    expr: *model.Expr,
+) anyerror!void {
+    const expr_ty = model.hir.exprType(expr.*);
+    if (expr_ty.kind != .named or expr_ty.name == null) return;
+    const type_decl = typeDeclByName(program, expr_ty.name.?) orelse return;
+    if (type_decl.kind != .class) return;
+    for (type_decl.methods) |method_decl| {
+        if (functionIdByName(program, method_decl.full_name)) |function_id| {
+            try markReachableFunction(allocator, program, reachable, function_id);
+        }
+    }
+}
+
+fn typeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl {
+    for (program.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+    }
+    return null;
 }
 
 pub fn lowerFieldTypes(allocator: std.mem.Allocator, program: model.Program, fields: []const model.Field) ![]ir.Field {
@@ -369,6 +400,29 @@ pub fn findTypeFieldDefaultExpr(program: model.Program, type_name: []const u8, f
 
 pub fn fieldDeclIsTypeConstant(field_decl: model.Field, owner_type_name: []const u8) bool {
     return field_decl.storage == .immutable and field_decl.ty.kind == .named and field_decl.ty.name != null and std.mem.eql(u8, field_decl.ty.name.?, owner_type_name);
+}
+
+pub fn lowerMethodMembers(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    methods: []const model.MethodMember,
+) ![]ir.MethodMember {
+    const lowered = try allocator.alloc(ir.MethodMember, methods.len);
+    for (methods, 0..) |method_decl, index| {
+        lowered[index] = .{
+            .name = try allocator.dupe(u8, method_decl.name),
+            .function_id = functionIdByName(program, method_decl.full_name) orelse return error.UnsupportedExecutableFeature,
+            .receiver_offset = method_decl.receiver_offset,
+        };
+    }
+    return lowered;
+}
+
+fn functionIdByName(program: model.Program, name: []const u8) ?u32 {
+    for (program.functions) |function_decl| {
+        if (std.mem.eql(u8, function_decl.name, name)) return function_decl.id;
+    }
+    return null;
 }
 
 fn markReachablePattern(

@@ -29,6 +29,7 @@ pub const OpCode = enum(u8) {
     array_len,
     array_get,
     array_set,
+    array_append,
     enum_tag,
     enum_payload,
     load_indirect,
@@ -40,6 +41,7 @@ pub const OpCode = enum(u8) {
     print,
     call_runtime,
     call_native,
+    call_virtual,
     call_value,
     ret,
 };
@@ -75,6 +77,7 @@ pub const Instruction = union(OpCode) {
     array_len: struct { dst: u32, array: u32 },
     array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef },
     array_set: struct { array: u32, index: u32, src: u32 },
+    array_append: struct { array: u32, src: u32 },
     enum_tag: struct { dst: u32, src: u32 },
     enum_payload: struct { dst: u32, src: u32, payload_ty: TypeRef },
     load_indirect: struct { dst: u32, ptr: u32, ty: TypeRef },
@@ -86,6 +89,7 @@ pub const Instruction = union(OpCode) {
     print: struct { src: u32, ty: TypeRef },
     call_runtime: struct { function_id: u32, args: []const u32, dst: ?u32 = null },
     call_native: struct { function_id: u32, args: []const u32, dst: ?u32 = null, return_ty: TypeRef = .{ .kind = .void } },
+    call_virtual: struct { receiver: u32, static_type_name: []const u8, method_name: []const u8, args: []const u32, return_ty: TypeRef = .{ .kind = .void }, dst: ?u32 = null },
     call_value: struct { callee: u32, args: []const u32, dst: ?u32 = null },
     ret: struct { src: ?u32 = null },
 };

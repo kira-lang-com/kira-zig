@@ -44,14 +44,8 @@ pub fn lowerImplicitSelfMethodCall(
     const self_binding = scope.get("self") orelse return null;
     const owner_type = resolveFieldContainerType(ctx, self_binding.ty) orelse return null;
     const resolved_method = (try resolveMethodMemberOrNull(ctx, owner_type, node.callee.identifier.name.segments[0].text, node.span)) orelse return null;
-    const receiver = try adjustMethodReceiver(
-        ctx,
-        try makeSelfLocalExpr(ctx, self_binding, node.span),
-        owner_type,
-        resolved_method,
-        node.span,
-    );
-    return (try buildResolvedMethodCallExpr(ctx, resolved_method, receiver, node, imports, scope, function_headers)).*;
+    const receiver = try makeSelfLocalExpr(ctx, self_binding, node.span);
+    return (try buildDispatchedMethodCallExpr(ctx, resolved_method, receiver, owner_type, node, imports, scope, function_headers)).*;
 }
 
 pub fn makeSelfLocalExpr(
@@ -407,6 +401,26 @@ pub fn buildResolvedMethodCallExpr(
     return lowered;
 }
 
+pub fn buildDispatchedMethodCallExpr(
+    ctx: *shared.Context,
+    method_decl: shared.MethodMember,
+    receiver: *model.Expr,
+    receiver_type: model.ResolvedType,
+    node: syntax.ast.CallExpr,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !*model.Expr {
+    const lowered = try ctx.allocator.create(model.Expr);
+    if (shared.isClassType(ctx, receiver_type) and receiver_type.kind == .named and receiver_type.name != null and shared.hasKnownSubclass(ctx, receiver_type.name.?)) {
+        try lowerVirtualMethodCall(ctx, lowered, method_decl, receiver, receiver_type.name.?, node, imports, scope, function_headers);
+        return lowered;
+    }
+    const adjusted_receiver = try adjustMethodReceiver(ctx, receiver, receiver_type, method_decl, node.span);
+    try lowerResolvedMethodCall(ctx, lowered, method_decl, adjusted_receiver, node, imports, scope, function_headers);
+    return lowered;
+}
+
 pub fn lowerResolvedMethodCall(
     ctx: *shared.Context,
     lowered: *model.Expr,
@@ -490,6 +504,53 @@ pub fn lowerResolvedMethodCall(
     }
 
     return error.DiagnosticsEmitted;
+}
+
+pub fn lowerVirtualMethodCall(
+    ctx: *shared.Context,
+    lowered: *model.Expr,
+    method_decl: shared.MethodMember,
+    receiver: *model.Expr,
+    static_type_name: []const u8,
+    node: syntax.ast.CallExpr,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !void {
+    const resolved_return_type = if (method_decl.return_type.kind == .unknown and function_headers != null)
+        if (function_headers.?.get(method_decl.full_name)) |header| header.return_type else method_decl.return_type
+    else
+        method_decl.return_type;
+    const trailing_callback_type = try trailingCallbackType(ctx, node, method_decl.params);
+    const explicit_param_count = method_decl.params.len - (if (trailing_callback_type != null) @as(usize, 1) else 0);
+    if (node.args.len != explicit_param_count) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM042",
+            .title = "wrong number of arguments",
+            .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected {d} explicit argument(s) but received {d}.", .{ method_decl.full_name, explicit_param_count, node.args.len }),
+            .labels = &.{diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments")},
+            .help = "Update the call so it matches the method signature exactly.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
+    var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+    for (node.args, 0..) |arg, index| {
+        try args.append(try lowerCallArgument(ctx, arg.value, method_decl.params[index], imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span));
+    }
+    if (trailing_callback_type) |callback_type| {
+        try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, function_headers orelse return error.DiagnosticsEmitted));
+    }
+
+    lowered.* = .{ .virtual_call = .{
+        .receiver = receiver,
+        .static_type_name = try ctx.allocator.dupe(u8, static_type_name),
+        .method_name = try ctx.allocator.dupe(u8, method_decl.name),
+        .args = try args.toOwnedSlice(),
+        .ty = resolved_return_type,
+        .span = node.span,
+    } };
 }
 
 pub fn trailingCallbackType(ctx: *shared.Context, node: syntax.ast.CallExpr, params: []const model.ResolvedType) !?model.ResolvedType {

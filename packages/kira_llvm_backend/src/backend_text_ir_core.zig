@@ -166,6 +166,9 @@ pub fn buildTextFunctionBody(
     var writer = &body.writer;
     const function_name = variant.symbol_name;
     try writer.writeAll("define ");
+    if (request.mode == .hybrid and builtin.os.tag == .windows) {
+        try writer.writeAll("dllexport ");
+    }
     try writer.writeAll(llvmValueTypeText(variant.return_type));
     try writer.writeByte(' ');
     try writeLlvmSymbol(writer, function_name);
@@ -839,6 +842,7 @@ pub fn buildTextFunctionBody(
                     value.src, value.index, temp_index,
                 });
             },
+            .array_append => return error.UnsupportedExecutableFeature,
             .enum_tag => |value| try enum_ops.emitEnumTag(writer, value),
             .enum_payload => |value| try enum_ops.emitEnumPayload(writer, value),
             .load_indirect => |value| {
@@ -986,6 +990,26 @@ pub fn buildTextFunctionBody(
             },
             .call => |value| {
                 try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, value, &temp_counter);
+            },
+            .call_virtual => |value| {
+                const type_decl = findTypeDecl(request.program, value.static_type_name) orelse return error.UnknownType;
+                var resolved_callee: ?u32 = null;
+                for (type_decl.methods) |method_decl| {
+                    if (std.mem.eql(u8, method_decl.name, value.method_name)) {
+                        resolved_callee = method_decl.function_id;
+                        break;
+                    }
+                }
+                const callee = resolved_callee orelse return error.UnknownFunction;
+                const args = try allocator.alloc(u32, value.args.len + 1);
+                defer allocator.free(args);
+                args[0] = value.receiver;
+                @memcpy(args[1..], value.args);
+                try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, .{
+                    .callee = callee,
+                    .args = args,
+                    .dst = value.dst,
+                }, &temp_counter);
             },
             .call_value => |value| {
                 try writeIndirectCallInstruction(writer, request, symbol_names, request.program, register_types, value);

@@ -1,0 +1,11 @@
+import support as Support
+
+@Main
+function main() {
+    let config = Support.makeConfig()
+    let label = Support.Label()
+    print(label.render())
+
+    print(config.node.value)
+    return
+}

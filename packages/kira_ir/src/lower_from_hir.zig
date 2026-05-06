@@ -167,8 +167,9 @@ fn lowerFunctionBatch(
 }
 
 fn shouldParallelLower(options: LowerProgramOptions, plan_count: usize) bool {
-    const worker_count = resolveLowerWorkerCount(options, plan_count);
-    return worker_count > 1;
+    _ = options;
+    _ = plan_count;
+    return false;
 }
 
 fn resolveLowerWorkerCount(options: LowerProgramOptions, plan_count: usize) usize {
@@ -328,6 +329,12 @@ fn lowerFunction(
     defer lowerer.hidden_local_types.deinit();
     defer lowerer.loop_stack.deinit();
     var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
+    for (function_decl.locals) |local| {
+        if (!local.is_param or !lowerer.isBoxedLocal(local.id)) continue;
+        const value_reg = lowerer.freshRegister();
+        try instructions.append(.{ .load_local = .{ .dst = value_reg, .local = local.id } });
+        try lowerer.initializeBoxedLocal(&instructions, local.id, try lowerResolvedType(program, local.ty), value_reg);
+    }
     const terminated = try lowerer.lowerStatements(&instructions, function_decl.body);
 
     if (!terminated and (instructions.items.len == 0 or instructions.items[instructions.items.len - 1] != .ret)) {
@@ -472,6 +479,11 @@ fn countCallbacksInExpr(expr: *model.Expr) u32 {
             for (node.args) |arg| count += countCallbacksInExpr(arg);
             break :blk count;
         },
+        .virtual_call => |node| blk: {
+            var count = countCallbacksInExpr(node.receiver);
+            for (node.args) |arg| count += countCallbacksInExpr(arg);
+            break :blk count;
+        },
         .call_value => |node| blk: {
             var count = countCallbacksInExpr(node.callee);
             for (node.args) |arg| count += countCallbacksInExpr(arg);
@@ -566,6 +578,16 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
     switch (expr.*) {
         .call => |call| {
             if (call.trailing_builder != null) return error.UnsupportedExecutableFeature;
+            if (std.mem.eql(u8, call.callee_name, "array.append")) {
+                if (call.args.len != 2) return error.UnsupportedExecutableFeature;
+                const array = try lowerer.lowerExpr(instructions, call.args[0]);
+                const src = try lowerer.lowerExpr(instructions, call.args[1]);
+                try instructions.append(.{ .array_append = .{
+                    .array = array,
+                    .src = src,
+                } });
+                return;
+            }
             if (std.mem.eql(u8, call.callee_name, "print")) {
                 if (call.args.len != 1) return error.UnsupportedExecutableFeature;
                 const reg = try lowerer.lowerExpr(instructions, call.args[0]);
@@ -595,6 +617,20 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
                 .args = try args.toOwnedSlice(),
                 .param_types = try lowerResolvedTypeSlice(lowerer.allocator, lowerer.program, call.param_types),
                 .return_type = try lowerResolvedType(lowerer.program, call.ty),
+                .dst = null,
+            } });
+        },
+        .virtual_call => |call| {
+            const receiver = try lowerer.lowerExpr(instructions, call.receiver);
+            var args = std.array_list.Managed(u32).init(lowerer.allocator);
+            defer args.deinit();
+            for (call.args) |arg| try args.append(try lowerer.lowerExpr(instructions, arg));
+            try instructions.append(.{ .call_virtual = .{
+                .receiver = receiver,
+                .static_type_name = call.static_type_name,
+                .method_name = call.method_name,
+                .args = try args.toOwnedSlice(),
+                .return_ty = if (call.ty.kind == .unknown) .{ .kind = .void } else try lowerResolvedType(lowerer.program, call.ty),
                 .dst = null,
             } });
         },
@@ -648,14 +684,13 @@ pub const Lowerer = struct {
         const function_id = self.state.next_generated_function_id;
         self.state.next_generated_function_id += 1;
         const function_name = try std.fmt.allocPrint(self.allocator, "{s}$callback_{d}", .{ self.function_name, function_id });
-        const nested_callback = std.mem.indexOf(u8, self.function_name, "$callback_") != null;
         try self.state.generated_functions.append(try lowerGeneratedCallbackFunction(
             self.allocator,
             self.program,
             self.state,
             function_id,
             function_name,
-            if (nested_callback) .runtime else self.execution,
+            self.execution,
             node,
         ));
         return function_id;
@@ -672,9 +707,7 @@ pub const Lowerer = struct {
         switch (statement) {
             .let_stmt => |node| {
                 if (self.isBoxedLocal(node.local_id)) {
-                    const ptr = self.freshRegister();
-                    try instructions.append(.{ .local_ptr = .{ .dst = ptr, .local = node.local_id } });
-                    try instructions.append(.{ .store_local = .{ .local = node.local_id, .src = ptr } });
+                    try self.initializeBoxedLocal(instructions, node.local_id, try lowerResolvedType(self.program, node.ty), null);
                 }
                 if (node.value) |value| {
                     const reg = try self.lowerExpr(instructions, value);
@@ -806,6 +839,22 @@ pub const Lowerer = struct {
                     .args = try args.toOwnedSlice(),
                     .param_types = try lowerResolvedTypeSlice(self.allocator, self.program, node.param_types),
                     .return_type = try lowerResolvedType(self.program, node.ty),
+                    .dst = dst,
+                } });
+                break :blk dst orelse return error.UnsupportedExecutableFeature;
+            },
+            .virtual_call => |node| blk: {
+                const receiver = try self.lowerExpr(instructions, node.receiver);
+                var args = std.array_list.Managed(u32).init(self.allocator);
+                defer args.deinit();
+                for (node.args) |arg| try args.append(try self.lowerExpr(instructions, arg));
+                const dst = if (node.ty.kind == .void) null else self.freshRegister();
+                try instructions.append(.{ .call_virtual = .{
+                    .receiver = receiver,
+                    .static_type_name = node.static_type_name,
+                    .method_name = node.method_name,
+                    .args = try args.toOwnedSlice(),
+                    .return_ty = try lowerResolvedType(self.program, node.ty),
                     .dst = dst,
                 } });
                 break :blk dst orelse return error.UnsupportedExecutableFeature;
@@ -1234,6 +1283,22 @@ pub const Lowerer = struct {
         }
         try instructions.append(.{ .store_local = .{ .local = local, .src = src } });
     }
+
+    fn initializeBoxedLocal(
+        self: *Lowerer,
+        instructions: *std.array_list.Managed(ir.Instruction),
+        local: u32,
+        ty: ir.ValueType,
+        initial_value: ?u32,
+    ) !void {
+        const cell_local = try self.freshHiddenLocal(ty);
+        const ptr = self.freshRegister();
+        try instructions.append(.{ .local_ptr = .{ .dst = ptr, .local = cell_local } });
+        try instructions.append(.{ .store_local = .{ .local = local, .src = ptr } });
+        if (initial_value) |src| {
+            try instructions.append(.{ .store_indirect = .{ .ptr = ptr, .src = src, .ty = ty } });
+        }
+    }
 };
 
 fn lowerCompareOp(op: model.hir.BinaryOp) ir.CompareOp {
@@ -1305,6 +1370,14 @@ fn cloneInstruction(allocator: std.mem.Allocator, instruction: ir.Instruction) !
         .call => |value| .{ .call = .{
             .callee = value.callee,
             .args = try cloneU32Slice(allocator, value.args),
+            .dst = value.dst,
+        } },
+        .call_virtual => |value| .{ .call_virtual = .{
+            .receiver = value.receiver,
+            .static_type_name = try allocator.dupe(u8, value.static_type_name),
+            .method_name = try allocator.dupe(u8, value.method_name),
+            .args = try cloneU32Slice(allocator, value.args),
+            .return_ty = value.return_ty,
             .dst = value.dst,
         } },
         .call_value => |value| .{ .call_value = .{

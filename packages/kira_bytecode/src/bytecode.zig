@@ -60,7 +60,20 @@ pub const LifecycleHook = struct {
 
 pub const TypeDecl = struct {
     name: []const u8,
+    kind: TypeKind = .struct_decl,
     fields: []Field,
+    methods: []MethodMember = &.{},
+};
+
+pub const TypeKind = enum(u8) {
+    class,
+    struct_decl,
+};
+
+pub const MethodMember = struct {
+    name: []const u8,
+    function_id: u32,
+    receiver_offset: u32,
 };
 
 pub const EnumTypeDecl = struct {
@@ -107,10 +120,17 @@ pub fn serialize(writer: anytype, module: Module) !void {
 
     for (module.types) |type_decl| {
         try writeString(writer, type_decl.name);
+        try writer.writeByte(@intFromEnum(type_decl.kind));
         try writer.writeInt(u32, @as(u32, @intCast(type_decl.fields.len)), .little);
         for (type_decl.fields) |field_decl| {
             try writeString(writer, field_decl.name);
             try writeTypeRef(writer, field_decl.ty);
+        }
+        try writer.writeInt(u32, @as(u32, @intCast(type_decl.methods.len)), .little);
+        for (type_decl.methods) |method_decl| {
+            try writeString(writer, method_decl.name);
+            try writer.writeInt(u32, method_decl.function_id, .little);
+            try writer.writeInt(u32, method_decl.receiver_offset, .little);
         }
     }
 
@@ -285,6 +305,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.index, .little);
                     try writer.writeInt(u32, value.src, .little);
                 },
+                .array_append => |value| {
+                    try writer.writeInt(u32, value.array, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                },
                 .enum_tag => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.src, .little);
@@ -323,6 +347,13 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .call_runtime => |value| try writeCall(writer, value.function_id, value.args, value.dst),
                 .call_native => |value| {
                     try writeCall(writer, value.function_id, value.args, value.dst);
+                    try writeTypeRef(writer, value.return_ty);
+                },
+                .call_virtual => |value| {
+                    try writer.writeInt(u32, value.receiver, .little);
+                    try writeString(writer, value.static_type_name);
+                    try writeString(writer, value.method_name);
+                    try writeCallPayload(writer, value.args, value.dst);
                     try writeTypeRef(writer, value.return_ty);
                 },
                 .call_value => |value| try writeIndirectCall(writer, value.callee, value.args, value.dst),
@@ -384,6 +415,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
 
     for (0..type_count) |_| {
         const name = try readString(allocator, reader);
+        const kind: TypeKind = @enumFromInt(try reader.takeByte());
         const field_count = try reader.takeInt(u32, .little);
         var fields = std.array_list.Managed(Field).init(allocator);
         for (0..field_count) |_| {
@@ -392,9 +424,20 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .ty = try readTypeRef(allocator, reader),
             });
         }
+        const method_count = try reader.takeInt(u32, .little);
+        var methods = std.array_list.Managed(MethodMember).init(allocator);
+        for (0..method_count) |_| {
+            try methods.append(.{
+                .name = try readString(allocator, reader),
+                .function_id = try reader.takeInt(u32, .little),
+                .receiver_offset = try reader.takeInt(u32, .little),
+            });
+        }
         try types.append(.{
             .name = name,
+            .kind = kind,
             .fields = try fields.toOwnedSlice(),
+            .methods = try methods.toOwnedSlice(),
         });
     }
 
@@ -590,6 +633,10 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .index = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
                 } }),
+                .array_append => try instructions.append(.{ .array_append = .{
+                    .array = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                } }),
                 .enum_tag => try instructions.append(.{ .enum_tag = .{
                     .dst = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
@@ -627,6 +674,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 } }),
                 .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
                 .call_native => try instructions.append(.{ .call_native = try readNativeCall(allocator, reader) }),
+                .call_virtual => try instructions.append(.{ .call_virtual = try readVirtualCall(allocator, reader) }),
                 .call_value => try instructions.append(.{ .call_value = try readIndirectCall(allocator, reader) }),
                 .ret => try instructions.append(.{ .ret = .{
                     .src = blk: {
@@ -672,13 +720,15 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
 
 fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !void {
     try writer.writeInt(u32, function_id, .little);
-    try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
-    for (args) |arg| try writer.writeInt(u32, arg, .little);
-    try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
+    try writeCallPayload(writer, args, dst);
 }
 
 fn writeIndirectCall(writer: anytype, callee: u32, args: []const u32, dst: ?u32) !void {
     try writer.writeInt(u32, callee, .little);
+    try writeCallPayload(writer, args, dst);
+}
+
+fn writeCallPayload(writer: anytype, args: []const u32, dst: ?u32) !void {
     try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
     for (args) |arg| try writer.writeInt(u32, arg, .little);
     try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
@@ -724,23 +774,42 @@ fn readIndirectCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(i
     return .{ .callee = call.callee, .args = call.args, .dst = call.dst };
 }
 
+fn readVirtualCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_virtual") {
+    const receiver = try reader.takeInt(u32, .little);
+    const static_type_name = try readString(allocator, reader);
+    const method_name = try readString(allocator, reader);
+    const payload = try readCallPayload(allocator, reader);
+    return .{
+        .receiver = receiver,
+        .static_type_name = static_type_name,
+        .method_name = method_name,
+        .args = payload.args,
+        .return_ty = try readTypeRef(allocator, reader),
+        .dst = payload.dst,
+    };
+}
+
 fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { function_id: u32, args: []const u32, dst: ?u32 } {
     const function_id = try reader.takeInt(u32, .little);
-    const arg_count = try reader.takeInt(u32, .little);
-    const args = try allocator.alloc(u32, arg_count);
-    for (0..arg_count) |index| {
-        args[index] = try reader.takeInt(u32, .little);
-    }
-    const raw_dst = try reader.takeInt(i32, .little);
+    const payload = try readCallPayload(allocator, reader);
     return .{
         .function_id = function_id,
-        .args = args,
-        .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
+        .args = payload.args,
+        .dst = payload.dst,
     };
 }
 
 fn readIndirectCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { callee: u32, args: []const u32, dst: ?u32 } {
     const callee = try reader.takeInt(u32, .little);
+    const payload = try readCallPayload(allocator, reader);
+    return .{
+        .callee = callee,
+        .args = payload.args,
+        .dst = payload.dst,
+    };
+}
+
+fn readCallPayload(allocator: std.mem.Allocator, reader: anytype) !struct { args: []const u32, dst: ?u32 } {
     const arg_count = try reader.takeInt(u32, .little);
     const args = try allocator.alloc(u32, arg_count);
     for (0..arg_count) |index| {
@@ -748,7 +817,6 @@ fn readIndirectCallParts(allocator: std.mem.Allocator, reader: anytype) !struct 
     }
     const raw_dst = try reader.takeInt(i32, .little);
     return .{
-        .callee = callee,
         .args = args,
         .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
     };

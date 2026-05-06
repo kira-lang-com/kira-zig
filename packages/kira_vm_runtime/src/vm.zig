@@ -241,7 +241,7 @@ pub const Vm = struct {
                     self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = closure_ptr });
                 },
                 .alloc_struct => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateStruct(module, value.type_name) }),
-                .alloc_enum => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateEnum(registers, value.discriminant, value.payload_src) }),
+                .alloc_enum => |value| self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.allocateEnum(value.enum_type_name, registers, value.discriminant, value.payload_src) }),
                 .alloc_native_state => |value| {
                     const src_value = registers[value.src];
                     if (src_value != .raw_ptr or src_value.raw_ptr == 0) {
@@ -391,6 +391,15 @@ pub const Vm = struct {
                     }
                     self.heap.replaceArrayItem(&array_ptr.items[index], registers[value.src]);
                 },
+                .array_append => |value| {
+                    const array_value = registers[value.array];
+                    if (array_value != .raw_ptr or array_value.raw_ptr == 0) {
+                        self.rememberError("array append requires a valid array handle");
+                        return error.RuntimeFailure;
+                    }
+                    const array_ptr: *ArrayObject = @ptrFromInt(array_value.raw_ptr);
+                    try self.heap.appendArrayItem(array_ptr, registers[value.src]);
+                },
                 .enum_tag => |value| {
                     const enum_value = registers[value.src];
                     if (enum_value != .raw_ptr or enum_value.raw_ptr == 0) {
@@ -482,6 +491,41 @@ pub const Vm = struct {
                     defer self.allocator.free(call_args);
                     var result = try callback(hooks.context, value.function_id, call_args);
                     result = try self.materializeNativeResult(module, value.return_ty, result);
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
+                },
+                .call_virtual => |value| {
+                    const receiver_value = registers[value.receiver];
+                    if (receiver_value != .raw_ptr or receiver_value.raw_ptr == 0) {
+                        self.rememberError("virtual method call requires a valid class receiver");
+                        return error.RuntimeFailure;
+                    }
+                    const actual_type_name = self.heap.getStructTypeName(receiver_value.raw_ptr) orelse value.static_type_name;
+                    const resolved_method = self.resolveVirtualMethod(module, actual_type_name, value.method_name) orelse {
+                        self.rememberError("virtual method could not be resolved on the concrete receiver type");
+                        return error.RuntimeFailure;
+                    };
+                    const adjusted_receiver = if (resolved_method.receiver_offset == 0)
+                        receiver_value.raw_ptr
+                    else
+                        @intFromPtr((@as([*]align(1) runtime_abi.Value, @ptrFromInt(receiver_value.raw_ptr)) + resolved_method.receiver_offset));
+                    const explicit_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
+                    defer self.allocator.free(explicit_args);
+                    var call_args = try self.allocator.alloc(runtime_abi.Value, explicit_args.len + 1);
+                    defer self.allocator.free(call_args);
+                    call_args[0] = .{ .raw_ptr = adjusted_receiver };
+                    @memcpy(call_args[1..], explicit_args);
+
+                    const result = if (module.findFunctionById(resolved_method.function_id) != null)
+                        try self.runFunctionById(module, resolved_method.function_id, call_args, writer, hooks)
+                    else native_result: {
+                        const callback = hooks.call_native orelse {
+                            self.rememberError("vm native bridge was not installed");
+                            return error.RuntimeFailure;
+                        };
+                        var native_value = try callback(hooks.context, resolved_method.function_id, call_args);
+                        native_value = try self.materializeNativeResult(module, value.return_ty, native_value);
+                        break :native_result native_value;
+                    };
                     if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
                 },
                 .call_value => |value| {
@@ -598,7 +642,7 @@ pub const Vm = struct {
         for (type_decl.fields, 0..) |field_decl, index| {
             fields[index] = try self.zeroValueForType(module, field_decl.ty);
         }
-        return self.heap.registerStruct(fields);
+        return self.heap.registerStruct(type_name, fields);
     }
 
     fn allocateNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, type_id: u64, src_payload: usize) !usize {
@@ -607,10 +651,8 @@ pub const Vm = struct {
             return error.RuntimeFailure;
         };
         const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_payload);
-        const runtime_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
         const native_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
         for (type_decl.fields, 0..) |field_decl, index| {
-            runtime_payload[index] = runtime_abi.bridgeValueFromValue(src_ptr[index]);
             var native_value = src_ptr[index];
             if (field_decl.ty.kind == .ffi_struct and native_value == .raw_ptr and native_value.raw_ptr != 0) {
                 native_value = .{ .raw_ptr = try self.copyStructToNativeLayout(
@@ -626,7 +668,7 @@ pub const Vm = struct {
         box.* = .{
             .type_id = type_id,
             .payload = @intFromPtr(native_payload.ptr),
-            .runtime_payload = @intFromPtr(runtime_payload.ptr),
+            .runtime_payload = 0,
         };
         return @intFromPtr(box);
     }
@@ -697,17 +739,31 @@ pub const Vm = struct {
         return self.heap.registerArray(object);
     }
 
-    fn allocateEnum(self: *Vm, registers: []const runtime_abi.Value, discriminant: u32, payload_src: ?u32) !usize {
+    fn allocateEnum(self: *Vm, enum_type_name: []const u8, registers: []const runtime_abi.Value, discriminant: u32, payload_src: ?u32) !usize {
         const slots = try self.allocator.alloc(runtime_abi.Value, 2);
         slots[0] = .{ .integer = @as(i64, @intCast(discriminant)) };
         slots[1] = if (payload_src) |src| registers[src] else .{ .void = {} };
-        return self.heap.registerStruct(slots);
+        return self.heap.registerStruct(enum_type_name, slots);
     }
 
     fn typeFieldCount(self: *Vm, module: *const bytecode.Module, type_name: []const u8) ?usize {
         _ = self;
         const type_decl = helper_impl.findType(module, type_name) orelse return null;
         return type_decl.fields.len;
+    }
+
+    fn resolveVirtualMethod(
+        self: *Vm,
+        module: *const bytecode.Module,
+        actual_type_name: []const u8,
+        method_name: []const u8,
+    ) ?bytecode.MethodMember {
+        _ = self;
+        const type_decl = helper_impl.findType(module, actual_type_name) orelse return null;
+        for (type_decl.methods) |method_decl| {
+            if (std.mem.eql(u8, method_decl.name, method_name)) return method_decl;
+        }
+        return null;
     }
 
     fn copyStruct(
@@ -781,7 +837,7 @@ pub const Vm = struct {
         for (type_decl.fields, 0..) |field_decl, index| {
             fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
         }
-        return self.heap.registerStruct(fields);
+        return self.heap.registerStruct(type_name, fields);
     }
 
     fn copyStructFromNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {

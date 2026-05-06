@@ -234,7 +234,6 @@ pub fn lowerProgramWithOptions(
     for (imported_globals.types) |type_decl| {
         _ = try resolveTypeHeader(&ctx, &local_types, &resolver_states, &type_headers, .{ .imported = type_decl }, type_decl.name);
     }
-
     var local_type_iterator = local_types.iterator();
     while (local_type_iterator.next()) |entry| {
         _ = try resolveTypeHeader(&ctx, &local_types, &resolver_states, &type_headers, .{ .local = entry.value_ptr.* }, entry.key_ptr.*);
@@ -247,6 +246,7 @@ pub fn lowerProgramWithOptions(
             .kind = entry.value_ptr.kind,
             .execution = entry.value_ptr.execution,
             .fields = @constCast(entry.value_ptr.fields),
+            .methods = try lowerTypeMethodMembers(allocator, entry.value_ptr.methods),
             .ffi = entry.value_ptr.ffi,
             .span = entry.value_ptr.span,
         });
@@ -775,6 +775,22 @@ fn flattenDefaultCalleeName(allocator: std.mem.Allocator, expr: *syntax.ast.Expr
         },
         else => allocator.dupe(u8, "<expr>"),
     };
+}
+
+fn lowerTypeMethodMembers(
+    allocator: std.mem.Allocator,
+    methods: []const shared.MethodMember,
+) ![]model.MethodMember {
+    const lowered = try allocator.alloc(model.MethodMember, methods.len);
+    for (methods, 0..) |method_decl, index| {
+        lowered[index] = .{
+            .name = try allocator.dupe(u8, method_decl.name),
+            .full_name = try allocator.dupe(u8, method_decl.full_name),
+            .receiver_offset = method_decl.receiver_offset,
+            .span = method_decl.span,
+        };
+    }
+    return lowered;
 }
 
 fn ownedEnumSlice(

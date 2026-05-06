@@ -2,9 +2,9 @@ const std = @import("std");
 const model = @import("kira_semantics_model");
 
 pub fn collectBoxedLocals(allocator: std.mem.Allocator, local_count: usize, body: []const model.Statement) ![]bool {
-    _ = body;
     const boxed = try allocator.alloc(bool, local_count);
     @memset(boxed, false);
+    collectBoxedFromStatements(boxed, body);
     return boxed;
 }
 
@@ -71,6 +71,10 @@ fn collectBoxedFromExpr(boxed: []bool, expr: *const model.Expr) void {
         .call => |node| for (node.args) |arg| collectBoxedFromExpr(boxed, arg),
         .call_value => |node| {
             collectBoxedFromExpr(boxed, node.callee);
+            for (node.args) |arg| collectBoxedFromExpr(boxed, arg);
+        },
+        .virtual_call => |node| {
+            collectBoxedFromExpr(boxed, node.receiver);
             for (node.args) |arg| collectBoxedFromExpr(boxed, arg);
         },
         .array => |node| for (node.elements) |element| collectBoxedFromExpr(boxed, element),

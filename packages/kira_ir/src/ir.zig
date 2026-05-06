@@ -50,9 +50,22 @@ pub const LifecycleHook = struct {
 
 pub const TypeDecl = struct {
     name: []const u8,
+    kind: TypeKind = .struct_decl,
     execution: runtime_abi.FunctionExecution = .inherited,
     fields: []Field,
+    methods: []MethodMember = &.{},
     ffi: ?FfiTypeInfo = null,
+};
+
+pub const TypeKind = enum {
+    class,
+    struct_decl,
+};
+
+pub const MethodMember = struct {
+    name: []const u8,
+    function_id: u32,
+    receiver_offset: u32,
 };
 
 pub const EnumTypeDecl = struct {
@@ -148,6 +161,7 @@ pub const Instruction = union(enum) {
     array_len: ArrayLen,
     array_get: ArrayGet,
     array_set: ArraySet,
+    array_append: ArrayAppend,
     enum_tag: EnumTag,
     enum_payload: EnumPayload,
     load_indirect: LoadIndirect,
@@ -158,6 +172,7 @@ pub const Instruction = union(enum) {
     label: Label,
     print: Print,
     call: Call,
+    call_virtual: VirtualCall,
     call_value: CallValue,
     ret: Return,
 };
@@ -333,6 +348,11 @@ pub const ArraySet = struct {
     src: u32,
 };
 
+pub const ArrayAppend = struct {
+    array: u32,
+    src: u32,
+};
+
 pub const EnumTag = struct {
     dst: u32,
     src: u32,
@@ -384,6 +404,15 @@ pub const Print = struct {
 pub const Call = struct {
     callee: u32,
     args: []const u32,
+    dst: ?u32 = null,
+};
+
+pub const VirtualCall = struct {
+    receiver: u32,
+    static_type_name: []const u8,
+    method_name: []const u8,
+    args: []const u32,
+    return_ty: ValueType,
     dst: ?u32 = null,
 };
 

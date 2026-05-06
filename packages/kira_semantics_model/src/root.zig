@@ -27,6 +27,7 @@ pub const BuilderSwitchCase = hir.BuilderSwitchCase;
 pub const SwitchCase = hir.SwitchCase;
 pub const TypeDecl = hir.TypeDecl;
 pub const TypeKind = hir.TypeKind;
+pub const MethodMember = hir.MethodMember;
 pub const ConstructForm = hir.ConstructForm;
 pub const Function = hir.Function;
 pub const Parameter = hir.Parameter;

@@ -36,7 +36,9 @@ pub const resolveMethodMemberOrNull = members.resolveMethodMemberOrNull;
 pub const resolveMethodMember = members.resolveMethodMember;
 pub const adjustMethodReceiver = members.adjustMethodReceiver;
 pub const buildResolvedMethodCallExpr = members.buildResolvedMethodCallExpr;
+pub const buildDispatchedMethodCallExpr = members.buildDispatchedMethodCallExpr;
 pub const lowerResolvedMethodCall = members.lowerResolvedMethodCall;
+pub const lowerVirtualMethodCall = members.lowerVirtualMethodCall;
 pub const trailingCallbackType = members.trailingCallbackType;
 pub const lowerTrailingCallbackValue = members.lowerTrailingCallbackValue;
 pub const lowerCallbackBlockValue = members.lowerCallbackBlockValue;
@@ -889,8 +891,6 @@ fn lowerBinaryOperatorMethod(
     if (lhs_type.kind != .named and lhs_type.kind != .native_state_view) return null;
 
     const resolved_method = (try resolveMethodMemberOrNull(ctx, lhs_type, method_name, node.span)) orelse return null;
-    const receiver = try adjustMethodReceiver(ctx, lhs, lhs_type, resolved_method, node.span);
-    const lowered = try ctx.allocator.create(model.Expr);
     const args = try ctx.allocator.alloc(syntax.ast.CallArg, 1);
     args[0] = .{
         .label = null,
@@ -904,7 +904,7 @@ fn lowerBinaryOperatorMethod(
         .trailing_callback = null,
         .span = node.span,
     };
-    try lowerResolvedMethodCall(ctx, lowered, resolved_method, receiver, fake_call, imports, scope, function_headers);
+    const lowered = try buildDispatchedMethodCallExpr(ctx, resolved_method, lhs, lhs_type, fake_call, imports, scope, function_headers);
     return lowered.*;
 }
 

@@ -133,6 +133,12 @@ fn findDirectFfiUseInExpr(
                 if (findDirectFfiUseInBuilder(builder, function_headers)) |use| return use;
             }
         },
+        .virtual_call => |node| {
+            if (findDirectFfiUseInExpr(node.receiver.*, function_headers)) |use| return use;
+            for (node.args) |arg| {
+                if (findDirectFfiUseInExpr(arg.*, function_headers)) |use| return use;
+            }
+        },
         .call_value => |node| {
             if (findDirectFfiUseInExpr(node.callee.*, function_headers)) |use| return use;
             for (node.args) |arg| {

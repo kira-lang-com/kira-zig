@@ -286,6 +286,7 @@ pub fn resolveImportedTypeHeader(
     try appendDeclaredImportedMethods(ctx, type_decl.name, &methods);
 
     return .{
+        .kind = type_decl.kind,
         .execution = type_decl.execution,
         .fields = try fields.toOwnedSlice(),
         .methods = try methods.toOwnedSlice(),

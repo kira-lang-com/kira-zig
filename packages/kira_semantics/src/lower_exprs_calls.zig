@@ -16,9 +16,7 @@ const resolveFieldType = parent.resolveFieldType;
 const resolveFieldContainerType = parent.resolveFieldContainerType;
 const resolveMethodMember = parent.resolveMethodMember;
 const resolveMethodMemberOrNull = parent.resolveMethodMemberOrNull;
-const adjustMethodReceiver = parent.adjustMethodReceiver;
-const buildResolvedMethodCallExpr = parent.buildResolvedMethodCallExpr;
-const lowerResolvedMethodCall = parent.lowerResolvedMethodCall;
+const buildDispatchedMethodCallExpr = parent.buildDispatchedMethodCallExpr;
 const functionTypeFromHeader = parent.functionTypeFromHeader;
 const lowerCallArgument = parent.lowerCallArgument;
 const trailingCallbackType = parent.trailingCallbackType;
@@ -265,10 +263,36 @@ pub fn lowerCallExpr(
         } else {
             const object = try lowerExpr(ctx, member.object, imports, scope, function_headers);
             const object_type = model.hir.exprType(object.*);
+            if (object_type.kind == .array and std.mem.eql(u8, member.member, "append")) {
+                if (node.args.len != 1) {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM042",
+                        .title = "wrong number of arguments",
+                        .message = "Array append expects exactly one value.",
+                        .labels = &.{diagnostics.primaryLabel(node.span, "append call has the wrong number of arguments")},
+                        .help = "Call `array.append(value)` with exactly one element.",
+                    });
+                    return error.DiagnosticsEmitted;
+                }
+                const element_type = if (object_type.name) |name| try shared.resolvedTypeFromText(name) else model.ResolvedType{ .kind = .unknown };
+                const value = try lowerCallArgument(ctx, node.args[0].value, element_type, imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span);
+                const args = try ctx.allocator.alloc(*model.Expr, 2);
+                args[0] = object;
+                args[1] = value;
+                lowered.* = .{ .call = .{
+                    .callee_name = "array.append",
+                    .function_id = null,
+                    .args = args,
+                    .ty = .{ .kind = .void },
+                    .span = node.span,
+                } };
+                return;
+            }
             if (object_type.kind != .native_state_view) {
                 if (try resolveMethodMemberOrNull(ctx, object_type, member.member, node.span)) |resolved_method| {
-                    const receiver = try adjustMethodReceiver(ctx, object, object_type, resolved_method, node.span);
-                    try lowerResolvedMethodCall(ctx, lowered, resolved_method, receiver, node, imports, scope, function_headers);
+                    const dispatched = try buildDispatchedMethodCallExpr(ctx, resolved_method, object, object_type, node, imports, scope, function_headers);
+                    lowered.* = dispatched.*;
                     return;
                 }
             }

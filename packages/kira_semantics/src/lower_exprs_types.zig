@@ -510,6 +510,19 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
             }
             return .{ .kind = .unknown };
         },
+        .member => |node| blk: {
+            if (node.object.* == .identifier and ctx.enum_headers != null) {
+                const enum_name = node.object.identifier.name.segments[node.object.identifier.name.segments.len - 1].text;
+                if (ctx.enum_headers.?.get(enum_name)) |enum_decl| {
+                    for (enum_decl.variants) |variant_decl| {
+                        if (std.mem.eql(u8, variant_decl.name, node.member) and variant_decl.payload_ty == null) {
+                            break :blk .{ .kind = .enum_instance, .name = try ctx.allocator.dupe(u8, enum_name) };
+                        }
+                    }
+                }
+            }
+            break :blk .{ .kind = .unknown };
+        },
         .index => |node| blk: {
             const object_ty = try resolveSyntaxExprType(ctx, node.object, span);
             break :blk try resolveIndexElementType(ctx, object_ty, node.span);
@@ -523,7 +536,10 @@ pub fn resolveLoweredValueType(ctx: *shared.Context, explicit_type_expr: ?*synta
         const explicit_type = try shared.typeFromSyntaxChecked(ctx, type_expr.*);
         if (value_expr) |expr| {
             const actual = model.hir.exprType(expr.*);
-            if (!(shared.canAssign(explicit_type, actual) or canPassArgument(ctx, explicit_type, actual))) {
+            if (explicit_type.kind == .array and actual.kind == .array and actual.name == null) {
+                return explicit_type;
+            }
+            if (!(shared.canAssignInContext(ctx, explicit_type, actual) or canPassArgument(ctx, explicit_type, actual))) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, explicit_type, actual);
                 return error.DiagnosticsEmitted;
             }
@@ -541,8 +557,9 @@ pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.T
         if (value_expr) |expr| {
             const inferred = try resolveSyntaxExprType(ctx, expr, span);
             if (explicit_type.kind == .callback and inferred.kind == .unknown and isFunctionNameExpr(expr.*)) return explicit_type;
+            if (explicit_type.kind == .array and inferred.kind == .array and inferred.name == null) return explicit_type;
             if (inferred.kind == .unknown and syntaxExprMatchesExplicitType(expr, explicit_type)) return explicit_type;
-            if (!(shared.canAssign(explicit_type, inferred) or canPassArgument(ctx, explicit_type, inferred))) {
+            if (!(shared.canAssignInContext(ctx, explicit_type, inferred) or canPassArgument(ctx, explicit_type, inferred))) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, explicit_type, inferred);
                 return error.DiagnosticsEmitted;
             }
@@ -578,7 +595,7 @@ pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: mod
         const return_stmt = statement.return_stmt;
         const actual = if (return_stmt.value) |expr| model.hir.exprType(expr.*) else model.ResolvedType{ .kind = .void };
         if (explicit_return_type.kind != .unknown) {
-            if (!shared.canAssignExactly(explicit_return_type, actual)) {
+            if (!typesCompatibleForContext(ctx, explicit_return_type, actual, false)) {
                 try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, return_stmt.span, explicit_return_type, actual);
                 return error.DiagnosticsEmitted;
             }
@@ -586,18 +603,10 @@ pub fn resolveFunctionReturnType(ctx: *shared.Context, explicit_return_type: mod
         }
         if (inferred == null) {
             inferred = actual;
-        } else if (!inferred.?.eql(actual)) {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM030",
-                .title = "function return type is ambiguous",
-                .message = "Kira found return statements with different inferred types.",
-                .labels = &.{
-                    diagnostics.primaryLabel(return_stmt.span, "return type changes here"),
-                },
-                .help = "Add an explicit return type to the function.",
-            });
-            return error.DiagnosticsEmitted;
+        } else if (inferred.?.eql(actual)) {
+            continue;
+        } else {
+            inferred = try resolveConditionalType(ctx, inferred.?, actual, return_stmt.span);
         }
     }
     if (explicit_return_type.kind != .unknown) return explicit_return_type;
@@ -660,8 +669,9 @@ pub fn resolveConditionalType(
     span: source_pkg.Span,
 ) !model.ResolvedType {
     if (then_ty.eql(else_ty)) return then_ty;
-    if (shared.canAssign(then_ty, else_ty) and !shared.canAssign(else_ty, then_ty)) return then_ty;
-    if (shared.canAssign(else_ty, then_ty) and !shared.canAssign(then_ty, else_ty)) return else_ty;
+    if (shared.canAssignInContext(ctx, then_ty, else_ty) and !shared.canAssignInContext(ctx, else_ty, then_ty)) return then_ty;
+    if (shared.canAssignInContext(ctx, else_ty, then_ty) and !shared.canAssignInContext(ctx, then_ty, else_ty)) return else_ty;
+    if (shared.commonClassType(ctx, then_ty, else_ty)) |common_ty| return common_ty;
 
     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
         .severity = .@"error",
@@ -683,10 +693,20 @@ fn typesCompatibleForContext(
     allow_numeric_widening: bool,
 ) bool {
     if (allow_numeric_widening) {
-        if (shared.canAssign(expected, actual)) return true;
+        if (shared.canAssignInContext(ctx, expected, actual)) return true;
     } else if (shared.canAssignExactly(expected, actual)) {
         return true;
     }
+
+    if (expected.kind == .array and actual.kind == .array) {
+        if (actual.name == null) return true;
+        if (expected.name == null) return actual.name == null;
+        const expected_element = shared.resolvedTypeFromText(expected.name.?) catch return false;
+        const actual_element = shared.resolvedTypeFromText(actual.name.?) catch return false;
+        return typesCompatibleForContext(ctx, expected_element, actual_element, allow_numeric_widening);
+    }
+
+    if (shared.isAssignableClassValue(ctx, expected, actual)) return true;
 
     if (expected.kind == .callback and actual.kind == .callback) {
         return callbackTypesCompatible(expected, actual);
@@ -754,6 +774,10 @@ pub fn resolveArrayLiteralType(ctx: *shared.Context, elements: []const *model.Ex
     for (elements[1..]) |element| {
         const next_ty = model.hir.exprType(element.*);
         if (element_ty.eql(next_ty)) continue;
+        if (shared.commonClassType(ctx, element_ty, next_ty)) |common_ty| {
+            element_ty = common_ty;
+            continue;
+        }
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
             .code = "KSEM050",
@@ -780,6 +804,10 @@ pub fn resolveSyntaxArrayLiteralType(ctx: *shared.Context, elements: []const *sy
     for (elements[1..]) |element| {
         const next_ty = try resolveSyntaxExprType(ctx, element, span);
         if (element_ty.eql(next_ty)) continue;
+        if (shared.commonClassType(ctx, element_ty, next_ty)) |common_ty| {
+            element_ty = common_ty;
+            continue;
+        }
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
             .code = "KSEM050",

@@ -41,9 +41,19 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .ty = lowerTypeRef(field_decl.ty),
             });
         }
+        var methods = std.array_list.Managed(bytecode.MethodMember).init(allocator);
+        for (type_decl.methods) |method_decl| {
+            try methods.append(.{
+                .name = method_decl.name,
+                .function_id = method_decl.function_id,
+                .receiver_offset = method_decl.receiver_offset,
+            });
+        }
         try types.append(.{
             .name = type_decl.name,
+            .kind = @enumFromInt(@intFromEnum(type_decl.kind)),
             .fields = try fields.toOwnedSlice(),
+            .methods = try methods.toOwnedSlice(),
         });
     }
 
@@ -165,6 +175,10 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .index = value.index,
                     .src = value.src,
                 } }),
+                .array_append => |value| try instructions.append(.{ .array_append = .{
+                    .array = value.array,
+                    .src = value.src,
+                } }),
                 .enum_tag => |value| try instructions.append(.{ .enum_tag = .{ .dst = value.dst, .src = value.src } }),
                 .enum_payload => |value| try instructions.append(.{ .enum_payload = .{
                     .dst = value.dst,
@@ -211,6 +225,14 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .call_value => |value| try instructions.append(.{ .call_value = .{
                     .callee = value.callee,
                     .args = value.args,
+                    .dst = value.dst,
+                } }),
+                .call_virtual => |value| try instructions.append(.{ .call_virtual = .{
+                    .receiver = value.receiver,
+                    .static_type_name = value.static_type_name,
+                    .method_name = value.method_name,
+                    .args = value.args,
+                    .return_ty = lowerTypeRef(value.return_ty),
                     .dst = value.dst,
                 } }),
                 .ret => |value| try instructions.append(.{ .ret = .{ .src = value.src } }),

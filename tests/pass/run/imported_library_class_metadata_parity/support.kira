@@ -1,0 +1,21 @@
+class Node {
+    let value: I64 = 5
+
+    function render(): I64 {
+        return self.value
+    }
+}
+
+class Label extends Node {
+    override let value: I64 = 11
+}
+
+struct NodeConfig {
+    let node: Node
+}
+
+function makeConfig(): NodeConfig {
+    return NodeConfig {
+        node: Label()
+    }
+}

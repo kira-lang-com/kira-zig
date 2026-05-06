@@ -120,6 +120,7 @@ pub const TypeDecl = struct {
     name: []const u8,
     execution: runtime_abi.FunctionExecution = .inherited,
     fields: []const Field,
+    methods: []const MethodMember = &.{},
     ffi: ?ffi.NamedTypeInfo = null,
     span: source_pkg.Span,
 };
@@ -127,6 +128,13 @@ pub const TypeDecl = struct {
 pub const TypeKind = enum {
     class,
     struct_decl,
+};
+
+pub const MethodMember = struct {
+    name: []const u8,
+    full_name: []const u8,
+    receiver_offset: u32,
+    span: source_pkg.Span,
 };
 
 pub const ConstructForm = struct {
@@ -361,6 +369,7 @@ pub const Expr = union(enum) {
     construct: ConstructExpr,
     construct_enum_variant: ConstructEnumVariantExpr,
     call: CallExpr,
+    virtual_call: VirtualCallExpr,
     call_value: CallValueExpr,
     array: ArrayExpr,
     index: IndexExpr,
@@ -531,6 +540,15 @@ pub const CallExpr = struct {
     span: source_pkg.Span,
 };
 
+pub const VirtualCallExpr = struct {
+    receiver: *Expr,
+    static_type_name: []const u8,
+    method_name: []const u8,
+    args: []*Expr,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
 pub const CallbackExpr = struct {
     params: []Parameter,
     captures: []Capture,
@@ -621,6 +639,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .construct => |node| node.ty,
         .construct_enum_variant => |node| node.ty,
         .call => |node| node.ty,
+        .virtual_call => |node| node.ty,
         .call_value => |node| node.ty,
         .array => |node| node.ty,
         .index => |node| node.ty,

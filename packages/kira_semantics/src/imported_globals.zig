@@ -13,6 +13,7 @@ pub const ImportedFunction = struct {
 
 pub const ImportedType = struct {
     name: []const u8,
+    kind: model.TypeKind = .struct_decl,
     execution: runtime_abi.FunctionExecution = .inherited,
     parents: []const []const u8 = &.{},
     fields: []const ImportedField = &.{},

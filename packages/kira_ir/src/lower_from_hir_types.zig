@@ -37,6 +37,9 @@ pub fn lowerNamedType(program: model.Program, name: []const u8) anyerror!ir.Valu
         }
         return .{ .kind = .ffi_struct, .name = name };
     }
+    for (program.enums) |enum_decl| {
+        if (std.mem.eql(u8, enum_decl.name, name)) return .{ .kind = .enum_instance, .name = name };
+    }
     if (std.mem.endsWith(u8, name, "_ptr")) return .{ .kind = .raw_ptr, .name = name };
     return error.UnsupportedType;
 }

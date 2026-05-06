@@ -15,8 +15,13 @@ pub const ClosureObject = struct {
 const ObjectKind = union(enum) {
     array: *ArrayObject,
     closure: *ClosureObject,
-    struct_fields: []runtime_abi.Value,
+    struct_fields: StructFieldsObject,
     string_bytes: []u8,
+};
+
+pub const StructFieldsObject = struct {
+    type_name: []const u8,
+    fields: []runtime_abi.Value,
 };
 
 const ObjectRecord = struct {
@@ -63,9 +68,12 @@ pub const Heap = struct {
         return ptr;
     }
 
-    pub fn registerStruct(self: *Heap, fields: []runtime_abi.Value) !usize {
+    pub fn registerStruct(self: *Heap, type_name: []const u8, fields: []runtime_abi.Value) !usize {
         const ptr = @intFromPtr(fields.ptr);
-        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .struct_fields = fields } });
+        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .struct_fields = .{
+            .type_name = type_name,
+            .fields = fields,
+        } } });
         return ptr;
     }
 
@@ -129,6 +137,14 @@ pub const Heap = struct {
         };
     }
 
+    pub fn getStructTypeName(self: *const Heap, ptr: usize) ?[]const u8 {
+        const record = self.objects.getPtr(ptr) orelse return null;
+        return switch (record.kind) {
+            .struct_fields => |value| value.type_name,
+            else => null,
+        };
+    }
+
     pub fn assignOwned(self: *Heap, slot: *runtime_abi.Value, value: runtime_abi.Value) void {
         const old = slot.*;
         slot.* = value;
@@ -151,6 +167,20 @@ pub const Heap = struct {
         const old = runtime_abi.bridgeValueToValue(slot.*);
         slot.* = runtime_abi.bridgeValueFromValue(value);
         self.releaseValue(old);
+    }
+
+    pub fn appendArrayItem(self: *Heap, object: *ArrayObject, value: runtime_abi.Value) !void {
+        const old_items = object.items[0..@max(object.len, 1)];
+        const new_len = object.len + 1;
+        const new_items = try self.allocator.alloc(runtime_abi.BridgeValue, new_len);
+        for (old_items[0..object.len], 0..) |item, index| {
+            new_items[index] = item;
+        }
+        self.retainValue(value);
+        new_items[object.len] = runtime_abi.bridgeValueFromValue(value);
+        self.allocator.free(old_items);
+        object.items = new_items.ptr;
+        object.len = new_len;
     }
 
     fn retainPtr(self: *Heap, ptr: usize) void {
@@ -187,8 +217,8 @@ pub const Heap = struct {
             .closure => |closure| {
                 for (closure.captures) |capture| try self.pinValueRecursive(capture, frame, visited);
             },
-            .struct_fields => |fields| {
-                for (fields) |field| try self.pinValueRecursive(field, frame, visited);
+            .struct_fields => |struct_fields| {
+                for (struct_fields.fields) |field| try self.pinValueRecursive(field, frame, visited);
             },
             .string_bytes => {},
         }
@@ -217,9 +247,9 @@ pub const Heap = struct {
                 self.allocator.free(closure.captures);
                 self.allocator.destroy(closure);
             },
-            .struct_fields => |fields| {
-                self.releaseSlots(fields);
-                self.allocator.free(fields);
+            .struct_fields => |value| {
+                self.releaseSlots(value.fields);
+                self.allocator.free(value.fields);
             },
             .string_bytes => |bytes| self.allocator.free(bytes),
         }
@@ -232,11 +262,11 @@ test "boundary pin scopes preserve managed graphs until unpinned" {
 
     const nested_fields = try std.testing.allocator.alloc(runtime_abi.Value, 1);
     nested_fields[0] = .{ .integer = 7 };
-    const nested_ptr = try heap.registerStruct(nested_fields);
+    const nested_ptr = try heap.registerStruct("Nested", nested_fields);
 
     const fields = try std.testing.allocator.alloc(runtime_abi.Value, 1);
     fields[0] = .{ .raw_ptr = nested_ptr };
-    const root_ptr = try heap.registerStruct(fields);
+    const root_ptr = try heap.registerStruct("Root", fields);
 
     heap.releaseValue(.{ .raw_ptr = nested_ptr });
     try heap.beginBoundaryPinScope();
@@ -253,7 +283,7 @@ test "unpin destroys zero-ref objects" {
 
     const fields = try std.testing.allocator.alloc(runtime_abi.Value, 1);
     fields[0] = .{ .integer = 1 };
-    const ptr = try heap.registerStruct(fields);
+    const ptr = try heap.registerStruct("Value", fields);
 
     try heap.beginBoundaryPinScope();
     try heap.pinBoundaryValue(.{ .raw_ptr = ptr });
