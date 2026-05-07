@@ -1,5 +1,6 @@
 struct Color {
-    var r: Int;
-    var g: Int;
-    var b: Int;
+    var r: Float;
+    var g: Float;
+    var b: Float;
+    var a: Float;
 }

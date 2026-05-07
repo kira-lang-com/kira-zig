@@ -24,7 +24,7 @@ pub fn buildProgramGraph(
     var decls = std.array_list.Managed(syntax.ast.Decl).init(allocator);
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
 
-    try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, root_program, module_map, diags);
+    try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, root_program, module_map, diags, true);
 
     return .{
         .imports = try import_list.toOwnedSlice(),
@@ -46,7 +46,7 @@ pub fn buildProgramGraphFromFiles(
 
     for (source_paths) |source_path| {
         const program = try parseModuleProgram(allocator, source_path, diags);
-        try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, program, module_map, diags);
+        try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, program, module_map, diags, true);
     }
 
     return .{
@@ -66,6 +66,7 @@ fn appendProgramGraph(
     program: syntax.ast.Program,
     module_map: package_manager.ModuleMap,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    expose_imports: bool,
 ) !void {
     try validateSourcePathAllowed(allocator, source_path, module_map, diags);
 
@@ -75,7 +76,9 @@ fn appendProgramGraph(
     if (visited.contains(visited_key)) return;
     try visited.put(try allocator.dupe(u8, visited_key), {});
 
-    for (program.imports) |import_decl| try import_list.append(import_decl);
+    if (expose_imports) {
+        for (program.imports) |import_decl| try import_list.append(import_decl);
+    }
     for (program.decls) |decl| try decls.append(decl);
     for (program.functions) |function_decl| try functions.append(function_decl);
 
@@ -85,7 +88,7 @@ fn appendProgramGraph(
             defer freeModuleFiles(allocator, module_files);
             for (module_files) |module_path| {
                 const imported_program = try parseModuleProgram(allocator, module_path, diags);
-                try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags);
+                try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
             }
             continue;
         }
@@ -95,7 +98,7 @@ fn appendProgramGraph(
 
         const module_path = imports.firstExistingCandidate(resolved.candidates) orelse continue;
         const imported_program = try parseModuleProgram(allocator, module_path, diags);
-        try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags);
+        try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
     }
 }
 
@@ -248,6 +251,41 @@ test "canonical visited identity deduplicates alternate path spellings" {
 
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
     try std.testing.expectEqual(@as(usize, 1), program.functions.len);
+}
+
+test "dependency imports do not become importer-visible imports" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.createDirPath(std.testing.io, "Dep/app");
+    try tmp.dir.createDirPath(std.testing.io, "Foundation/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "App/app/main.kira", .data = "import Dep\nfunction appEntry() { return; }\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Dep/app/Dep.kira", .data = "import Foundation\nfunction depEntry() { return; }\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Foundation/app/Foundation.kira", .data = "function foundationEntry() { return; }\n" });
+
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app", allocator);
+    const dep_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Dep/app", allocator);
+    const foundation_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Foundation/app", allocator);
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", allocator);
+    const owners = [_]package_manager.ModuleMap.ModuleOwner{
+        .{ .module_root = "App", .package_name = "App", .source_root = app_root },
+        .{ .module_root = "Dep", .package_name = "Dep", .source_root = dep_root },
+        .{ .module_root = "Foundation", .package_name = "Foundation", .source_root = foundation_root },
+    };
+
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const root_program = try parseModuleProgram(allocator, source_path, &diags);
+    const program = try buildProgramGraph(allocator, source_path, root_program, .{ .owners = owners[0..] }, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.imports.len);
+    try std.testing.expectEqualStrings("Dep", program.imports[0].module_name.segments[0].text);
+    try std.testing.expectEqual(@as(usize, 3), program.functions.len);
 }
 
 test "graph rejects an entry source outside declared app roots" {
