@@ -9,6 +9,26 @@ const llvm_backend = @import("kira_llvm_backend");
 const resolver = @import("native_lib_resolver.zig");
 const autobind = @import("ffi_autobind.zig");
 
+fn nowTimestamp() std.Io.Clock.Timestamp {
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
+}
+
+fn elapsedNs(start: std.Io.Clock.Timestamp) u64 {
+    const duration_ns = start.durationTo(std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake)).raw.toNanoseconds();
+    return @intCast(@max(duration_ns, 0));
+}
+
+fn timingsEnvEnabled() bool {
+    if (!builtin.link_libc) return false;
+    const raw = std.c.getenv("KIRA_TIMINGS") orelse return false;
+    const value = std.mem.span(raw);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
+fn timingPrint(comptime fmt: []const u8, args: anytype) void {
+    if (timingsEnvEnabled()) std.debug.print(fmt, args);
+}
+
 pub fn prepareNativeLibraries(
     allocator: std.mem.Allocator,
     source_path: []const u8,
@@ -21,8 +41,12 @@ pub fn prepareNativeLibraries(
     var libraries = std.array_list.Managed(native.ResolvedNativeLibrary).init(allocator);
     for (manifest_paths) |manifest_path| {
         var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
+        const artifact_start = nowTimestamp();
         try ensureNativeArtifact(allocator, &library);
+        timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
+        const autobind_start = nowTimestamp();
         try autobind.ensureGeneratedBindings(allocator, library);
+        timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
         try libraries.append(library);
     }
     return libraries.toOwnedSlice();
@@ -40,7 +64,7 @@ pub fn prepareImportedNativeLibraries(
 
     for (existing) |library| {
         try libraries.append(library);
-        try seen.put(try allocator.dupe(u8, library.artifact_path), {});
+        try seen.put(try artifactIdentity(allocator, library.artifact_path), {});
     }
 
     for (imports) |import_decl| {
@@ -67,12 +91,21 @@ fn appendNativeLibrariesFromPackageRoot(
     const manifest_paths = try loadNativeManifestPathsFromProjectRoot(allocator, package_root);
     for (manifest_paths) |manifest_path| {
         var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
-        if (seen.contains(library.artifact_path)) continue;
+        const identity = try artifactIdentity(allocator, library.artifact_path);
+        if (seen.contains(identity)) continue;
+        const artifact_start = nowTimestamp();
         try ensureNativeArtifact(allocator, &library);
+        timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
+        const autobind_start = nowTimestamp();
         try autobind.ensureGeneratedBindings(allocator, library);
-        try seen.put(try allocator.dupe(u8, library.artifact_path), {});
+        timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
+        try seen.put(identity, {});
         try libraries.append(library);
     }
+}
+
+fn artifactIdentity(allocator: std.mem.Allocator, artifact_path: []const u8) ![]const u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, artifact_path, allocator) catch allocator.dupe(u8, artifact_path);
 }
 
 fn loadProjectNativeManifestPaths(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {

@@ -44,6 +44,38 @@ pub const BuildSystem = struct {
         return result.diagnostics;
     }
 
+    pub fn checkFrontend(self: BuildSystem, path: []const u8) !pipeline.CheckPipelineResult {
+        if (self.use_cache) {
+            const maybe_cache = cache.Cache.initForSource(self.allocator, path) catch null;
+            if (maybe_cache) |build_cache| {
+                const maybe_entry = build_cache.entryForFrontendCheck(path) catch null;
+                if (maybe_entry) |entry| {
+                    if (entry.hasFrontendCheckSuccess()) {
+                        pipeline.timingPrint("[kira:timing] check.frontend_cache_hit path={s}\n", .{path});
+                        return .{
+                            .source = try source_pkg.SourceFile.fromPath(self.allocator, path),
+                            .diagnostics = &.{},
+                            .failure_stage = null,
+                            .cache_status = .hit,
+                        };
+                    }
+
+                    var result = try pipeline.checkFileFrontend(self.allocator, path);
+                    result.cache_status = .miss;
+                    if (!result.failed()) {
+                        const store_start = nowTimestamp();
+                        entry.storeFrontendCheckSuccess() catch {};
+                        result.cache_status = .stored;
+                        result.cache_store_ns = elapsedNs(store_start);
+                        pipeline.timingPrint("[kira:timing] check.frontend_cache_store path={s} ns={d}\n", .{ path, result.cache_store_ns });
+                    }
+                    return result;
+                }
+            }
+        }
+        return pipeline.checkFileFrontend(self.allocator, path);
+    }
+
     pub fn checkForBackend(self: BuildSystem, path: []const u8, target: build_def.ExecutionTarget) !pipeline.CheckPipelineResult {
         if (self.use_cache) {
             const maybe_cache = cache.Cache.initForSource(self.allocator, path) catch null;
@@ -51,6 +83,7 @@ pub const BuildSystem = struct {
                 const maybe_entry = build_cache.entryForBuild(path, target) catch null;
                 if (maybe_entry) |entry| {
                     if (entry.hasCheckSuccess()) {
+                        pipeline.timingPrint("[kira:timing] check.cache_hit path={s} backend={s}\n", .{ path, @tagName(target) });
                         return .{
                             .source = try source_pkg.SourceFile.fromPath(self.allocator, path),
                             .diagnostics = &.{},
@@ -66,6 +99,7 @@ pub const BuildSystem = struct {
                         entry.storeCheckSuccess() catch {};
                         result.cache_status = .stored;
                         result.cache_store_ns = elapsedNs(store_start);
+                        pipeline.timingPrint("[kira:timing] check.cache_store path={s} backend={s} ns={d}\n", .{ path, @tagName(target), result.cache_store_ns });
                     }
                     return result;
                 }
@@ -75,6 +109,38 @@ pub const BuildSystem = struct {
     }
 
     pub fn checkPackageRoot(self: BuildSystem, source_root: []const u8) !pipeline.CheckPipelineResult {
+        if (self.use_cache) {
+            const module_files = @import("kira_program_graph").collectPackageModuleFiles(self.allocator, source_root) catch &.{};
+            if (module_files.len != 0) {
+                const representative = module_files[0];
+                const maybe_cache = cache.Cache.initForSource(self.allocator, representative) catch null;
+                if (maybe_cache) |build_cache| {
+                    const maybe_entry = build_cache.entryForPackageCheck(representative) catch null;
+                    if (maybe_entry) |entry| {
+                        if (entry.hasPackageCheckSuccess()) {
+                            pipeline.timingPrint("[kira:timing] check.package_cache_hit source_root={s}\n", .{source_root});
+                            return .{
+                                .source = try source_pkg.SourceFile.fromPath(self.allocator, representative),
+                                .diagnostics = &.{},
+                                .failure_stage = null,
+                                .cache_status = .hit,
+                            };
+                        }
+
+                        var result = try pipeline.checkPackageRoot(self.allocator, source_root);
+                        result.cache_status = .miss;
+                        if (!result.failed()) {
+                            const store_start = nowTimestamp();
+                            entry.storePackageCheckSuccess() catch {};
+                            result.cache_status = .stored;
+                            result.cache_store_ns = elapsedNs(store_start);
+                            pipeline.timingPrint("[kira:timing] check.package_cache_store source_root={s} ns={d}\n", .{ source_root, result.cache_store_ns });
+                        }
+                        return result;
+                    }
+                }
+            }
+        }
         return pipeline.checkPackageRoot(self.allocator, source_root);
     }
 
@@ -91,6 +157,7 @@ pub const BuildSystem = struct {
     }
 
     pub fn build(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        const total_start = nowTimestamp();
         if (self.use_cache) {
             const maybe_cache = cache.Cache.initForSource(self.allocator, request.source_path) catch null;
             if (maybe_cache) |build_cache| {
@@ -98,10 +165,18 @@ pub const BuildSystem = struct {
                 if (maybe_entry) |entry| {
                     if (entry.hasArtifacts()) {
                         const restore_start = nowTimestamp();
+                        const artifacts = try entry.restoreTo(request.output_path);
+                        const restore_ns = elapsedNs(restore_start);
+                        pipeline.timingPrint("[kira:timing] build.cache_hit path={s} backend={s} restore_ns={d} total_ns={d}\n", .{
+                            request.source_path,
+                            @tagName(request.target.execution),
+                            restore_ns,
+                            elapsedNs(total_start),
+                        });
                         return .{
-                            .artifacts = try entry.restoreTo(request.output_path),
+                            .artifacts = artifacts,
                             .cache_status = .hit,
-                            .cache_restore_ns = elapsedNs(restore_start),
+                            .cache_restore_ns = restore_ns,
                         };
                     }
 
@@ -112,12 +187,20 @@ pub const BuildSystem = struct {
                         entry.storeFrom(request.output_path) catch {};
                         uncached.cache_status = .stored;
                         uncached.cache_store_ns = elapsedNs(store_start);
+                        pipeline.timingPrint("[kira:timing] build.cache_store path={s} backend={s} store_ns={d} total_ns={d}\n", .{
+                            request.source_path,
+                            @tagName(request.target.execution),
+                            uncached.cache_store_ns,
+                            elapsedNs(total_start),
+                        });
                     }
                     return uncached;
                 }
             }
         }
-        return self.buildUncached(request);
+        const result = try self.buildUncached(request);
+        pipeline.timingPrint("[kira:timing] build.total path={s} backend={s} cached=false ns={d}\n", .{ request.source_path, @tagName(request.target.execution), elapsedNs(total_start) });
+        return result;
     }
 
     fn buildUncached(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
@@ -150,6 +233,7 @@ pub const BuildSystem = struct {
     }
 
     pub fn buildNativeArtifact(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        const total_start = nowTimestamp();
         const compiled = try self.compileForBackend(request);
         if (compiled.failed()) {
             return .{
@@ -162,6 +246,7 @@ pub const BuildSystem = struct {
 
         const ir_program = compiled.ir_program.?;
         const object_path = try defaultObjectPath(self.allocator, request.output_path);
+        const emit_start = nowTimestamp();
         const backend_result = llvm_backend.compile(self.allocator, .{
             .mode = .llvm_native,
             .program = &ir_program,
@@ -180,6 +265,7 @@ pub const BuildSystem = struct {
                 .failure_stage = .backend_prepare,
             };
         };
+        pipeline.timingPrint("[kira:timing] llvm_backend.compile path={s} backend=llvm_native ns={d}\n", .{ request.source_path, elapsedNs(emit_start) });
 
         const artifacts = try self.allocator.alloc(build_def.Artifact, backend_result.artifacts.len);
         for (backend_result.artifacts, 0..) |artifact, index| {
@@ -194,10 +280,12 @@ pub const BuildSystem = struct {
                 .path = artifact.path,
             };
         }
+        pipeline.timingPrint("[kira:timing] buildNativeArtifact.total path={s} ns={d}\n", .{ request.source_path, elapsedNs(total_start) });
         return .{ .artifacts = artifacts };
     }
 
     pub fn buildHybridArtifact(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        const total_start = nowTimestamp();
         const compiled = try self.compileForBackend(request);
         if (compiled.failed()) {
             return .{
@@ -219,8 +307,11 @@ pub const BuildSystem = struct {
             .failure_kind = .build,
             .failure_stage = compiled.failure_stage,
         };
+        const bytecode_write_start = nowTimestamp();
         try bytecode_module.writeToFile(bytecode_path);
+        pipeline.timingPrint("[kira:timing] bytecode.writeToFile path={s} ns={d}\n", .{ bytecode_path, elapsedNs(bytecode_write_start) });
 
+        const emit_start = nowTimestamp();
         const backend_result = llvm_backend.compile(self.allocator, .{
             .mode = .hybrid,
             .program = &ir_program,
@@ -239,7 +330,9 @@ pub const BuildSystem = struct {
                 .failure_stage = .backend_prepare,
             };
         };
+        pipeline.timingPrint("[kira:timing] llvm_backend.compile path={s} backend=hybrid ns={d}\n", .{ request.source_path, elapsedNs(emit_start) });
 
+        const manifest_start = nowTimestamp();
         const manifest = buildHybridManifest(self.allocator, ir_program, std.fs.path.stem(request.source_path), bytecode_path, library_path) catch |err| {
             const backend_diagnostics = try pipeline.backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{
@@ -250,6 +343,7 @@ pub const BuildSystem = struct {
             };
         };
         try manifest.writeToFile(request.output_path);
+        pipeline.timingPrint("[kira:timing] hybrid_manifest.write path={s} ns={d}\n", .{ request.output_path, elapsedNs(manifest_start) });
 
         const artifacts = try self.allocator.alloc(build_def.Artifact, backend_result.artifacts.len + 2);
         artifacts[0] = .{ .kind = .bytecode, .path = bytecode_path };
@@ -266,6 +360,7 @@ pub const BuildSystem = struct {
                 .path = artifact.path,
             };
         }
+        pipeline.timingPrint("[kira:timing] buildHybridArtifact.total path={s} ns={d}\n", .{ request.source_path, elapsedNs(total_start) });
         return .{ .artifacts = artifacts };
     }
 

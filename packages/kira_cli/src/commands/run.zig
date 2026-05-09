@@ -11,6 +11,7 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
     const previous_trace = runtime_abi.executionTraceEnabled();
     runtime_abi.setExecutionTraceEnabled(parsed.trace_execution);
     defer runtime_abi.setExecutionTraceEnabled(previous_trace);
@@ -105,6 +106,7 @@ const ParsedArgs = struct {
     offline: bool = false,
     locked: bool = false,
     trace_execution: bool = false,
+    timings: bool = false,
     input_path: []const u8,
 };
 
@@ -113,6 +115,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var offline = false;
     var locked = false;
     var trace_execution = false;
+    var timings = false;
     var input_path: ?[]const u8 = null;
 
     var index: usize = 0;
@@ -136,6 +139,10 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             trace_execution = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--timings")) {
+            timings = true;
+            continue;
+        }
         if (input_path != null) return error.InvalidArguments;
         input_path = arg;
     }
@@ -145,8 +152,16 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
         .offline = offline,
         .locked = locked,
         .trace_execution = trace_execution,
+        .timings = timings,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
+}
+
+fn timingsEnvEnabled() bool {
+    if (!builtin.link_libc) return false;
+    const raw = std.c.getenv("KIRA_TIMINGS") orelse return false;
+    const value = std.mem.span(raw);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {

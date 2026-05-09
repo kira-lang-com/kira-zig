@@ -150,6 +150,12 @@ fn appendProgramGraph(
             stats.package_files += module_files.len;
             timingPrint("[kira:timing] graph.collectPackageModuleFiles package={s} files={d} ns={d}\n", .{ owner.package_name, module_files.len, collect_ns });
             defer freeModuleFiles(allocator, module_files);
+            if (module_files.len == 0) {
+                const resolved = try imports.resolveImportPath(allocator, source_path, import_decl.module_name, module_map);
+                defer freeResolution(allocator, resolved);
+                try appendUnresolvedImportDiagnostic(allocator, diags, import_decl, resolved);
+                return error.DiagnosticsEmitted;
+            }
             for (module_files) |module_path| {
                 try stats.addPackageParse(owner.package_name);
                 const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, owner.package_name);
@@ -161,10 +167,36 @@ fn appendProgramGraph(
         const resolved = try imports.resolveImportPath(allocator, source_path, import_decl.module_name, module_map);
         defer freeResolution(allocator, resolved);
 
-        const module_path = imports.firstExistingCandidate(resolved.candidates) orelse continue;
+        const module_path = imports.firstExistingCandidate(resolved.candidates) orelse {
+            try appendUnresolvedImportDiagnostic(allocator, diags, import_decl, resolved);
+            return error.DiagnosticsEmitted;
+        };
         const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, null);
         try appendProgramGraph(allocator, stats, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
     }
+}
+
+fn appendUnresolvedImportDiagnostic(
+    allocator: std.mem.Allocator,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    import_decl: syntax.ast.ImportDecl,
+    resolved: imports.ImportResolution,
+) !void {
+    try diagnostics.appendOwned(allocator, diags, .{
+        .severity = .@"error",
+        .code = "KSEM032",
+        .title = "unresolved import",
+        .message = try std.fmt.allocPrint(
+            allocator,
+            "Kira could not find a module for import '{s}'.",
+            .{resolved.display_name},
+        ),
+        .labels = &.{
+            diagnostics.primaryLabel(import_decl.span, "import does not resolve to a module file"),
+        },
+        .notes = try imports.resolvedCandidateNotes(allocator, resolved.candidates),
+        .help = "Create the imported module under an allowed `app/` source root or remove the import.",
+    });
 }
 
 fn parseModuleProgramTimed(

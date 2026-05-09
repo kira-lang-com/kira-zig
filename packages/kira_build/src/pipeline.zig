@@ -37,7 +37,7 @@ fn elapsedNs(start: i128) u64 {
     return @intCast(nowNs() - start);
 }
 
-fn timingPrint(comptime fmt: []const u8, args: anytype) void {
+pub fn timingPrint(comptime fmt: []const u8, args: anytype) void {
     if (timings_enabled) std.debug.print(fmt, args);
 }
 
@@ -174,6 +174,15 @@ fn diagnosticsOwnedOrFallback(
     return diags.toOwnedSlice();
 }
 
+fn graphDiagnosticStage(diags: []const diagnostics.Diagnostic) FrontendStage {
+    for (diags) |diag| {
+        if (diag.code) |code| {
+            if (std.mem.eql(u8, code, "KSEM032")) return .semantics;
+        }
+    }
+    return .graph;
+}
+
 pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !FrontendPipelineResult {
     const total_start = nowNs();
     const parsed = try parseFile(allocator, path);
@@ -198,14 +207,15 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
     const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            const stage = graphDiagnosticStage(diags.items);
             timingPrint("[kira:timing] buildProgramGraph path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(graph_start) });
             timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
-                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .graph),
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, stage),
                 .ir_program = null,
                 .native_libraries = parsed.native_libraries,
-                .failure_stage = .graph,
+                .failure_stage = stage,
             };
         },
         else => return err,
@@ -453,6 +463,79 @@ pub fn checkFileForBackend(
     };
 }
 
+pub fn checkFileFrontend(allocator: std.mem.Allocator, path: []const u8) !CheckPipelineResult {
+    const total_start = nowNs();
+    const parsed = try parseFileWithoutNativePreparation(allocator, path);
+    if (parsed.program == null) {
+        timingPrint("[kira:timing] checkFileFrontend.total path={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ path, elapsedNs(total_start) });
+        return .{
+            .source = parsed.source,
+            .diagnostics = parsed.diagnostics,
+            .failure_stage = parsed.failure_stage,
+        };
+    }
+
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    for (parsed.diagnostics) |diag| try diags.append(diag);
+
+    const module_map_start = nowNs();
+    const module_map = try package_manager.loadModuleMapForSource(allocator, parsed.source.path);
+    timingPrint("[kira:timing] loadModuleMapForSource path={s} owners={d} ns={d}\n", .{ parsed.source.path, module_map.owners.len, elapsedNs(module_map_start) });
+
+    const graph_start = nowNs();
+    const merged_program = program_graph.buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map, &diags) catch |err| switch (err) {
+        error.DiagnosticsEmitted => {
+            const stage = graphDiagnosticStage(diags.items);
+            timingPrint("[kira:timing] buildProgramGraph path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(graph_start) });
+            timingPrint("[kira:timing] checkFileFrontend.total path={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ path, elapsedNs(total_start) });
+            return .{
+                .source = parsed.source,
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, stage),
+                .failure_stage = stage,
+            };
+        },
+        else => return err,
+    };
+    timingPrint("[kira:timing] buildProgramGraph path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
+
+    const validate_start = nowNs();
+    validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
+        error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] validateImports path={s} imports={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, elapsedNs(validate_start) });
+            timingPrint("[kira:timing] checkFileFrontend.total path={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ path, elapsedNs(total_start) });
+            return .{
+                .source = parsed.source,
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
+                .failure_stage = .semantics,
+            };
+        },
+        else => return err,
+    };
+    timingPrint("[kira:timing] validateImports path={s} imports={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, elapsedNs(validate_start) });
+
+    const semantics_start = nowNs();
+    _ = semantics.analyzeWithImports(allocator, merged_program, .{}, &diags) catch |err| switch (err) {
+        error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] semantics.analyzeWithImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(semantics_start) });
+            timingPrint("[kira:timing] checkFileFrontend.total path={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ path, elapsedNs(total_start) });
+            return .{
+                .source = parsed.source,
+                .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
+                .failure_stage = .semantics,
+            };
+        },
+        else => return err,
+    };
+    timingPrint("[kira:timing] semantics.analyzeWithImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(semantics_start) });
+    timingPrint("[kira:timing] checkFileFrontend.total path={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ path, elapsedNs(total_start) });
+
+    return .{
+        .source = parsed.source,
+        .diagnostics = try diags.toOwnedSlice(),
+        .failure_stage = null,
+    };
+}
+
 fn dummyNativeEmitOptions() @import("kira_backend_api").NativeEmitOptions {
     return .{
         .object_path = "__kira_check__.o",
@@ -658,55 +741,18 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
     const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraphFromFiles(allocator, module_files, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            const stage = graphDiagnosticStage(diags.items);
             timingPrint("[kira:timing] buildProgramGraphFromFiles source_root={s} ns={d}\n", .{ source_root, elapsedNs(graph_start) });
             timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
             return .{
                 .source = source,
                 .diagnostics = try diags.toOwnedSlice(),
-                .failure_stage = .graph,
+                .failure_stage = stage,
             };
         },
         else => return err,
     };
     timingPrint("[kira:timing] buildProgramGraphFromFiles source_root={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ source_root, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
-
-    const parse_loop_start = nowNs();
-    var parse_loop_files: usize = 0;
-    var parse_loop_bytes: usize = 0;
-    var validate_loop_imports: usize = 0;
-    var validate_loop_ns: u64 = 0;
-    for (module_files) |module_path| {
-        const parsed = try parseFileWithoutNativePreparation(allocator, module_path);
-        parse_loop_files += 1;
-        parse_loop_bytes += parsed.source.text.len;
-        if (parsed.program == null) {
-            timingPrint("[kira:timing] checkPackageRoot.parseFileLoop source_root={s} files={d} bytes={d} ns={d}\n", .{ source_root, parse_loop_files, parse_loop_bytes, elapsedNs(parse_loop_start) });
-            timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
-            return .{
-                .source = parsed.source,
-                .diagnostics = parsed.diagnostics,
-                .failure_stage = parsed.failure_stage,
-            };
-        }
-        validate_loop_imports += parsed.program.?.imports.len;
-        const validate_start = nowNs();
-        validateImports(allocator, &parsed.source, parsed.program.?, &diags) catch |err| switch (err) {
-            error.DiagnosticsEmitted => {
-                validate_loop_ns += elapsedNs(validate_start);
-                timingPrint("[kira:timing] checkPackageRoot.validateImportsLoop source_root={s} imports={d} ns={d}\n", .{ source_root, validate_loop_imports, validate_loop_ns });
-                timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
-                return .{
-                    .source = parsed.source,
-                    .diagnostics = try diags.toOwnedSlice(),
-                    .failure_stage = .semantics,
-                };
-            },
-            else => return err,
-        };
-        validate_loop_ns += elapsedNs(validate_start);
-    }
-    timingPrint("[kira:timing] checkPackageRoot.parseFileLoop source_root={s} files={d} bytes={d} ns={d}\n", .{ source_root, parse_loop_files, parse_loop_bytes, elapsedNs(parse_loop_start) });
-    timingPrint("[kira:timing] checkPackageRoot.validateImportsLoop source_root={s} imports={d} ns={d}\n", .{ source_root, validate_loop_imports, validate_loop_ns });
 
     const semantics_start = nowNs();
     _ = semantics.analyzeLibrary(allocator, merged_program, .{}, &diags) catch |err| switch (err) {

@@ -22,13 +22,16 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     const result = switch (input) {
         .application => |app| blk: {
             try support.logFrontendStarted(stderr, "check", app.source_path);
-            const backend = parsed.backend orelse app.default_backend orelse .vm;
             var system = build.BuildSystem.init(allocator);
-            break :blk try system.checkForBackend(app.source_path, backend);
+            if (parsed.backend) |backend| {
+                break :blk try system.checkForBackend(app.source_path, backend);
+            }
+            break :blk try system.checkFrontend(app.source_path);
         },
         .library => |library| blk: {
             try support.logFrontendStarted(stderr, "check", library.source_root);
-            break :blk try build.checkPackageRoot(allocator, library.source_root);
+            var system = build.BuildSystem.init(allocator);
+            break :blk try system.checkPackageRoot(library.source_root);
         },
     };
     if (!diagnostics.hasErrors(result.diagnostics)) {

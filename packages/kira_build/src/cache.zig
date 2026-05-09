@@ -17,12 +17,28 @@ pub const Cache = struct {
     }
 
     pub fn entryForBuild(self: Cache, source_path: []const u8, target: build_def.ExecutionTarget) !Entry {
-        const key = try fingerprintBuild(self.allocator, source_path, target);
+        const key = try fingerprintBuild(self.allocator, source_path, @tagName(target));
         defer self.allocator.free(key);
         const backend_dir = backendName(target);
         const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", backend_dir, key });
         try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
         return Entry.init(self.allocator, root, target);
+    }
+
+    pub fn entryForFrontendCheck(self: Cache, source_path: []const u8) !Entry {
+        const key = try fingerprintBuild(self.allocator, source_path, "frontend-check");
+        defer self.allocator.free(key);
+        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "frontend-check", key });
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        return Entry.init(self.allocator, root, .vm);
+    }
+
+    pub fn entryForPackageCheck(self: Cache, representative_source_path: []const u8) !Entry {
+        const key = try fingerprintBuild(self.allocator, representative_source_path, "package-check");
+        defer self.allocator.free(key);
+        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "package-check", key });
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        return Entry.init(self.allocator, root, .vm);
     }
 };
 
@@ -67,6 +83,22 @@ pub const Entry = struct {
 
     pub fn storeCheckSuccess(self: Entry) !void {
         try publishTextFileAtomic(try self.join("check.ok"), "ok\n");
+    }
+
+    pub fn hasFrontendCheckSuccess(self: Entry) bool {
+        return fileExistsJoin(self.root_path, "frontend_check.ok");
+    }
+
+    pub fn storeFrontendCheckSuccess(self: Entry) !void {
+        try publishTextFileAtomic(try self.join("frontend_check.ok"), "ok\n");
+    }
+
+    pub fn hasPackageCheckSuccess(self: Entry) bool {
+        return fileExistsJoin(self.root_path, "package_check.ok");
+    }
+
+    pub fn storePackageCheckSuccess(self: Entry) !void {
+        try publishTextFileAtomic(try self.join("package_check.ok"), "ok\n");
     }
 
     pub fn restoreTo(self: Entry, output_path: []const u8) ![]build_def.Artifact {
@@ -190,10 +222,10 @@ const StageDir = struct {
     }
 };
 
-fn fingerprintBuild(allocator: std.mem.Allocator, source_path: []const u8, target: build_def.ExecutionTarget) ![]const u8 {
+fn fingerprintBuild(allocator: std.mem.Allocator, source_path: []const u8, target_name: []const u8) ![]const u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update("kira-build-cache-v1\n");
-    hasher.update(@tagName(target));
+    hasher.update(target_name);
     hasher.update("\n");
     hasher.update(@tagName(builtin.cpu.arch));
     hasher.update("-");
@@ -245,12 +277,34 @@ fn inputFiles(allocator: std.mem.Allocator, source_path: []const u8) ![]const []
     var files = std.array_list.Managed([]const u8).init(allocator);
     const root = try projectRootForSource(allocator, source_path);
     defer allocator.free(root);
-    try collectInputs(allocator, root, "", &files);
+    var visited_roots = std.StringHashMap(void).init(allocator);
+    try collectRootInputs(allocator, root, &visited_roots, &files);
+    if (@import("kira_package_manager").loadModuleMapForSource(allocator, source_path)) |module_map| {
+        for (module_map.owners) |owner| {
+            const package_root = std.fs.path.dirname(owner.source_root) orelse owner.source_root;
+            try collectRootInputs(allocator, package_root, &visited_roots, &files);
+        }
+    } else |_| {}
     if (files.items.len == 0) {
         try files.append(try absolutize(allocator, source_path));
     }
     sortStrings(files.items);
     return files.toOwnedSlice();
+}
+
+fn collectRootInputs(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    visited_roots: *std.StringHashMap(void),
+    files: *std.array_list.Managed([]const u8),
+) !void {
+    const canonical = try absolutize(allocator, root);
+    if (visited_roots.contains(canonical)) {
+        allocator.free(canonical);
+        return;
+    }
+    try visited_roots.put(canonical, {});
+    try collectInputs(allocator, canonical, "", files);
 }
 
 fn collectInputs(
