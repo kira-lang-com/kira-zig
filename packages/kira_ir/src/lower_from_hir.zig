@@ -365,9 +365,15 @@ fn lowerGeneratedCallbackFunction(
     execution: runtime_abi.FunctionExecution,
     callback: model.hir.CallbackExpr,
 ) !ir.Function {
-    const boxed_locals = try collectBoxedLocals(allocator, callback.locals.len, callback.body);
+    const local_remap = try buildCallbackLocalRemap(allocator, callback);
+    defer allocator.free(local_remap);
+    const callback_local_count = callbackLocalCount(local_remap);
+    const original_boxed_locals = try collectBoxedLocals(allocator, callback.locals.len, callback.body);
+    defer allocator.free(original_boxed_locals);
+    const boxed_locals = try remapBoxedLocals(allocator, local_remap, callback_local_count, original_boxed_locals);
     for (callback.captures) |capture| {
-        if (capture.by_ref and capture.local_id < boxed_locals.len) boxed_locals[capture.local_id] = true;
+        const mapped = remapLocalId(local_remap, capture.local_id);
+        if (capture.by_ref and mapped < boxed_locals.len) boxed_locals[mapped] = true;
     }
     var lowerer = Lowerer{
         .allocator = allocator,
@@ -377,10 +383,11 @@ fn lowerGeneratedCallbackFunction(
         .function_name = function_name,
         .next_register = 0,
         .next_label = 0,
-        .next_local = @as(u32, @intCast(callback.locals.len)),
+        .next_local = callback_local_count,
         .hidden_local_types = std.array_list.Managed(ir.ValueType).init(allocator),
         .loop_stack = std.array_list.Managed(Lowerer.LoopLabels).init(allocator),
         .boxed_locals = boxed_locals,
+        .local_remap = local_remap,
     };
     defer allocator.free(boxed_locals);
     defer lowerer.hidden_local_types.deinit();
@@ -389,10 +396,11 @@ fn lowerGeneratedCallbackFunction(
     var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
     for (callback.captures, 0..) |capture, index| {
         const param_slot: u32 = @intCast(callback.params.len + index);
-        if (param_slot == capture.local_id) continue;
+        const capture_local = lowerer.mapLocal(capture.local_id);
+        if (param_slot == capture_local) continue;
         const reg = lowerer.freshRegister();
         try instructions.append(.{ .load_local = .{ .dst = reg, .local = param_slot } });
-        try instructions.append(.{ .store_local = .{ .src = reg, .local = capture.local_id } });
+        try instructions.append(.{ .store_local = .{ .src = reg, .local = capture_local } });
     }
     const terminated = try lowerer.lowerStatements(&instructions, callback.body);
     if (!terminated and (instructions.items.len == 0 or instructions.items[instructions.items.len - 1] != .ret)) {
@@ -409,7 +417,7 @@ fn lowerGeneratedCallbackFunction(
         .return_type = try lowerResolvedType(program, callback.return_type),
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
-        .local_types = try lowerCallbackLocalTypes(allocator, program, callback, lowerer.hidden_local_types.items, boxed_locals),
+        .local_types = try lowerCallbackLocalTypes(allocator, program, callback, local_remap, callback_local_count, lowerer.hidden_local_types.items, boxed_locals),
         .instructions = try instructions.toOwnedSlice(),
     };
 }
@@ -536,17 +544,83 @@ fn lowerAllLocalTypesBoxed(
     return lowered;
 }
 
+const unmapped_local = std.math.maxInt(u32);
+
+fn buildCallbackLocalRemap(allocator: std.mem.Allocator, callback: model.hir.CallbackExpr) ![]u32 {
+    var max_local: u32 = 0;
+    for (callback.locals) |local| max_local = @max(max_local, local.id);
+    for (callback.captures) |capture| max_local = @max(max_local, capture.local_id);
+
+    const remap = try allocator.alloc(u32, @as(usize, @intCast(max_local)) + 1);
+    @memset(remap, unmapped_local);
+
+    for (callback.params, 0..) |param, index| {
+        if (param.id < remap.len) remap[param.id] = @intCast(index);
+    }
+    for (callback.captures, 0..) |capture, index| {
+        if (capture.local_id < remap.len) remap[capture.local_id] = @intCast(callback.params.len + index);
+    }
+
+    var next_local: u32 = @intCast(callback.params.len + callback.captures.len);
+    for (callback.locals) |local| {
+        if (local.id >= remap.len or remap[local.id] != unmapped_local) continue;
+        remap[local.id] = next_local;
+        next_local += 1;
+    }
+
+    return remap;
+}
+
+fn remapLocalId(remap: []const u32, local: u32) u32 {
+    if (local >= remap.len) return local;
+    const mapped = remap[local];
+    return if (mapped == unmapped_local) local else mapped;
+}
+
+fn callbackLocalCount(remap: []const u32) u32 {
+    var count: u32 = 0;
+    for (remap) |mapped| {
+        if (mapped == unmapped_local) continue;
+        count = @max(count, mapped + 1);
+    }
+    return count;
+}
+
+fn remapBoxedLocals(allocator: std.mem.Allocator, remap: []const u32, local_count: u32, original: []const bool) ![]bool {
+    const boxed = try allocator.alloc(bool, local_count);
+    @memset(boxed, false);
+    for (original, 0..) |is_boxed, local| {
+        if (!is_boxed) continue;
+        const mapped = remapLocalId(remap, @intCast(local));
+        if (mapped < boxed.len) boxed[mapped] = true;
+    }
+    return boxed;
+}
+
 fn lowerCallbackLocalTypes(
     allocator: std.mem.Allocator,
     program: model.Program,
     callback: model.hir.CallbackExpr,
+    local_remap: []const u32,
+    local_count: u32,
     hidden_locals: []const ir.ValueType,
     boxed_locals: []const bool,
 ) ![]ir.ValueType {
-    const lowered = try lowerAllLocalTypesBoxed(allocator, program, callback.locals, hidden_locals, boxed_locals);
-    for (callback.captures, 0..) |_, index| {
+    const lowered = try allocator.alloc(ir.ValueType, @as(usize, @intCast(local_count)) + hidden_locals.len);
+    for (lowered) |*slot| slot.* = .{ .kind = .void };
+    for (callback.locals) |local| {
+        const mapped = remapLocalId(local_remap, local.id);
+        if (mapped < local_count) lowered[mapped] = try lowerResolvedType(program, local.ty);
+    }
+    for (hidden_locals, 0..) |hidden, index| {
+        lowered[@as(usize, @intCast(local_count)) + index] = hidden;
+    }
+    for (boxed_locals, 0..) |boxed, index| {
+        if (boxed and index < lowered.len) lowered[index] = .{ .kind = .raw_ptr, .name = "CaptureCell" };
+    }
+    for (callback.captures, 0..) |capture, index| {
         const param_slot = callback.params.len + index;
-        if (param_slot < lowered.len) lowered[param_slot] = if (callback.captures[index].by_ref) .{ .kind = .raw_ptr, .name = "CaptureCell" } else try lowerResolvedType(program, callback.captures[index].ty);
+        if (param_slot < lowered.len) lowered[param_slot] = if (capture.by_ref) .{ .kind = .raw_ptr, .name = "CaptureCell" } else try lowerResolvedType(program, capture.ty);
     }
     return lowered;
 }
@@ -651,6 +725,7 @@ pub const Lowerer = struct {
     hidden_local_types: std.array_list.Managed(ir.ValueType),
     loop_stack: std.array_list.Managed(LoopLabels),
     boxed_locals: []const bool,
+    local_remap: ?[]const u32 = null,
 
     const LoopLabels = struct {
         break_label: u32,
@@ -676,7 +751,17 @@ pub const Lowerer = struct {
         return local;
     }
 
+    pub fn mapLocal(self: *const Lowerer, local: u32) u32 {
+        if (self.local_remap) |remap| return remapLocalId(remap, local);
+        return local;
+    }
+
     pub fn isBoxedLocal(self: *Lowerer, local: u32) bool {
+        const mapped = self.mapLocal(local);
+        return mapped < self.boxed_locals.len and self.boxed_locals[mapped];
+    }
+
+    pub fn isBoxedStorageLocal(self: *Lowerer, local: u32) bool {
         return local < self.boxed_locals.len and self.boxed_locals[local];
     }
 
@@ -706,25 +791,26 @@ pub const Lowerer = struct {
     fn lowerStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statement: model.Statement) !bool {
         switch (statement) {
             .let_stmt => |node| {
+                const local_id = self.mapLocal(node.local_id);
                 if (self.isBoxedLocal(node.local_id)) {
-                    try self.initializeBoxedLocal(instructions, node.local_id, try lowerResolvedType(self.program, node.ty), null);
+                    try self.initializeBoxedLocal(instructions, local_id, try lowerResolvedType(self.program, node.ty), null);
                 }
                 if (node.value) |value| {
                     const reg = try self.lowerExpr(instructions, value);
                     if (self.isBoxedLocal(node.local_id)) {
-                        try self.storeValueToLocal(instructions, node.local_id, try lowerResolvedType(self.program, node.ty), reg);
+                        try self.storeValueToLocal(instructions, local_id, try lowerResolvedType(self.program, node.ty), reg);
                         return false;
                     }
                     if ((try lowerResolvedType(self.program, node.ty)).kind == .ffi_struct) {
                         const dst_ptr = self.freshRegister();
-                        try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = node.local_id } });
+                        try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = local_id } });
                         try instructions.append(.{ .copy_indirect = .{
                             .dst_ptr = dst_ptr,
                             .src_ptr = reg,
                             .type_name = node.ty.name orelse return error.UnsupportedExecutableFeature,
                         } });
                     } else {
-                        try instructions.append(.{ .store_local = .{ .local = node.local_id, .src = reg } });
+                        try instructions.append(.{ .store_local = .{ .local = local_id, .src = reg } });
                     }
                 }
                 return false;
@@ -809,14 +895,15 @@ pub const Lowerer = struct {
                     defer captures.deinit();
                     for (node.captures) |capture| {
                         const reg = self.freshRegister();
+                        const source_local = self.mapLocal(capture.source_local_id);
                         if (capture.by_ref) {
                             if (self.isBoxedLocal(capture.source_local_id)) {
-                                try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                                try instructions.append(.{ .load_local = .{ .dst = reg, .local = source_local } });
                             } else {
-                                try instructions.append(.{ .local_ptr = .{ .dst = reg, .local = capture.source_local_id } });
+                                try instructions.append(.{ .local_ptr = .{ .dst = reg, .local = source_local } });
                             }
                         } else {
-                            try instructions.append(.{ .load_local = .{ .dst = reg, .local = capture.source_local_id } });
+                            try instructions.append(.{ .load_local = .{ .dst = reg, .local = source_local } });
                         }
                         try captures.append(reg);
                     }
@@ -1076,12 +1163,13 @@ pub const Lowerer = struct {
             },
             .local => |node| blk: {
                 const dst = self.freshRegister();
+                const local_id = self.mapLocal(node.local_id);
                 if (self.isBoxedLocal(node.local_id)) {
                     const ptr = self.freshRegister();
-                    try instructions.append(.{ .load_local = .{ .dst = ptr, .local = node.local_id } });
+                    try instructions.append(.{ .load_local = .{ .dst = ptr, .local = local_id } });
                     try instructions.append(.{ .load_indirect = .{ .dst = dst, .ptr = ptr, .ty = try lowerResolvedType(self.program, node.ty) } });
                 } else {
-                    try instructions.append(.{ .load_local = .{ .dst = dst, .local = node.local_id } });
+                    try instructions.append(.{ .load_local = .{ .dst = dst, .local = local_id } });
                 }
                 break :blk dst;
             },
@@ -1265,7 +1353,7 @@ pub const Lowerer = struct {
         ty: ir.ValueType,
         src: u32,
     ) !void {
-        if (self.isBoxedLocal(local)) {
+        if (self.isBoxedStorageLocal(local)) {
             const ptr = self.freshRegister();
             try instructions.append(.{ .load_local = .{ .dst = ptr, .local = local } });
             try instructions.append(.{ .store_indirect = .{ .ptr = ptr, .src = src, .ty = ty } });

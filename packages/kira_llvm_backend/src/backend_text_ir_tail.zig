@@ -116,3 +116,42 @@ test "native state ffi struct field writes copy assigned values" {
     try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.copy") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "native.state.set.struct.ptrint") != null);
 }
+
+test "emits array append helper calls in text llvm ir" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    var program = ir.Program{
+        .functions = &.{.{
+            .id = 0,
+            .name = "main",
+            .execution = .native,
+            .param_types = &.{},
+            .return_type = .{ .kind = .void },
+            .register_count = 3,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = &.{
+                .{ .const_int = .{ .dst = 0, .value = 0 } },
+                .{ .alloc_array = .{ .dst = 1, .len = 0 } },
+                .{ .const_int = .{ .dst = 2, .value = 4 } },
+                .{ .array_append = .{ .array = 1, .src = 2 } },
+                .{ .ret = .{ .src = null } },
+            },
+        }},
+        .entry_index = 0,
+    };
+    const request = backend_api.CompileRequest{
+        .mode = .llvm_native,
+        .program = &program,
+        .module_name = "array_append_test",
+        .emit = .{
+            .object_path = "dummy.obj",
+        },
+    };
+
+    const text = try core.buildTextLlvmIr(allocator, request, "x86_64-pc-windows-msvc");
+    try std.testing.expect(std.mem.indexOf(u8, text, "kira_array_append") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "array.append.pack") != null);
+}

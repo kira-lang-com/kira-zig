@@ -198,7 +198,9 @@ pub fn lowerProgramWithOptions(
                 if (lowered.type_params.len == 0) try concrete_enums.put(allocator, lowered.name, lowered);
             },
             .type_decl => |type_decl| {
-                try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, type_decl.name, type_decl.span);
+                if (!hasFfiAnnotation(type_decl.annotations)) {
+                    try shared.registerTopLevelName(allocator, out_diagnostics, &top_level_names, type_decl.name, type_decl.span);
+                }
                 try local_types.put(allocator, type_decl.name, type_decl);
             },
             .construct_form_decl => |form_decl| {
@@ -590,6 +592,12 @@ pub fn lowerFieldDefaultExprExpected(
     expected_type: model.ResolvedType,
     function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
+    if (expected_type.kind == .enum_instance) {
+        if (try lowerFieldDefaultEnumVariantExpr(ctx, expr, expected_type, function_headers)) |enum_expr| {
+            return enum_expr;
+        }
+    }
+
     const lowered = try ctx.allocator.create(model.Expr);
     lowered.* = switch (expr.*) {
         .integer => |node| .{ .integer = .{
@@ -614,10 +622,11 @@ pub fn lowerFieldDefaultExprExpected(
         } },
         .array => |node| blk: {
             var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.elements) |element| try elements.append(try lowerFieldDefaultExprExpected(ctx, element, .{ .kind = .unknown }, function_headers));
+            const element_type = try fieldDefaultArrayElementType(ctx, expected_type);
+            for (node.elements) |element| try elements.append(try lowerFieldDefaultExprExpected(ctx, element, element_type, function_headers));
             break :blk .{ .array = .{
                 .elements = try elements.toOwnedSlice(),
-                .ty = .{ .kind = .array },
+                .ty = if (expected_type.kind == .array) expected_type else .{ .kind = .array },
                 .span = node.span,
             } };
         },
@@ -744,6 +753,121 @@ pub fn lowerFieldDefaultExprExpected(
     return lowered;
 }
 
+fn lowerFieldDefaultEnumVariantExpr(
+    ctx: *shared.Context,
+    expr: *syntax.ast.Expr,
+    expected_type: model.ResolvedType,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) anyerror!?*model.Expr {
+    const enum_name = expected_type.name orelse return null;
+    const enum_decl = findEnumDeclForDefault(ctx, enum_name) orelse return null;
+    const VariantTarget = struct {
+        name: []const u8,
+        payload: ?*syntax.ast.Expr,
+        span: source_pkg.Span,
+    };
+    const target: VariantTarget = switch (expr.*) {
+        .identifier => |node| blk: {
+            if (node.name.segments.len < 2 or !std.mem.eql(u8, node.name.segments[0].text, enum_name)) return null;
+            break :blk .{
+                .name = node.name.segments[node.name.segments.len - 1].text,
+                .payload = null,
+                .span = node.span,
+            };
+        },
+        .member => |node| .{
+            .name = node.member,
+            .payload = null,
+            .span = node.span,
+        },
+        .call => |node| blk: {
+            const variant_name = switch (node.callee.*) {
+                .member => |member| member.member,
+                .identifier => |callee| name_blk: {
+                    if (callee.name.segments.len < 2 or !std.mem.eql(u8, callee.name.segments[0].text, enum_name)) return null;
+                    break :name_blk callee.name.segments[callee.name.segments.len - 1].text;
+                },
+                else => return null,
+            };
+            break :blk .{
+                .name = variant_name,
+                .payload = if (node.args.len == 1) node.args[0].value else null,
+                .span = node.span,
+            };
+        },
+        else => return null,
+    };
+    const variant = findEnumVariantForDefault(enum_decl, target.name) orelse return null;
+    const payload = if (target.payload) |payload_expr|
+        if (variant.payload_ty) |payload_ty|
+            try lowerFieldDefaultExprExpected(ctx, payload_expr, payload_ty, function_headers)
+        else {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM105",
+                .title = "match pattern payload is invalid",
+                .message = "This enum variant does not accept a payload value.",
+                .labels = &.{diagnostics.primaryLabel(target.span, "payload value is not valid for this enum variant")},
+                .help = "Remove the argument from this enum constructor call.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+    else if (variant.payload_ty != null)
+        variant.default_value
+    else
+        null;
+    if (variant.payload_ty != null and payload == null) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM105",
+            .title = "match pattern payload is invalid",
+            .message = "This enum variant requires an associated payload value.",
+            .labels = &.{diagnostics.primaryLabel(target.span, "missing enum payload value")},
+            .help = "Pass the payload argument or add a default value on the enum variant declaration.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+    const lowered = try ctx.allocator.create(model.Expr);
+    lowered.* = .{ .construct_enum_variant = .{
+        .enum_name = try ctx.allocator.dupe(u8, enum_decl.name),
+        .variant_name = try ctx.allocator.dupe(u8, variant.name),
+        .discriminant = variant.discriminant,
+        .payload = payload,
+        .ty = .{ .kind = .enum_instance, .name = try ctx.allocator.dupe(u8, enum_decl.name) },
+        .span = target.span,
+    } };
+    return lowered;
+}
+
+fn findEnumDeclForDefault(ctx: *shared.Context, enum_name: []const u8) ?model.EnumDecl {
+    if (ctx.concrete_enums) |concrete_enums| {
+        if (concrete_enums.get(enum_name)) |enum_decl| return enum_decl;
+    }
+    if (ctx.enum_headers) |enum_headers| {
+        if (enum_headers.get(enum_name)) |enum_decl| return enum_decl;
+    }
+    return null;
+}
+
+fn findEnumVariantForDefault(enum_decl: model.EnumDecl, variant_name: []const u8) ?model.EnumVariantHir {
+    for (enum_decl.variants) |variant| {
+        if (std.mem.eql(u8, variant.name, variant_name)) return variant;
+    }
+    return null;
+}
+
+fn fieldDefaultArrayElementType(ctx: *shared.Context, expected_type: model.ResolvedType) !model.ResolvedType {
+    if (expected_type.kind != .array or expected_type.name == null) return .{ .kind = .unknown };
+    const element_name = expected_type.name.?;
+    if (ctx.enum_headers) |enum_headers| {
+        if (enum_headers.get(element_name) != null) return .{ .kind = .enum_instance, .name = element_name };
+    }
+    if (ctx.concrete_enums) |concrete_enums| {
+        if (concrete_enums.get(element_name) != null) return .{ .kind = .enum_instance, .name = element_name };
+    }
+    return try shared.resolvedTypeFromText(element_name);
+}
+
 fn defaultExprSpan(expr: syntax.ast.Expr) source_pkg.Span {
     return switch (expr) {
         .integer => |node| node.span,
@@ -775,6 +899,17 @@ fn flattenDefaultCalleeName(allocator: std.mem.Allocator, expr: *syntax.ast.Expr
         },
         else => allocator.dupe(u8, "<expr>"),
     };
+}
+
+fn hasFfiAnnotation(annotations: []const syntax.ast.Annotation) bool {
+    for (annotations) |annotation| {
+        if (annotation.name.segments.len >= 2 and
+            std.mem.eql(u8, annotation.name.segments[0].text, "FFI"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn lowerTypeMethodMembers(

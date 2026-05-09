@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const source_pkg = @import("kira_source");
 const diagnostics = @import("kira_diagnostics");
 const lexer = @import("kira_lexer");
@@ -13,6 +14,54 @@ const native = @import("kira_native_lib_definition");
 const ffi_support = @import("ffi_support.zig");
 const package_manager = @import("kira_package_manager");
 const program_graph = @import("kira_program_graph");
+
+var timings_enabled: bool = false;
+
+pub fn setTimingsEnabled(enabled: bool) void {
+    timings_enabled = enabled;
+    program_graph.setTimingsEnabled(enabled);
+}
+
+fn nowNs() i128 {
+    if (builtin.os.tag == .windows) {
+        var counter: std.os.windows.LARGE_INTEGER = undefined;
+        var frequency: std.os.windows.LARGE_INTEGER = undefined;
+        _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
+        _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency);
+        return @divTrunc(@as(i128, counter) * 1_000_000_000, @as(i128, frequency));
+    }
+    return 0;
+}
+
+fn elapsedNs(start: i128) u64 {
+    return @intCast(nowNs() - start);
+}
+
+fn timingPrint(comptime fmt: []const u8, args: anytype) void {
+    if (timings_enabled) std.debug.print(fmt, args);
+}
+
+fn countSourceBytes(allocator: std.mem.Allocator, files: [][]u8) !usize {
+    var total: usize = 0;
+    for (files) |path| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
+        total += bytes.len;
+    }
+    return total;
+}
+
+fn countImportedPackageFiles(allocator: std.mem.Allocator, module_map: package_manager.ModuleMap) !usize {
+    var total: usize = 0;
+    for (module_map.owners) |owner| {
+        const module_files = try program_graph.collectPackageModuleFiles(allocator, owner.source_root);
+        defer {
+            for (module_files) |module_file| allocator.free(module_file);
+            allocator.free(module_files);
+        }
+        total += module_files.len;
+    }
+    return total;
+}
 
 pub const FrontendStage = enum {
     lexer,
@@ -126,8 +175,10 @@ fn diagnosticsOwnedOrFallback(
 }
 
 pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !FrontendPipelineResult {
+    const total_start = nowNs();
     const parsed = try parseFile(allocator, path);
     if (parsed.program == null) {
+        timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
         return .{
             .source = parsed.source,
             .diagnostics = parsed.diagnostics,
@@ -140,9 +191,15 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     for (parsed.diagnostics) |diag| try diags.append(diag);
 
+    const module_map_start = nowNs();
     const module_map = try package_manager.loadModuleMapForSource(allocator, parsed.source.path);
+    timingPrint("[kira:timing] loadModuleMapForSource path={s} owners={d} ns={d}\n", .{ parsed.source.path, module_map.owners.len, elapsedNs(module_map_start) });
+
+    const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] buildProgramGraph path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(graph_start) });
+            timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
                 .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .graph),
@@ -153,10 +210,17 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         },
         else => return err,
     };
-    const native_libraries = try ffi_support.prepareImportedNativeLibraries(allocator, parsed.native_libraries, merged_program.imports, module_map);
+    timingPrint("[kira:timing] buildProgramGraph path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
 
+    const native_import_start = nowNs();
+    const native_libraries = try ffi_support.prepareImportedNativeLibraries(allocator, parsed.native_libraries, merged_program.imports, module_map);
+    timingPrint("[kira:timing] prepareImportedNativeLibraries path={s} imports={d} native_libraries={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, native_libraries.len, elapsedNs(native_import_start) });
+
+    const validate_start = nowNs();
     validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] validateImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(validate_start) });
+            timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
                 .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
@@ -167,9 +231,13 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         },
         else => return err,
     };
+    timingPrint("[kira:timing] validateImports path={s} imports={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, elapsedNs(validate_start) });
 
+    const semantics_start = nowNs();
     const hir = semantics.analyzeWithImports(allocator, merged_program, .{}, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] semantics.analyzeWithImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(semantics_start) });
+            timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
                 .diagnostics = try diagnosticsOwnedOrFallback(allocator, &diags, .semantics),
@@ -180,7 +248,9 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         },
         else => return err,
     };
+    timingPrint("[kira:timing] semantics.analyzeWithImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(semantics_start) });
 
+    const ir_start = nowNs();
     const ir_program = ir.lowerProgram(allocator, hir) catch |err| switch (err) {
         error.UnsupportedExecutableFeature, error.UnsupportedType => {
             try diags.append(.{
@@ -190,6 +260,8 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
                 .message = "This program uses language constructs that are not yet lowered into the shared executable IR.",
                 .help = "Use `kirac check` to validate the frontend shape, or stay within the currently executable subset for `run` and `build`.",
             });
+            timingPrint("[kira:timing] ir.lowerProgram path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(ir_start) });
+            timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
                 .diagnostics = try diags.toOwnedSlice(),
@@ -200,6 +272,8 @@ pub fn compileFileToIr(allocator: std.mem.Allocator, path: []const u8) !Frontend
         },
         else => return err,
     };
+    timingPrint("[kira:timing] ir.lowerProgram path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(ir_start) });
+    timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
     return .{
         .source = parsed.source,
         .diagnostics = try diags.toOwnedSlice(),
@@ -226,8 +300,10 @@ pub fn compileFileForBackend(
     target: build_def.ExecutionTarget,
     explicit_native_libraries: []const native.ResolvedNativeLibrary,
 ) !ExecutablePipelineResult {
+    const total_start = nowNs();
     const frontend = try compileFileToIr(allocator, path);
     if (frontend.ir_program == null or diagnostics.hasErrors(frontend.diagnostics)) {
+        timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
         return .{
             .source = frontend.source,
             .diagnostics = frontend.diagnostics,
@@ -239,12 +315,17 @@ pub fn compileFileForBackend(
     }
 
     const ir_program = frontend.ir_program.?;
+    const merge_start = nowNs();
     const merged_native_libraries = try mergeNativeLibraries(allocator, explicit_native_libraries, frontend.native_libraries);
+    timingPrint("[kira:timing] mergeNativeLibraries path={s} explicit={d} discovered={d} merged={d} ns={d}\n", .{ path, explicit_native_libraries.len, frontend.native_libraries.len, merged_native_libraries.len, elapsedNs(merge_start) });
 
     switch (target) {
         .vm => {
+            const bytecode_start = nowNs();
             const module = bytecode.compileProgram(allocator, ir_program, .vm) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=vm ns={d}\n", .{ path, elapsedNs(bytecode_start) });
+                timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
                 return .{
                     .source = frontend.source,
                     .diagnostics = backend_diagnostics,
@@ -254,6 +335,8 @@ pub fn compileFileForBackend(
                     .failure_stage = .backend_prepare,
                 };
             };
+            timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=vm ns={d}\n", .{ path, elapsedNs(bytecode_start) });
+            timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
             return .{
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
@@ -264,6 +347,7 @@ pub fn compileFileForBackend(
             };
         },
         .llvm_native => {
+            const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .llvm_native,
                 .program = &ir_program,
@@ -272,6 +356,8 @@ pub fn compileFileForBackend(
                 .resolved_native_libraries = merged_native_libraries,
             }) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                timingPrint("[kira:timing] llvm_backend.validate path={s} backend=llvm_native ns={d}\n", .{ path, elapsedNs(llvm_start) });
+                timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
                 return .{
                     .source = frontend.source,
                     .diagnostics = backend_diagnostics,
@@ -281,6 +367,8 @@ pub fn compileFileForBackend(
                     .failure_stage = .backend_prepare,
                 };
             };
+            timingPrint("[kira:timing] llvm_backend.validate path={s} backend=llvm_native ns={d}\n", .{ path, elapsedNs(llvm_start) });
+            timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
             return .{
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
@@ -291,8 +379,11 @@ pub fn compileFileForBackend(
             };
         },
         .hybrid => {
+            const bytecode_start = nowNs();
             const module = bytecode.compileProgram(allocator, ir_program, .hybrid_runtime) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=hybrid_runtime ns={d}\n", .{ path, elapsedNs(bytecode_start) });
+                timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
                 return .{
                     .source = frontend.source,
                     .diagnostics = backend_diagnostics,
@@ -302,6 +393,8 @@ pub fn compileFileForBackend(
                     .failure_stage = .backend_prepare,
                 };
             };
+            timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=hybrid_runtime ns={d}\n", .{ path, elapsedNs(bytecode_start) });
+            const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .hybrid,
                 .program = &ir_program,
@@ -310,6 +403,8 @@ pub fn compileFileForBackend(
                 .resolved_native_libraries = merged_native_libraries,
             }) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                timingPrint("[kira:timing] llvm_backend.validate path={s} backend=hybrid ns={d}\n", .{ path, elapsedNs(llvm_start) });
+                timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
                 return .{
                     .source = frontend.source,
                     .diagnostics = backend_diagnostics,
@@ -319,6 +414,8 @@ pub fn compileFileForBackend(
                     .failure_stage = .backend_prepare,
                 };
             };
+            timingPrint("[kira:timing] llvm_backend.validate path={s} backend=hybrid ns={d}\n", .{ path, elapsedNs(llvm_start) });
+            timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
             return .{
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
@@ -336,7 +433,19 @@ pub fn checkFileForBackend(
     path: []const u8,
     target: build_def.ExecutionTarget,
 ) !CheckPipelineResult {
+    const total_start = nowNs();
     const prepared = try compileFileForBackend(allocator, path, target, &.{});
+    const reached_ir = prepared.ir_program != null or prepared.failure_stage == .ir or prepared.failure_stage == .backend_prepare;
+    const reached_bytecode = prepared.bytecode_module != null;
+    const reached_llvm = (target == .llvm_native or target == .hybrid) and prepared.failure_stage == null and prepared.ir_program != null;
+    timingPrint("[kira:timing] checkFileForBackend.total path={s} backend={s} reached_ir={any} reached_bytecode={any} reached_llvm={any} ns={d}\n", .{
+        path,
+        @tagName(target),
+        reached_ir,
+        reached_bytecode,
+        reached_llvm,
+        elapsedNs(total_start),
+    });
     return .{
         .source = prepared.source,
         .diagnostics = prepared.diagnostics,
@@ -428,10 +537,14 @@ pub fn backendDiagnostics(allocator: std.mem.Allocator, source_path: []const u8,
 }
 
 pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResult {
+    const source_start = nowNs();
     const source = try source_pkg.SourceFile.fromPath(allocator, path);
+    timingPrint("[kira:timing] SourceFile.fromPath path={s} bytes={d} ns={d}\n", .{ path, source.text.len, elapsedNs(source_start) });
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const lex_start = nowNs();
     const tokens = lexer.tokenize(allocator, &source, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] lex/tokenize path={s} ns={d}\n", .{ path, elapsedNs(lex_start) });
             return .{
                 .source = source,
                 .diagnostics = try diags.toOwnedSlice(),
@@ -441,6 +554,7 @@ pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResul
         },
         else => return err,
     };
+    timingPrint("[kira:timing] lex/tokenize path={s} tokens={d} ns={d}\n", .{ path, tokens.len, elapsedNs(lex_start) });
 
     return .{
         .source = source,
@@ -450,6 +564,14 @@ pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResul
 }
 
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineResult {
+    return parseFileWithNativePreparation(allocator, path, true);
+}
+
+fn parseFileWithoutNativePreparation(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineResult {
+    return parseFileWithNativePreparation(allocator, path, false);
+}
+
+fn parseFileWithNativePreparation(allocator: std.mem.Allocator, path: []const u8, prepare_native: bool) !ParsePipelineResult {
     const lexed = try lexFile(allocator, path);
     if (lexed.tokens == null) {
         return .{
@@ -463,8 +585,10 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineR
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     for (lexed.diagnostics) |diag| try diags.append(diag);
 
+    const parse_start = nowNs();
     const program = parser.parse(allocator, lexed.tokens.?, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] parse path={s} ns={d}\n", .{ path, elapsedNs(parse_start) });
             return .{
                 .source = lexed.source,
                 .diagnostics = try diags.toOwnedSlice(),
@@ -474,8 +598,17 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !ParsePipelineR
         },
         else => return err,
     };
+    timingPrint("[kira:timing] parse path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ path, program.imports.len, program.decls.len, program.functions.len, elapsedNs(parse_start) });
 
-    const native_libraries = try ffi_support.prepareNativeLibraries(allocator, path, program.imports);
+    const native_libraries = if (prepare_native) blk: {
+        const native_start = nowNs();
+        const libraries = try ffi_support.prepareNativeLibraries(allocator, path, program.imports);
+        timingPrint("[kira:timing] prepareNativeLibraries path={s} native_libraries={d} ns={d}\n", .{ path, libraries.len, elapsedNs(native_start) });
+        break :blk libraries;
+    } else blk: {
+        timingPrint("[kira:timing] prepareNativeLibraries path={s} skipped=true ns=0\n", .{path});
+        break :blk &.{};
+    };
 
     return .{
         .source = lexed.source,
@@ -490,7 +623,12 @@ pub fn checkFile(allocator: std.mem.Allocator, path: []const u8) !CheckPipelineR
 }
 
 pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !CheckPipelineResult {
+    const total_start = nowNs();
+    const collect_start = nowNs();
     const module_files = try program_graph.collectPackageModuleFiles(allocator, source_root);
+    const collect_ns = elapsedNs(collect_start);
+    const source_bytes = try countSourceBytes(allocator, module_files);
+    timingPrint("[kira:timing] collectPackageModuleFiles source_root={s} source_files={d} source_bytes={d} ns={d}\n", .{ source_root, module_files.len, source_bytes, collect_ns });
     if (module_files.len == 0) {
         const source = try source_pkg.SourceFile.initOwned(allocator, source_root, "");
         const diags = try allocator.alloc(diagnostics.Diagnostic, 1);
@@ -501,6 +639,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
             .message = "Kira could not find any `.kira` source files in this package's canonical `app/` source root.",
             .help = "Add library source files under the package `app/` directory.",
         };
+        timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
         return .{
             .source = source,
             .diagnostics = diags,
@@ -508,11 +647,19 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
         };
     }
 
+    const source_start = nowNs();
     const source = try source_pkg.SourceFile.fromPath(allocator, module_files[0]);
+    timingPrint("[kira:timing] SourceFile.fromPath package_root_primary={s} bytes={d} ns={d}\n", .{ module_files[0], source.text.len, elapsedNs(source_start) });
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const module_map_start = nowNs();
     const module_map = try package_manager.loadModuleMapForSource(allocator, module_files[0]);
+    const imported_package_files = try countImportedPackageFiles(allocator, module_map);
+    timingPrint("[kira:timing] loadModuleMapForSource package_root={s} owners={d} imported_package_files={d} ns={d}\n", .{ module_files[0], module_map.owners.len, imported_package_files, elapsedNs(module_map_start) });
+    const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraphFromFiles(allocator, module_files, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] buildProgramGraphFromFiles source_root={s} ns={d}\n", .{ source_root, elapsedNs(graph_start) });
+            timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
             return .{
                 .source = source,
                 .diagnostics = try diags.toOwnedSlice(),
@@ -521,18 +668,33 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
         },
         else => return err,
     };
+    timingPrint("[kira:timing] buildProgramGraphFromFiles source_root={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ source_root, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
 
+    const parse_loop_start = nowNs();
+    var parse_loop_files: usize = 0;
+    var parse_loop_bytes: usize = 0;
+    var validate_loop_imports: usize = 0;
+    var validate_loop_ns: u64 = 0;
     for (module_files) |module_path| {
-        const parsed = try parseFile(allocator, module_path);
+        const parsed = try parseFileWithoutNativePreparation(allocator, module_path);
+        parse_loop_files += 1;
+        parse_loop_bytes += parsed.source.text.len;
         if (parsed.program == null) {
+            timingPrint("[kira:timing] checkPackageRoot.parseFileLoop source_root={s} files={d} bytes={d} ns={d}\n", .{ source_root, parse_loop_files, parse_loop_bytes, elapsedNs(parse_loop_start) });
+            timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
             return .{
                 .source = parsed.source,
                 .diagnostics = parsed.diagnostics,
                 .failure_stage = parsed.failure_stage,
             };
         }
+        validate_loop_imports += parsed.program.?.imports.len;
+        const validate_start = nowNs();
         validateImports(allocator, &parsed.source, parsed.program.?, &diags) catch |err| switch (err) {
             error.DiagnosticsEmitted => {
+                validate_loop_ns += elapsedNs(validate_start);
+                timingPrint("[kira:timing] checkPackageRoot.validateImportsLoop source_root={s} imports={d} ns={d}\n", .{ source_root, validate_loop_imports, validate_loop_ns });
+                timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
                 return .{
                     .source = parsed.source,
                     .diagnostics = try diags.toOwnedSlice(),
@@ -541,10 +703,16 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
             },
             else => return err,
         };
+        validate_loop_ns += elapsedNs(validate_start);
     }
+    timingPrint("[kira:timing] checkPackageRoot.parseFileLoop source_root={s} files={d} bytes={d} ns={d}\n", .{ source_root, parse_loop_files, parse_loop_bytes, elapsedNs(parse_loop_start) });
+    timingPrint("[kira:timing] checkPackageRoot.validateImportsLoop source_root={s} imports={d} ns={d}\n", .{ source_root, validate_loop_imports, validate_loop_ns });
 
+    const semantics_start = nowNs();
     _ = semantics.analyzeLibrary(allocator, merged_program, .{}, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
+            timingPrint("[kira:timing] semantics.analyzeLibrary source_root={s} ns={d}\n", .{ source_root, elapsedNs(semantics_start) });
+            timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
             return .{
                 .source = source,
                 .diagnostics = try diags.toOwnedSlice(),
@@ -553,6 +721,8 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
         },
         else => return err,
     };
+    timingPrint("[kira:timing] semantics.analyzeLibrary source_root={s} ns={d}\n", .{ source_root, elapsedNs(semantics_start) });
+    timingPrint("[kira:timing] checkPackageRoot.total source_root={s} reached_ir=false reached_bytecode=false reached_llvm=false ns={d}\n", .{ source_root, elapsedNs(total_start) });
 
     return .{
         .source = source,

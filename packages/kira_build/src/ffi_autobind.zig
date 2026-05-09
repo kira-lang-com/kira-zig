@@ -467,13 +467,12 @@ fn renderBindings(
     for (sorted_aliases) |name| {
         const typedef_decl = index.typedefs.get(name) orelse return error.MissingAutobindType;
         if (typedefResolvesToSelfRecordOrEnum(name, typedef_decl, &index)) continue;
+        if (typedefResolvesToPrimitiveAlias(typedef_decl)) continue;
+        if (typedefResolvesToEnumAlias(typedef_decl, &index)) continue;
         try writeAliasType(allocator, writer, typedef_decl);
     }
 
-    for (sorted_enums) |name| {
-        const enum_decl = index.enums.get(name) orelse return error.MissingAutobindType;
-        try writeEnumType(allocator, writer, enum_decl);
-    }
+    _ = sorted_enums;
 
     for (sorted_callbacks) |name| {
         const typedef_decl = index.typedefs.get(name) orelse return error.MissingAutobindCallback;
@@ -508,7 +507,7 @@ fn renderBindings(
 
     for (function_names.items) |name| {
         const function_decl = index.functions.get(name) orelse return error.MissingAutobindFunction;
-        try writeFunctionDecl(allocator, writer, library.name, function_decl);
+        try writeFunctionDecl(allocator, writer, library.name, function_decl, &index);
     }
 
     return output.toOwnedSlice();
@@ -519,13 +518,13 @@ fn writeAliasType(allocator: std.mem.Allocator, writer: anytype, typedef_decl: C
         .callback => return writeCallbackType(allocator, writer, typedef_decl),
         .array => {
             try writer.print("@FFI.Array {{ element: {s}; count: {d}; }}\n", .{
-                try kiraTypeName(allocator, typedef_decl.array_element_type orelse return error.InvalidAutobindingDecl),
+                try kiraTypeName(allocator, typedef_decl.array_element_type orelse return error.InvalidAutobindingDecl, null),
                 typedef_decl.array_count,
             });
             try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
         },
         .alias => {
-            try writer.print("@FFI.Alias {{ target: {s}; }}\n", .{try kiraTypeName(allocator, typedef_decl.qual_type)});
+            try writer.print("@FFI.Alias {{ target: {s}; }}\n", .{try kiraTypeName(allocator, typedef_decl.qual_type, null)});
             try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
         },
     }
@@ -533,7 +532,7 @@ fn writeAliasType(allocator: std.mem.Allocator, writer: anytype, typedef_decl: C
 
 fn writeSyntheticArrayType(allocator: std.mem.Allocator, writer: anytype, array_info: ArrayTypeInfo) !void {
     try writer.print("@FFI.Array {{ element: {s}; count: {d}; }}\n", .{
-        try kiraTypeName(allocator, array_info.element_type),
+        try kiraTypeName(allocator, array_info.element_type, null),
         array_info.count,
     });
     try writer.print("struct {s} {{}}\n\n", .{array_info.name});
@@ -549,10 +548,10 @@ fn writeCallbackType(allocator: std.mem.Allocator, writer: anytype, typedef_decl
     try writer.print("@FFI.Callback {{ abi: c; params: [", .{});
     for (typedef_decl.callback_params, 0..) |param, index| {
         if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(try kiraTypeName(allocator, param));
+        try writer.writeAll(try kiraTypeName(allocator, param, null));
     }
     try writer.writeAll("]; result: ");
-    try writer.writeAll(try kiraTypeName(allocator, typedef_decl.callback_result orelse "void"));
+    try writer.writeAll(try kiraTypeName(allocator, typedef_decl.callback_result orelse "void", null));
     try writer.writeAll("; }\n");
     try writer.print("struct {s} {{}}\n\n", .{typedef_decl.name});
 }
@@ -568,7 +567,7 @@ fn writeStructType(
     try writer.writeAll("@FFI.Struct { layout: c; }\n");
     try writer.print("struct {s} {{\n", .{name});
     for (record.fields) |field| {
-        const type_name = try fieldTypeName(allocator, name, field, inline_callbacks);
+        const type_name = try fieldTypeName(allocator, name, field, inline_callbacks, index);
         try writer.print("    var {s}: {s}\n", .{ sanitizeIdentifier(field.name), type_name });
     }
     try writer.writeAll("}\n\n");
@@ -581,15 +580,15 @@ fn writeMacroConstantsType(writer: anytype, library_name: []const u8, macro_name
     _ = index;
 }
 
-fn writeFunctionDecl(allocator: std.mem.Allocator, writer: anytype, library_name: []const u8, function_decl: CFunction) !void {
+fn writeFunctionDecl(allocator: std.mem.Allocator, writer: anytype, library_name: []const u8, function_decl: CFunction, index: *const AstIndex) !void {
     try writer.print("@FFI.Extern {{ library: {s}; symbol: {s}; abi: c; }}\n", .{ library_name, function_decl.name });
     try writer.print("function {s}(", .{function_decl.name});
-    for (function_decl.params, 0..) |param, index| {
-        if (index != 0) try writer.writeAll(", ");
-        const type_name = try kiraTypeName(allocator, param.qual_type);
+    for (function_decl.params, 0..) |param, param_index| {
+        if (param_index != 0) try writer.writeAll(", ");
+        const type_name = try kiraTypeName(allocator, param.qual_type, index);
         try writer.print("{s}: {s}", .{ sanitizeIdentifier(param.name), type_name });
     }
-    const result_type = try kiraTypeName(allocator, function_decl.return_type);
+    const result_type = try kiraTypeName(allocator, function_decl.return_type, index);
     try writer.print("): {s};\n\n", .{result_type});
 }
 
@@ -598,10 +597,11 @@ fn fieldTypeName(
     owner_name: []const u8,
     field: CField,
     inline_callbacks: *const std.StringHashMapUnmanaged(CTypedef),
+    index: *const AstIndex,
 ) ![]const u8 {
     const callback_name = try syntheticFieldCallbackName(allocator, owner_name, field.name);
     if (inline_callbacks.contains(callback_name)) return callback_name;
-    return kiraTypeName(allocator, field.qual_type);
+    return kiraTypeName(allocator, field.qual_type, index);
 }
 
 fn collectTypeDependencies(
@@ -687,10 +687,21 @@ const ParsedType = union(enum) {
     },
 };
 
-fn kiraTypeName(allocator: std.mem.Allocator, qual_type: []const u8) ![]const u8 {
+fn kiraTypeName(allocator: std.mem.Allocator, qual_type: []const u8, maybe_index: ?*const AstIndex) ![]const u8 {
     const text = std.mem.trim(u8, qual_type, " ");
     if (primitiveKiraTypeName(text)) |name| return allocator.dupe(u8, name);
-    if (std.mem.startsWith(u8, text, "enum ")) return allocator.dupe(u8, text["enum ".len..]);
+    if (std.mem.startsWith(u8, text, "enum ")) return allocator.dupe(u8, "U32");
+    if (maybe_index) |index| {
+        if (index.enums.contains(text)) return allocator.dupe(u8, "U32");
+        if (index.typedefs.get(text)) |typedef_decl| {
+            if (typedef_decl.kind == .alias) {
+                const target = std.mem.trim(u8, typedef_decl.qual_type, " ");
+                if (primitiveKiraTypeName(target)) |name| return allocator.dupe(u8, name);
+                if (std.mem.startsWith(u8, target, "enum ")) return allocator.dupe(u8, "U32");
+                if (index.enums.contains(target)) return allocator.dupe(u8, "U32");
+            }
+        }
+    }
     if (try parseArrayType(allocator, text)) |array_info| {
         return allocator.dupe(u8, array_info.name);
     }
@@ -718,11 +729,15 @@ fn parseCType(allocator: std.mem.Allocator, qual_type: []const u8, index: *const
     if (std.mem.startsWith(u8, text, "struct ")) {
         return .{ .struct_name = try allocator.dupe(u8, text["struct ".len..]) };
     }
-    if (index.enums.contains(text)) return .{ .enum_name = try allocator.dupe(u8, text) };
+    if (index.enums.contains(text)) return .plain;
     if (index.typedefs.get(text)) |typedef_decl| {
         return switch (typedef_decl.kind) {
             .callback => .{ .callback_name = try allocator.dupe(u8, text) },
-            .array, .alias => .{ .alias_name = try allocator.dupe(u8, text) },
+            .array => .{ .alias_name = try allocator.dupe(u8, text) },
+            .alias => {
+                if (typedefResolvesToPrimitiveAlias(typedef_decl) or typedefResolvesToEnumAlias(typedef_decl, index)) return .plain;
+                return .{ .alias_name = try allocator.dupe(u8, text) };
+            },
         };
     }
     if (resolveRecord(text, index) != null) return .{ .struct_name = try allocator.dupe(u8, text) };
@@ -755,6 +770,18 @@ fn typedefResolvesToSelfRecordOrEnum(name: []const u8, typedef_decl: CTypedef, i
         if (std.mem.eql(u8, target, name) and index.enums.contains(name)) return true;
     }
     return false;
+}
+
+fn typedefResolvesToPrimitiveAlias(typedef_decl: CTypedef) bool {
+    if (typedef_decl.kind != .alias) return false;
+    return primitiveKiraTypeName(std.mem.trim(u8, typedef_decl.qual_type, " ")) != null;
+}
+
+fn typedefResolvesToEnumAlias(typedef_decl: CTypedef, index: *const AstIndex) bool {
+    if (typedef_decl.kind != .alias) return false;
+    const target = std.mem.trim(u8, typedef_decl.qual_type, " ");
+    if (std.mem.startsWith(u8, target, "enum ")) return true;
+    return index.enums.contains(target);
 }
 
 fn trimPointerTarget(text: []const u8) []const u8 {

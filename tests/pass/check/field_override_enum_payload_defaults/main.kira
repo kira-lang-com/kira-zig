@@ -1,0 +1,29 @@
+struct Color {
+    let r: F32 = 1.0
+}
+
+struct GlowPayload {
+    let color: Color = Color {}
+    let radius: Int = 4
+}
+
+enum Paint {
+    Flat
+    Glow(GlowPayload)
+}
+
+class Surface {
+    let paint: Paint = Paint.Flat
+    let effects: [Paint] = []
+}
+
+class Card extends Surface {
+    override let paint: Paint = Paint.Flat
+    override let effects: [Paint] = [Paint.Glow(GlowPayload { color: Color { r: 0.5 } })]
+}
+
+@Main
+function main() {
+    let card = Card()
+    return
+}

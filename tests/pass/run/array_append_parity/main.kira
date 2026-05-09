@@ -1,0 +1,10 @@
+@Main
+function main() {
+    var values: [Int] = []
+    values.append(4)
+    values.append(5)
+    for item in values {
+        print(item)
+    }
+    return
+}

@@ -14,6 +14,7 @@ pub const LexPipelineResult = @import("pipeline.zig").LexPipelineResult;
 pub const ParsePipelineResult = @import("pipeline.zig").ParsePipelineResult;
 pub const VmPipelineResult = @import("pipeline.zig").VmPipelineResult;
 pub const checkFileForBackend = @import("pipeline.zig").checkFileForBackend;
+pub const setTimingsEnabled = @import("pipeline.zig").setTimingsEnabled;
 pub const compileFileToIr = @import("pipeline.zig").compileFileToIr;
 pub const compileFileToBytecode = @import("pipeline.zig").compileFileToBytecode;
 pub const compileFileForBackend = @import("pipeline.zig").compileFileForBackend;

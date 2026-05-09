@@ -89,7 +89,7 @@ pub const Vm = struct {
         return self.copyStructFromNativeLayout(module, type_name, native_ptr);
     }
 
-    pub fn materializeNativeClosure(self: *Vm, module: *const bytecode.Module, native_ptr: usize) !usize {
+    pub fn materializeNativeClosure(self: *Vm, module: *const bytecode.Module, native_ptr: usize, external_capture_types: ?[]const bytecode.TypeRef) !usize {
         if (native_ptr == 0) return 0;
         if (self.heap.getClosure(native_ptr) != null) return native_ptr;
         const function_id_ptr: *const i64 = @ptrFromInt(native_ptr);
@@ -116,6 +116,18 @@ pub const Vm = struct {
             if (function_decl) |decl| {
                 const param_index = decl.param_count - @as(u32, @intCast(capture_count)) + @as(u32, @intCast(index));
                 const capture_ty = decl.local_types[param_index];
+                if (capture_ty.kind == .ffi_struct and capture_value == .raw_ptr and capture_value.raw_ptr != 0) {
+                    capture_value = .{ .raw_ptr = try self.copyStructFromNativeLayout(module, capture_ty.name orelse {
+                        self.rememberError("native closure capture type is missing a name");
+                        return error.RuntimeFailure;
+                    }, capture_value.raw_ptr) };
+                }
+            } else if (external_capture_types) |capture_types| {
+                if (index >= capture_types.len) {
+                    self.rememberError("native closure capture metadata is incomplete");
+                    return error.RuntimeFailure;
+                }
+                const capture_ty = capture_types[index];
                 if (capture_ty.kind == .ffi_struct and capture_value == .raw_ptr and capture_value.raw_ptr != 0) {
                     capture_value = .{ .raw_ptr = try self.copyStructFromNativeLayout(module, capture_ty.name orelse {
                         self.rememberError("native closure capture type is missing a name");
@@ -799,8 +811,8 @@ pub const Vm = struct {
                     self.heap.releaseValue(old);
                     continue;
                 }
-                    const nested_dst: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
-                    const nested_src: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
+                const nested_dst: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
+                const nested_src: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
                 try self.copyStruct(module, nested_type, nested_dst, nested_src);
             } else {
                 self.heap.retainValue(src_ptr[index]);
@@ -891,7 +903,6 @@ pub const Vm = struct {
             try helper_impl.writeNativeFieldValue(self, module, field_decl.ty, fields[index], native_ptr + offset);
         }
     }
-
 };
 
 test "executes nested runtime calls" {
@@ -935,6 +946,63 @@ test "executes nested runtime calls" {
     var stream = std.Io.Writer.fixed(&buffer);
     try vm.runMain(&module, &stream);
     try std.testing.expectEqualStrings("42\n", stream.buffered());
+}
+
+test "materializes native closure struct captures using external metadata" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const backend_fields = [_]bytecode.Field{
+        .{ .name = "id", .ty = .{ .kind = .integer, .name = "U32" } },
+    };
+    const pipeline_fields = [_]bytecode.Field{
+        .{ .name = "handle", .ty = .{ .kind = .ffi_struct, .name = "BackendPipelineHandle" } },
+        .{ .name = "id", .ty = .{ .kind = .integer, .name = "U32" } },
+    };
+    const types = [_]bytecode.TypeDecl{
+        .{ .name = "BackendPipelineHandle", .fields = @constCast(&backend_fields) },
+        .{ .name = "RenderPipeline", .fields = @constCast(&pipeline_fields) },
+    };
+    const module = bytecode.Module{
+        .types = @constCast(&types),
+        .functions = &.{},
+        .entry_function_id = null,
+    };
+
+    const native_pipeline = try arena.allocator().alloc(u8, 8);
+    @memset(native_pipeline, 0);
+    (@as(*u32, @ptrFromInt(@intFromPtr(native_pipeline.ptr)))).* = 65537;
+    (@as(*u32, @ptrFromInt(@intFromPtr(native_pipeline.ptr) + 4))).* = 65537;
+
+    const NativeClosure = extern struct {
+        function_id: i64,
+        capture_count: i64,
+        captures: [1]runtime_abi.BridgeValue,
+    };
+    const native_closure = try arena.allocator().create(NativeClosure);
+    native_closure.* = .{
+        .function_id = 457,
+        .capture_count = 1,
+        .captures = .{runtime_abi.bridgeValueFromValue(.{ .raw_ptr = @intFromPtr(native_pipeline.ptr) })},
+    };
+    const capture_types = [_]bytecode.TypeRef{
+        .{ .kind = .ffi_struct, .name = "RenderPipeline" },
+    };
+
+    const closure_ptr = try vm.materializeNativeClosure(&module, @intFromPtr(native_closure), &capture_types);
+    const closure = vm.heap.getClosure(closure_ptr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), closure.captures.len);
+    try std.testing.expect(closure.captures[0] == .raw_ptr);
+
+    const pipeline_values: [*]const runtime_abi.Value = @ptrFromInt(closure.captures[0].raw_ptr);
+    try std.testing.expect(pipeline_values[0] == .raw_ptr);
+    try std.testing.expect(pipeline_values[1] == .integer);
+    try std.testing.expectEqual(@as(i64, 65537), pipeline_values[1].integer);
+
+    const handle_values: [*]const runtime_abi.Value = @ptrFromInt(pipeline_values[0].raw_ptr);
+    try std.testing.expect(handle_values[0] == .integer);
+    try std.testing.expectEqual(@as(i64, 65537), handle_values[0].integer);
 }
 
 test "prints struct values" {

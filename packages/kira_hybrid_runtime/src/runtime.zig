@@ -90,7 +90,12 @@ pub const HybridRuntime = struct {
                     if (runtime_present) @as(i32, 1) else @as(i32, 0),
                     if (manifest_function) |item| @tagName(item.execution) else "<missing>",
                 });
-                runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeClosure(&self.module, runtime_args[index].raw_ptr) };
+                const capture_types = if (manifest_function) |item|
+                    try nativeClosureCaptureTypes(self.allocator, runtime_args[index].raw_ptr, item)
+                else
+                    null;
+                defer if (capture_types) |items| self.allocator.free(items);
+                runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeClosure(&self.module, runtime_args[index].raw_ptr, capture_types) };
                 continue;
             }
             if (local_ty.kind != .ffi_struct or runtime_args[index] != .raw_ptr or runtime_args[index].raw_ptr == 0) continue;
@@ -213,6 +218,40 @@ fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?h
         if (function_decl.id == function_id) return function_decl;
     }
     return null;
+}
+
+fn nativeClosureCaptureTypes(allocator: std.mem.Allocator, native_ptr: usize, function_decl: hybrid.FunctionManifest) ![]bytecode.TypeRef {
+    const capture_count_ptr: *const i64 = @ptrFromInt(native_ptr + 8);
+    const capture_count_i64 = capture_count_ptr.*;
+    if (capture_count_i64 < 0) return error.RuntimeFailure;
+    const capture_count: usize = @intCast(capture_count_i64);
+    if (capture_count > function_decl.param_types.len) return error.RuntimeFailure;
+
+    const start = function_decl.param_types.len - capture_count;
+    const result = try allocator.alloc(bytecode.TypeRef, capture_count);
+    for (function_decl.param_types[start..], 0..) |param_type, index| {
+        result[index] = convertManifestTypeRef(param_type);
+    }
+    return result;
+}
+
+fn convertManifestTypeRef(value: hybrid.TypeRef) bytecode.TypeRef {
+    return .{
+        .kind = switch (value.kind) {
+            .void => .void,
+            .integer => .integer,
+            .float => .float,
+            .string => .string,
+            .boolean => .boolean,
+            .construct_any => .construct_any,
+            .array => .array,
+            .raw_ptr => .raw_ptr,
+            .ffi_struct => .ffi_struct,
+            .enum_instance => .enum_instance,
+        },
+        .name = value.name,
+        .construct_constraint = if (value.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null,
+    };
 }
 
 fn isCallbackTypeName(name: []const u8) bool {

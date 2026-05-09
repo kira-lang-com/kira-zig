@@ -12,7 +12,7 @@ const ResolvedMethodMember = parent.ResolvedMethodMember;
 const TypeSource = parent.TypeSource;
 const LocalTypeMap = parent.LocalTypeMap;
 const ResolverState = parent.ResolverState;
-const lowerFieldDefaultExpr = parent.lowerFieldDefaultExpr;
+const lowerFieldDefaultExprExpected = parent.lowerFieldDefaultExprExpected;
 const lowerField = parent.lowerField;
 const lowerFunction = parent.lowerFunction;
 pub fn lowerImports(ctx: *shared.Context, imports: []const syntax.ast.ImportDecl) ![]model.Import {
@@ -607,7 +607,7 @@ pub fn applyLocalTypeMembers(
                 try emitInvalidFieldOverride(ctx, field_decl.span, "Field overrides must provide a replacement default value.");
                 return error.DiagnosticsEmitted;
             }
-            fields.items[match.inherited_offset].default_value = try lowerFieldDefaultExpr(ctx, field_decl.value.?);
+            fields.items[match.inherited_offset].default_value = try lowerFieldDefaultExprExpected(ctx, field_decl.value.?, match.field.ty, ctx.function_headers);
             fields.items[match.inherited_offset].span = field_decl.span;
             continue;
         }

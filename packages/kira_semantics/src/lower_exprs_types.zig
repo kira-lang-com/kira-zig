@@ -572,18 +572,50 @@ pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.T
 }
 
 pub fn syntaxExprMatchesExplicitType(expr: *syntax.ast.Expr, explicit_type: model.ResolvedType) bool {
+    if (explicit_type.kind == .array) {
+        if (expr.* != .array or explicit_type.name == null) return false;
+        const element_type = shared.resolvedTypeFromText(explicit_type.name.?) catch return false;
+        for (expr.array.elements) |element| {
+            if (!syntaxExprMatchesExplicitType(element, element_type)) return false;
+        }
+        return true;
+    }
+    if (explicit_type.kind == .enum_instance and explicit_type.name != null) {
+        return switch (expr.*) {
+            .call => |node| switch (node.callee.*) {
+                .identifier => |value| qualifiedNameRootMatches(value.name, explicit_type.name.?),
+                .member => |member| enumMemberMatches(member, explicit_type.name.?),
+                else => false,
+            },
+            .identifier => |value| qualifiedNameRootMatches(value.name, explicit_type.name.?),
+            .member => |node| enumMemberMatches(node, explicit_type.name.?),
+            else => false,
+        };
+    }
     if (explicit_type.kind != .named or explicit_type.name == null) return false;
     return switch (expr.*) {
         .struct_literal => |node| std.mem.eql(u8, node.type_name.segments[node.type_name.segments.len - 1].text, explicit_type.name.?),
         .call => |node| switch (node.callee.*) {
-            .identifier => |value| std.mem.eql(u8, value.name.segments[value.name.segments.len - 1].text, explicit_type.name.?),
-            .member => |value| std.mem.eql(u8, value.member, explicit_type.name.?),
+            .identifier => |value| std.mem.eql(u8, value.name.segments[value.name.segments.len - 1].text, explicit_type.name.?) or qualifiedNameRootMatches(value.name, explicit_type.name.?),
+            .member => |value| std.mem.eql(u8, value.member, explicit_type.name.?) or enumMemberMatches(value, explicit_type.name.?),
             else => false,
         },
+        .identifier => |value| qualifiedNameRootMatches(value.name, explicit_type.name.?),
         .member => |node| switch (node.object.*) {
             .identifier => |value| std.mem.eql(u8, value.name.segments[value.name.segments.len - 1].text, explicit_type.name.?),
             else => false,
         },
+        else => false,
+    };
+}
+
+fn qualifiedNameRootMatches(name: syntax.ast.QualifiedName, expected_name: []const u8) bool {
+    return name.segments.len > 1 and std.mem.eql(u8, name.segments[0].text, expected_name);
+}
+
+fn enumMemberMatches(node: syntax.ast.MemberExpr, enum_name: []const u8) bool {
+    return switch (node.object.*) {
+        .identifier => |value| std.mem.eql(u8, value.name.segments[value.name.segments.len - 1].text, enum_name),
         else => false,
     };
 }

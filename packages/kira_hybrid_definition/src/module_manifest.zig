@@ -20,6 +20,7 @@ pub const TypeRef = struct {
         array,
         raw_ptr,
         ffi_struct,
+        enum_instance,
     };
 };
 

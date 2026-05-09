@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const source_pkg = @import("kira_source");
 const diagnostics = @import("kira_diagnostics");
 const lexer = @import("kira_lexer");
@@ -7,6 +8,58 @@ const syntax = @import("kira_syntax_model");
 const package_manager = @import("kira_package_manager");
 const imports = @import("imports.zig");
 const paths = @import("paths.zig");
+
+var timings_enabled: bool = false;
+
+pub fn setTimingsEnabled(enabled: bool) void {
+    timings_enabled = enabled;
+}
+
+fn nowNs() i128 {
+    if (builtin.os.tag == .windows) {
+        var counter: std.os.windows.LARGE_INTEGER = undefined;
+        var frequency: std.os.windows.LARGE_INTEGER = undefined;
+        _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
+        _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency);
+        return @divTrunc(@as(i128, counter) * 1_000_000_000, @as(i128, frequency));
+    }
+    return 0;
+}
+
+fn elapsedNs(start: i128) u64 {
+    return @intCast(nowNs() - start);
+}
+
+fn timingPrint(comptime fmt: []const u8, args: anytype) void {
+    if (timings_enabled) std.debug.print(fmt, args);
+}
+
+const GraphTimingStats = struct {
+    allocator: std.mem.Allocator,
+    parse_calls: usize = 0,
+    parse_bytes: usize = 0,
+    collect_package_calls: usize = 0,
+    package_files: usize = 0,
+    graph_parse_ns: u64 = 0,
+    collect_package_ns: u64 = 0,
+    package_parse_counts: std.StringHashMap(usize),
+
+    fn init(allocator: std.mem.Allocator) GraphTimingStats {
+        return .{
+            .allocator = allocator,
+            .package_parse_counts = std.StringHashMap(usize).init(allocator),
+        };
+    }
+
+    fn addPackageParse(self: *GraphTimingStats, package_name: []const u8) !void {
+        const existing = self.package_parse_counts.get(package_name) orelse 0;
+        if (existing == 0) {
+            try self.package_parse_counts.put(try self.allocator.dupe(u8, package_name), 1);
+        } else {
+            try self.package_parse_counts.put(package_name, existing + 1);
+        }
+    }
+};
 
 pub const ProgramGraph = struct {
     program: syntax.ast.Program,
@@ -19,12 +72,14 @@ pub fn buildProgramGraph(
     module_map: package_manager.ModuleMap,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !syntax.ast.Program {
+    var stats = GraphTimingStats.init(allocator);
     var visited = std.StringHashMap(void).init(allocator);
     var import_list = std.array_list.Managed(syntax.ast.ImportDecl).init(allocator);
     var decls = std.array_list.Managed(syntax.ast.Decl).init(allocator);
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
 
-    try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, root_program, module_map, diags, true);
+    try appendProgramGraph(allocator, &stats, &visited, &import_list, &decls, &functions, source_path, root_program, module_map, diags, true);
+    printGraphStats("buildProgramGraph", &stats, import_list.items.len, decls.items.len, functions.items.len);
 
     return .{
         .imports = try import_list.toOwnedSlice(),
@@ -39,15 +94,17 @@ pub fn buildProgramGraphFromFiles(
     module_map: package_manager.ModuleMap,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !syntax.ast.Program {
+    var stats = GraphTimingStats.init(allocator);
     var visited = std.StringHashMap(void).init(allocator);
     var import_list = std.array_list.Managed(syntax.ast.ImportDecl).init(allocator);
     var decls = std.array_list.Managed(syntax.ast.Decl).init(allocator);
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
 
     for (source_paths) |source_path| {
-        const program = try parseModuleProgram(allocator, source_path, diags);
-        try appendProgramGraph(allocator, &visited, &import_list, &decls, &functions, source_path, program, module_map, diags, true);
+        const program = try parseModuleProgramTimed(allocator, &stats, source_path, diags, null);
+        try appendProgramGraph(allocator, &stats, &visited, &import_list, &decls, &functions, source_path, program, module_map, diags, true);
     }
+    printGraphStats("buildProgramGraphFromFiles", &stats, import_list.items.len, decls.items.len, functions.items.len);
 
     return .{
         .imports = try import_list.toOwnedSlice(),
@@ -58,6 +115,7 @@ pub fn buildProgramGraphFromFiles(
 
 fn appendProgramGraph(
     allocator: std.mem.Allocator,
+    stats: *GraphTimingStats,
     visited: *std.StringHashMap(void),
     import_list: *std.array_list.Managed(syntax.ast.ImportDecl),
     decls: *std.array_list.Managed(syntax.ast.Decl),
@@ -84,11 +142,18 @@ fn appendProgramGraph(
 
     for (program.imports) |import_decl| {
         if (imports.packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
+            const collect_start = nowNs();
             const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
+            const collect_ns = elapsedNs(collect_start);
+            stats.collect_package_calls += 1;
+            stats.collect_package_ns += collect_ns;
+            stats.package_files += module_files.len;
+            timingPrint("[kira:timing] graph.collectPackageModuleFiles package={s} files={d} ns={d}\n", .{ owner.package_name, module_files.len, collect_ns });
             defer freeModuleFiles(allocator, module_files);
             for (module_files) |module_path| {
-                const imported_program = try parseModuleProgram(allocator, module_path, diags);
-                try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
+                try stats.addPackageParse(owner.package_name);
+                const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, owner.package_name);
+                try appendProgramGraph(allocator, stats, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
             }
             continue;
         }
@@ -97,8 +162,58 @@ fn appendProgramGraph(
         defer freeResolution(allocator, resolved);
 
         const module_path = imports.firstExistingCandidate(resolved.candidates) orelse continue;
-        const imported_program = try parseModuleProgram(allocator, module_path, diags);
-        try appendProgramGraph(allocator, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
+        const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, null);
+        try appendProgramGraph(allocator, stats, visited, import_list, decls, functions, module_path, imported_program, module_map, diags, false);
+    }
+}
+
+fn parseModuleProgramTimed(
+    allocator: std.mem.Allocator,
+    stats: *GraphTimingStats,
+    module_path: []const u8,
+    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+    package_name: ?[]const u8,
+) !syntax.ast.Program {
+    const start = nowNs();
+    const source = try source_pkg.SourceFile.fromPath(allocator, module_path);
+    stats.parse_calls += 1;
+    stats.parse_bytes += source.text.len;
+    var module_diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = lexer.tokenize(allocator, &source, &module_diags) catch {
+        for (module_diags.items) |diag| try out_diagnostics.append(diag);
+        return error.DiagnosticsEmitted;
+    };
+    const program = parser.parse(allocator, tokens, &module_diags) catch {
+        for (module_diags.items) |diag| try out_diagnostics.append(diag);
+        return error.DiagnosticsEmitted;
+    };
+    const ns = elapsedNs(start);
+    stats.graph_parse_ns += ns;
+    if (package_name) |name| {
+        timingPrint("[kira:timing] graph.parseModuleProgram package={s} path={s} bytes={d} ns={d}\n", .{ name, module_path, source.text.len, ns });
+    } else {
+        timingPrint("[kira:timing] graph.parseModuleProgram path={s} bytes={d} ns={d}\n", .{ module_path, source.text.len, ns });
+    }
+    return program;
+}
+
+fn printGraphStats(label: []const u8, stats: *GraphTimingStats, imports_len: usize, decls_len: usize, functions_len: usize) void {
+    if (!timings_enabled) return;
+    std.debug.print("[kira:timing] {s}.summary parse_calls={d} parse_bytes={d} imports={d} declarations={d} functions={d} collect_package_calls={d} imported_package_files={d} parse_ns={d} collect_package_ns={d}\n", .{
+        label,
+        stats.parse_calls,
+        stats.parse_bytes,
+        imports_len,
+        decls_len,
+        functions_len,
+        stats.collect_package_calls,
+        stats.package_files,
+        stats.graph_parse_ns,
+        stats.collect_package_ns,
+    });
+    var iterator = stats.package_parse_counts.iterator();
+    while (iterator.next()) |entry| {
+        std.debug.print("[kira:timing] {s}.package_parse_count package={s} count={d}\n", .{ label, entry.key_ptr.*, entry.value_ptr.* });
     }
 }
 

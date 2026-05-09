@@ -1,0 +1,31 @@
+class Frame {
+    let value: Int
+}
+
+class Root {}
+
+@Native
+function register(handler: (Frame) -> Void) {
+    handler(Frame(2))
+    return
+}
+
+@Native
+function build(root: Root) {
+    let frame = Frame(5)
+    print(frame.value)
+    print(9)
+    return
+}
+
+@Main
+@Native
+function main() {
+    let root = Root()
+    register { frame in
+        let returned = Frame(frame.value + 1)
+        print(returned.value)
+        build(root)
+    }
+    return
+}

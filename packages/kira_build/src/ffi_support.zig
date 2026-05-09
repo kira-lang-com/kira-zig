@@ -46,18 +46,33 @@ pub fn prepareImportedNativeLibraries(
     for (imports) |import_decl| {
         const owner = program_graph.packageRootOwnerForImport(module_map, import_decl.module_name) orelse continue;
         const package_root = std.fs.path.dirname(owner.source_root) orelse continue;
-        const manifest_paths = try loadNativeManifestPathsFromProjectRoot(allocator, package_root);
-        for (manifest_paths) |manifest_path| {
-            var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
-            if (seen.contains(library.artifact_path)) continue;
-            try ensureNativeArtifact(allocator, &library);
-            try autobind.ensureGeneratedBindings(allocator, library);
-            try seen.put(try allocator.dupe(u8, library.artifact_path), {});
-            try libraries.append(library);
-        }
+        try appendNativeLibrariesFromPackageRoot(allocator, selector, package_root, &seen, &libraries);
+    }
+
+    for (module_map.owners) |owner| {
+        const package_root = std.fs.path.dirname(owner.source_root) orelse continue;
+        try appendNativeLibrariesFromPackageRoot(allocator, selector, package_root, &seen, &libraries);
     }
 
     return libraries.toOwnedSlice();
+}
+
+fn appendNativeLibrariesFromPackageRoot(
+    allocator: std.mem.Allocator,
+    selector: native.TargetSelector,
+    package_root: []const u8,
+    seen: *std.StringHashMap(void),
+    libraries: *std.array_list.Managed(native.ResolvedNativeLibrary),
+) !void {
+    const manifest_paths = try loadNativeManifestPathsFromProjectRoot(allocator, package_root);
+    for (manifest_paths) |manifest_path| {
+        var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
+        if (seen.contains(library.artifact_path)) continue;
+        try ensureNativeArtifact(allocator, &library);
+        try autobind.ensureGeneratedBindings(allocator, library);
+        try seen.put(try allocator.dupe(u8, library.artifact_path), {});
+        try libraries.append(library);
+    }
 }
 
 fn loadProjectNativeManifestPaths(allocator: std.mem.Allocator, source_path: []const u8) ![]const []const u8 {
@@ -82,6 +97,9 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     if (library.build.sources.len == 0) return;
     const maybe_dir = std.fs.path.dirname(library.artifact_path) orelse ".";
     try makePath(maybe_dir);
+    if (std.Io.Dir.cwd().access(std.Options.debug_io, library.artifact_path, .{})) {
+        return;
+    } else |_| {}
     if (library.link_mode != .static) return error.UnsupportedNativeLibraryBuildMode;
     return compileStaticLibraryViaClang(allocator, library);
 }

@@ -355,8 +355,20 @@ fn lowerHybridTypeRefs(allocator: std.mem.Allocator, types: []const @import("kir
 
 fn lowerHybridTypeRef(value_type: @import("kira_ir").ValueType) hybrid.TypeRef {
     return .{
-        .kind = @enumFromInt(@intFromEnum(value_type.kind)),
+        .kind = switch (value_type.kind) {
+            .void => .void,
+            .integer => .integer,
+            .float => .float,
+            .string => .string,
+            .boolean => .boolean,
+            .construct_any => .construct_any,
+            .array => .array,
+            .raw_ptr => .raw_ptr,
+            .ffi_struct => .ffi_struct,
+            .enum_instance => .enum_instance,
+        },
         .name = value_type.name,
+        .construct_constraint = if (value_type.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null,
     };
 }
 

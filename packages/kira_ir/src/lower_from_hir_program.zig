@@ -20,6 +20,7 @@ pub fn lowerEnumTypeDecls(
         for (function_decl.params) |param| try markReferencedType(allocator, program, &referenced, param.ty);
         try markReferencedType(allocator, program, &referenced, function_decl.return_type);
         for (function_decl.locals) |local| try markReferencedType(allocator, program, &referenced, local.ty);
+        for (function_decl.body) |statement| try markReferencedTypesInStatement(allocator, program, &referenced, statement);
     }
 
     var enums = std.array_list.Managed(ir.EnumTypeDecl).init(allocator);
@@ -39,6 +40,118 @@ pub fn lowerEnumTypeDecls(
         });
     }
     return enums.toOwnedSlice();
+}
+
+fn markReferencedTypesInStatement(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    referenced: *std.StringHashMapUnmanaged(void),
+    statement: model.Statement,
+) anyerror!void {
+    switch (statement) {
+        .let_stmt => |node| {
+            try markReferencedType(allocator, program, referenced, node.ty);
+            if (node.value) |value| try markReferencedTypesInExpr(allocator, program, referenced, value);
+        },
+        .assign_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.target);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.value);
+        },
+        .expr_stmt => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.expr),
+        .if_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.condition);
+            for (node.then_body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+            if (node.else_body) |else_body| for (else_body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+        },
+        .for_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.iterator);
+            for (node.body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+        },
+        .while_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.condition);
+            for (node.body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+        },
+        .break_stmt, .continue_stmt => {},
+        .match_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.subject);
+            for (node.arms) |arm| {
+                try markReferencedTypesInPattern(allocator, program, referenced, arm.pattern);
+                if (arm.guard) |guard| try markReferencedTypesInExpr(allocator, program, referenced, guard);
+                for (arm.body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+            }
+        },
+        .switch_stmt => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.subject);
+            for (node.cases) |case_node| {
+                try markReferencedTypesInExpr(allocator, program, referenced, case_node.pattern);
+                for (case_node.body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+            }
+            if (node.default_body) |default_body| for (default_body) |inner| try markReferencedTypesInStatement(allocator, program, referenced, inner);
+        },
+        .return_stmt => |node| if (node.value) |value| try markReferencedTypesInExpr(allocator, program, referenced, value),
+    }
+}
+
+fn markReferencedTypesInExpr(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    referenced: *std.StringHashMapUnmanaged(void),
+    expr: *model.Expr,
+) anyerror!void {
+    try markReferencedType(allocator, program, referenced, model.hir.exprType(expr.*));
+    switch (expr.*) {
+        .construct => |node| for (node.fields) |field| try markReferencedTypesInExpr(allocator, program, referenced, field.value),
+        .construct_enum_variant => |node| if (node.payload) |payload| try markReferencedTypesInExpr(allocator, program, referenced, payload),
+        .native_state => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.value),
+        .native_user_data => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.state),
+        .native_recover => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.value),
+        .call => |node| for (node.args) |arg| try markReferencedTypesInExpr(allocator, program, referenced, arg),
+        .virtual_call => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.receiver);
+            for (node.args) |arg| try markReferencedTypesInExpr(allocator, program, referenced, arg);
+        },
+        .call_value => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.callee);
+            for (node.args) |arg| try markReferencedTypesInExpr(allocator, program, referenced, arg);
+        },
+        .parent_view => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
+        .c_string_to_string => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.value),
+        .array_len => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
+        .field => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
+        .binary => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.lhs);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.rhs);
+        },
+        .conditional => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.condition);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.then_expr);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.else_expr);
+        },
+        .unary => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.operand),
+        .array => |node| for (node.elements) |element| try markReferencedTypesInExpr(allocator, program, referenced, element),
+        .index => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.object);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.index);
+        },
+        .callback => |node| for (node.body) |statement| try markReferencedTypesInStatement(allocator, program, referenced, statement),
+        else => {},
+    }
+}
+
+fn markReferencedTypesInPattern(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    referenced: *std.StringHashMapUnmanaged(void),
+    pattern: model.MatchPattern,
+) anyerror!void {
+    switch (pattern) {
+        .variant => |node| {
+            if (node.payload_ty) |payload_ty| try markReferencedType(allocator, program, referenced, payload_ty);
+            if (node.inner) |inner| try markReferencedTypesInPattern(allocator, program, referenced, inner.*);
+            if (node.as_binding_ty) |binding_ty| try markReferencedType(allocator, program, referenced, binding_ty);
+        },
+        .binding => |node| try markReferencedType(allocator, program, referenced, node.ty),
+    }
 }
 
 pub fn lowerConstructs(allocator: std.mem.Allocator, program: model.Program) ![]ir.Construct {
@@ -83,6 +196,7 @@ pub fn lowerTypeDecls(
         for (function_decl.params) |param| try markReferencedType(allocator, program, &referenced, param.ty);
         try markReferencedType(allocator, program, &referenced, function_decl.return_type);
         for (function_decl.locals) |local| try markReferencedType(allocator, program, &referenced, local.ty);
+        for (function_decl.body) |statement| try markReferencedTypesInStatement(allocator, program, &referenced, statement);
     }
 
     var types = std.array_list.Managed(ir.TypeDecl).init(allocator);
@@ -323,21 +437,22 @@ pub fn lowerAssignmentStatement(
     const value_reg = try lowerer.lowerExpr(instructions, node.value);
     switch (node.target.*) {
         .local => |target| {
+            const local_id = lowerer.mapLocal(target.local_id);
             const local_ty = try lowerResolvedType(program, target.ty);
             if (lowerer.isBoxedLocal(target.local_id)) {
                 const ptr_reg = lowerer.freshRegister();
-                try instructions.append(.{ .load_local = .{ .dst = ptr_reg, .local = target.local_id } });
+                try instructions.append(.{ .load_local = .{ .dst = ptr_reg, .local = local_id } });
                 try instructions.append(.{ .store_indirect = .{ .ptr = ptr_reg, .src = value_reg, .ty = local_ty } });
             } else if (local_ty.kind == .ffi_struct) {
                 const dst_ptr = lowerer.freshRegister();
-                try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = target.local_id } });
+                try instructions.append(.{ .load_local = .{ .dst = dst_ptr, .local = local_id } });
                 try instructions.append(.{ .copy_indirect = .{
                     .dst_ptr = dst_ptr,
                     .src_ptr = value_reg,
                     .type_name = local_ty.name orelse return error.UnsupportedExecutableFeature,
                 } });
             } else {
-                try instructions.append(.{ .store_local = .{ .local = target.local_id, .src = value_reg } });
+                try instructions.append(.{ .store_local = .{ .local = local_id, .src = value_reg } });
             }
         },
         .field => |target| {
@@ -537,6 +652,11 @@ test "lowers native callback state into dedicated IR instructions" {
     try std.testing.expect(entry.instructions[0] == .alloc_struct);
     try std.testing.expect(entry.instructions[1] == .alloc_native_state);
     try std.testing.expect(callback.instructions[1] == .recover_native_state);
+    var found_counter_state = false;
+    for (lowered.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, "CounterState")) found_counter_state = true;
+    }
+    try std.testing.expect(found_counter_state);
 }
 
 test "lowers construct metadata and any construct types into IR" {

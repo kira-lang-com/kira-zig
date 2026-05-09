@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
@@ -7,6 +8,7 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
     const input = try support.resolveCheckInput(allocator, parsed.input_path);
 
     const project_root = switch (input) {
@@ -65,12 +67,14 @@ const ParsedArgs = struct {
     backend: ?build_def.ExecutionTarget = null,
     offline: bool = false,
     locked: bool = false,
+    timings: bool = false,
     input_path: []const u8,
 };
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
     var offline = false;
     var locked = false;
+    var timings = false;
     var input_path: ?[]const u8 = null;
 
     var backend: ?build_def.ExecutionTarget = null;
@@ -91,6 +95,10 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             locked = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--timings")) {
+            timings = true;
+            continue;
+        }
         if (input_path != null) return error.InvalidArguments;
         input_path = arg;
     }
@@ -99,8 +107,16 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
         .backend = backend,
         .offline = offline,
         .locked = locked,
+        .timings = timings,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
+}
+
+fn timingsEnvEnabled() bool {
+    if (!builtin.link_libc) return false;
+    const raw = std.c.getenv("KIRA_TIMINGS") orelse return false;
+    const value = std.mem.span(raw);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {

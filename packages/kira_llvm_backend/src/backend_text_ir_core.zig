@@ -54,7 +54,10 @@ pub fn buildTextLlvmIr(
     var globals = std.array_list.Managed([]const u8).init(allocator);
     defer freeStringList(allocator, &globals);
     const plan = try buildMonomorphizationPlan(allocator, request);
-    defer { var owned = plan; owned.deinit(); }
+    defer {
+        var owned = plan;
+        owned.deinit();
+    }
     var symbol_names = std.AutoHashMapUnmanaged(u32, []const u8){};
     defer freeSymbolNames(allocator, &symbol_names);
     for (request.program.functions) |function_decl| {
@@ -115,6 +118,7 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("declare ptr @\"kira_array_alloc\"(i64)\n");
     try writer.writeAll("declare i64 @\"kira_array_len\"(ptr)\n");
     try writer.writeAll("declare void @\"kira_array_store\"(ptr, i64, ptr)\n");
+    try writer.writeAll("declare void @\"kira_array_append\"(ptr, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_load\"(ptr, i64, ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_alloc\"(i64, i64)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_payload\"(ptr)\n");
@@ -197,7 +201,9 @@ pub fn buildTextFunctionBody(
             const struct_type_name = typeRefName(local_type.name orelse return error.UnsupportedExecutableFeature);
             try writer.print("  %local.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ index, struct_type_name });
             try writer.print("  %local.size.{d} = ptrtoint ptr %local.size.ptr.{d} to i64\n", .{ index, index });
-            try writer.print("  %local.heap.{d} = call ptr @malloc(i64 %local.size.{d})\n", .{ index, index });
+            try writer.print("  %local.empty.{d} = icmp eq i64 %local.size.{d}, 0\n", .{ index, index });
+            try writer.print("  %local.alloc.size.{d} = select i1 %local.empty.{d}, i64 1, i64 %local.size.{d}\n", .{ index, index, index });
+            try writer.print("  %local.heap.{d} = call ptr @malloc(i64 %local.alloc.size.{d})\n", .{ index, index });
             try writer.print("  store {s} zeroinitializer, ptr %local.heap.{d}\n", .{ struct_type_name, index });
             try writer.print("  %local.heap.int.{d} = ptrtoint ptr %local.heap.{d} to i64\n", .{ index, index });
             try writer.print("  store i64 %local.heap.int.{d}, ptr %local{d}\n", .{ index, index });
@@ -227,7 +233,9 @@ pub fn buildTextFunctionBody(
                 try writer.writeAll("\n");
             },
             .const_string => |value| {
-                const string_index = string_state[0]; string_state[0] += 1; try appendStringGlobals(allocator, globals, string_index, value.value);
+                const string_index = string_state[0];
+                string_state[0] += 1;
+                try appendStringGlobals(allocator, globals, string_index, value.value);
                 try writer.writeAll("  %r");
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" = load %kira.string, ptr @kira_str_");
@@ -249,7 +257,9 @@ pub fn buildTextFunctionBody(
                 const struct_type_name = typeRefName(value.type_name);
                 try writer.print("  %alloc.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ value.dst, struct_type_name });
                 try writer.print("  %alloc.size.{d} = ptrtoint ptr %alloc.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
-                try writer.print("  %alloc.ptr.{d} = call ptr @malloc(i64 %alloc.size.{d})\n", .{ value.dst, value.dst });
+                try writer.print("  %alloc.empty.{d} = icmp eq i64 %alloc.size.{d}, 0\n", .{ value.dst, value.dst });
+                try writer.print("  %alloc.bytes.{d} = select i1 %alloc.empty.{d}, i64 1, i64 %alloc.size.{d}\n", .{ value.dst, value.dst, value.dst });
+                try writer.print("  %alloc.ptr.{d} = call ptr @malloc(i64 %alloc.bytes.{d})\n", .{ value.dst, value.dst });
                 try writer.print("  store {s} zeroinitializer, ptr %alloc.ptr.{d}\n", .{ struct_type_name, value.dst });
                 try writer.writeAll("  %r");
                 try writer.print("{d}", .{value.dst});
@@ -842,7 +852,55 @@ pub fn buildTextFunctionBody(
                     value.src, value.index, temp_index,
                 });
             },
-            .array_append => return error.UnsupportedExecutableFeature,
+            .array_append => |value| {
+                const temp_index = temp_counter;
+                temp_counter += 1;
+                try writer.print("  %array.append.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.array });
+                try writer.print("  %array.append.pack.{d}.0 = insertvalue %kira.bridge.value zeroinitializer, i8 {d}, 0\n", .{
+                    temp_index, bridgeTagValue(register_types[value.src]),
+                });
+                switch (register_types[value.src].kind) {
+                    .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
+                        try writer.print("  %array.append.pack.{d} = insertvalue %kira.bridge.value %array.append.pack.{d}.0, i64 %r{d}, 2\n", .{
+                            temp_index, temp_index, value.src,
+                        });
+                    },
+                    .float => {
+                        if (register_types[value.src].name != null and std.mem.eql(u8, register_types[value.src].name.?, "F32")) {
+                            try writer.print("  %array.append.float.ext.{d} = fpext float %r{d} to double\n", .{ temp_index, value.src });
+                            try writer.print("  %array.append.float.bits.{d} = bitcast double %array.append.float.ext.{d} to i64\n", .{ temp_index, temp_index });
+                        } else {
+                            try writer.print("  %array.append.float.bits.{d} = bitcast double %r{d} to i64\n", .{ temp_index, value.src });
+                        }
+                        try writer.print("  %array.append.pack.{d} = insertvalue %kira.bridge.value %array.append.pack.{d}.0, i64 %array.append.float.bits.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .boolean => {
+                        try writer.print("  %array.append.bool.{d} = zext i1 %r{d} to i64\n", .{ temp_index, value.src });
+                        try writer.print("  %array.append.pack.{d} = insertvalue %kira.bridge.value %array.append.pack.{d}.0, i64 %array.append.bool.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .string => {
+                        try writer.print("  %array.append.str.ptr.{d} = extractvalue %kira.string %r{d}, 0\n", .{ temp_index, value.src });
+                        try writer.print("  %array.append.str.ptrint.{d} = ptrtoint ptr %array.append.str.ptr.{d} to i64\n", .{ temp_index, temp_index });
+                        try writer.print("  %array.append.str.len.{d} = extractvalue %kira.string %r{d}, 1\n", .{ temp_index, value.src });
+                        try writer.print("  %array.append.pack.{d}.1 = insertvalue %kira.bridge.value %array.append.pack.{d}.0, i64 %array.append.str.ptrint.{d}, 2\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                        try writer.print("  %array.append.pack.{d} = insertvalue %kira.bridge.value %array.append.pack.{d}.1, i64 %array.append.str.len.{d}, 3\n", .{
+                            temp_index, temp_index, temp_index,
+                        });
+                    },
+                    .void => return error.UnsupportedExecutableFeature,
+                }
+                try writer.print("  %array.append.pack.ptr.{d} = alloca %kira.bridge.value\n", .{temp_index});
+                try writer.print("  store %kira.bridge.value %array.append.pack.{d}, ptr %array.append.pack.ptr.{d}\n", .{ temp_index, temp_index });
+                try writer.print("  call void @\"kira_array_append\"(ptr %array.append.ptr.{d}, ptr %array.append.pack.ptr.{d})\n", .{
+                    value.src, temp_index,
+                });
+            },
             .enum_tag => |value| try enum_ops.emitEnumTag(writer, value),
             .enum_payload => |value| try enum_ops.emitEnumPayload(writer, value),
             .load_indirect => |value| {

@@ -69,10 +69,16 @@ pub const Heap = struct {
     }
 
     pub fn registerStruct(self: *Heap, type_name: []const u8, fields: []runtime_abi.Value) !usize {
-        const ptr = @intFromPtr(fields.ptr);
+        var owned_fields = fields;
+        if (owned_fields.len == 0) {
+            self.allocator.free(owned_fields);
+            owned_fields = try self.allocator.alloc(runtime_abi.Value, 1);
+            owned_fields[0] = .{ .void = {} };
+        }
+        const ptr = @intFromPtr(owned_fields.ptr);
         try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .struct_fields = .{
             .type_name = type_name,
-            .fields = fields,
+            .fields = owned_fields,
         } } });
         return ptr;
     }
@@ -291,5 +297,18 @@ test "unpin destroys zero-ref objects" {
     try std.testing.expectEqual(@as(usize, 1), heap.count());
     heap.endBoundaryPinScope();
 
+    try std.testing.expectEqual(@as(usize, 0), heap.count());
+}
+
+test "empty structs use managed non-zero storage" {
+    var heap = Heap.init(std.testing.allocator);
+    defer heap.deinit();
+
+    const fields = try std.testing.allocator.alloc(runtime_abi.Value, 0);
+    const ptr = try heap.registerStruct("Empty", fields);
+
+    try std.testing.expect(ptr != 0);
+    try std.testing.expect(heap.isManagedValue(.{ .raw_ptr = ptr }));
+    heap.releaseValue(.{ .raw_ptr = ptr });
     try std.testing.expectEqual(@as(usize, 0), heap.count());
 }

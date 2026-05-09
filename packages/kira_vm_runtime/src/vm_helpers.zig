@@ -89,9 +89,11 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
             };
             const nested_ptr: usize = switch (value) {
                 .raw_ptr => |ptr| ptr,
-                .integer => |inner| if (inner <= 0) 0 else @intCast(@min(@as(u64, @intCast(inner)), std.math.maxInt(usize))),
                 .void => 0,
-                else => 0,
+                else => {
+                    vm.rememberError("nested struct field cannot be lowered from a non-pointer value");
+                    return error.RuntimeFailure;
+                },
             };
             if (nested_ptr == 0) {
                 const layout = try native_layout.structLayout(module, nested_name);
