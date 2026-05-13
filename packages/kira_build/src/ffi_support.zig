@@ -130,11 +130,160 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
     if (library.build.sources.len == 0) return;
     const maybe_dir = std.fs.path.dirname(library.artifact_path) orelse ".";
     try makePath(maybe_dir);
-    if (std.Io.Dir.cwd().access(std.Options.debug_io, library.artifact_path, .{})) {
+
+    const fingerprint = try nativeArtifactFingerprint(allocator, library.*);
+    defer allocator.free(fingerprint);
+    const fingerprint_path = try std.fmt.allocPrint(allocator, "{s}.fingerprint", .{library.artifact_path});
+    defer allocator.free(fingerprint_path);
+
+    if (try nativeArtifactIsFresh(allocator, library.artifact_path, fingerprint_path, fingerprint)) {
         return;
-    } else |_| {}
+    }
     if (library.link_mode != .static) return error.UnsupportedNativeLibraryBuildMode;
-    return compileStaticLibraryViaClang(allocator, library);
+    try compileStaticLibraryViaClang(allocator, library);
+    try writeFile(fingerprint_path, fingerprint);
+}
+
+fn nativeArtifactIsFresh(allocator: std.mem.Allocator, artifact_path: []const u8, fingerprint_path: []const u8, expected_fingerprint: []const u8) !bool {
+    std.Io.Dir.cwd().access(std.Options.debug_io, artifact_path, .{}) catch return false;
+    const existing = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024)) catch return false;
+    defer allocator.free(existing);
+    return std.mem.eql(u8, existing, expected_fingerprint);
+}
+
+fn nativeArtifactFingerprint(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary) ![]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("kira-native-artifact-v1\n");
+    hashString(&hasher, "name", library.name);
+    hashString(&hasher, "link_mode", @tagName(library.link_mode));
+    hashString(&hasher, "abi", @tagName(library.abi));
+    hashString(&hasher, "arch", library.target.architecture);
+    hashString(&hasher, "os", library.target.operating_system);
+    hashString(&hasher, "target_abi", library.target.abi);
+    if (library.manifest_path) |path| try hashFile(allocator, &hasher, path);
+    try hashFiles(allocator, &hasher, library.build.sources);
+    try hashFiles(allocator, &hasher, library.headers.include_dirs);
+    try hashFiles(allocator, &hasher, library.build.include_dirs);
+    if (library.headers.entrypoint) |path| try hashFile(allocator, &hasher, path);
+    if (library.autobinding) |autobinding| try hashFiles(allocator, &hasher, autobinding.headers);
+    hashStrings(&hasher, "header_define", library.headers.defines);
+    hashStrings(&hasher, "build_define", library.build.defines);
+    hashStrings(&hasher, "header_framework", library.headers.frameworks);
+    hashStrings(&hasher, "link_framework", library.link.frameworks);
+    hashStrings(&hasher, "header_system_lib", library.headers.system_libs);
+    hashStrings(&hasher, "link_system_lib", library.link.system_libs);
+
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    return hexDigest(allocator, &digest);
+}
+
+fn hashFiles(allocator: std.mem.Allocator, hasher: anytype, paths: []const []const u8) !void {
+    var files = std.array_list.Managed([]const u8).init(allocator);
+    for (paths) |path| {
+        try collectNativeInputFiles(allocator, path, &files);
+    }
+    sortStrings(files.items);
+    for (files.items) |path| {
+        try hashFile(allocator, hasher, path);
+    }
+}
+
+fn collectNativeInputFiles(allocator: std.mem.Allocator, path: []const u8, files: *std.array_list.Managed([]const u8)) !void {
+    const stat = if (std.fs.path.isAbsolute(path))
+        try std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{})
+    else
+        try std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{});
+
+    if (stat.kind == .file) {
+        if (isNativeBuildInput(path)) try files.append(try absolutize(allocator, path));
+        return;
+    }
+    if (stat.kind != .directory) return;
+    const absolute = try absolutize(allocator, path);
+    try collectNativeInputFilesInDir(allocator, absolute, "", files);
+}
+
+fn collectNativeInputFilesInDir(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    relative: []const u8,
+    files: *std.array_list.Managed([]const u8),
+) !void {
+    const dir_path = if (relative.len == 0) root else try std.fs.path.join(allocator, &.{ root, relative });
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        if (entry.kind == .directory) {
+            if (std.mem.eql(u8, entry.name, ".git") or std.mem.eql(u8, entry.name, ".kira-build") or std.mem.eql(u8, entry.name, "generated")) continue;
+            const child_rel = if (relative.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ relative, entry.name });
+            try collectNativeInputFilesInDir(allocator, root, child_rel, files);
+            continue;
+        }
+        if (entry.kind != .file or !isNativeBuildInput(entry.name)) continue;
+        const rel_path = if (relative.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ relative, entry.name });
+        try files.append(try std.fs.path.join(allocator, &.{ root, rel_path }));
+    }
+}
+
+fn isNativeBuildInput(path: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    return std.mem.eql(u8, ext, ".c") or
+        std.mem.eql(u8, ext, ".h") or
+        std.mem.eql(u8, ext, ".hpp") or
+        std.mem.eql(u8, ext, ".hh") or
+        std.mem.eql(u8, ext, ".inc") or
+        std.mem.eql(u8, ext, ".m") or
+        std.mem.eql(u8, ext, ".mm");
+}
+
+fn hashFile(allocator: std.mem.Allocator, hasher: anytype, path: []const u8) !void {
+    hashString(hasher, "file", path);
+    const contents = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(256 * 1024 * 1024));
+    defer allocator.free(contents);
+    hasher.update(contents);
+    hasher.update("\n");
+}
+
+fn hashString(hasher: anytype, name: []const u8, value: []const u8) void {
+    hasher.update(name);
+    hasher.update("=");
+    hasher.update(value);
+    hasher.update("\n");
+}
+
+fn hashStrings(hasher: anytype, name: []const u8, values: []const []const u8) void {
+    for (values) |value| hashString(hasher, name, value);
+}
+
+fn writeFile(path: []const u8, data: []const u8) !void {
+    try makePath(std.fs.path.dirname(path) orelse ".");
+    const file = if (std.fs.path.isAbsolute(path))
+        try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true })
+    else
+        try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    try file.writeStreamingAll(std.Options.debug_io, data);
+}
+
+fn sortStrings(items: [][]const u8) void {
+    std.mem.sort([]const u8, items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+}
+
+fn hexDigest(allocator: std.mem.Allocator, digest: []const u8) ![]const u8 {
+    const alphabet = "0123456789abcdef";
+    const out = try allocator.alloc(u8, digest.len * 2);
+    for (digest, 0..) |byte, index| {
+        out[index * 2] = alphabet[byte >> 4];
+        out[index * 2 + 1] = alphabet[byte & 0x0f];
+    }
+    return out;
 }
 
 fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
