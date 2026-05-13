@@ -693,6 +693,25 @@ pub fn lowerExpr(
                 return lowered;
             }
             const flattened = try flattenMemberExpr(ctx.allocator, expr);
+            if (std.mem.eql(u8, flattened.root, "<expr>")) {
+                const object = try lowerExpr(ctx, node.object, imports, scope, function_headers);
+                if (tryLowerArrayCountMemberExpr(object, node.member, node.span)) |array_len_expr| {
+                    lowered.* = array_len_expr;
+                    return lowered;
+                }
+                const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return error.DiagnosticsEmitted;
+                const resolved_field = try resolveFieldMember(ctx, model.hir.exprType(object.*), node.member, node.span);
+                lowered.* = .{ .field = .{
+                    .object = object,
+                    .container_type_name = try ctx.allocator.dupe(u8, object_type.name orelse return error.DiagnosticsEmitted),
+                    .field_name = try ctx.allocator.dupe(u8, node.member),
+                    .field_index = resolved_field.slot_index,
+                    .ty = resolved_field.ty,
+                    .storage = resolved_field.storage,
+                    .span = node.span,
+                } };
+                return lowered;
+            }
             const root_is_type = (ctx.type_headers != null and (ctx.type_headers.?.get(flattened.root) != null)) or
                 ctx.imported_globals.findType(flattened.root) != null;
             if ((shared.isImportedRoot(flattened.root, imports) or root_is_type) and scope.get(flattened.root) == null) {

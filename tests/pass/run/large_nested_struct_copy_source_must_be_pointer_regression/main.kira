@@ -1,0 +1,93 @@
+struct Leaf {
+    var id: Int
+    var weight: Int
+}
+
+struct Cell {
+    var primary: Leaf
+    var secondary: Leaf
+}
+
+struct Row {
+    var cells: [Cell]
+    var rowWeight: Int
+}
+
+struct Grid {
+    var rows: [Row]
+    var version: Int
+}
+
+function makeCell(base: Int) -> Cell {
+    return Cell {
+        primary: Leaf { id: base, weight: base * 10 },
+        secondary: Leaf { id: base + 1, weight: base * 10 + 5 }
+    }
+}
+
+function makeGrid() -> Grid {
+    let row0 = Row { cells: [makeCell(1), makeCell(2), makeCell(3)], rowWeight: 100 }
+    let row1 = Row { cells: [makeCell(4), makeCell(5), makeCell(6)], rowWeight: 200 }
+    let row2 = Row { cells: [makeCell(7), makeCell(8), makeCell(9)], rowWeight: 300 }
+    return Grid { rows: [row0, row1, row2], version: 42 }
+}
+
+function cellScore(cell: Cell) -> Int {
+    return cell.primary.id * 1000 + cell.primary.weight * 100 + cell.secondary.id * 10 + cell.secondary.weight
+}
+
+function rowScore(row: Row) -> Int {
+    var score = row.rowWeight
+    var i = 0
+    while i < 3 {
+        score = score + cellScore(row.cells[i])
+        i = i + 1
+    }
+    return score
+}
+
+function mutateCopy(cell: Cell, delta: Int) -> Cell {
+    var copy = cell
+    copy.primary.weight = copy.primary.weight + delta
+    copy.secondary.id = copy.secondary.id + 20
+    return copy
+}
+
+function returnedNestedCopy(grid: Grid, rowIndex: Int, cellIndex: Int) -> Cell {
+    let row = grid.rows[rowIndex]
+    let cell = row.cells[cellIndex]
+    return mutateCopy(cell, 7)
+}
+
+function gridScore(grid: Grid) -> Int {
+    var score = grid.version
+    var i = 0
+    while i < 3 {
+        score = score + rowScore(grid.rows[i])
+        i = i + 1
+    }
+    return score
+}
+
+@Main
+function main() {
+    var grid = makeGrid()
+    let originalMiddle = grid.rows[1].cells[1]
+    var localCopy = grid.rows[1].cells[1]
+    localCopy.primary.weight = localCopy.primary.weight + 99
+    localCopy.secondary.weight = localCopy.secondary.weight + 33
+
+    let returned = returnedNestedCopy(grid, 2, 1)
+    var replacement = returned
+    replacement.primary.id = replacement.primary.id + 100
+    let rowsCopy = grid.rows[1]
+
+    print(cellScore(originalMiddle))
+    print(cellScore(localCopy))
+    print(cellScore(grid.rows[1].cells[1]))
+    print(cellScore(returned))
+    print(cellScore(replacement))
+    print(rowScore(rowsCopy))
+    print(gridScore(grid))
+    return
+}

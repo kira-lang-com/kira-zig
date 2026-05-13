@@ -1,0 +1,184 @@
+struct VertexAttributeDescriptor {
+    var location: Int
+    var format: Int
+    var offset: Int
+    var bufferIndex: Int
+}
+
+struct VertexLayoutDescriptor {
+    var stride: Int
+    var stepMode: Int
+    var attributes: [VertexAttributeDescriptor]
+}
+
+struct BlendDescriptor {
+    var enabled: Bool
+    var preset: Int
+    var srcFactor: Int
+    var dstFactor: Int
+}
+
+struct ColorTargetDescriptor {
+    var format: Int
+    var writeMask: Int
+    var blend: BlendDescriptor
+}
+
+struct DepthStencilDescriptor {
+    var enabled: Bool
+    var compare: Int
+    var writeEnabled: Bool
+    var bias: Int
+}
+
+struct UniformBlockDescriptor {
+    var binding: Int
+    var size: Int
+    var stageMask: Int
+}
+
+struct ShaderResourceDescriptor {
+    var binding: Int
+    var kind: Int
+    var stageMask: Int
+}
+
+struct RenderPipelineDescriptor {
+    var vertexLayout: VertexLayoutDescriptor
+    var colorTargets: [ColorTargetDescriptor]
+    var depth: DepthStencilDescriptor
+    var uniformBlocks: [UniformBlockDescriptor]
+    var shaderResources: [ShaderResourceDescriptor]
+}
+
+function attributeScore(attr: VertexAttributeDescriptor) -> Int {
+    return attr.location * 1000 + attr.format * 100 + attr.offset * 10 + attr.bufferIndex
+}
+
+function blendScore(blend: BlendDescriptor) -> Int {
+    if blend.enabled {
+        return blend.preset * 100 + blend.srcFactor * 10 + blend.dstFactor
+    }
+    return blend.preset
+}
+
+function depthScore(depth: DepthStencilDescriptor) -> Int {
+    var score = depth.compare * 100 + depth.bias
+    if depth.enabled {
+        score = score + 7
+    }
+    if depth.writeEnabled {
+        score = score + 11
+    }
+    return score
+}
+
+function shiftAttribute(attr: VertexAttributeDescriptor, delta: Int) -> VertexAttributeDescriptor {
+    var next = attr
+    next.offset = next.offset + delta
+    next.location = next.location + 10
+    return next
+}
+
+function makeDescriptor() -> RenderPipelineDescriptor {
+    let attrs = [
+        VertexAttributeDescriptor { location: 0, format: 31, offset: 0, bufferIndex: 0 },
+        VertexAttributeDescriptor { location: 1, format: 32, offset: 12, bufferIndex: 0 },
+        VertexAttributeDescriptor { location: 2, format: 21, offset: 24, bufferIndex: 1 },
+        VertexAttributeDescriptor { location: 3, format: 44, offset: 40, bufferIndex: 1 }
+    ]
+    let colors = [
+        ColorTargetDescriptor { format: 80, writeMask: 15, blend: BlendDescriptor { enabled: true, preset: 3, srcFactor: 6, dstFactor: 7 } },
+        ColorTargetDescriptor { format: 81, writeMask: 7, blend: BlendDescriptor { enabled: false, preset: 9, srcFactor: 1, dstFactor: 0 } },
+        ColorTargetDescriptor { format: 82, writeMask: 3, blend: BlendDescriptor { enabled: true, preset: 4, srcFactor: 5, dstFactor: 2 } }
+    ]
+    let uniforms = [
+        UniformBlockDescriptor { binding: 0, size: 96, stageMask: 1 },
+        UniformBlockDescriptor { binding: 1, size: 80, stageMask: 2 },
+        UniformBlockDescriptor { binding: 2, size: 32, stageMask: 3 }
+    ]
+    let resources = [
+        ShaderResourceDescriptor { binding: 4, kind: 1, stageMask: 2 },
+        ShaderResourceDescriptor { binding: 5, kind: 2, stageMask: 3 },
+        ShaderResourceDescriptor { binding: 6, kind: 3, stageMask: 1 }
+    ]
+    return RenderPipelineDescriptor {
+        vertexLayout: VertexLayoutDescriptor { stride: 48, stepMode: 0, attributes: attrs },
+        colorTargets: colors,
+        depth: DepthStencilDescriptor { enabled: true, compare: 5, writeEnabled: true, bias: 13 },
+        uniformBlocks: uniforms,
+        shaderResources: resources
+    }
+}
+
+function checksumDescriptor(descriptor: RenderPipelineDescriptor) -> Int {
+    var checksum = descriptor.vertexLayout.stride * 13 + descriptor.vertexLayout.stepMode
+    var i = 0
+    while i < 4 {
+        let attr = descriptor.vertexLayout.attributes[i]
+        checksum = checksum + attributeScore(attr)
+        checksum = checksum + descriptor.vertexLayout.attributes[i].format * 3
+        checksum = checksum + descriptor.vertexLayout.attributes[i].offset * 5
+        i = i + 1
+    }
+
+    var c = 0
+    while c < 3 {
+        let target = descriptor.colorTargets[c]
+        let blend = descriptor.colorTargets[c].blend
+        checksum = checksum + target.format * 17 + target.writeMask
+        checksum = checksum + blendScore(blend)
+        checksum = checksum + descriptor.colorTargets[c].blend.preset * 19
+        if descriptor.colorTargets[c].blend.enabled {
+            checksum = checksum + 23
+        }
+        c = c + 1
+    }
+
+    checksum = checksum + depthScore(descriptor.depth)
+    checksum = checksum + descriptor.depth.compare * 29
+    if descriptor.depth.writeEnabled {
+        checksum = checksum + 31
+    }
+
+    var u = 0
+    while u < 3 {
+        checksum = checksum + descriptor.uniformBlocks[u].binding * 37
+        checksum = checksum + descriptor.uniformBlocks[u].size
+        checksum = checksum + descriptor.uniformBlocks[u].stageMask * 41
+        u = u + 1
+    }
+
+    var r = 0
+    while r < 3 {
+        let resource = descriptor.shaderResources[r]
+        checksum = checksum + resource.binding * 43 + resource.kind * 47 + resource.stageMask
+        checksum = checksum + descriptor.shaderResources[r].binding
+        r = r + 1
+    }
+    return checksum
+}
+
+@Main
+function main() {
+    let descriptor = makeDescriptor()
+    let i = 2
+    let attr = descriptor.vertexLayout.attributes[i]
+    let shifted = shiftAttribute(attr, 100)
+    let blend = descriptor.colorTargets[0].blend
+
+    print(descriptor.vertexLayout.attributes[0].format)
+    print(descriptor.vertexLayout.attributes[0].offset)
+    print(descriptor.vertexLayout.attributes[2].format)
+    print(descriptor.vertexLayout.attributes[2].offset)
+    print(descriptor.colorTargets[0].blend.preset)
+    print(descriptor.colorTargets[0].blend.enabled)
+    print(descriptor.depth.compare)
+    print(descriptor.depth.writeEnabled)
+    print(descriptor.uniformBlocks[2].stageMask)
+    print(descriptor.shaderResources[1].binding)
+    print(attributeScore(shifted))
+    print(blendScore(blend))
+    print(checksumDescriptor(descriptor))
+    return
+}

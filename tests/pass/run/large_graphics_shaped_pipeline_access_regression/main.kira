@@ -1,0 +1,78 @@
+struct KGBlendDescriptor {
+    var enabled: Bool
+    var preset: Int
+}
+
+struct KGColorTargetDescriptor {
+    var format: Int
+    var blend: KGBlendDescriptor
+}
+
+struct KGVertexAttributeDescriptor {
+    var semantic: Int
+    var format: Int
+    var offset: Int
+}
+
+struct KGVertexLayoutDescriptor {
+    var stride: Int
+    var attributes: [KGVertexAttributeDescriptor]
+}
+
+struct KGRenderPipelineDescriptor {
+    var vertexLayout: KGVertexLayoutDescriptor
+    var colorTargets: [KGColorTargetDescriptor]
+}
+
+struct Pipeline {
+    var descriptor: KGRenderPipelineDescriptor
+    var shaderId: Int
+}
+
+function makePipeline() -> Pipeline {
+    return Pipeline {
+        descriptor: KGRenderPipelineDescriptor {
+            vertexLayout: KGVertexLayoutDescriptor {
+                stride: 24,
+                attributes: [
+                    KGVertexAttributeDescriptor { semantic: 0, format: 31, offset: 0 },
+                    KGVertexAttributeDescriptor { semantic: 1, format: 31, offset: 12 },
+                    KGVertexAttributeDescriptor { semantic: 2, format: 43, offset: 20 }
+                ]
+            },
+            colorTargets: [
+                KGColorTargetDescriptor { format: 80, blend: KGBlendDescriptor { enabled: true, preset: 2 } },
+                KGColorTargetDescriptor { format: 81, blend: KGBlendDescriptor { enabled: false, preset: 0 } }
+            ]
+        },
+        shaderId: 700
+    }
+}
+
+function pipelineChecksum(pipeline: Pipeline) -> Int {
+    var checksum = pipeline.shaderId + pipeline.descriptor.vertexLayout.stride
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[0].format * 3
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[0].offset * 5
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[1].format * 7
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[1].offset * 11
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[2].format * 13
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[2].offset * 17
+    checksum = checksum + pipeline.descriptor.colorTargets[0].blend.preset * 19
+    if pipeline.descriptor.colorTargets[0].blend.enabled {
+        checksum = checksum + 23
+    }
+    checksum = checksum + pipeline.descriptor.colorTargets[1].format
+    return checksum
+}
+
+@Main
+function main() {
+    let pipeline = makePipeline()
+    print(pipeline.descriptor.vertexLayout.attributes[0].format)
+    print(pipeline.descriptor.vertexLayout.attributes[0].offset)
+    print(pipeline.descriptor.vertexLayout.attributes[1].format)
+    print(pipeline.descriptor.vertexLayout.attributes[1].offset)
+    print(pipeline.descriptor.colorTargets[0].blend.preset)
+    print(pipelineChecksum(pipeline))
+    return
+}

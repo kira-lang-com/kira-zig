@@ -1,0 +1,97 @@
+@Runtime
+struct NativeVertexAttribute {
+    var location: Int
+    var format: Int
+    var offset: Int
+}
+
+@Runtime
+struct NativeBlend {
+    var enabled: Bool
+    var preset: Int
+}
+
+@Runtime
+struct NativeColorTarget {
+    var format: Int
+    var blend: NativeBlend
+}
+
+@Runtime
+struct NativeDepth {
+    var compare: Int
+    var writeEnabled: Bool
+}
+
+@Runtime
+struct NativeDescriptor {
+    var stride: Int
+    var attributes: [NativeVertexAttribute]
+    var colors: [NativeColorTarget]
+    var depth: NativeDepth
+}
+
+@Runtime
+function makeRuntimeDescriptor() -> NativeDescriptor {
+    return NativeDescriptor {
+        stride: 24,
+        attributes: [
+            NativeVertexAttribute { location: 0, format: 31, offset: 0 },
+            NativeVertexAttribute { location: 1, format: 31, offset: 12 },
+            NativeVertexAttribute { location: 2, format: 22, offset: 20 }
+        ],
+        colors: [
+            NativeColorTarget { format: 80, blend: NativeBlend { enabled: true, preset: 4 } },
+            NativeColorTarget { format: 81, blend: NativeBlend { enabled: false, preset: 9 } }
+        ],
+        depth: NativeDepth { compare: 5, writeEnabled: true }
+    }
+}
+
+@Runtime
+function runtimeDescriptorScore(descriptor: NativeDescriptor) -> Int {
+    var checksum = descriptor.stride
+    var i = 0
+    while i < 3 {
+        let attr = descriptor.attributes[i]
+        checksum = checksum + attr.location * 1000
+        checksum = checksum + descriptor.attributes[i].format * 100
+        checksum = checksum + descriptor.attributes[i].offset
+        i = i + 1
+    }
+    var c = 0
+    while c < 2 {
+        let blend = descriptor.colors[c].blend
+        checksum = checksum + descriptor.colors[c].format * 10
+        checksum = checksum + descriptor.colors[c].blend.preset
+        if blend.enabled {
+            checksum = checksum + 77
+        }
+        c = c + 1
+    }
+    checksum = checksum + descriptor.depth.compare * 13
+    if descriptor.depth.writeEnabled {
+        checksum = checksum + 17
+    }
+    return checksum
+}
+
+@Native
+function nativeBoundaryBounceScore(descriptor: NativeDescriptor) -> Int {
+    return runtimeDescriptorScore(descriptor)
+}
+
+@Native
+function nativeScalarProbe(descriptor: NativeDescriptor) -> Int {
+    return descriptor.stride + descriptor.depth.compare
+}
+
+@Main
+@Runtime
+function main() {
+    let descriptor = makeRuntimeDescriptor()
+    print(runtimeDescriptorScore(descriptor))
+    print(nativeBoundaryBounceScore(descriptor))
+    print(nativeScalarProbe(descriptor))
+    return
+}

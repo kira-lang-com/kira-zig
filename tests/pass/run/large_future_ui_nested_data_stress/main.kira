@@ -1,0 +1,173 @@
+struct ThemeColors {
+    var background: Int
+    var foreground: Int
+    var accent: Int
+}
+
+struct EdgeInsets {
+    var left: Int
+    var top: Int
+    var right: Int
+    var bottom: Int
+}
+
+struct BorderStyle {
+    var width: Int
+    var color: Int
+}
+
+struct ShadowStyle {
+    var blur: Int
+    var offsetX: Int
+    var offsetY: Int
+}
+
+struct TextStyle {
+    var size: Int
+    var weight: Int
+    var color: Int
+}
+
+struct WidgetStyle {
+    var padding: EdgeInsets
+    var border: BorderStyle
+    var shadow: ShadowStyle
+    var text: TextStyle
+}
+
+struct Theme {
+    var colors: ThemeColors
+    var primary: WidgetStyle
+    var secondary: WidgetStyle
+}
+
+struct LayoutConstraints {
+    var minWidth: Int
+    var maxWidth: Int
+    var minHeight: Int
+    var maxHeight: Int
+}
+
+struct GlyphInfo {
+    var codepoint: Int
+    var advance: Int
+    var x: Int
+    var y: Int
+}
+
+struct GlyphRun {
+    var glyphs: [GlyphInfo]
+    var style: TextStyle
+}
+
+struct LayoutNode {
+    var id: Int
+    var constraints: LayoutConstraints
+    var style: WidgetStyle
+    var glyphRun: GlyphRun
+}
+
+struct LayoutResult {
+    var width: Int
+    var height: Int
+    var baseline: Int
+}
+
+function edgeSum(edge: EdgeInsets) -> Int {
+    return edge.left + edge.top + edge.right + edge.bottom
+}
+
+function styleScore(style: WidgetStyle) -> Int {
+    return edgeSum(style.padding) * 3 + style.border.width * 5 + style.border.color + style.shadow.blur * 7 + style.text.size * 11 + style.text.weight
+}
+
+function glyphScore(glyph: GlyphInfo) -> Int {
+    return glyph.codepoint * 3 + glyph.advance * 5 + glyph.x * 7 + glyph.y * 11
+}
+
+function measureNode(node: LayoutNode) -> LayoutResult {
+    var glyphWidth = 0
+    var i = 0
+    while i < 3 {
+        let glyph = node.glyphRun.glyphs[i]
+        glyphWidth = glyphWidth + glyph.advance
+        i = i + 1
+    }
+    let padding = edgeSum(node.style.padding)
+    return LayoutResult {
+        width: node.constraints.minWidth + glyphWidth + padding,
+        height: node.constraints.minHeight + node.style.text.size + node.style.border.width,
+        baseline: node.style.text.size + node.style.padding.top
+    }
+}
+
+function makeStyle(base: Int) -> WidgetStyle {
+    return WidgetStyle {
+        padding: EdgeInsets { left: base, top: base + 1, right: base + 2, bottom: base + 3 },
+        border: BorderStyle { width: base + 1, color: base * 10 },
+        shadow: ShadowStyle { blur: base + 2, offsetX: base + 3, offsetY: base + 4 },
+        text: TextStyle { size: base + 12, weight: base + 400, color: base * 20 }
+    }
+}
+
+function makeRun(base: Int, style: TextStyle) -> GlyphRun {
+    return GlyphRun {
+        glyphs: [
+            GlyphInfo { codepoint: base, advance: 8, x: 0, y: 0 },
+            GlyphInfo { codepoint: base + 1, advance: 9, x: 8, y: 0 },
+            GlyphInfo { codepoint: base + 2, advance: 10, x: 17, y: 0 }
+        ],
+        style: style
+    }
+}
+
+function makeNode(id: Int, style: WidgetStyle, base: Int) -> LayoutNode {
+    return LayoutNode {
+        id: id,
+        constraints: LayoutConstraints { minWidth: base * 10, maxWidth: base * 20, minHeight: base * 5, maxHeight: base * 10 },
+        style: style,
+        glyphRun: makeRun(base + 60, style.text)
+    }
+}
+
+function themeScore(theme: Theme) -> Int {
+    return theme.colors.background + theme.colors.foreground + theme.colors.accent + styleScore(theme.primary) + styleScore(theme.secondary)
+}
+
+@Main
+function main() {
+    let theme = Theme {
+        colors: ThemeColors { background: 1, foreground: 2, accent: 3 },
+        primary: makeStyle(4),
+        secondary: makeStyle(8)
+    }
+    let nodes = [
+        makeNode(10, theme.primary, 11),
+        makeNode(20, theme.secondary, 13),
+        makeNode(30, theme.primary, 17)
+    ]
+    let index = 1
+    let node = nodes[index]
+    var copiedStyle = node.style
+    copiedStyle.padding.left = copiedStyle.padding.left + 50
+    let copiedGlyph = nodes[2].glyphRun.glyphs[1]
+    let result = measureNode(node)
+    var checksum = themeScore(theme)
+    var i = 0
+    while i < 3 {
+        checksum = checksum + nodes[i].id + styleScore(nodes[i].style)
+        checksum = checksum + glyphScore(nodes[i].glyphRun.glyphs[i])
+        i = i + 1
+    }
+    checksum = checksum + styleScore(copiedStyle) + glyphScore(copiedGlyph)
+    checksum = checksum + result.width + result.height + result.baseline
+
+    print(nodes[0].style.padding.left)
+    print(copiedStyle.padding.left)
+    print(nodes[1].glyphRun.glyphs[2].advance)
+    print(result.width)
+    print(result.height)
+    print(result.baseline)
+    print(checksum)
+    return
+}

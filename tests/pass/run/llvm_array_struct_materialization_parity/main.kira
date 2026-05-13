@@ -1,0 +1,74 @@
+struct Nested {
+    var x: Int
+    var y: Int
+}
+
+struct Item {
+    var x: Int
+    var nested: Nested
+}
+
+struct Container {
+    var items: [Item]
+}
+
+function makeItems() -> [Item] {
+    return [
+        Item { x: 10, nested: Nested { x: 100, y: 1000 } },
+        Item { x: 20, nested: Nested { x: 200, y: 2000 } },
+        Item { x: 30, nested: Nested { x: 300, y: 3000 } },
+        Item { x: 40, nested: Nested { x: 400, y: 4000 } }
+    ]
+}
+
+function useItem(item: Item) -> Int {
+    return item.x + item.nested.x
+}
+
+function useNested(nested: Nested) -> Int {
+    return nested.x + nested.y
+}
+
+function getItem(items: [Item], i: Int) -> Item {
+    return items[i]
+}
+
+function getNested(items: [Item], i: Int) -> Nested {
+    return items[i].nested
+}
+
+function checksum(items: [Item], index: Int) -> Int {
+    let container = Container { items: items }
+    let item = items[index]
+    let nested = items[index].nested
+    let returned = getItem(items, 2)
+    let returnedNested = getNested(items, 1)
+
+    var copy = items[index]
+    copy.x = 999
+
+    var score = 0
+    score = score + items[index].x
+    score = score + items[index].nested.x
+    score = score + container.items[index].x
+    score = score + container.items[index].nested.x
+    score = score + item.x
+    score = score + nested.x
+    score = score + useItem(items[index])
+    score = score + useNested(items[index].nested)
+    score = score + returned.x
+    score = score + returnedNested.x
+    score = score + items[2].x
+    score = score + items[0].x
+    score = score + items[3].x
+    score = score + items[items.count - 1].nested.y
+    score = score + items[index].x
+    return score
+}
+
+@Main
+function main() {
+    let items = makeItems()
+    print(checksum(items, 1))
+    return
+}

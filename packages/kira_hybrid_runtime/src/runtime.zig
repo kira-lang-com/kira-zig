@@ -274,13 +274,26 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
         lowered_args[index] = arg;
         if (index >= function_decl.param_types.len) continue;
         const param_type = function_decl.param_types[index];
-        if (param_type.kind != .ffi_struct or arg != .raw_ptr or arg.raw_ptr == 0) continue;
-        native_arg_ptrs[index] = try self.vm.lowerStructToNativeLayout(
-            &self.module,
-            param_type.name orelse return error.RuntimeFailure,
-            arg.raw_ptr,
-        );
-        lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+        if (arg != .raw_ptr or arg.raw_ptr == 0) continue;
+        switch (param_type.kind) {
+            .ffi_struct => {
+                native_arg_ptrs[index] = try self.vm.lowerStructToNativeLayout(
+                    &self.module,
+                    param_type.name orelse return error.RuntimeFailure,
+                    arg.raw_ptr,
+                );
+                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+            },
+            .array => {
+                native_arg_ptrs[index] = try self.vm.copyArrayToNativeLayout(
+                    &self.module,
+                    convertManifestTypeRef(param_type),
+                    arg.raw_ptr,
+                );
+                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+            },
+            else => {},
+        }
     }
 
     const result = try self.bridge.call(function_id, lowered_args);
@@ -288,12 +301,21 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     for (native_arg_ptrs, 0..) |native_ptr, index| {
         if (native_ptr == 0) continue;
         const param_type = function_decl.param_types[index];
-        try self.vm.syncStructFromNativeLayout(
-            &self.module,
-            param_type.name orelse return error.RuntimeFailure,
-            args[index].raw_ptr,
-            native_ptr,
-        );
+        switch (param_type.kind) {
+            .ffi_struct => try self.vm.syncStructFromNativeLayout(
+                &self.module,
+                param_type.name orelse return error.RuntimeFailure,
+                args[index].raw_ptr,
+                native_ptr,
+            ),
+            .array => try self.vm.syncArrayFromNativeLayout(
+                &self.module,
+                convertManifestTypeRef(param_type),
+                args[index].raw_ptr,
+                native_ptr,
+            ),
+            else => {},
+        }
     }
 
     return result;

@@ -521,3 +521,115 @@ test "macOS framework-backed C source compiles as Objective-C" {
     try std.testing.expect(!shouldCompileAsObjectiveC(.macos, library, "/tmp/sokol_impl.m"));
     try std.testing.expect(!shouldCompileAsObjectiveC(.linux, library, "/tmp/sokol_impl.c"));
 }
+
+test "native artifact freshness tracks C and header content changes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "Native");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Native/fresh.h",
+        .data =
+        \\#ifndef KIRA_NATIVE_FRESH_H
+        \\#define KIRA_NATIVE_FRESH_H
+        \\#define KIRA_NATIVE_STRESS_VALUE 41
+        \\int kira_native_stress(void);
+        \\#endif
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Native/fresh.c",
+        .data =
+        \\#include "fresh.h"
+        \\int kira_native_stress(void) { return KIRA_NATIVE_STRESS_VALUE; }
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Native/fresh.toml",
+        .data =
+        \\[native]
+        \\name = "fresh"
+        \\
+        ,
+    });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "Native", allocator);
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.c", allocator);
+    const header_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.h", allocator);
+    const manifest_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.toml", allocator);
+    const artifact_path = try std.fs.path.join(allocator, &.{ root, "libfresh.a" });
+    const fingerprint_path = try std.fmt.allocPrint(allocator, "{s}.fingerprint", .{artifact_path});
+
+    var library: native.ResolvedNativeLibrary = .{
+        .manifest_path = manifest_path,
+        .name = "fresh",
+        .link_mode = .static,
+        .abi = .c,
+        .artifact_path = artifact_path,
+        .target = try hostTargetSelector(allocator),
+        .headers = .{
+            .entrypoint = header_path,
+            .include_dirs = &.{root},
+        },
+        .build = .{
+            .sources = &.{source_path},
+            .include_dirs = &.{root},
+        },
+        .link = .{},
+    };
+
+    try ensureNativeArtifact(allocator, &library);
+    const fingerprint1 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024));
+    const artifact1 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, artifact_path, allocator, .limited(1024 * 1024));
+    try std.testing.expect(try nativeArtifactIsFresh(allocator, artifact_path, fingerprint_path, fingerprint1));
+
+    try ensureNativeArtifact(allocator, &library);
+    const fingerprint2 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024));
+    const artifact2 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, artifact_path, allocator, .limited(1024 * 1024));
+    try std.testing.expectEqualStrings(fingerprint1, fingerprint2);
+    try std.testing.expectEqualSlices(u8, artifact1, artifact2);
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Native/fresh.c",
+        .data =
+        \\#include "fresh.h"
+        \\int kira_native_stress(void) { return KIRA_NATIVE_STRESS_VALUE + 1; }
+        \\
+        ,
+    });
+    const source_fingerprint = try nativeArtifactFingerprint(allocator, library);
+    try std.testing.expect(!std.mem.eql(u8, fingerprint1, source_fingerprint));
+    try std.testing.expect(!try nativeArtifactIsFresh(allocator, artifact_path, fingerprint_path, source_fingerprint));
+    try ensureNativeArtifact(allocator, &library);
+    const fingerprint3 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024));
+    const artifact3 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, artifact_path, allocator, .limited(1024 * 1024));
+    try std.testing.expectEqualStrings(source_fingerprint, fingerprint3);
+    try std.testing.expect(!std.mem.eql(u8, artifact1, artifact3));
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Native/fresh.h",
+        .data =
+        \\#ifndef KIRA_NATIVE_FRESH_H
+        \\#define KIRA_NATIVE_FRESH_H
+        \\#define KIRA_NATIVE_STRESS_VALUE 55
+        \\int kira_native_stress(void);
+        \\#endif
+        \\
+        ,
+    });
+    const header_fingerprint = try nativeArtifactFingerprint(allocator, library);
+    try std.testing.expect(!std.mem.eql(u8, fingerprint3, header_fingerprint));
+    try std.testing.expect(!try nativeArtifactIsFresh(allocator, artifact_path, fingerprint_path, header_fingerprint));
+    try ensureNativeArtifact(allocator, &library);
+    const fingerprint4 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024));
+    const artifact4 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, artifact_path, allocator, .limited(1024 * 1024));
+    try std.testing.expectEqualStrings(header_fingerprint, fingerprint4);
+    try std.testing.expect(!std.mem.eql(u8, artifact3, artifact4));
+    try std.testing.expect(try nativeArtifactIsFresh(allocator, artifact_path, fingerprint_path, fingerprint4));
+}

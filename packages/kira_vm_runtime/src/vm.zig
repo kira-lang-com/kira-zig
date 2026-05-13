@@ -156,6 +156,58 @@ pub const Vm = struct {
         try self.copyStructToNativeLayoutInto(module, type_name, runtime_ptr, native_ptr);
     }
 
+    pub fn copyArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize) anyerror!usize {
+        const source: *const ArrayObject = @ptrFromInt(runtime_array_ptr);
+        const object = try self.allocator.create(ArrayObject);
+        const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+        const element_ty = try self.arrayElementType(module, array_ty);
+        for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+        for (source.items[0..source.len], 0..) |item, index| {
+            const value = runtime_abi.bridgeValueToValue(item);
+            items[index] = runtime_abi.bridgeValueFromValue(try self.copyValueToNativeLayout(module, element_ty, value));
+        }
+        object.* = .{
+            .len = source.len,
+            .items = items.ptr,
+        };
+        return @intFromPtr(object);
+    }
+
+    pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) anyerror!usize {
+        const source: *const ArrayObject = @ptrFromInt(native_array_ptr);
+        const object = try self.allocator.create(ArrayObject);
+        const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+        const element_ty = try self.arrayElementType(module, array_ty);
+        for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+        for (source.items[0..source.len], 0..) |item, index| {
+            const value = runtime_abi.bridgeValueToValue(item);
+            items[index] = runtime_abi.bridgeValueFromValue(try self.copyValueFromNativeLayout(module, element_ty, value));
+        }
+        object.* = .{
+            .len = source.len,
+            .items = items.ptr,
+        };
+        return try self.heap.registerArray(object);
+    }
+
+    pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
+        const source: *const ArrayObject = @ptrFromInt(native_array_ptr);
+        const destination: *ArrayObject = @ptrFromInt(runtime_array_ptr);
+        const old_items = destination.items[0..@max(destination.len, 1)];
+        for (old_items[0..destination.len]) |item| self.heap.releaseValue(runtime_abi.bridgeValueToValue(item));
+
+        const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+        const element_ty = try self.arrayElementType(module, array_ty);
+        for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+        for (source.items[0..source.len], 0..) |item, index| {
+            const value = runtime_abi.bridgeValueToValue(item);
+            items[index] = runtime_abi.bridgeValueFromValue(try self.copyValueFromNativeLayout(module, element_ty, value));
+        }
+        self.allocator.free(old_items);
+        destination.len = source.len;
+        destination.items = items.ptr;
+    }
+
     pub fn syncStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
         runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "sync native->runtime type={s} src=0x{x} dst=0x{x}", .{ type_name, native_ptr, runtime_ptr });
         try self.copyStructFromNativeLayoutInto(module, type_name, runtime_ptr, native_ptr);
@@ -385,8 +437,16 @@ pub const Vm = struct {
                         self.rememberError("array index is out of bounds");
                         return error.RuntimeFailure;
                     }
-                    self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], runtime_abi.bridgeValueToValue(array_ptr.items[index]));
-                    _ = value.ty;
+                    var item_value = runtime_abi.bridgeValueToValue(array_ptr.items[index]);
+                    if (value.ty.kind == .ffi_struct and item_value == .raw_ptr and item_value.raw_ptr != 0 and !self.isManagedStructPointer(item_value.raw_ptr)) {
+                        item_value = .{ .raw_ptr = try self.copyStructFromNativeLayout(module, value.ty.name orelse {
+                            self.rememberError("array element struct type is missing a name");
+                            return error.RuntimeFailure;
+                        }, item_value.raw_ptr) };
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], item_value);
+                    } else {
+                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], item_value);
+                    }
                 },
                 .array_set => |value| {
                     const array_value = registers[value.array];
@@ -442,7 +502,11 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     if (value.ty.kind == .ffi_struct) {
-                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = ptr.raw_ptr });
+                        const type_name = value.ty.name orelse {
+                            self.rememberError("struct load type is missing a name");
+                            return error.RuntimeFailure;
+                        };
+                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.resolveStructValuePointer(type_name, ptr.raw_ptr) });
                     } else {
                         const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
                         self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], slot_ptr.*);
@@ -454,9 +518,17 @@ pub const Vm = struct {
                         self.rememberError("indirect store requires a valid pointer");
                         return error.RuntimeFailure;
                     }
-                    const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
-                    self.heap.assignBorrowed(slot_ptr, registers[value.src]);
-                    _ = value.ty;
+                    if (value.ty.kind == .ffi_struct) {
+                        const type_name = value.ty.name orelse {
+                            self.rememberError("struct store type is missing a name");
+                            return error.RuntimeFailure;
+                        };
+                        const dst_ptr = try self.ensureStructDestinationPointer(module, type_name, ptr.raw_ptr);
+                        try self.copyStructValueInto(module, type_name, dst_ptr, registers[value.src]);
+                    } else {
+                        const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
+                        self.heap.assignBorrowed(slot_ptr, registers[value.src]);
+                    }
                 },
                 .copy_indirect => |value| {
                     const dst_ptr_value = registers[value.dst_ptr];
@@ -465,13 +537,9 @@ pub const Vm = struct {
                         self.rememberError("struct copy requires valid pointers");
                         return error.RuntimeFailure;
                     }
-                    const type_decl = helper_impl.findType(module, value.type_name) orelse {
-                        self.rememberError("struct type could not be resolved");
-                        return error.RuntimeFailure;
-                    };
-                    const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr_value.raw_ptr);
-                    const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr_value.raw_ptr);
-                    try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+                    const dst_ptr = try self.ensureStructDestinationPointer(module, value.type_name, dst_ptr_value.raw_ptr);
+                    const src_ptr = try self.resolveStructValuePointer(value.type_name, src_ptr_value.raw_ptr);
+                    try self.copyStructValueInto(module, value.type_name, dst_ptr, .{ .raw_ptr = src_ptr });
                 },
                 .branch => |value| {
                     const condition = registers[value.condition];
@@ -751,6 +819,67 @@ pub const Vm = struct {
         return self.heap.registerArray(object);
     }
 
+    fn arrayElementType(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef) !bytecode.TypeRef {
+        _ = self;
+        const name = array_ty.name orelse return .{ .kind = .raw_ptr };
+        return resolveTypeText(module, name);
+    }
+
+    fn copyValueToNativeLayout(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+        return switch (ty.kind) {
+            .ffi_struct => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyStructToNativeLayout(module, ty.name orelse {
+                    self.rememberError("array element struct type is missing a name");
+                    return error.RuntimeFailure;
+                }, value.raw_ptr) };
+            },
+            .array => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyArrayToNativeLayout(module, ty, value.raw_ptr) };
+            },
+            else => value,
+        };
+    }
+
+    fn resolveTypeText(module: *const bytecode.Module, text: []const u8) bytecode.TypeRef {
+        if (std.mem.eql(u8, text, "Void")) return .{ .kind = .void };
+        if (std.mem.eql(u8, text, "Bool")) return .{ .kind = .boolean, .name = "Bool" };
+        if (std.mem.eql(u8, text, "String")) return .{ .kind = .string };
+        if (std.mem.eql(u8, text, "Float") or std.mem.eql(u8, text, "F64")) return .{ .kind = .float, .name = "F64" };
+        if (std.mem.eql(u8, text, "F32")) return .{ .kind = .float, .name = "F32" };
+        if (std.mem.eql(u8, text, "Int") or std.mem.eql(u8, text, "I64")) return .{ .kind = .integer, .name = "I64" };
+        if (std.mem.eql(u8, text, "I8") or std.mem.eql(u8, text, "I16") or std.mem.eql(u8, text, "I32") or
+            std.mem.eql(u8, text, "U8") or std.mem.eql(u8, text, "U16") or std.mem.eql(u8, text, "U32"))
+        {
+            return .{ .kind = .integer, .name = text };
+        }
+        if (std.mem.eql(u8, text, "RawPtr") or std.mem.endsWith(u8, text, "_ptr")) return .{ .kind = .raw_ptr, .name = text };
+        if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') return .{ .kind = .array, .name = text[1 .. text.len - 1] };
+        if (helper_impl.findType(module, text) != null) return .{ .kind = .ffi_struct, .name = text };
+        for (module.enums) |enum_decl| {
+            if (std.mem.eql(u8, enum_decl.name, text)) return .{ .kind = .enum_instance, .name = text };
+        }
+        return .{ .kind = .raw_ptr, .name = text };
+    }
+
+    fn copyValueFromNativeLayout(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+        return switch (ty.kind) {
+            .ffi_struct => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyStructFromNativeLayout(module, ty.name orelse {
+                    self.rememberError("array element struct type is missing a name");
+                    return error.RuntimeFailure;
+                }, value.raw_ptr) };
+            },
+            .array => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyArrayFromNativeLayout(module, ty, value.raw_ptr) };
+            },
+            else => value,
+        };
+    }
+
     fn allocateEnum(self: *Vm, enum_type_name: []const u8, registers: []const runtime_abi.Value, discriminant: u32, payload_src: ?u32) !usize {
         const slots = try self.allocator.alloc(runtime_abi.Value, 2);
         slots[0] = .{ .integer = @as(i64, @intCast(discriminant)) };
@@ -762,6 +891,90 @@ pub const Vm = struct {
         _ = self;
         const type_decl = helper_impl.findType(module, type_name) orelse return null;
         return type_decl.fields.len;
+    }
+
+    fn managedStructTypeName(self: *Vm, ptr: usize) ?[]const u8 {
+        return self.heap.getStructTypeName(ptr);
+    }
+
+    fn isManagedStructPointer(self: *Vm, ptr: usize) bool {
+        return self.managedStructTypeName(ptr) != null;
+    }
+
+    fn resolveStructValuePointer(self: *Vm, expected_type_name: []const u8, ptr: usize) !usize {
+        if (ptr == 0) {
+            self.rememberError("struct value pointer is null");
+            return error.RuntimeFailure;
+        }
+        if (self.isManagedStructPointer(ptr)) return ptr;
+        _ = expected_type_name;
+
+        const slot_ptr: *const runtime_abi.Value = @ptrFromInt(ptr);
+        const value = slot_ptr.*;
+        if (value != .raw_ptr) {
+            self.rememberError("struct pointer slot does not contain a struct value");
+            return error.RuntimeFailure;
+        }
+        if (value.raw_ptr == 0) return 0;
+        if (!self.isManagedStructPointer(value.raw_ptr)) {
+            self.rememberError("struct pointer slot does not contain a managed struct value");
+            return error.RuntimeFailure;
+        }
+        return value.raw_ptr;
+    }
+
+    fn ensureStructDestinationPointer(self: *Vm, module: *const bytecode.Module, expected_type_name: []const u8, ptr: usize) !usize {
+        if (ptr == 0) {
+            self.rememberError("struct destination pointer is null");
+            return error.RuntimeFailure;
+        }
+        if (self.isManagedStructPointer(ptr)) return ptr;
+        if (self.managedStructTypeName(ptr)) |_| {
+            self.rememberError("struct destination type does not match the expected type");
+            return error.RuntimeFailure;
+        }
+
+        const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr);
+        if (slot_ptr.* == .raw_ptr and slot_ptr.raw_ptr != 0) {
+            if (!self.isManagedStructPointer(slot_ptr.raw_ptr)) {
+                self.rememberError("struct destination slot does not contain a managed struct value");
+                return error.RuntimeFailure;
+            }
+            return slot_ptr.raw_ptr;
+        }
+
+        const old = slot_ptr.*;
+        slot_ptr.* = .{ .raw_ptr = try self.allocateStruct(module, expected_type_name) };
+        self.heap.releaseValue(old);
+        return slot_ptr.raw_ptr;
+    }
+
+    fn copyStructValueInto(
+        self: *Vm,
+        module: *const bytecode.Module,
+        type_name: []const u8,
+        dst_raw_ptr: usize,
+        src_value: runtime_abi.Value,
+    ) !void {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
+            self.rememberError("struct type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_raw_ptr);
+        if (src_value == .raw_ptr and src_value.raw_ptr != 0) {
+            const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_value.raw_ptr);
+            try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+            return;
+        }
+        if (src_value == .raw_ptr and src_value.raw_ptr == 0) {
+            const default_ptr = try self.allocateStruct(module, type_name);
+            defer self.heap.releaseValue(.{ .raw_ptr = default_ptr });
+            const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(default_ptr);
+            try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+            return;
+        }
+        self.rememberError("struct copy source must be a struct value");
+        return error.RuntimeFailure;
     }
 
     fn resolveVirtualMethod(

@@ -1,0 +1,11 @@
+backends = ["hybrid", "vm", "llvm"]
+
+[phases.check]
+result = "pass"
+
+[phases.build]
+result = "pass"
+
+[phases.run]
+result = "pass"
+stdout = "31\n0\n31\n12\n2\n2207\n"

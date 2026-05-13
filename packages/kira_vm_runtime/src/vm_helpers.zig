@@ -75,12 +75,19 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
             }
             (@as(*u8, @ptrFromInt(address))).* = if (value.boolean) 1 else 0;
         },
-        .construct_any, .array, .raw_ptr, .enum_instance => {
+        .construct_any, .raw_ptr, .enum_instance => {
             if (value != .raw_ptr) {
                 vm.rememberError("runtime pointer field cannot be lowered to native memory");
                 return error.RuntimeFailure;
             }
             (@as(*usize, @ptrFromInt(address))).* = value.raw_ptr;
+        },
+        .array => {
+            if (value != .raw_ptr) {
+                vm.rememberError("runtime array field cannot be lowered to native memory");
+                return error.RuntimeFailure;
+            }
+            (@as(*usize, @ptrFromInt(address))).* = if (value.raw_ptr == 0) 0 else try vm.copyArrayToNativeLayout(module, field_ty, value.raw_ptr);
         },
         .ffi_struct => {
             const nested_name = field_ty.name orelse {
@@ -125,7 +132,11 @@ pub fn readNativeFieldValue(
             break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
         },
         .boolean => .{ .boolean = (@as(*const u8, @ptrFromInt(address))).* != 0 },
-        .construct_any, .array, .raw_ptr, .enum_instance => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+        .construct_any, .raw_ptr, .enum_instance => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+        .array => blk: {
+            const array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+            break :blk .{ .raw_ptr = if (array_ptr == 0) 0 else try vm.copyArrayFromNativeLayout(module, field_decl.ty, array_ptr) };
+        },
         .ffi_struct => .{ .raw_ptr = try vm.copyStructFromNativeLayout(module, field_decl.ty.name orelse {
             vm.rememberError("nested struct field type is missing a name");
             return error.RuntimeFailure;
