@@ -416,7 +416,9 @@ fn buildHybridManifest(
             .name = function_decl.name,
             .execution = resolved_execution,
             .param_types = try lowerHybridTypeRefs(allocator, function_decl.param_types),
+            .param_ownership = try lowerHybridOwnershipModes(allocator, function_decl.param_ownership),
             .return_type = lowerHybridTypeRef(function_decl.return_type),
+            .return_ownership = lowerHybridOwnershipMode(function_decl.return_ownership),
             .exported_name = if (resolved_execution == .native and !function_decl.is_extern)
                 try std.fmt.allocPrint(allocator, "kira_native_fn_{d}", .{function_decl.id})
             else
@@ -464,6 +466,22 @@ fn lowerHybridTypeRef(value_type: @import("kira_ir").ValueType) hybrid.TypeRef {
         },
         .name = value_type.name,
         .construct_constraint = if (value_type.construct_constraint) |constraint| .{ .construct_name = constraint.construct_name } else null,
+    };
+}
+
+fn lowerHybridOwnershipModes(allocator: std.mem.Allocator, values: []const @import("kira_ir").OwnershipMode) ![]hybrid.OwnershipMode {
+    const lowered = try allocator.alloc(hybrid.OwnershipMode, values.len);
+    for (values, 0..) |value, index| lowered[index] = lowerHybridOwnershipMode(value);
+    return lowered;
+}
+
+fn lowerHybridOwnershipMode(value: @import("kira_ir").OwnershipMode) hybrid.OwnershipMode {
+    return switch (value) {
+        .owned => .owned,
+        .borrow_read => .borrow_read,
+        .borrow_mut => .borrow_mut,
+        .move => .move,
+        .copy => .copy,
     };
 }
 

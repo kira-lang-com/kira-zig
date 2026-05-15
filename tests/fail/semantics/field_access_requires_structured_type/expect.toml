@@ -1,0 +1,13 @@
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
+diagnostic_code = "KSEM047"
+diagnostic_title = "field access requires a structured type"
+stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

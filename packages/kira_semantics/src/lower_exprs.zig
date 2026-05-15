@@ -85,6 +85,22 @@ fn tryLowerArrayCountMemberExpr(object: *model.Expr, member_name: []const u8, sp
     } };
 }
 
+fn emitMemberAccessRequiresStructuredType(
+    ctx: *shared.Context,
+    span: source_pkg.Span,
+) !void {
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM047",
+        .title = "field access requires a structured type",
+        .message = "This member access does not resolve to a Kira or FFI struct value.",
+        .labels = &.{
+            diagnostics.primaryLabel(span, "field access target is not a struct or pointer-to-struct"),
+        },
+        .help = "Access fields on a named struct value or a pointer-to-struct type.",
+    });
+}
+
 pub fn lowerBlockStatements(
     ctx: *shared.Context,
     block: syntax.ast.Block,
@@ -728,7 +744,10 @@ pub fn lowerExpr(
                     lowered.* = array_len_expr;
                     return lowered;
                 }
-                const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return error.DiagnosticsEmitted;
+                const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse {
+                    try emitMemberAccessRequiresStructuredType(ctx, node.span);
+                    return error.DiagnosticsEmitted;
+                };
                 const resolved_field = try resolveFieldMember(ctx, model.hir.exprType(object.*), node.member, node.span);
                 lowered.* = .{ .field = .{
                     .object = object,
@@ -784,7 +803,10 @@ pub fn lowerExpr(
                             lowered.* = array_len_expr;
                             return lowered;
                         }
-                        const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return error.DiagnosticsEmitted;
+                        const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse {
+                            try emitMemberAccessRequiresStructuredType(ctx, node.span);
+                            return error.DiagnosticsEmitted;
+                        };
                         const resolved_field = try resolveFieldMember(ctx, model.hir.exprType(object.*), node.member, node.span);
                         lowered.* = .{ .field = .{
                             .object = object,
@@ -816,7 +838,10 @@ pub fn lowerExpr(
                 lowered.* = array_len_expr;
                 return lowered;
             }
-            const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return error.DiagnosticsEmitted;
+            const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse {
+                try emitMemberAccessRequiresStructuredType(ctx, node.span);
+                return error.DiagnosticsEmitted;
+            };
             const resolved_field = try resolveFieldMember(ctx, model.hir.exprType(object.*), node.member, node.span);
             lowered.* = .{ .field = .{
                 .object = object,

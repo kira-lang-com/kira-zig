@@ -320,6 +320,7 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     defer {
         for (native_arg_ptrs, 0..) |native_ptr, index| {
             if (native_ptr == 0 or index >= function_decl.param_types.len) continue;
+            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index))) continue;
             const param_type = function_decl.param_types[index];
             switch (param_type.kind) {
                 .ffi_struct => if (param_type.name) |name| {
@@ -366,6 +367,7 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     self.vm.retainManagedValue(result);
     for (native_arg_ptrs, 0..) |native_ptr, index| {
         if (native_ptr == 0) continue;
+        if (!ownershipSyncsBack(paramOwnershipAt(function_decl.param_ownership, index))) continue;
         const param_type = function_decl.param_types[index];
         switch (param_type.kind) {
             .ffi_struct => try self.vm.syncStructFromNativeLayout(
@@ -385,6 +387,22 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     }
 
     return result;
+}
+
+fn paramOwnershipAt(param_ownership: []const hybrid.OwnershipMode, index: usize) hybrid.OwnershipMode {
+    if (index < param_ownership.len) return param_ownership[index];
+    return .owned;
+}
+
+fn ownershipTransfersToCallee(mode: hybrid.OwnershipMode) bool {
+    return switch (mode) {
+        .owned, .move => true,
+        .borrow_read, .borrow_mut, .copy => false,
+    };
+}
+
+fn ownershipSyncsBack(mode: hybrid.OwnershipMode) bool {
+    return mode == .borrow_mut;
 }
 
 fn callNativeFunction(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {

@@ -18,12 +18,17 @@ pub const JobReport = struct {
     failed: usize,
 };
 
+var process_state_mutex: std.atomic.Mutex = .unlocked;
+
 pub fn runBackendJob(
     allocator: std.mem.Allocator,
     case: discovery.Case,
     backend: discovery.Backend,
     options: Options,
 ) !JobReport {
+    while (!process_state_mutex.tryLock()) std.atomic.spinLoopHint();
+    defer process_state_mutex.unlock();
+
     var reporter = BufferedReporter.init(allocator);
     var system = build.BuildSystem.init(allocator);
     var profiles: [3]PhaseProfile = .{ .{}, .{}, .{} };
@@ -297,8 +302,18 @@ fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: di
 
     const module = try system.readBytecode(output_path);
     var output: std.Io.Writer.Allocating = .init(allocator);
+    const run_cwd = try runtimeCwdForCase(allocator, case);
+    defer allocator.free(run_cwd);
 
     var vm = vm_runtime.Vm.init(allocator);
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+    defer {
+        std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
+    }
+    var run_dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, run_cwd, .{});
+    defer run_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.Options.debug_io, run_dir);
     try vm.runMain(&module, &output.writer);
     return .{
         .result = .pass,
@@ -329,11 +344,14 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
     }
 
     const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
+    const run_cwd = try runtimeCwdForCase(allocator, case);
+    defer allocator.free(run_cwd);
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const child = try std.process.run(allocator, io_impl.io(), .{
         .argv = &.{executable.path},
+        .cwd = .{ .path = run_cwd },
     });
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
@@ -372,11 +390,16 @@ fn runHybridPhase(
     }
 
     const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
+    const runner_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, runner, allocator);
+    defer allocator.free(runner_path);
+    const run_cwd = try runtimeCwdForCase(allocator, case);
+    defer allocator.free(run_cwd);
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const child = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ runner, manifest_path },
+        .argv = &.{ runner_path, manifest_path },
+        .cwd = .{ .path = run_cwd },
     });
     defer allocator.free(child.stderr);
     try expectExitedZero(child.term);
@@ -414,6 +437,32 @@ fn findExecutable(artifacts: []const build_def.Artifact) ?build_def.Artifact {
         if (artifact.kind == .executable) return artifact;
     }
     return null;
+}
+
+fn runtimeCwdForCase(allocator: std.mem.Allocator, case: discovery.Case) ![]const u8 {
+    const source_dir = std.fs.path.dirname(case.source_path) orelse ".";
+    var current = try allocator.dupe(u8, source_dir);
+    while (true) {
+        if (dirHasProjectManifest(current)) return current;
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
+
+fn dirHasProjectManifest(path: []const u8) bool {
+    return fileExistsAt(path, "kira.toml") or fileExistsAt(path, "project.toml") or fileExistsAt(path, "Kira.toml");
+}
+
+fn fileExistsAt(dir_path: []const u8, file_name: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{}) catch return false;
+    defer dir.close(std.Options.debug_io);
+    var file = dir.openFile(std.Options.debug_io, file_name, .{}) catch return false;
+    file.close(std.Options.debug_io);
+    return true;
 }
 
 const TmpDir = struct {

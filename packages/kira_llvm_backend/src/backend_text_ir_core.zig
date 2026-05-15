@@ -198,12 +198,18 @@ pub fn buildTextFunctionBody(
     const register_owned_ptr = try allocator.alloc(bool, register_types.len);
     defer allocator.free(register_owned_ptr);
     @memset(register_owned_ptr, false);
+    const register_owns_contents = try allocator.alloc(bool, register_types.len);
+    defer allocator.free(register_owns_contents);
+    @memset(register_owns_contents, false);
     const register_escaped = try allocator.alloc(bool, register_types.len);
     defer allocator.free(register_escaped);
     @memset(register_escaped, false);
     const register_local_ptr = try allocator.alloc(?usize, register_types.len);
     defer allocator.free(register_local_ptr);
     @memset(register_local_ptr, null);
+    const register_field_owner = try allocator.alloc(?u32, register_types.len);
+    defer allocator.free(register_field_owner);
+    @memset(register_field_owner, null);
     const local_owns_contents = try allocator.alloc(bool, variant.local_types.len);
     defer allocator.free(local_owns_contents);
     @memset(local_owns_contents, false);
@@ -237,6 +243,9 @@ pub fn buildTextFunctionBody(
         try writer.print("{d}", .{index});
         try writer.writeAll(", ptr %local");
         try writer.print("{d}\n", .{index});
+        if (ownershipConsumes(paramOwnershipAt(variant.param_ownership, index))) {
+            markOwnedLocalForType(local_owns_contents, local_owned_values, index, param_type);
+        }
     }
     for (function_decl.instructions) |instruction| {
         switch (instruction) {
@@ -290,6 +299,7 @@ pub fn buildTextFunctionBody(
                 try writer.print("  store ptr %alloc.ptr.{d}, ptr %cleanup.heap.slot.{d}\n", .{ value.dst, value.dst });
                 try owned_values.append(.{ .reg = value.dst, .ty = register_types[value.dst], .kind = .heap_ptr });
                 register_owned_ptr[value.dst] = true;
+                register_owns_contents[value.dst] = false;
             },
             .alloc_enum => |value| try enum_ops.emitAllocEnum(writer, register_types, value),
             .alloc_native_state => |value| {
@@ -630,6 +640,7 @@ pub fn buildTextFunctionBody(
                         try writer.writeAll(" = load i64, ptr %local");
                         try writer.print("{d}\n", .{value.local});
                         register_local_ptr[value.dst] = value.local;
+                        register_owns_contents[value.dst] = local_owns_contents[value.local];
                     },
                     .array, .raw_ptr, .string => {
                         try writer.writeAll(" = load ");
@@ -668,6 +679,7 @@ pub fn buildTextFunctionBody(
                 try writer.writeAll(" = ptrtoint ptr %field.ptr.");
                 try writer.print("{d}", .{value.dst});
                 try writer.writeAll(" to i64\n");
+                register_field_owner[value.dst] = value.base;
             },
             .recover_native_state => |value| {
                 try writer.print("  %native.recover.state.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.dst, value.state });
@@ -1020,6 +1032,14 @@ pub fn buildTextFunctionBody(
                         try writer.writeAll("  %r");
                         try writer.print("{d}", .{value.dst});
                         try writer.print(" = ptrtoint ptr %load.arrayptr.{d} to i64\n", .{value.dst});
+                        if (value.ptr < register_field_owner.len) {
+                            if (register_field_owner[value.ptr]) |owner_reg| {
+                                if (owner_reg < register_local_ptr.len) register_local_ptr[value.dst] = register_local_ptr[owner_reg];
+                                if (owner_reg < register_owns_contents.len and register_owns_contents[owner_reg]) {
+                                    register_owned_ptr[value.dst] = true;
+                                }
+                            }
+                        }
                     },
                     .float => {
                         try writer.print("  %load.raw.float.{d} = load {s}, ptr %load.ptr.{d}\n", .{ value.dst, abi_type, value.dst });
@@ -1094,6 +1114,16 @@ pub fn buildTextFunctionBody(
                         else => {},
                     }
                 }
+                if (value.ptr < register_field_owner.len) {
+                    if (register_field_owner[value.ptr]) |owner_reg| {
+                        if (owner_reg < register_owns_contents.len) register_owns_contents[owner_reg] = true;
+                        if (owner_reg < register_local_ptr.len) {
+                            if (register_local_ptr[owner_reg]) |owner_local| {
+                                if (owner_local < local_owns_contents.len) local_owns_contents[owner_local] = true;
+                            }
+                        }
+                    }
+                }
             },
             .copy_indirect => |value| {
                 const struct_type_name = typeRefName(value.type_name);
@@ -1102,7 +1132,9 @@ pub fn buildTextFunctionBody(
                 try writer.print("  %copy.val.{d} = load {s}, ptr %copy.src.{d}\n", .{ value.dst_ptr, struct_type_name, value.src_ptr });
                 try writer.print("  store {s} %copy.val.{d}, ptr %copy.dst.{d}\n", .{ struct_type_name, value.dst_ptr, value.dst_ptr });
                 if (register_local_ptr[value.dst_ptr]) |local_index| {
-                    if (register_owned_ptr[value.src_ptr]) local_owns_contents[local_index] = true;
+                    if (value.src_ptr < register_owns_contents.len and register_owns_contents[value.src_ptr]) {
+                        local_owns_contents[local_index] = true;
+                    }
                     if (register_local_ptr[value.src_ptr]) |source_local| {
                         if (local_owns_contents[source_local]) {
                             local_owns_contents[source_local] = false;
@@ -1154,8 +1186,9 @@ pub fn buildTextFunctionBody(
             },
             .call => |value| {
                 try writeCallInstruction(writer, request, plan, symbol_names, request.program, register_types, value, &temp_counter);
+                const callee_decl = functionById(request.program.*, value.callee) orelse return error.UnknownFunction;
+                markConsumedCallArgs(register_types, register_owned_ptr, register_owns_contents, register_escaped, register_local_ptr, variant.local_types, local_owns_contents, local_owned_values, value.args, callee_decl.param_types, callee_decl.param_ownership);
                 if (value.dst) |dst| {
-                    const callee_decl = functionById(request.program.*, value.callee) orelse return error.UnknownFunction;
                     const owns_return = !callee_decl.is_extern and try functionReturnOwnsAllocation(allocator, request.program, value.callee, 0);
                     if (owns_return and register_types[dst].kind == .array) {
                         try owned_values.append(.{ .reg = dst, .ty = register_types[dst], .kind = .array });
@@ -1166,6 +1199,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("  store ptr %cleanup.call.ptr.{d}, ptr %cleanup.heap.slot.{d}\n", .{ dst, dst });
                         try owned_values.append(.{ .reg = dst, .ty = register_types[dst], .kind = .heap_ptr });
                         register_owned_ptr[dst] = true;
+                        register_owns_contents[dst] = true;
                     }
                 }
             },
@@ -1188,8 +1222,9 @@ pub fn buildTextFunctionBody(
                     .args = args,
                     .dst = value.dst,
                 }, &temp_counter);
+                const callee_decl = functionById(request.program.*, callee) orelse return error.UnknownFunction;
+                markConsumedCallArgs(register_types, register_owned_ptr, register_owns_contents, register_escaped, register_local_ptr, variant.local_types, local_owns_contents, local_owned_values, args, callee_decl.param_types, callee_decl.param_ownership);
                 if (value.dst) |dst| {
-                    const callee_decl = functionById(request.program.*, callee) orelse return error.UnknownFunction;
                     const owns_return = !callee_decl.is_extern and try functionReturnOwnsAllocation(allocator, request.program, callee, 0);
                     if (owns_return and register_types[dst].kind == .array) {
                         try owned_values.append(.{ .reg = dst, .ty = register_types[dst], .kind = .array });
@@ -1200,6 +1235,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("  store ptr %cleanup.call.ptr.{d}, ptr %cleanup.heap.slot.{d}\n", .{ dst, dst });
                         try owned_values.append(.{ .reg = dst, .ty = register_types[dst], .kind = .heap_ptr });
                         register_owned_ptr[dst] = true;
+                        register_owns_contents[dst] = true;
                     }
                 }
             },
@@ -1223,7 +1259,11 @@ pub fn buildTextFunctionBody(
     }
     if (!block_terminated) {
         try emitFunctionCleanup(allocator, writer, request.program, variant.local_types, local_owns_contents, local_owned_values, owned_values.items, register_escaped, register_local_ptr, null, &temp_counter);
-        try writer.writeAll("  ret void\n");
+        if (function_decl.return_type.kind == .void) {
+            try writer.writeAll("  ret void\n");
+        } else {
+            try writer.writeAll("  unreachable\n");
+        }
     }
     try writer.writeAll("}\n");
     return body.toOwnedSlice();
@@ -1241,28 +1281,168 @@ const OwnedValue = struct {
     };
 };
 
+fn ownershipConsumes(mode: ir.OwnershipMode) bool {
+    return switch (mode) {
+        .borrow_read, .borrow_mut, .copy => false,
+        .owned, .move => true,
+    };
+}
+
+fn paramOwnershipAt(param_ownership: []const ir.OwnershipMode, index: usize) ir.OwnershipMode {
+    if (index < param_ownership.len) return param_ownership[index];
+    return .owned;
+}
+
+fn markOwnedLocalForType(
+    local_owns_contents: []bool,
+    local_owned_values: []bool,
+    index: usize,
+    value_type: ir.ValueType,
+) void {
+    if (index >= local_owned_values.len or index >= local_owns_contents.len) return;
+    switch (value_type.kind) {
+        .array, .raw_ptr, .string => local_owned_values[index] = true,
+        else => {},
+    }
+}
+
+fn clearTransferredValueOwnership(
+    register_owned_ptr: []bool,
+    register_owns_contents: []bool,
+    register_escaped: []bool,
+    register_local_ptr: []const ?usize,
+    local_types: []const ir.ValueType,
+    local_owns_contents: []bool,
+    local_owned_values: []bool,
+    arg: u32,
+    value_type: ir.ValueType,
+) void {
+    if (arg < register_owned_ptr.len and register_owned_ptr[arg]) {
+        register_owned_ptr[arg] = false;
+        register_escaped[arg] = true;
+    }
+    if (arg < register_owns_contents.len) register_owns_contents[arg] = false;
+    if (arg >= register_local_ptr.len) return;
+    const source_local = register_local_ptr[arg] orelse return;
+    if (source_local >= local_types.len) return;
+    switch (local_types[source_local].kind) {
+        .ffi_struct => {
+            if (source_local < local_owns_contents.len) local_owns_contents[source_local] = false;
+        },
+        .array, .raw_ptr, .string => {
+            if (source_local < local_owned_values.len) local_owned_values[source_local] = false;
+        },
+        else => switch (value_type.kind) {
+            .array, .raw_ptr, .string => {
+                if (source_local < local_owns_contents.len) local_owns_contents[source_local] = false;
+            },
+            else => {},
+        },
+    }
+}
+
+fn markConsumedCallArgs(
+    register_types: []const ir.ValueType,
+    register_owned_ptr: []bool,
+    register_owns_contents: []bool,
+    register_escaped: []bool,
+    register_local_ptr: []const ?usize,
+    local_types: []const ir.ValueType,
+    local_owns_contents: []bool,
+    local_owned_values: []bool,
+    args: []const u32,
+    param_types: []const ir.ValueType,
+    param_ownership: []const ir.OwnershipMode,
+) void {
+    _ = register_types;
+    const limit = @min(args.len, param_types.len);
+    for (args[0..limit], 0..) |arg, index| {
+        if (!ownershipConsumes(paramOwnershipAt(param_ownership, index))) continue;
+        clearTransferredValueOwnership(register_owned_ptr, register_owns_contents, register_escaped, register_local_ptr, local_types, local_owns_contents, local_owned_values, arg, param_types[index]);
+    }
+}
+
+const OwnershipReturnCacheState = enum {
+    in_progress,
+    no,
+    yes,
+};
+
 fn functionReturnOwnsAllocation(
     allocator: std.mem.Allocator,
     program: *const ir.Program,
     function_id: u32,
     depth: usize,
 ) !bool {
+    var cache = std.AutoHashMap(u32, OwnershipReturnCacheState).init(allocator);
+    defer cache.deinit();
+    return functionReturnOwnsAllocationInner(allocator, program, function_id, depth, &cache);
+}
+
+fn functionReturnOwnsAllocationInner(
+    allocator: std.mem.Allocator,
+    program: *const ir.Program,
+    function_id: u32,
+    depth: usize,
+    cache: *std.AutoHashMap(u32, OwnershipReturnCacheState),
+) !bool {
     if (depth > 64) return false;
+    if (cache.get(function_id)) |state| {
+        return switch (state) {
+            .yes => true,
+            .no => false,
+            .in_progress => false,
+        };
+    }
+
+    try cache.put(function_id, .in_progress);
     const function_decl = functionById(program.*, function_id) orelse return error.UnknownFunction;
-    if (function_decl.is_extern) return false;
+    if (function_decl.is_extern) {
+        try cache.put(function_id, .no);
+        return false;
+    }
 
     const owned = try allocator.alloc(bool, function_decl.register_count);
     defer allocator.free(owned);
     @memset(owned, false);
+    const local_owns_contents = try allocator.alloc(bool, function_decl.local_types.len);
+    defer allocator.free(local_owns_contents);
+    @memset(local_owns_contents, false);
+    const local_owned_values = try allocator.alloc(bool, function_decl.local_types.len);
+    defer allocator.free(local_owned_values);
+    @memset(local_owned_values, false);
+
+    for (function_decl.param_types, 0..) |param_type, index| {
+        if (!ownershipConsumes(paramOwnershipAt(function_decl.param_ownership, index))) continue;
+        markOwnedLocalForType(local_owns_contents, local_owned_values, index, param_type);
+    }
 
     var saw_value_return = false;
     for (function_decl.instructions) |instruction| {
         switch (instruction) {
             .alloc_struct => |value| owned[value.dst] = true,
             .alloc_array => |value| owned[value.dst] = true,
+            .store_local => |value| {
+                if (value.src >= owned.len or !owned[value.src]) continue;
+                if (value.local >= function_decl.local_types.len) continue;
+                switch (function_decl.local_types[value.local].kind) {
+                    .array, .raw_ptr, .string => {
+                        local_owned_values[value.local] = true;
+                        owned[value.src] = false;
+                    },
+                    else => {},
+                }
+            },
+            .load_local => |value| {
+                if (value.dst >= owned.len or value.local >= function_decl.local_types.len) continue;
+                switch (function_decl.local_types[value.local].kind) {
+                    .array, .raw_ptr, .string => owned[value.dst] = local_owned_values[value.local],
+                    else => {},
+                }
+            },
             .call => |value| if (value.dst) |dst| {
                 const callee_decl = functionById(program.*, value.callee) orelse return error.UnknownFunction;
-                owned[dst] = !callee_decl.is_extern and try functionReturnOwnsAllocation(allocator, program, value.callee, depth + 1);
+                owned[dst] = !callee_decl.is_extern and try functionReturnOwnsAllocationInner(allocator, program, value.callee, depth + 1, cache);
             },
             .call_virtual => |value| if (value.dst) |dst| {
                 const type_decl = findTypeDecl(program, value.static_type_name) orelse return error.UnknownType;
@@ -1275,17 +1455,21 @@ fn functionReturnOwnsAllocation(
                 }
                 const callee = resolved_callee orelse return error.UnknownFunction;
                 const callee_decl = functionById(program.*, callee) orelse return error.UnknownFunction;
-                owned[dst] = !callee_decl.is_extern and try functionReturnOwnsAllocation(allocator, program, callee, depth + 1);
+                owned[dst] = !callee_decl.is_extern and try functionReturnOwnsAllocationInner(allocator, program, callee, depth + 1, cache);
             },
             .ret => |value| {
                 const src = value.src orelse return false;
                 saw_value_return = true;
-                if (src >= owned.len or !owned[src]) return false;
+                if (src >= owned.len or !owned[src]) {
+                    try cache.put(function_id, .no);
+                    return false;
+                }
             },
             else => {},
         }
     }
 
+    try cache.put(function_id, if (saw_value_return) .yes else .no);
     return saw_value_return;
 }
 
