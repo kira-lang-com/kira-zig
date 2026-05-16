@@ -14,7 +14,7 @@ Internal layering map for repo changes.
 
 | Layer | Packages |
 | --- | --- |
-| 0 | `kira_core`, `kira_source`, `kira_diagnostics`, `kira_log`, `kira_runtime_abi` |
+| 0 | `kira_core`, `kira_source`, `kira_diagnostics`, `kira_log`, `kira_runtime_abi`, `kira_llvm_toolchain_layout` |
 | 1 | `kira_syntax_model`, `kira_lexer`, `kira_parser`, `kira_ksl_syntax_model`, `kira_ksl_parser` |
 | 2 | `kira_semantics_model`, `kira_shader_model`, `kira_ksl_semantics`, `kira_semantics` |
 | 3 | `kira_ir`, `kira_shader_ir`, `kira_hybrid_definition`, `kira_backend_api`, `kira_native_lib_definition` |
@@ -46,7 +46,7 @@ Internal layering map for repo changes.
 | Native-library manifests / FFI | `kira_manifest`, `kira_native_lib_definition`, `kira_build`, `kira_llvm_backend` |
 | Project discovery / package graph | `kira_project`, `kira_package_manager`, `kira_program_graph` |
 | CLI UX | `kira_cli` |
-| Install / fetch / build orchestration | `kira_build`, `kira_toolchain`, `build.zig` |
+| Install / fetch / build orchestration | `kira_build`, `kira_toolchain`, `kira_llvm_toolchain_layout`, `build.zig` |
 | Shader language pipeline | `kira_ksl_*`, `kira_shader_*`, `kira_glsl_backend` |
 
 ## Root export guidance

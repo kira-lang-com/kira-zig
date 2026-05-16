@@ -6,6 +6,7 @@ Layer 0:
 - `kira_diagnostics`
 - `kira_log`
 - `kira_runtime_abi`
+- `kira_llvm_toolchain_layout`
 
 Layer 1:
 - `kira_syntax_model`

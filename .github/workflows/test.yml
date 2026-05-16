@@ -1,0 +1,171 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep this matrix aligned with llvm-metadata.toml. Without an LLVM
+        # backend stub, unsupported hosts must not pretend to run native CI.
+        include:
+          - os: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - os: macos
+            arch: arm64
+            runner: macos-14
+          - os: windows
+            arch: x64
+            runner: windows-2022
+
+    steps:
+      - name: Check out Kira
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install native graphics headers (Linux)
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev
+
+      - name: Resolve LLVM CI metadata (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --ci-metadata --json > "$RUNNER_TEMP/llvm-fetch.json"
+          python - <<'PY' "$RUNNER_TEMP/llvm-fetch.json" "$GITHUB_ENV"
+          import json
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          env_path = pathlib.Path(sys.argv[2])
+          with env_path.open("a", encoding="utf-8") as fh:
+              for key in ("repository", "release_tag", "asset_name"):
+                  fh.write(f"{key.upper()}={metadata[key]}\n")
+              fh.write(f"KIRA_LLVM_HOME={metadata['install_dir']}\n")
+          PY
+
+      - name: Resolve LLVM CI metadata (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --ci-metadata --json | Out-File -FilePath "$env:RUNNER_TEMP\llvm-fetch.json" -Encoding utf8NoBOM
+          $metadata = Get-Content "$env:RUNNER_TEMP\llvm-fetch.json" | ConvertFrom-Json
+          "REPOSITORY=$($metadata.repository)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "RELEASE_TAG=$($metadata.release_tag)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "ASSET_NAME=$($metadata.asset_name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "KIRA_LLVM_HOME=$($metadata.install_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Download pinned LLVM archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/llvm-download"
+          gh release download "$RELEASE_TAG" \
+            --repo "$REPOSITORY" \
+            --pattern "$ASSET_NAME" \
+            --dir "$RUNNER_TEMP/llvm-download"
+          printf 'LLVM_ARCHIVE=%s\n' "$RUNNER_TEMP/llvm-download/$ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Download pinned LLVM archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\llvm-download" | Out-Null
+          gh release download "$env:RELEASE_TAG" `
+            --repo "$env:REPOSITORY" `
+            --pattern "$env:ASSET_NAME" `
+            --dir "$env:RUNNER_TEMP\llvm-download"
+          "LLVM_ARCHIVE=$env:RUNNER_TEMP\llvm-download\$env:ASSET_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Install pinned LLVM archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --archive "$LLVM_ARCHIVE"
+
+      - name: Install pinned LLVM archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          if (Test-Path $env:KIRA_LLVM_HOME) {
+            Remove-Item $env:KIRA_LLVM_HOME -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $env:KIRA_LLVM_HOME | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xf "$env:LLVM_ARCHIVE" -C "$env:KIRA_LLVM_HOME"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if (-not (Test-Path (Join-Path $env:KIRA_LLVM_HOME "bin\clang.exe"))) {
+            throw "Extracted LLVM archive is missing bin\clang.exe under $env:KIRA_LLVM_HOME"
+          }
+
+      - name: Clear Zig cache after LLVM install (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        run: |
+          rm -rf .zig-cache
+          if [ -n "${ZIG_LOCAL_CACHE_DIR:-}" ]; then
+            rm -rf "$ZIG_LOCAL_CACHE_DIR"
+            mkdir -p "$ZIG_LOCAL_CACHE_DIR"
+          fi
+          if [ -n "${ZIG_GLOBAL_CACHE_DIR:-}" ]; then
+            rm -rf "$ZIG_GLOBAL_CACHE_DIR"
+            mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+          fi
+
+      - name: Clear Zig cache after LLVM install (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          if (Test-Path .zig-cache) {
+            Remove-Item .zig-cache -Recurse -Force
+          }
+          if ($env:ZIG_LOCAL_CACHE_DIR -and (Test-Path $env:ZIG_LOCAL_CACHE_DIR)) {
+            Remove-Item $env:ZIG_LOCAL_CACHE_DIR -Recurse -Force
+          }
+          if ($env:ZIG_LOCAL_CACHE_DIR) {
+            New-Item -ItemType Directory -Force -Path $env:ZIG_LOCAL_CACHE_DIR | Out-Null
+          }
+          if ($env:ZIG_GLOBAL_CACHE_DIR -and (Test-Path $env:ZIG_GLOBAL_CACHE_DIR)) {
+            Remove-Item $env:ZIG_GLOBAL_CACHE_DIR -Recurse -Force
+          }
+          if ($env:ZIG_GLOBAL_CACHE_DIR) {
+            New-Item -ItemType Directory -Force -Path $env:ZIG_GLOBAL_CACHE_DIR | Out-Null
+          }
+
+      - name: Run test suite
+        run: |
+          zig build test

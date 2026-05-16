@@ -118,7 +118,7 @@ fn printUsage(writer: anytype) !void {
         \\  package pack [<project-dir|kira.toml|project.toml>]
         \\  package inspect <archive-path|project-dir>
         \\  new [--lib] <Name> <destination>
-        \\  fetch-llvm
+        \\  fetch-llvm [--ci-metadata --json | --archive <path>]
         \\  help
         \\  version
         \\  project layout: <root>/kira.toml or <root>/project.toml with entrypoint at <root>/app/main.kira
@@ -327,7 +327,8 @@ test "vm run launches bytecode produced by the build pipeline" {
         &stderr,
     );
 
-    const artifact_path = try std.fs.path.join(arena.allocator(), &.{ path, "generated", "DemoApp.run.kbc" });
+    const output_root = try support.outputRoot(arena.allocator(), path);
+    const artifact_path = try std.fs.path.join(arena.allocator(), &.{ output_root, "DemoApp.run.kbc" });
     var artifact = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, artifact_path, .{});
     artifact.close(std.Options.debug_io);
 

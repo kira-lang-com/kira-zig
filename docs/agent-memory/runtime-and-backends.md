@@ -29,7 +29,7 @@ Files:
 - `packages/kira_llvm_backend/src/backend_text_ir_calls.zig`
 - `packages/kira_llvm_backend/src/backend_utils.zig`
 - `packages/kira_llvm_backend/src/toolchain.zig`
-- `packages/kira_llvm_backend/src/toolchain_layout.zig`
+- `packages/kira_llvm_toolchain_layout/src/root.zig`
 - `packages/kira_llvm_backend/src/runtime_symbols.zig`
 
 Notes:

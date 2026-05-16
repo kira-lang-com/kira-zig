@@ -96,7 +96,17 @@ pub fn downloadAssetToFile(
     switch (response.status) {
         .ok => return,
         .not_found => return error.GitHubReleaseAssetNotFound,
-        else => return error.GitHubAssetDownloadFailed,
+        else => {
+            std.debug.print(
+                "GitHub asset download failed: status={d} ({s}) url={s}\n",
+                .{
+                    @intFromEnum(response.status),
+                    @tagName(response.status),
+                    download_url,
+                },
+            );
+            return error.GitHubAssetDownloadFailed;
+        },
     }
 }
 
@@ -130,7 +140,10 @@ fn fetchWriter(
     is_api_request: bool,
     writer: *std.Io.Writer,
 ) !struct { status: std.http.Status } {
-    var client: std.http.Client = .{ .allocator = allocator, .io = std.Options.debug_io };
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = std.Options.debug_io,
+    };
     defer client.deinit();
 
     const token = githubToken(allocator) catch null;
@@ -138,23 +151,37 @@ fn fetchWriter(
 
     var extra_headers = std.array_list.Managed(std.http.Header).init(allocator);
     defer extra_headers.deinit();
+
     try extra_headers.append(.{ .name = "User-Agent", .value = "kirac-fetch-llvm" });
+
     if (is_api_request) {
         try extra_headers.append(.{ .name = "Accept", .value = "application/vnd.github+json" });
         try extra_headers.append(.{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" });
+    } else {
+        try extra_headers.append(.{ .name = "Accept", .value = "application/octet-stream" });
     }
+
     var auth_header_value: ?[]const u8 = null;
     defer if (auth_header_value) |value| allocator.free(value);
-    if (token) |value| {
-        auth_header_value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{value});
-        try extra_headers.append(.{ .name = "Authorization", .value = auth_header_value.? });
+
+    if (is_api_request) {
+        if (token) |value| {
+            auth_header_value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{value});
+            try extra_headers.append(.{ .name = "Authorization", .value = auth_header_value.? });
+        }
     }
+
+    // GitHub release assets redirect to huge signed URLs.
+    // 512 bytes is too small and causes HttpRedirectLocationOversize.
+    var redirect_buffer: [64 * 1024]u8 = undefined;
 
     const result = try client.fetch(.{
         .location = .{ .url = url },
         .response_writer = writer,
         .extra_headers = extra_headers.items,
+        .redirect_buffer = &redirect_buffer,
     });
+
     return .{ .status = result.status };
 }
 

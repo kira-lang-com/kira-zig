@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("kira_llvm_build_options");
 const kira_toolchain = @import("kira_toolchain");
 const backend_utils = @import("backend_utils.zig");
-const toolchain_layout = @import("toolchain_layout.zig");
+const toolchain_layout = @import("kira_llvm_toolchain_layout");
 
 pub const InitSymbols = struct {
     target_info: [:0]const u8,
@@ -89,6 +89,25 @@ pub const Toolchain = struct {
         return self.clangPath(allocator);
     }
 
+    pub fn processEnvironMap(self: Toolchain, allocator: std.mem.Allocator) !std.process.Environ.Map {
+        var environ_map = try std.process.Environ.createMap(backend_utils.inheritedProcessEnviron(), allocator);
+        errdefer environ_map.deinit();
+        try self.applyRuntimeEnvironment(allocator, &environ_map);
+        return environ_map;
+    }
+
+    pub fn applyRuntimeEnvironment(self: Toolchain, allocator: std.mem.Allocator, environ_map: *std.process.Environ.Map) !void {
+        switch (builtin.os.tag) {
+            .linux => try prependEnvPathEntry(allocator, environ_map, "LD_LIBRARY_PATH", self.lib_dir, ":"),
+            .macos => try prependEnvPathEntry(allocator, environ_map, "DYLD_LIBRARY_PATH", self.lib_dir, ":"),
+            .windows => {
+                try prependEnvPathEntry(allocator, environ_map, "PATH", self.bin_dir, ";");
+                try prependEnvPathEntry(allocator, environ_map, "PATH", self.lib_dir, ";");
+            },
+            else => {},
+        }
+    }
+
     pub fn toolPath(self: Toolchain, allocator: std.mem.Allocator, tool_name: []const u8) ![]const u8 {
         const executable = try kira_toolchain.executableName(allocator, tool_name);
         defer allocator.free(executable);
@@ -152,7 +171,13 @@ fn resolveWithLlvmConfig(
         const bin_dir = runLlvmConfig(allocator, llvm_config, "--bindir") catch null;
         const lib_dir = runLlvmConfig(allocator, llvm_config, "--libdir") catch null;
         if (bin_dir != null and lib_dir != null) {
-            return .{ .bin_dir = bin_dir.?, .lib_dir = lib_dir.? };
+            errdefer allocator.free(bin_dir.?);
+            errdefer allocator.free(lib_dir.?);
+            if (directoryExists(bin_dir.?) and directoryExists(lib_dir.?)) {
+                return .{ .bin_dir = bin_dir.?, .lib_dir = lib_dir.? };
+            }
+            allocator.free(bin_dir.?);
+            allocator.free(lib_dir.?);
         }
     }
     return .{
@@ -191,7 +216,9 @@ fn libraryPath(allocator: std.mem.Allocator, bin_dir: []const u8, lib_dir: []con
         },
         .linux => [_]struct { dir: []const u8, name: []const u8 }{
             .{ .dir = lib_dir, .name = "libLLVM-C.so" },
+            .{ .dir = lib_dir, .name = "libLLVM.so" },
             .{ .dir = bin_dir, .name = "libLLVM-C.so" },
+            .{ .dir = bin_dir, .name = "libLLVM.so" },
         },
         .macos => [_]struct { dir: []const u8, name: []const u8 }{
             .{ .dir = lib_dir, .name = "libLLVM-C.dylib" },
@@ -220,6 +247,45 @@ fn fileExists(path: []const u8) bool {
     } else |_| {
         return false;
     }
+}
+
+fn directoryExists(path: []const u8) bool {
+    const dir = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{})
+    else
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{});
+    if (dir) |value| {
+        value.close(std.Options.debug_io);
+        return true;
+    } else |_| {
+        return false;
+    }
+}
+
+fn prependEnvPathEntry(
+    allocator: std.mem.Allocator,
+    environ_map: *std.process.Environ.Map,
+    key: []const u8,
+    entry: []const u8,
+    separator: []const u8,
+) !void {
+    const existing = environ_map.get(key);
+    if (existing) |value| {
+        if (containsPathEntry(value, entry, separator)) return;
+        const merged = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ entry, separator, value });
+        defer allocator.free(merged);
+        try environ_map.put(key, merged);
+        return;
+    }
+    try environ_map.put(key, entry);
+}
+
+fn containsPathEntry(list: []const u8, entry: []const u8, separator: []const u8) bool {
+    var it = std.mem.splitSequence(u8, list, separator);
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, part, entry)) return true;
+    }
+    return false;
 }
 
 fn initSymbols() InitSymbols {

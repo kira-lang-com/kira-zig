@@ -1,7 +1,7 @@
 const std = @import("std");
 const kira_toolchain = @import("packages/kira_toolchain/src/root.zig");
 const llvm_metadata = @import("packages/kira_build/src/llvm_metadata.zig");
-const toolchain_layout = @import("packages/kira_llvm_backend/src/toolchain_layout.zig");
+const toolchain_layout = @import("packages/kira_llvm_toolchain_layout/src/root.zig");
 const kirac_version = "0.1.0";
 const kira_primary_executable = "kirac";
 const kira_bootstrapper_name = "kira-bootstrapper";
@@ -38,13 +38,14 @@ const packages = [_]Package{
     .{ .name = "kira_vm_runtime", .path = "packages/kira_vm_runtime/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_bytecode" } },
     .{ .name = "kira_native_bridge", .path = "packages/kira_native_bridge/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_native_lib_definition" } },
     .{ .name = "kira_hybrid_runtime", .path = "packages/kira_hybrid_runtime/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_native_bridge", "kira_vm_runtime", "kira_bytecode" } },
-    .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi", "kira_toolchain" } },
+    .{ .name = "kira_llvm_toolchain_layout", .path = "packages/kira_llvm_toolchain_layout/src/root.zig", .imports = &.{} },
+    .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi", "kira_toolchain", "kira_llvm_toolchain_layout" } },
     .{ .name = "kira_manifest", .path = "packages/kira_manifest/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
     .{ .name = "kira_project", .path = "packages/kira_project/src/root.zig", .imports = &.{ "kira_core", "kira_manifest" } },
     .{ .name = "kira_package_manager", .path = "packages/kira_package_manager/src/root.zig", .imports = &.{ "kira_manifest", "kira_diagnostics", "kira_toolchain" } },
     .{ .name = "kira_program_graph", .path = "packages/kira_program_graph/src/root.zig", .imports = &.{ "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_package_manager" } },
     .{ .name = "kira_build_definition", .path = "packages/kira_build_definition/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },
-    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_package_manager", "kira_program_graph", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_runtime_abi", "kira_llvm_backend", "kira_toolchain", "kira_ksl_syntax_model", "kira_ksl_parser", "kira_ksl_semantics", "kira_shader_ir", "kira_shader_model", "kira_glsl_backend" } },
+    .{ .name = "kira_build", .path = "packages/kira_build/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_manifest", "kira_project", "kira_package_manager", "kira_program_graph", "kira_build_definition", "kira_backend_api", "kira_native_lib_definition", "kira_hybrid_definition", "kira_runtime_abi", "kira_llvm_backend", "kira_llvm_toolchain_layout", "kira_toolchain", "kira_ksl_syntax_model", "kira_ksl_parser", "kira_ksl_semantics", "kira_shader_ir", "kira_shader_model", "kira_glsl_backend" } },
     .{ .name = "kira_instruments", .path = "packages/kira_instruments/src/root.zig", .imports = &.{} },
     .{ .name = "kira_linter", .path = "packages/kira_linter/src/root.zig", .imports = &.{ "kira_core", "kira_diagnostics", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_doc", .path = "packages/kira_doc/src/root.zig", .imports = &.{ "kira_core", "kira_parser", "kira_semantics" } },
@@ -71,7 +72,6 @@ pub fn build(b: *std.Build) void {
     const llvm_version = metadata.llvm_version;
     const llvm_host_key = toolchain_layout.hostLlvmBundleKey(b.graph.host.result) orelse "unsupported-host";
     const llvm_probe = discoverLlvmHeaders(b.allocator, repo_root, llvm_version, llvm_host_key, b.graph.environ_map.get("KIRA_LLVM_HOME"));
-
     var modules: std.StringArrayHashMapUnmanaged(*std.Build.Module) = .empty;
     defer modules.deinit(b.allocator);
 
@@ -89,7 +89,6 @@ pub fn build(b: *std.Build) void {
     }
 
     const llvm_options = b.addOptions();
-    llvm_options.addOption(bool, "llvm_available", llvm_probe != null);
     llvm_options.addOption([]const u8, "repo_root", repo_root);
     llvm_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     llvm_options.addOption([]const u8, "llvm_version", llvm_version);
@@ -181,14 +180,16 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
     });
-    fetch_llvm_module.addImport("kira_llvm_backend", modules.get("kira_llvm_backend").?);
+    fetch_llvm_module.addImport("kira_llvm_toolchain_layout", modules.get("kira_llvm_toolchain_layout").?);
     fetch_llvm_module.addImport("kira_toolchain", modules.get("kira_toolchain").?);
+    fetch_llvm_module.link_libc = true;
     const fetch_llvm_tool = b.addExecutable(.{
         .name = "fetch-llvm",
         .root_module = fetch_llvm_module,
     });
     fetch_llvm_tool.root_module.addOptions("fetch_llvm_build_options", fetch_llvm_options);
     const fetch_llvm_run = b.addRunArtifact(fetch_llvm_tool);
+    if (b.args) |args| fetch_llvm_run.addArgs(args);
     const fetch_llvm_step = b.step("fetch-llvm", "Download and install the pinned LLVM toolchain");
     fetch_llvm_step.dependOn(&fetch_llvm_run.step);
 
@@ -235,6 +236,7 @@ pub fn build(b: *std.Build) void {
     corpus_module.addImport("kira_diagnostics", modules.get("kira_diagnostics").?);
     corpus_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
     corpus_module.addImport("kira_vm_runtime", modules.get("kira_vm_runtime").?);
+    corpus_module.link_libc = true;
 
     const hybrid_runner_module = b.createModule(.{
         .root_source_file = b.path("tests/hybrid_runner.zig"),
@@ -242,6 +244,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     hybrid_runner_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
+    hybrid_runner_module.addImport("kira_runtime_abi", modules.get("kira_runtime_abi").?);
+    hybrid_runner_module.link_libc = true;
 
     const corpus_runner = b.addExecutable(.{
         .name = "kira-corpus-tests",

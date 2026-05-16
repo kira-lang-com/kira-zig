@@ -568,7 +568,7 @@ pub fn backendDiagnostic(allocator: std.mem.Allocator, source_path: []const u8, 
                 .{ source_path, source_path },
             ),
         },
-        error.LlvmBackendUnavailable => .{
+        error.LlvmToolchainUnavailable => .{
             .severity = .@"error",
             .code = "KBUILD002",
             .title = "LLVM backend is unavailable",

@@ -36,6 +36,15 @@ pub fn homeDir(allocator: std.mem.Allocator) ![]u8 {
         return home;
     } else |_| {}
 
+    if (builtin.link_libc and builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+        if (std.c.getpwuid(std.c.getuid())) |entry| {
+            if (entry.dir) |dir| {
+                const value = std.mem.span(dir);
+                if (value.len != 0) return allocator.dupe(u8, value);
+            }
+        }
+    }
+
     return error.HomeDirectoryUnavailable;
 }
 
@@ -243,14 +252,22 @@ test "writes and parses current toolchain toml" {
 }
 
 test "builds managed toolchain layout" {
+    const llvm_version = try pinnedLlvmVersionForTests(std.testing.allocator);
+    defer std.testing.allocator.free(llvm_version);
+
+    const maybe_home = homeDir(std.testing.allocator) catch |err| {
+        try std.testing.expectEqual(error.HomeDirectoryUnavailable, err);
+        try std.testing.expectError(error.HomeDirectoryUnavailable, managedToolchainRoot(std.testing.allocator, .dev, "0.1.0"));
+        try std.testing.expectError(error.HomeDirectoryUnavailable, managedLlvmHome(std.testing.allocator, llvm_version, "x86_64-linux-gnu"));
+        return;
+    };
+    defer std.testing.allocator.free(maybe_home);
+
     const root = try managedToolchainRoot(std.testing.allocator, .dev, "0.1.0");
     defer std.testing.allocator.free(root);
     const expected_root_suffix = try std.fs.path.join(std.testing.allocator, &.{ ".kira", "toolchains", "dev", "0.1.0" });
     defer std.testing.allocator.free(expected_root_suffix);
     try std.testing.expect(std.mem.endsWith(u8, root, expected_root_suffix));
-
-    const llvm_version = try pinnedLlvmVersionForTests(std.testing.allocator);
-    defer std.testing.allocator.free(llvm_version);
 
     const llvm_home = try managedLlvmHome(std.testing.allocator, llvm_version, "x86_64-linux-gnu");
     defer std.testing.allocator.free(llvm_home);

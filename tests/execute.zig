@@ -3,6 +3,7 @@ const std = @import("std");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const diagnostics = @import("kira_diagnostics");
+const hybrid_runtime = @import("kira_hybrid_runtime");
 const vm_runtime = @import("kira_vm_runtime");
 const compare = @import("compare.zig");
 const discovery = @import("discovery.zig");
@@ -354,8 +355,14 @@ fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: 
         .cwd = .{ .path = run_cwd },
     });
     defer allocator.free(child.stderr);
-    try expectExitedZero(child.term);
-    try compare.expectEmptyText(allocator, child.stderr);
+    expectExitedZero(child.term) catch |err| {
+        printChildFailure("llvm", child);
+        return err;
+    };
+    compare.expectEmptyText(allocator, child.stderr) catch |err| {
+        printChildFailure("llvm", child);
+        return err;
+    };
     return .{
         .result = .pass,
         .stdout = child.stdout,
@@ -402,8 +409,22 @@ fn runHybridPhase(
         .cwd = .{ .path = run_cwd },
     });
     defer allocator.free(child.stderr);
-    try expectExitedZero(child.term);
-    try compare.expectEmptyText(allocator, child.stderr);
+    expectExitedZero(child.term) catch |err| {
+        printChildFailure("hybrid", child);
+        printHybridManifest(allocator, manifest_path);
+        runHybridTraceRetry(allocator, runner_path, manifest_path, run_cwd) catch |trace_err| {
+            std.debug.print("hybrid trace retry failed before launch: {s}\n", .{@errorName(trace_err)});
+        };
+        return err;
+    };
+    compare.expectEmptyText(allocator, child.stderr) catch |err| {
+        printChildFailure("hybrid", child);
+        printHybridManifest(allocator, manifest_path);
+        runHybridTraceRetry(allocator, runner_path, manifest_path, run_cwd) catch |trace_err| {
+            std.debug.print("hybrid trace retry failed before launch: {s}\n", .{@errorName(trace_err)});
+        };
+        return err;
+    };
     return .{
         .result = .pass,
         .stdout = child.stdout,
@@ -529,6 +550,68 @@ fn expectExitedZero(term: std.process.Child.Term) !void {
         .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
         else => return error.CommandFailed,
     }
+}
+
+fn printChildFailure(backend: []const u8, child: anytype) void {
+    std.debug.print("{s} child failed with term={any}\n", .{ backend, child.term });
+    if (child.stdout.len != 0) std.debug.print("{s} child stdout:\n{s}\n", .{ backend, child.stdout });
+    if (child.stderr.len != 0) std.debug.print("{s} child stderr:\n{s}\n", .{ backend, child.stderr });
+}
+
+fn printHybridManifest(allocator: std.mem.Allocator, manifest_path: []const u8) void {
+    const manifest = hybrid_runtime.loadHybridModule(allocator, manifest_path) catch |err| {
+        std.debug.print("hybrid manifest unavailable: {s}\n", .{@errorName(err)});
+        return;
+    };
+    std.debug.print(
+        "hybrid manifest: entry={d} entry_exec={s} bytecode={s} native_library={s} functions={d}\n",
+        .{
+            manifest.entry_function_id,
+            @tagName(manifest.entry_execution),
+            manifest.bytecode_path,
+            manifest.native_library_path,
+            manifest.functions.len,
+        },
+    );
+    for (manifest.functions) |function_decl| {
+        std.debug.print(
+            "hybrid manifest fn: id={d} exec={s} name={s} params={d} exported={s}\n",
+            .{
+                function_decl.id,
+                @tagName(function_decl.execution),
+                function_decl.name,
+                function_decl.param_types.len,
+                function_decl.exported_name orelse "<none>",
+            },
+        );
+    }
+}
+
+fn runHybridTraceRetry(
+    allocator: std.mem.Allocator,
+    runner_path: []const u8,
+    manifest_path: []const u8,
+    run_cwd: []const u8,
+) !void {
+    const process_environ = inheritedProcessEnviron();
+    var environ_map = try std.process.Environ.createMap(process_environ, allocator);
+    defer environ_map.deinit();
+    try environ_map.put("KIRA_TRACE_EXECUTION", "1");
+
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const child = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{ runner_path, manifest_path },
+        .cwd = .{ .path = run_cwd },
+        .environ_map = &environ_map,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(256 * 1024),
+    });
+    defer allocator.free(child.stdout);
+    defer allocator.free(child.stderr);
+
+    std.debug.print("hybrid trace retry follows\n", .{});
+    printChildFailure("hybrid trace", child);
 }
 
 fn matrixLabel(

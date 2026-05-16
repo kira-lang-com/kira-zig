@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  VERSION: "0.1.0"
+  BINARY_NAME: "kira"
+  PRIMARY_EXECUTABLE: "kirac"
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x64
+            runner: ubuntu-24.04
+            artifact_suffix: linux-x64
+            archive_ext: tar.gz
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact_suffix: linux-arm64
+            archive_ext: tar.gz
+          - os: macos
+            arch: x64
+            runner: macos-13
+            artifact_suffix: macos-x64
+            archive_ext: tar.gz
+          - os: macos
+            arch: arm64
+            runner: macos-14
+            artifact_suffix: macos-arm64
+            archive_ext: tar.gz
+          - os: windows
+            arch: x64
+            runner: windows-2022
+            artifact_suffix: windows-x64
+            archive_ext: zip
+          - os: windows
+            arch: arm64
+            runner: windows-2022-arm
+            artifact_suffix: windows-arm64
+            archive_ext: zip
+
+    steps:
+      - name: Check out Kira
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build Kira (Unix)
+        if: matrix.os != 'windows'
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Build Kira (Windows)
+        if: matrix.os == 'windows'
+        run: zig build -Doptimize=ReleaseSafe
+        shell: pwsh
+
+      - name: Locate built artifacts
+        id: locate
+        shell: bash
+        run: |
+          cd zig-out/bin
+
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            echo "kirac_path=$(ls -1 kirac.exe)" >> "$GITHUB_OUTPUT"
+            echo "bootstrapper_path=$(ls -1 kira-bootstrapper.exe)" >> "$GITHUB_OUTPUT"
+          else
+            echo "kirac_path=$(ls -1 kirac)" >> "$GITHUB_OUTPUT"
+            echo "bootstrapper_path=$(ls -1 kira-bootstrapper)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package release (Unix)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          mkdir -p "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+          cd "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+
+          cp "${{ steps.locate.outputs.kirac_path }}" "./${{ env.PRIMARY_EXECUTABLE }}"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            cp "${{ steps.locate.outputs.bootstrapper_path }}" "./${{ env.BINARY_NAME }}.exe"
+          else
+            cp "${{ steps.locate.outputs.bootstrapper_path }}" "./${{ env.BINARY_NAME }}"
+            chmod +x "./${{ env.BINARY_NAME }}"
+          fi
+          chmod +x "./${{ env.PRIMARY_EXECUTABLE }}"
+
+          cp "$GITHUB_WORKSPACE/README.md" .
+          cp "$GITHUB_WORKSPACE/LICENSE" .
+
+          mkdir -p templates
+          cp -r "$GITHUB_WORKSPACE/templates/"* ./templates/
+          mkdir -p foundation
+          cp -r "$GITHUB_WORKSPACE/foundation/"* ./foundation/
+          cp "$GITHUB_WORKSPACE/llvm-metadata.toml" .
+
+          cd ..
+          tar -czf "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}.${{ matrix.archive_ext }}" "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+          echo "artifact_path=${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}.${{ matrix.archive_ext }}" >> "$GITHUB_OUTPUT"
+
+      - name: Package release (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}" | Out-Null
+          Set-Location "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+
+          Copy-Item "${{ steps.locate.outputs.kirac_path }}" -Destination "./${{ env.PRIMARY_EXECUTABLE }}.exe"
+          Copy-Item "${{ steps.locate.outputs.bootstrapper_path }}" -Destination "./${{ env.BINARY_NAME }}.exe"
+
+          Copy-Item "$env:GITHUB_WORKSPACE\README.md" .
+          Copy-Item "$env:GITHUB_WORKSPACE\LICENSE" .
+
+          New-Item -ItemType Directory -Force -Path "templates" | Out-Null
+          Copy-Item "$env:GITHUB_WORKSPACE\templates\*" -Destination "./templates/" -Recurse
+          New-Item -ItemType Directory -Force -Path "foundation" | Out-Null
+          Copy-Item "$env:GITHUB_WORKSPACE\foundation\*" -Destination "./foundation/" -Recurse
+          Copy-Item "$env:GITHUB_WORKSPACE\llvm-metadata.toml" .
+
+          Set-Location ..
+          Compress-Archive -Path "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}" -DestinationPath "${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}.${{ matrix.archive_ext }}"
+          Write-Host "artifact_path=${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}.${{ matrix.archive_ext }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8NoBOM -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}
+          path: ${{ steps.locate.outputs.artifact_path }}
+          if-no-files-found: error
+
+  checksum:
+    name: Generate checksums
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: kira-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum -b * > SHA256SUMS.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [build, checksum]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: kira-*
+          merge-multiple: true
+
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists"
+            exit 1
+          fi
+
+          cat > /tmp/notes.md << 'RELEASE_NOTES'
+          Kira v0.1.0 release
+
+          ## Installation
+          Extract the archive for your platform and add the bin directory to your PATH.
+
+          ## What's Included
+          - `kirac` - Kira compiler CLI
+          - `kira` - Bootstrapper launcher
+          - templates/ - Project templates
+          - foundation/ - Foundation library
+          - llvm-metadata.toml - LLVM toolchain version
+
+          ## Verification
+          Verify the checksums using `sha256sum -c SHA256SUMS.txt`
+          RELEASE_NOTES
+
+          gh release create "$TAG_NAME" \
+            --title "$TAG_NAME" \
+            --notes-file /tmp/notes.md \
+            artifacts/kira-* \
+            artifacts/SHA256SUMS.txt
+
+      - name: Verify release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          expected=(kira-linux-x64.tar.gz kira-linux-arm64.tar.gz kira-macos-x64.tar.gz kira-macos-arm64.tar.gz kira-windows-x64.zip kira-windows-arm64.zip SHA256SUMS.txt)
+          for asset in "${expected[@]}"; do
+            if ! gh release view "$TAG_NAME" --json assets --jq '.assets[].name' | grep -qx "$asset"; then
+              echo "Missing expected asset: $asset"
+              exit 1
+            fi
+          done
+          echo "All expected assets present"

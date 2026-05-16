@@ -7,6 +7,8 @@ Standalone CLI:
 - `kira --help`
 - `kira --version`
 - `kira fetch-llvm`
+- `kira fetch-llvm --ci-metadata --json`
+- `kira fetch-llvm --archive /path/to/llvm.tar.xz`
 - `kira run examples/hello`
 - `kira run --backend llvm examples/hello`
 - `kira run --backend hybrid examples/hybrid_roundtrip`
@@ -64,6 +66,8 @@ Install notes:
 CLI behavior:
 
 - `fetch-llvm` reads `llvm-metadata.toml`, resolves the current host bundle, downloads the matching GitHub release asset, installs it into `~/.kira/toolchains/llvm/<llvm-version>/<target>/`, and skips when the install marker already matches
+- `fetch-llvm --ci-metadata --json` prints Kira-owned machine-readable metadata for CI without downloading or extracting anything
+- `fetch-llvm --archive <path>` installs a previously downloaded archive into the managed LLVM location using the same validation, extraction, marker, and layout rules as the normal fetch flow
 - `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `kira.toml` first, then legacy `project.toml`
 - `run` defaults to the VM backend; `run --backend llvm` builds and runs a native executable
 - `run --backend hybrid` builds a hybrid manifest, bytecode sidecar, and native shared library, then runs the mixed program in the hybrid host

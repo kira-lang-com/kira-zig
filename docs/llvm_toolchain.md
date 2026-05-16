@@ -10,6 +10,13 @@ kira fetch-llvm
 
 `zig build fetch-llvm` remains available when you want the old build-step workflow.
 
+CI can split transport from installation while still keeping Kira in charge of the metadata and install tree:
+
+```bash
+kira fetch-llvm --ci-metadata --json
+kira fetch-llvm --archive /path/to/downloaded/archive.tar.xz
+```
+
 That command:
 
 - reads `llvm-metadata.toml`
@@ -20,6 +27,8 @@ That command:
 - writes an install marker so later runs can skip a matching install
 
 This flow intentionally does not use checksum verification.
+
+The CI metadata mode does not download or extract the archive. It only reports the pinned LLVM version, release tag, repository slug, asset name, host key, and managed install directory that Kira expects for the current host. The archive install mode performs the normal extraction, validation, marker writing, and final managed install activation after an external downloader has already produced the archive file.
 
 ## Why Kira ships LLVM bundles
 
@@ -62,7 +71,7 @@ Each release asset is produced from an LLVM install tree, not from the raw build
 - `bin/llvm-config` or `bin/llvm-config.exe` when LLVM installs it on that host
 - any supporting files installed alongside those directories by LLVM's normal install step
 
-On macOS, the shared runtime may appear as `libLLVM.dylib` rather than `libLLVM-C.dylib`; Kira accepts either layout.
+On Unix-like platforms, the shared runtime may appear as the unified LLVM shared library rather than the narrower C API library. Kira accepts either layout, including `libLLVM.so` on Linux and `libLLVM.dylib` on macOS.
 
 The workflow intentionally avoids building LLVM examples, tests, benchmarks, docs, bindings, and optional compression or XML dependencies. It does include `clang`, because Kira uses the compiler driver from the managed toolchain for native compilation steps. The goal is a focused LLVM-plus-clang integration bundle for Kira rather than a full general-purpose LLVM workstation image.
 
@@ -114,7 +123,7 @@ The LLVM backend uses an explicit discovery order instead of silently falling ba
 2. active managed install at `~/.kira/toolchains/llvm/<llvm-version>/<host-key>`
 3. older repo-managed fallback paths under `.kira/llvm/` if they already exist locally
 
-When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout. On macOS, it accepts either the C API dylib or the unified `libLLVM.dylib` produced by the install tree.
+When `llvm-config` exists inside the selected toolchain, Kira uses it to refine the bin/lib directories. Otherwise Kira falls back to the normal install tree layout. On Unix-like hosts, it accepts either the dedicated LLVM C API shared library or the unified LLVM shared library produced by the install tree.
 
 If discovery fails, the LLVM backend reports the paths it checked and tells the caller to set `KIRA_LLVM_HOME` or run `kira fetch-llvm`. The backend does not silently bind to an arbitrary machine-local LLVM install.
 
