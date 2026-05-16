@@ -157,7 +157,7 @@ pub fn writeCallInstruction(
                 try writer.writeByte(' ');
                 if (callee_decl.is_extern) {
                     switch (param_type.kind) {
-                    .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
+                        .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
                             try writer.writeAll("%call.arg.");
                             try writer.print("{d}.{d}", .{ callee_id, index });
                         },
@@ -524,7 +524,7 @@ pub fn buildCallValueDispatcher(
                     try writer.writeByte(' ');
                     if (function_decl.is_extern) {
                         switch (param_type.kind) {
-                    .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
+                            .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => {
                                 try writer.writeAll("%dispatch.arg.");
                                 try writer.print("{d}.{d}", .{ case_index, index });
                             },
@@ -725,7 +725,8 @@ pub fn buildCallValueDispatcher(
     }
 
     try writer.writeAll("dispatch.closure:\n");
-    try writer.writeAll("  %closure.ptr = inttoptr i64 %function_id to ptr\n");
+    try writer.writeAll("  %closure.raw = and i64 %function_id, 9223372036854775807\n");
+    try writer.writeAll("  %closure.ptr = inttoptr i64 %closure.raw to ptr\n");
     try writer.writeAll("  %closure.id = load i64, ptr %closure.ptr\n");
     try writer.writeAll("  %closure.slots = getelementptr inbounds i8, ptr %closure.ptr, i64 16\n");
     try writer.writeAll("  switch i64 %closure.id, label %dispatch.default [\n");

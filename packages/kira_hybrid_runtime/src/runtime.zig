@@ -93,7 +93,8 @@ pub const HybridRuntime = struct {
                     // Already a managed runtime closure pointer; do not reinterpret native memory.
                     continue;
                 }
-                const native_function_id: i64 = (@as(*const i64, @ptrFromInt(runtime_args[index].raw_ptr))).*;
+                const native_closure_ptr = runtime_abi.untagNativeClosurePointer(runtime_args[index].raw_ptr);
+                const native_function_id: i64 = (@as(*const i64, @ptrFromInt(native_closure_ptr))).*;
                 const runtime_present = if (native_function_id >= 0 and native_function_id <= std.math.maxInt(u32)) self.module.findFunctionById(@intCast(native_function_id)) != null else false;
                 const manifest_function = if (native_function_id >= 0 and native_function_id <= std.math.maxInt(u32)) findFunction(self.manifest.functions, @intCast(native_function_id)) else null;
                 runtime_abi.emitExecutionTrace("CALLBACK", "CLOSURE_ARG", "fn={d} arg={d} closure_fn={d} runtime_present={d} manifest_exec={s}", .{
@@ -104,11 +105,11 @@ pub const HybridRuntime = struct {
                     if (manifest_function) |item| @tagName(item.execution) else "<missing>",
                 });
                 const capture_types = if (manifest_function) |item|
-                    try nativeClosureCaptureTypes(self.allocator, runtime_args[index].raw_ptr, item)
+                    try nativeClosureCaptureTypes(self.allocator, native_closure_ptr, item)
                 else
                     null;
                 defer if (capture_types) |items| self.allocator.free(items);
-                runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeClosure(&self.module, runtime_args[index].raw_ptr, capture_types) };
+                runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeClosure(&self.module, native_closure_ptr, capture_types) };
                 materialized_args[index] = true;
                 continue;
             }
@@ -270,7 +271,8 @@ fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?h
 }
 
 fn nativeClosureCaptureTypes(allocator: std.mem.Allocator, native_ptr: usize, function_decl: hybrid.FunctionManifest) ![]bytecode.TypeRef {
-    const capture_count_ptr: *const i64 = @ptrFromInt(native_ptr + 8);
+    const raw_native_ptr = runtime_abi.untagNativeClosurePointer(native_ptr);
+    const capture_count_ptr: *const i64 = @ptrFromInt(raw_native_ptr + 8);
     const capture_count_i64 = capture_count_ptr.*;
     if (capture_count_i64 < 0) return error.RuntimeFailure;
     const capture_count: usize = @intCast(capture_count_i64);

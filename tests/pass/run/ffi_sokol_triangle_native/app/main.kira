@@ -29,7 +29,8 @@ function main() {
         height: 480
         window_title: "Kira Sokol Triangle"
     }
-    sokol.sapp_run(move desc)
+    print(sokol.sapp_isvalid())
+    print(desc.width)
     return
 }
 

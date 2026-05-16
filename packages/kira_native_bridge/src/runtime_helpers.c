@@ -7,6 +7,8 @@
 
 #if defined(_WIN32)
 #define KIRA_BRIDGE_EXPORT __declspec(dllexport)
+#include <fcntl.h>
+#include <io.h>
 #else
 #define KIRA_BRIDGE_EXPORT
 #endif
@@ -55,6 +57,18 @@ static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32
 static void *(*kira_array_alloc_fn)(size_t) = NULL;
 static void (*kira_array_free_fn)(void *, size_t) = NULL;
 static int kira_trace_execution_enabled = -1;
+#if defined(_WIN32)
+static int kira_stdout_binary_configured = 0;
+#endif
+
+static void kira_prepare_stdout(void) {
+#if defined(_WIN32)
+    if (!kira_stdout_binary_configured) {
+        _setmode(_fileno(stdout), _O_BINARY);
+        kira_stdout_binary_configured = 1;
+    }
+#endif
+}
 
 static int kira_trace_enabled(void) {
     if (kira_trace_execution_enabled >= 0) return kira_trace_execution_enabled;
@@ -114,30 +128,35 @@ static void kira_bridge_free(void *ptr, size_t size) {
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_write_i64(int64_t value) {
+    kira_prepare_stdout();
     kira_trace_log("NATIVE", "PRINT", "i64");
     printf("%lld", (long long)value);
     fflush(stdout);
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_write_f64(double value) {
+    kira_prepare_stdout();
     kira_trace_log("NATIVE", "PRINT", "f64");
     printf("%g", value);
     fflush(stdout);
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_write_string(const unsigned char *ptr, size_t len) {
+    kira_prepare_stdout();
     kira_trace_log("NATIVE", "PRINT", "string len=%llu", (unsigned long long)len);
     fwrite(ptr, 1, len, stdout);
     fflush(stdout);
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_write_ptr(uintptr_t value) {
+    kira_prepare_stdout();
     kira_trace_log("NATIVE", "PRINT", "ptr");
     printf("0x%llx", (unsigned long long)value);
     fflush(stdout);
 }
 
 KIRA_BRIDGE_EXPORT void kira_native_write_newline(void) {
+    kira_prepare_stdout();
     fputc('\n', stdout);
     fflush(stdout);
 }

@@ -157,8 +157,9 @@ pub const Vm = struct {
     pub fn materializeNativeClosure(self: *Vm, module: *const bytecode.Module, native_ptr: usize, external_capture_types: ?[]const bytecode.TypeRef) !usize {
         if (native_ptr == 0) return 0;
         if (self.heap.getClosure(native_ptr) != null) return native_ptr;
-        const function_id_ptr: *const i64 = @ptrFromInt(native_ptr);
-        const capture_count_ptr: *const i64 = @ptrFromInt(native_ptr + 8);
+        const raw_native_ptr = runtime_abi.untagNativeClosurePointer(native_ptr);
+        const function_id_ptr: *const i64 = @ptrFromInt(raw_native_ptr);
+        const capture_count_ptr: *const i64 = @ptrFromInt(raw_native_ptr + 8);
         const function_id_i64 = function_id_ptr.*;
         const capture_count_i64 = capture_count_ptr.*;
         if (function_id_i64 < 0 or function_id_i64 > std.math.maxInt(u32)) {
@@ -172,7 +173,7 @@ pub const Vm = struct {
         const capture_count: usize = @intCast(capture_count_i64);
         const function_id: u32 = @intCast(function_id_i64);
         const function_decl = module.findFunctionById(function_id);
-        const native_slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_ptr + 16);
+        const native_slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(raw_native_ptr + 16);
         const closure = try self.allocator.create(ClosureObject);
         errdefer self.allocator.destroy(closure);
         const captures = try self.allocator.alloc(runtime_abi.Value, capture_count);
@@ -221,7 +222,7 @@ pub const Vm = struct {
             .is_native = function_decl == null,
             .captures = captures,
         };
-        runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime closure fn={d} captures={d} ptr=0x{x}", .{ closure.function_id, capture_count, native_ptr });
+        runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime closure fn={d} captures={d} ptr=0x{x}", .{ closure.function_id, capture_count, raw_native_ptr });
         return self.heap.registerClosure(closure);
     }
 

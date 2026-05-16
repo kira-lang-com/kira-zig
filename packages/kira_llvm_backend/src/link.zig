@@ -6,7 +6,7 @@ const backend_utils = @import("backend_utils.zig");
 const clang_driver = @import("clang_driver.zig");
 const toolchain = @import("toolchain.zig");
 
-pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {
+pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []const u8, pic: bool) ![]const u8 {
     const helper_object = try helperObjectPath(allocator, object_path);
     const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
@@ -15,6 +15,7 @@ pub fn buildRuntimeHelpersObject(allocator: std.mem.Allocator, object_path: []co
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
     try clang_driver.appendHostClangDriverArgs(allocator, &argv);
+    if (pic and builtin.os.tag != .windows) try argv.append("-fPIC");
     try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
     try runCommand(allocator, argv.items);
     return helper_object;
@@ -47,6 +48,7 @@ pub fn linkExecutable(
             try argv.appendSlice(&.{ "-framework", framework });
         }
     }
+    try appendHostDefaultSystemLibraries(&argv);
 
     try runCommand(allocator, argv.items);
 }
@@ -75,8 +77,13 @@ pub fn linkSharedLibrary(
             try argv.appendSlice(&.{ "-framework", framework });
         }
     }
+    try appendHostDefaultSystemLibraries(&argv);
 
     try runCommand(allocator, argv.items);
+}
+
+fn appendHostDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8)) !void {
+    if (builtin.os.tag == .linux) try argv.append("-lm");
 }
 
 fn helperObjectPath(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {
@@ -87,12 +94,16 @@ fn helperObjectPath(allocator: std.mem.Allocator, object_path: []const u8) ![]co
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
     const process_environ = backend_utils.inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = argv,
         .expand_arg0 = .expand,
+        .environ_map = &environ_map,
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     });

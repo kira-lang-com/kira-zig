@@ -383,12 +383,16 @@ fn publishStagedArtifact(staged_path: []const u8, artifact_path: []const u8) !vo
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    const llvm_toolchain = try llvm_backend.LlvmToolchain.discover(allocator);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = argv,
         .expand_arg0 = .expand,
+        .environ_map = &environ_map,
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
     });

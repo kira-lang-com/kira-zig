@@ -285,7 +285,7 @@ pub fn buildTextFunctionBody(
             },
             .alloc_struct => |value| {
                 const struct_type_name = typeRefName(value.type_name);
-                try writer.print("  %alloc.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{ value.dst, struct_type_name });
+                try writer.print("  %alloc.size.ptr.{d} = getelementptr {s}, ptr null, i32 1\n", .{ value.dst, struct_type_name });
                 try writer.print("  %alloc.size.{d} = ptrtoint ptr %alloc.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
                 try writer.print("  %alloc.empty.{d} = icmp eq i64 %alloc.size.{d}, 0\n", .{ value.dst, value.dst });
                 try writer.print("  %alloc.bytes.{d} = select i1 %alloc.empty.{d}, i64 1, i64 %alloc.size.{d}\n", .{ value.dst, value.dst, value.dst });
@@ -305,7 +305,7 @@ pub fn buildTextFunctionBody(
             .alloc_native_state => |value| {
                 const type_decl = findTypeDecl(request.program, value.type_name) orelse return error.UnsupportedExecutableFeature;
                 const struct_type_name = typeRefName(value.type_name);
-                try writer.print("  %native.state.size.ptr.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr null, i32 1\n", .{
+                try writer.print("  %native.state.size.ptr.{d} = getelementptr [{d} x %kira.bridge.value], ptr null, i32 1\n", .{
                     value.dst,
                     type_decl.fields.len,
                 });
@@ -413,7 +413,7 @@ pub fn buildTextFunctionBody(
                             try writer.print("  %native.state.load.struct.{d}.{d} = load {s}, ptr %native.state.src.field.ptr.{d}.{d}\n", .{
                                 value.dst, index, field_struct_name, value.dst, index,
                             });
-                            try writer.print("  %native.state.load.struct.size.ptr.{d}.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{
+                            try writer.print("  %native.state.load.struct.size.ptr.{d}.{d} = getelementptr {s}, ptr null, i32 1\n", .{
                                 value.dst, index, field_struct_name,
                             });
                             try writer.print("  %native.state.load.struct.size.{d}.{d} = ptrtoint ptr %native.state.load.struct.size.ptr.{d}.{d} to i64\n", .{
@@ -468,7 +468,7 @@ pub fn buildTextFunctionBody(
                 }
             },
             .const_closure => |value| {
-                try writer.print("  %closure.size.ptr.{d} = getelementptr inbounds [{d} x %kira.bridge.value], ptr null, i32 1\n", .{ value.dst, value.captures.len });
+                try writer.print("  %closure.size.ptr.{d} = getelementptr [{d} x %kira.bridge.value], ptr null, i32 1\n", .{ value.dst, value.captures.len });
                 try writer.print("  %closure.captures.size.{d} = ptrtoint ptr %closure.size.ptr.{d} to i64\n", .{ value.dst, value.dst });
                 try writer.print("  %closure.size.{d} = add i64 16, %closure.captures.size.{d}\n", .{ value.dst, value.dst });
                 try writer.print("  %closure.ptr.{d} = call ptr @malloc(i64 %closure.size.{d})\n", .{ value.dst, value.dst });
@@ -508,7 +508,8 @@ pub fn buildTextFunctionBody(
                     }
                     try writer.print("  store %kira.bridge.value %closure.pack.{d}.{d}, ptr %closure.slot.{d}.{d}\n", .{ value.dst, index, value.dst, index });
                 }
-                try writer.print("  %r{d} = ptrtoint ptr %closure.ptr.{d} to i64\n", .{ value.dst, value.dst });
+                try writer.print("  %closure.raw.{d} = ptrtoint ptr %closure.ptr.{d} to i64\n", .{ value.dst, value.dst });
+                try writer.print("  %r{d} = or i64 %closure.raw.{d}, -9223372036854775808\n", .{ value.dst, value.dst });
                 try owned_values.append(.{ .reg = value.dst, .ty = register_types[value.dst], .kind = .raw_heap });
                 register_owned_ptr[value.dst] = true;
             },
@@ -764,7 +765,7 @@ pub fn buildTextFunctionBody(
                         try writer.print("  %native.state.set.struct.value.{d} = load {s}, ptr %native.state.set.struct.src.{d}\n", .{
                             temp_index, field_struct_name, temp_index,
                         });
-                        try writer.print("  %native.state.set.struct.size.ptr.{d} = getelementptr inbounds {s}, ptr null, i32 1\n", .{
+                        try writer.print("  %native.state.set.struct.size.ptr.{d} = getelementptr {s}, ptr null, i32 1\n", .{
                             temp_index, field_struct_name,
                         });
                         try writer.print("  %native.state.set.struct.size.{d} = ptrtoint ptr %native.state.set.struct.size.ptr.{d} to i64\n", .{
@@ -1510,7 +1511,8 @@ fn emitFunctionCleanup(
                 try writer.print("  call void @free(ptr %cleanup.heap.ptr.{d})\n", .{cleanup_temp});
             },
             .raw_heap => {
-                try writer.print("  %cleanup.raw.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ cleanup_temp, owned.reg });
+                try writer.print("  %cleanup.raw.bits.{d} = and i64 %r{d}, 9223372036854775807\n", .{ cleanup_temp, owned.reg });
+                try writer.print("  %cleanup.raw.ptr.{d} = inttoptr i64 %cleanup.raw.bits.{d} to ptr\n", .{ cleanup_temp, cleanup_temp });
                 try writer.print("  call void @free(ptr %cleanup.raw.ptr.{d})\n", .{cleanup_temp});
             },
         }

@@ -112,7 +112,7 @@ fn compileViaTextIr(
     defer if (owns_ir_path) allocator.free(ir_path);
 
     try writeTextFile(ir_path, ir_text);
-    try emitObjectFileFromIr(allocator, ir_path, request.emit.object_path);
+    try emitObjectFileFromIr(allocator, ir_path, request.emit.object_path, request.mode == .hybrid);
 
     var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
     try artifacts.append(.{
@@ -121,7 +121,7 @@ fn compileViaTextIr(
     });
 
     if (request.emit.executable_path) |executable_path| {
-        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
+        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, false);
         try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
         try artifacts.append(.{
             .kind = .executable,
@@ -130,7 +130,7 @@ fn compileViaTextIr(
     }
 
     if (request.emit.shared_library_path) |library_path| {
-        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path);
+        const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, true);
         try linker.linkSharedLibrary(allocator, library_path, &.{ request.emit.object_path, bridge_object }, request.resolved_native_libraries);
         try artifacts.append(.{
             .kind = .native_library,
@@ -531,19 +531,24 @@ fn emitObjectFileFromIr(
     allocator: std.mem.Allocator,
     ir_path: []const u8,
     object_path: []const u8,
+    pic: bool,
 ) !void {
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     const clang_path = try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(clang_path);
     try @import("clang_driver.zig").appendHostClangDriverArgs(allocator, &argv);
+    if (pic and builtin.os.tag != .windows) try argv.append("-fPIC");
     try argv.appendSlice(&.{ "-c", "-o", object_path, ir_path });
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
     defer io_impl.deinit();
     const result = std.process.run(allocator, io_impl.io(), .{
         .argv = argv.items,
+        .environ_map = &environ_map,
         .stdout_limit = .limited(512 * 1024),
         .stderr_limit = .limited(512 * 1024),
     }) catch |err| return err;

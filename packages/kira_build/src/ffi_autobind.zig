@@ -235,6 +235,8 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
     const llvm_toolchain = try llvm_backend.LlvmToolchain.discover(allocator);
     const clang_path = try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.appendSlice(&.{ clang_path, "-Xclang", "-ast-dump=json", "-fsyntax-only" });
@@ -260,6 +262,7 @@ fn runClangAstDump(allocator: std.mem.Allocator, library: native.ResolvedNativeL
     const result = try std.process.run(allocator, io_impl.io(), .{
         .argv = argv.items,
         .expand_arg0 = .expand,
+        .environ_map = &environ_map,
         .stdout_limit = .limited(16 * 1024 * 1024),
         .stderr_limit = .limited(16 * 1024 * 1024),
     });

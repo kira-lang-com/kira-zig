@@ -476,9 +476,13 @@ pub fn appendTypeDefinitions(allocator: std.mem.Allocator, writer: anytype, prog
         }
         try writer.writeAll(typeRefName(type_decl.name));
         try writer.writeAll(" = type { ");
-        for (type_decl.fields, 0..) |field_decl, index| {
-            if (index != 0) try writer.writeAll(", ");
-            try writer.writeAll(try llvmFieldAbiTypeText(allocator, program, field_decl.ty));
+        if (type_decl.fields.len == 0) {
+            try writer.writeAll("i8");
+        } else {
+            for (type_decl.fields, 0..) |field_decl, index| {
+                if (index != 0) try writer.writeAll(", ");
+                try writer.writeAll(try llvmFieldAbiTypeText(allocator, program, field_decl.ty));
+            }
         }
         try writer.writeAll(" }\n");
     }
@@ -689,7 +693,6 @@ pub fn countStringConstants(function_decl: ir.Function) usize {
     return count;
 }
 
-
 pub fn buildTextExternDecl(
     allocator: std.mem.Allocator,
     request: backend_api.CompileRequest,
@@ -774,6 +777,9 @@ fn ffiTypeLayout(program: *const ir.Program, type_name: []const u8) anyerror!Typ
 
     var offset: usize = 0;
     var max_alignment: usize = 1;
+    if (type_decl.fields.len == 0) {
+        return .{ .size = 1, .alignment = 1 };
+    }
     for (type_decl.fields) |field| {
         const field_layout = try valueTypeLayout(program, field.ty);
         max_alignment = @max(max_alignment, field_layout.alignment);
@@ -940,7 +946,7 @@ pub fn buildHybridBridgeWrapper(
         .void => {
             try writer.writeAll("  store %kira.bridge.value %bridge.out.0, ptr %out_result\n");
         },
-            .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
+        .integer, .construct_any, .raw_ptr, .ffi_struct, .array, .enum_instance => {
             try writer.writeAll("  %bridge.out.1 = insertvalue %kira.bridge.value %bridge.out.0, i64 %bridge.call, 2\n");
             try writer.writeAll("  store %kira.bridge.value %bridge.out.1, ptr %out_result\n");
         },
