@@ -17,6 +17,13 @@ Standalone CLI:
 - `kira live desktop examples/hello --quit-after 5s`
 - `kira live desktop examples/hello --run-for 5s --kill-after`
 - `kira live ios-simulator examples/hello --quit-after 5s`
+- `kira live`
+- `kira live web examples/web_dom --surface dom --quit-after 10s`
+- `kira export apple`
+- `kira export web examples/web_dom --surface dom`
+- `kira export windows`
+- `kira export android`
+- `kira export linux`
 - `kira tokens examples/hello`
 - `kira ast examples/hello`
 - `kira check examples/hello`
@@ -83,9 +90,13 @@ CLI behavior:
 - `live <target> --quit-after <duration>` defaults to the desktop platform and starts a real live server/client session. The server builds a VM/live-loadable bundle graph under the selected target's `.kira-build/live/`, launches a live runner client, sends the bundle graph and bundle payloads, waits for client load/link/entrypoint events, waits for at least one rendered frame unless `--headless` is explicitly supplied, and then requests clean shutdown when the duration expires.
 - `live desktop <target> --quit-after <duration>` is the explicit desktop spelling. The desktop runner window is visible for renderable apps/examples; `--quit-after` only bounds the session and does not bypass server/client handshake, bundle delivery, entrypoint start, or frame acknowledgement.
 - `live desktop <target> --run-for <duration> --kill-after` is a legacy compatibility spelling. `--run-for` maps to the same bounded duration as `--quit-after`; `--kill-after` is retained as an emergency cleanup hint after graceful shutdown has been attempted.
-- `live ios-simulator <target>` and `live ios <target>` are recognized platform spellings. The current implementation audits Xcode, the iPhoneSimulator SDK, and available simulator runtimes, then reports a precise unsupported-runner diagnostic until the simulator live client build/install/launch path is implemented. Physical device live support is recognized as `ios-device` but is not implemented.
+- `live`, with no target, infers the current project/app target and defaults to the desktop runner. If the first positional after `live` is a known runner id, it is parsed as a runner; path-like values such as `./ios`, `../ios`, and `/tmp/ios` remain target paths.
+- Runner ids are `desktop`, `macos`, `ios`, `tvos`, `visionos`, `windows`, `android`, `web`, and `linux`. Every runner id is accepted; incomplete host/device clients emit Kira-owned diagnostics instead of disappearing.
+- `live web <target> --surface dom` runs the Kira Wasm DOM scaffold and writes browser artifacts under `.kira-build/live/runners/web-kira-wasm/`. `webgpu` and `hybrid` are modeled web surfaces and rejected with precise diagnostics until implemented.
+- `live ios <target> --host 0.0.0.0 --port 42111` audits Xcode, iOS SDKs, and physical-device discovery. A physical iPhone must use a device-reachable endpoint such as the host LAN IP, not `localhost`; install/launch/signing gaps are reported as blocked device-runner diagnostics.
 - Live root handling is explicit: invocation cwd, selected target root, Kira toolchain root, runner host path, generated live output root, and client runtime cwd are separate. The desktop runner host is resolved from the installed/development Kira toolchain; the selected example directory is never used as a Zig build root.
 - Live reload currently uses full-bundle hot restart. On source changes, the server rebuilds the bundle graph, sends the full bundle set, and the already-running client restarts the app entrypoint without rebuilding or relaunching the runner process. Incremental bundle patching is reserved for a future protocol extension and is not documented as supported yet.
+- Live clients consume `.klbundle` directories. The current layout includes a manifest, graph, metadata, diagnostics summary, bytecode/hybrid payloads, assets/resources, dependency graph information, version/hash metadata, and platform/surface metadata.
 - `--headless` is only for non-window tests of the live protocol and reload loop. Normal desktop live sessions open a visible window when the platform can present one.
 - `run`, `build`, and `check` automatically sync dependencies before compiling; add `--offline` or `--locked` when you want cache-only or lockfile-only behavior
 - Library package roots are checkable and buildable, but not runnable or live-runnable. `kira run .` on a library emits `KCL020`; `kira live .` emits `KCL021`. Use an example or app target for execution.
@@ -111,6 +122,8 @@ CLI behavior:
 - `package inspect` prints manifest metadata and archive contents without extracting package scripts because package scripts are not supported
 - `build --backend llvm` writes both a native object file and a native executable into `generated/`
 - `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `generated/`
+- `build --profile debug|profiler|release` selects the resolved profile backend. `profiles.profiler` is the profiling profile; `profiles.profile` is reserved/rejected.
+- `export apple|macos|ios|tvos|visionos|windows|android|web|linux [target]` infers the current project/app target when omitted. `apple` emits the merged Xcode workspace; individual Apple exports reuse that system. Windows/Linux emit CMake/Ninja scaffolds, Android emits a Gradle scaffold, and Web emits Kira Wasm DOM HTML/JS/Wasm artifacts.
 - `new` scaffolds either an app or a library package; use `new --lib` for a library template with `kind = "library"`, `module_root`, and a root module file under `app/`
 
 LLVM backend selection is explicit and host-native. Discovery order is:

@@ -1,0 +1,28 @@
+import Foundation.Web as Web
+
+@Main
+@Native
+function main() {
+    let body = Web.documentBody()
+    let title = Web.createElement("h1")
+    Web.setText(title, "Hello from Kira Wasm")
+    Web.appendChild(body, title)
+
+    let details = Web.createElement("p")
+    Web.setText(details, Web.navigatorUserAgent())
+    Web.appendChild(body, details)
+
+    let button = Web.createElement("button")
+    Web.setText(button, "Click me")
+    Web.appendChild(body, button)
+
+    let status = Web.createElement("p")
+    Web.setText(status, "Waiting for DOM update")
+    Web.appendChild(body, status)
+
+    Web.setTimeout(1, 250)
+    Web.consoleLog("Kira browser API call succeeded")
+    print("Hello from Kira Wasm")
+    print("Kira browser API call succeeded")
+    return
+}

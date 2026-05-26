@@ -227,13 +227,79 @@ pub fn invalidLivePlatform(allocator: std.mem.Allocator, value: []const u8) !dia
         .code = .KCL041_InvalidLivePlatform,
         .domain = .cli,
         .phase = .cli_argument_parsing,
-        .title = "invalid live platform",
+        .title = "unknown runner",
         .message = try std.fmt.allocPrint(
             allocator,
-            "`{s}` is not a supported live platform.",
+            "`{s}` is not a supported Kira runner.",
             .{value},
         ),
-        .help = "Use `desktop`, `ios`, `ios-simulator`, or `ios-device`. Use `kira live <target>` when omitting the platform.",
+        .help = "Use `desktop`, `macos`, `ios`, `tvos`, `visionos`, `windows`, `android`, `web`, or `linux`. Path-like values such as `./ios` are treated as targets.",
+    });
+}
+
+pub fn invalidWebSurface(allocator: std.mem.Allocator, value: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL051_UnknownWebSurface,
+        .domain = .cli,
+        .phase = .cli_argument_parsing,
+        .title = "unknown web surface",
+        .message = try std.fmt.allocPrint(allocator, "`{s}` is not a supported web surface.", .{value}),
+        .help = "Use `dom`, `webgpu`, or `hybrid`. The DOM surface is implemented first; webgpu and hybrid currently report precise unsupported diagnostics.",
+    });
+}
+
+pub fn exportNotImplemented(allocator: std.mem.Allocator, family: []const u8, detail: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL054_ExportNotImplemented,
+        .domain = .cli,
+        .phase = .backend_prepare,
+        .title = "platform export is not fully buildable yet",
+        .message = try std.fmt.allocPrint(allocator, "Kira generated the `{s}` export scaffold, but a required platform build step is not complete. {s}", .{ family, detail }),
+        .help = "Inspect the generated export folder and install the missing platform SDK or command-line tool, then rerun the export command.",
+    });
+}
+
+pub fn appleWorkspaceGenerationFailed(allocator: std.mem.Allocator, detail: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL058_AppleWorkspaceGenerationFailed,
+        .domain = .cli,
+        .phase = .backend_prepare,
+        .title = "Apple workspace generation failed",
+        .message = try std.fmt.allocPrint(allocator, "Kira could not generate the Apple export workspace. {s}", .{detail}),
+        .help = "Check the export directory permissions and rerun `kira export apple`.",
+    });
+}
+
+pub fn iosDeviceNotFound(allocator: std.mem.Allocator, detail: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL074_IOSDeviceNotFound,
+        .domain = .cli,
+        .phase = .toolchain_activation,
+        .title = "physical iOS device not found",
+        .message = try std.fmt.allocPrint(allocator, "Kira could not find a connected, usable physical iPhone. {s}", .{detail}),
+        .help = "Connect and trust an iPhone with Developer Mode enabled, then rerun `kira live ios --host 0.0.0.0`.",
+    });
+}
+
+pub fn iosEndpointUnreachableFromDevice(allocator: std.mem.Allocator, endpoint: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL081_LiveServerEndpointUnreachableFromDevice,
+        .domain = .cli,
+        .phase = .runtime_execution,
+        .title = "iOS live endpoint is not device-reachable",
+        .message = try std.fmt.allocPrint(allocator, "The iPhone live runner cannot connect to `{s}` because that endpoint resolves to the device itself or is otherwise not reachable from the phone.", .{endpoint}),
+        .help = "Use a LAN IP such as `kira live ios --host 0.0.0.0 --server-url http://192.168.x.x:42111`.",
+    });
+}
+
+pub fn macOSRunnerBuildFailed(allocator: std.mem.Allocator, target: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL072_MacOSRunnerBuildFailed,
+        .domain = .cli,
+        .phase = .backend_prepare,
+        .title = "macOS Xcode live runner build failed",
+        .message = try std.fmt.allocPrint(allocator, "Kira generated the macOS Xcode live runner for `{s}`, but `xcodebuild` could not build it.", .{target}),
+        .help = "Inspect the xcodebuild output above, verify Xcode command-line tools, and rerun `kira live macos`.",
     });
 }
 

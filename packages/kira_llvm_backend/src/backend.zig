@@ -536,7 +536,7 @@ fn emitObjectFileFromIr(
     selector: ?@import("kira_native_lib_definition").TargetSelector,
 ) !void {
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
-    const clang_path = try llvm_toolchain.clangPath(allocator);
+    const clang_path = (try @import("clang_driver.zig").appleClangPathForSelector(allocator, selector)) orelse try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
     var environ_map = try llvm_toolchain.processEnvironMap(allocator);
     defer environ_map.deinit();

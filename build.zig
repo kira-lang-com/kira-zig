@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .default_target = preferredDefaultTarget(b.graph.host.result),
     });
     const optimize = b.standardOptimizeOption(.{});
+    const apple_sdk = b.option([]const u8, "apple-sdk", "Apple SDK sysroot path used when cross-compiling generated runner support") orelse "";
     const channel = channelForOptimize(optimize);
     const repo_root = b.pathFromRoot("");
     const metadata = llvm_metadata.parseFile(b.allocator, b.pathFromRoot("llvm-metadata.toml")) catch
@@ -119,6 +120,10 @@ pub fn build(b: *std.Build) void {
         for (probe.include_dirs) |dir| {
             modules.get("kira_llvm_backend").?.addIncludePath(.{ .cwd_relative = dir });
         }
+    }
+    if (apple_sdk.len > 0) {
+        const apple_include = std.fs.path.join(b.allocator, &.{ apple_sdk, "usr", "include" }) catch @panic("failed to build Apple SDK include path");
+        modules.get("kira_native_bridge").?.addSystemIncludePath(.{ .cwd_relative = apple_include });
     }
 
     const cli = b.addExecutable(.{
@@ -189,6 +194,8 @@ pub fn build(b: *std.Build) void {
     live_support_module.addImport("kira_hybrid_definition", modules.get("kira_hybrid_definition").?);
     live_support_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
     live_support_module.link_libc = true;
+    const live_support_c_flags: []const []const u8 = if (apple_sdk.len > 0) &.{ "-isysroot", apple_sdk } else &.{};
+    if (apple_sdk.len > 0) live_support_module.addSystemIncludePath(.{ .cwd_relative = std.fs.path.join(b.allocator, &.{ apple_sdk, "usr", "include" }) catch @panic("failed to build Apple SDK include path") });
 
     const live_support = b.addLibrary(.{
         .linkage = .static,
@@ -197,7 +204,7 @@ pub fn build(b: *std.Build) void {
     });
     live_support.root_module.addCSourceFile(.{
         .file = b.path("packages/kira_native_bridge/src/runtime_helpers.c"),
-        .flags = &.{},
+        .flags = live_support_c_flags,
     });
     const install_live_support = b.addInstallArtifact(live_support, .{});
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const diag_messages = @import("kira_diagnostic_messages");
 const diagnostics = @import("kira_diagnostics");
+const manifest = @import("kira_manifest");
 const app_generation = @import("kira_app_generation");
 const CommandKind = @import("../command/CommandKind.zig");
 const Kind = CommandKind.CommandKind;
@@ -51,6 +52,7 @@ fn parseCommandByKind(allocator: std.mem.Allocator, kind: Kind, args: []const []
         .build => .{ .build = try parseProjectCommand(allocator, args) },
         .run => .{ .run = try parseRun(allocator, args) },
         .live => .{ .live = try parseLive(allocator, args) },
+        .export_cmd => .{ .export_cmd = try parseExport(allocator, args) },
         .new => .{ .new = try parseNew(allocator, args) },
         .fetch_llvm => .{ .fetch_llvm = try parseFetchLlvm(allocator, args) },
         .sync => .{ .sync = try parseSync(allocator, args) },
@@ -130,6 +132,12 @@ fn parseProjectCommand(allocator: std.mem.Allocator, args: []const []const u8) !
             };
             continue;
         }
+        if (std.mem.eql(u8, arg, "--profile")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--profile", "debug, profiler, or release");
+            parsed.profile = manifest.BuildProfile.parse(args[index]) orelse return failInvalid("--profile", args[index], "debug, profiler, or release");
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--offline")) {
             parsed.offline = true;
             continue;
@@ -157,6 +165,14 @@ fn parseRun(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.RunO
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (parsed.runner == null and input_path == null and !isPathLike(arg)) {
+            if (manifest.RunnerId.parse(arg)) |runner| {
+                if (runner == .web) {
+                    parsed.runner = runner;
+                    continue;
+                }
+            }
+        }
         if (std.mem.eql(u8, arg, "--backend")) {
             index += 1;
             if (index >= args.len) return failMissing("--backend", "vm, llvm, or hybrid");
@@ -170,6 +186,12 @@ fn parseRun(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.RunO
             index += 1;
             if (index >= args.len) return failMissing(arg, "a duration");
             parsed.quit_after = Duration.parse(args[index]) orelse return failDuration(arg, args[index]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--surface")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--surface", "dom, webgpu, or hybrid");
+            parsed.surface = manifest.WebSurface.parse(args[index]) orelse return failInvalid("--surface", args[index], "dom, webgpu, or hybrid");
             continue;
         }
         if (std.mem.eql(u8, arg, "--offline")) {
@@ -198,7 +220,7 @@ fn parseRun(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.RunO
 
 fn parseLive(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.LiveOptions {
     _ = allocator;
-    if (args.len == 0) return failInvalid("live", "", "a runner and target, or a target");
+    if (args.len == 0) return .{ .runner = .desktop, .input_path = "." };
     if (std.mem.eql(u8, args[0], "runners")) {
         if (args.len != 3) return failInvalid("live runners", "", "list, build, or clean plus a target");
         const mode: Parsed.LiveMode = if (std.mem.eql(u8, args[1], "list")) .runners_list else if (std.mem.eql(u8, args[1], "build")) .runners_build else if (std.mem.eql(u8, args[1], "clean")) .runners_clean else return failInvalid("live runners", args[1], "list, build, or clean");
@@ -206,15 +228,19 @@ fn parseLive(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.Liv
     }
 
     var runner: Parsed.LiveRunnerKind = .desktop;
+    var device: []const u8 = "auto";
     var index: usize = 0;
-    if (parseLiveRunner(args[0])) |explicit_runner| {
-        runner = explicit_runner;
-        index = 1;
-    } else if (args.len >= 2 and !std.mem.startsWith(u8, args[1], "-")) {
-        return failLivePlatform(args[0]);
+    if (!isPathLike(args[0])) {
+        if (parseLiveRunner(args[0])) |explicit_runner| {
+            runner = explicit_runner;
+            device = liveDeviceSelectorForRunnerAlias(args[0]);
+            index = 1;
+        } else if (args.len >= 2 and !std.mem.startsWith(u8, args[1], "-")) {
+            return failLivePlatform(args[0]);
+        }
     }
     var input_path: ?[]const u8 = null;
-    var parsed = Parsed.LiveOptions{ .runner = runner, .input_path = "" };
+    var parsed = Parsed.LiveOptions{ .runner = runner, .input_path = "", .device = device };
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--quit-after") or std.mem.eql(u8, arg, "-quit-after")) {
@@ -237,6 +263,36 @@ fn parseLive(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.Liv
             parsed.headless = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--profile")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--profile", "debug, profiler, or release");
+            parsed.profile = manifest.BuildProfile.parse(args[index]) orelse return failInvalid("--profile", args[index], "debug, profiler, or release");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--surface")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--surface", "dom, webgpu, or hybrid");
+            parsed.surface = manifest.WebSurface.parse(args[index]) orelse return failInvalid("--surface", args[index], "dom, webgpu, or hybrid");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--host")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--host", "a bind host");
+            parsed.host = args[index];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--port")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--port", "a TCP port");
+            parsed.port = std.fmt.parseInt(u16, args[index], 10) catch return failInvalid("--port", args[index], "a TCP port from 1 to 65535");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--server-url")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--server-url", "a live server URL");
+            parsed.server_url = args[index];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--device")) {
             index += 1;
             if (index >= args.len) return failMissing("--device", "a device selector");
@@ -247,15 +303,70 @@ fn parseLive(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.Liv
         if (input_path != null) return failInvalid("target", arg, "a single target path");
         input_path = arg;
     }
-    parsed.input_path = input_path orelse return failInvalid("live", "", "a target path");
+    parsed.input_path = input_path orelse ".";
     return parsed;
 }
 
 fn parseLiveRunner(value: []const u8) ?Parsed.LiveRunnerKind {
     if (std.mem.eql(u8, value, "desktop")) return .desktop;
-    if (std.mem.eql(u8, value, "ios") or std.mem.eql(u8, value, "ios-simulator") or std.mem.eql(u8, value, "simulator")) return .ios_simulator;
-    if (std.mem.eql(u8, value, "ios-device") or std.mem.eql(u8, value, "device")) return .ios_device;
+    if (std.mem.eql(u8, value, "macos")) return .macos;
+    if (std.mem.eql(u8, value, "ios") or std.mem.eql(u8, value, "ios-simulator") or std.mem.eql(u8, value, "ios-device") or std.mem.eql(u8, value, "simulator") or std.mem.eql(u8, value, "device")) return .ios;
+    if (std.mem.eql(u8, value, "tvos")) return .tvos;
+    if (std.mem.eql(u8, value, "visionos")) return .visionos;
+    if (std.mem.eql(u8, value, "windows")) return .windows;
+    if (std.mem.eql(u8, value, "android")) return .android;
+    if (std.mem.eql(u8, value, "web")) return .web;
+    if (std.mem.eql(u8, value, "linux")) return .linux;
     return null;
+}
+
+fn liveDeviceSelectorForRunnerAlias(value: []const u8) []const u8 {
+    if (std.mem.eql(u8, value, "ios-simulator") or std.mem.eql(u8, value, "simulator")) return "simulator";
+    if (std.mem.eql(u8, value, "ios-device") or std.mem.eql(u8, value, "device")) return "device";
+    return "auto";
+}
+
+fn parseExport(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.ExportOptions {
+    _ = allocator;
+    var family: ?manifest.ExportFamily = null;
+    var input_path: ?[]const u8 = null;
+    var parsed = Parsed.ExportOptions{ .family = .web, .input_path = "." };
+    var index: usize = 0;
+    if (args.len > 0 and !isPathLike(args[0])) {
+        if (manifest.ExportFamily.parse(args[0])) |explicit_family| {
+            family = explicit_family;
+            index = 1;
+        }
+    }
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--profile")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--profile", "debug, profiler, or release");
+            parsed.profile = manifest.BuildProfile.parse(args[index]) orelse return failInvalid("--profile", args[index], "debug, profiler, or release");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--surface")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--surface", "dom, webgpu, or hybrid");
+            parsed.surface = manifest.WebSurface.parse(args[index]) orelse return failInvalid("--surface", args[index], "dom, webgpu, or hybrid");
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported export flag");
+        if (input_path != null) return failInvalid("target", arg, "a single target path");
+        if (family == null and !isPathLike(arg) and manifest.ExportFamily.parse(arg) == null) return failInvalid("export", arg, "a platform export family");
+        input_path = arg;
+    }
+    parsed.family = family orelse return failInvalid("export", "", "an export family such as apple, ios, web, linux, windows, or android");
+    parsed.input_path = input_path orelse ".";
+    return parsed;
+}
+
+fn isPathLike(value: []const u8) bool {
+    return std.mem.startsWith(u8, value, ".") or
+        std.mem.startsWith(u8, value, "/") or
+        std.mem.indexOfScalar(u8, value, std.fs.path.sep) != null or
+        std.mem.indexOfScalar(u8, value, '/') != null;
 }
 
 fn parseNew(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.NewOptions {
@@ -559,9 +670,29 @@ test "parse live desktop explicit target and legacy duration flags" {
 
 test "parse live headless and ios simulator platform" {
     const result = try parse(std.testing.allocator, &.{ "kira", "live", "ios-simulator", "examples/hello", "--headless", "--quit-after", "1s" });
-    try std.testing.expectEqual(.ios_simulator, result.command.live.runner);
+    try std.testing.expectEqual(.ios, result.command.live.runner);
+    try std.testing.expectEqualStrings("simulator", result.command.live.device);
     try std.testing.expect(result.command.live.headless);
     try std.testing.expectEqual(@as(u64, std.time.ns_per_s), result.command.live.quit_after.?.nanoseconds);
+}
+
+test "parse live defaults target and disambiguates path-like runner names" {
+    const inferred = try parse(std.testing.allocator, &.{ "kira", "live", "web", "--surface", "dom" });
+    try std.testing.expectEqual(.web, inferred.command.live.runner);
+    try std.testing.expectEqualStrings(".", inferred.command.live.input_path);
+    try std.testing.expectEqual(.dom, inferred.command.live.surface);
+
+    const path_like = try parse(std.testing.allocator, &.{ "kira", "live", "./ios", "--quit-after", "1s" });
+    try std.testing.expectEqual(.desktop, path_like.command.live.runner);
+    try std.testing.expectEqualStrings("./ios", path_like.command.live.input_path);
+}
+
+test "parse export platform target inference" {
+    const result = try parse(std.testing.allocator, &.{ "kira", "export", "web", "--profile", "release", "--surface", "dom" });
+    try std.testing.expectEqual(.export_cmd, result.command.kind());
+    try std.testing.expectEqual(.web, result.command.export_cmd.family);
+    try std.testing.expectEqualStrings(".", result.command.export_cmd.input_path);
+    try std.testing.expectEqual(.release, result.command.export_cmd.profile);
 }
 
 test "parse live rejects unknown platform before treating it as target" {

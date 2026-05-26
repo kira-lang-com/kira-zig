@@ -1,0 +1,12 @@
+[package]
+name = "web_dom"
+version = "0.1.0"
+kind = "app"
+kira = "0.1.0"
+
+[defaults]
+execution_mode = "vm"
+build_target = "web"
+
+[dependencies]
+Foundation = { path = "../../foundation" }

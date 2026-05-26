@@ -131,17 +131,23 @@ fn receiveBundleSet(
             .replace_bundle => {
                 const payload = try protocol.decodeReplaceBundlePayload(allocator, frame.payload);
                 try client.sendText(.log_line, "live.client.bundle.received");
+                try client.sendText(.log_line, if (is_reload) "live.bundle.update.received" else "live.bundle.received");
                 const bundle_dir = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{payload.bundle_id}) });
                 try storeBundlePayload(bundle_dir, payload);
                 if (std.mem.eql(u8, payload.bundle_id, main_bundle_id)) {
                     try client.sendText(.log_line, "live.bundle.loaded");
-                    if (is_reload) try client.sendText(.log_line, "live.client.hot_restart.started");
+                    if (is_reload) {
+                        try client.sendText(.log_line, "live.client.hot_restart.started");
+                        try client.sendText(.log_line, "live.hot_restart.started");
+                    }
                     return .bundle_ready;
                 }
             },
             .shutdown => {
+                try client.sendText(.log_line, "live.shutdown.started");
                 try client.sendText(.log_line, "live.shutdown.received");
                 try client.sendText(.shutdown_ack, "ok");
+                try client.sendText(.log_line, "live.shutdown.finished");
                 return .shutdown;
             },
             else => {},

@@ -14,8 +14,7 @@ pub fn buildRuntimeHelpersObject(
 ) ![]const u8 {
     const helper_object = try helperObjectPath(allocator, object_path);
     const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
-    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
-    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
+    const driver_path = try compilerDriverPathForSelector(allocator, selector);
     try ensureParentDir(helper_object);
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
@@ -34,8 +33,7 @@ pub fn linkExecutable(
     selector: ?native.TargetSelector,
 ) !void {
     try ensureParentDir(executable_path);
-    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
-    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
+    const driver_path = try compilerDriverPathForSelector(allocator, selector);
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
@@ -67,8 +65,7 @@ pub fn linkSharedLibrary(
     selector: ?native.TargetSelector,
 ) !void {
     try ensureParentDir(library_path);
-    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
-    const driver_path = try llvm_toolchain.compilerDriverPath(allocator);
+    const driver_path = try compilerDriverPathForSelector(allocator, selector);
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
@@ -91,6 +88,12 @@ pub fn linkSharedLibrary(
 
 fn appendHostDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8)) !void {
     if (builtin.os.tag == .linux) try argv.append("-lm");
+}
+
+fn compilerDriverPathForSelector(allocator: std.mem.Allocator, selector: ?native.TargetSelector) ![]const u8 {
+    if (try clang_driver.appleClangPathForSelector(allocator, selector)) |path| return path;
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    return llvm_toolchain.compilerDriverPath(allocator);
 }
 
 fn helperObjectPath(allocator: std.mem.Allocator, object_path: []const u8) ![]const u8 {

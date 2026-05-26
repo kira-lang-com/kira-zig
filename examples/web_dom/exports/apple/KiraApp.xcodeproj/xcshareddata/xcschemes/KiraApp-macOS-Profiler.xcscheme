@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1600" version="1.7">
+  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+    <BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="KiraApp-macOS-Profiler" BuildableName="KiraApp-macOS-Profiler.app" BlueprintName="KiraApp-macOS-Profiler" ReferencedContainer="container:KiraApp.xcodeproj"></BuildableReference></BuildActionEntry></BuildActionEntries>
+  </BuildAction>
+  <LaunchAction buildConfiguration="Profiler"></LaunchAction>
+</Scheme>

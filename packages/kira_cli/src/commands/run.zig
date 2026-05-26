@@ -6,6 +6,8 @@ const build_def = @import("kira_build_definition");
 const diag_messages = @import("kira_diagnostic_messages");
 const diagnostics = @import("kira_diagnostics");
 const hybrid_runtime = @import("kira_hybrid_runtime");
+const kira_live = @import("kira_live");
+const manifest_config = @import("kira_manifest");
 const package_manager = @import("kira_package_manager");
 const runtime_abi = @import("kira_runtime_abi");
 const vm_runtime = @import("kira_vm_runtime");
@@ -16,6 +18,9 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
+    if (parsed.runner != null and parsed.runner.? == .web) {
+        return executeWebRunner(allocator, parsed, stdout, stderr);
+    }
     build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
     const previous_trace = runtime_abi.executionTraceEnabled();
     runtime_abi.setExecutionTraceEnabled(parsed.trace_execution);
@@ -193,7 +198,9 @@ fn parseHybridArtifactArgs(args: []const []const u8) !HybridArtifactArgs {
 }
 
 const ParsedArgs = struct {
+    runner: ?manifest_config.RunnerId = null,
     backend: ?build_def.ExecutionTarget = null,
+    surface: manifest_config.WebSurface = .dom,
     offline: bool = false,
     locked: bool = false,
     trace_execution: bool = false,
@@ -203,7 +210,9 @@ const ParsedArgs = struct {
 };
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
+    var runner: ?manifest_config.RunnerId = null;
     var backend: ?build_def.ExecutionTarget = null;
+    var surface: manifest_config.WebSurface = .dom;
     var offline = false;
     var locked = false;
     var trace_execution = false;
@@ -214,6 +223,14 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (runner == null and input_path == null and !std.mem.startsWith(u8, arg, "-")) {
+            if (manifest_config.RunnerId.parse(arg)) |parsed_runner| {
+                if (parsed_runner == .web) {
+                    runner = parsed_runner;
+                    continue;
+                }
+            }
+        }
         if (std.mem.eql(u8, arg, "--backend")) {
             index += 1;
             if (index >= args.len) return error.InvalidArguments;
@@ -242,12 +259,20 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             quit_after_ns = parseDurationNs(args[index]) orelse return error.InvalidArguments;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--surface")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            surface = manifest_config.WebSurface.parse(args[index]) orelse return error.InvalidArguments;
+            continue;
+        }
         if (input_path != null) return error.InvalidArguments;
         input_path = arg;
     }
 
     return .{
+        .runner = runner,
         .backend = backend,
+        .surface = surface,
         .offline = offline,
         .locked = locked,
         .trace_execution = trace_execution,
@@ -255,6 +280,20 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
         .quit_after_ns = quit_after_ns,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
+}
+
+fn executeWebRunner(allocator: std.mem.Allocator, parsed: ParsedArgs, stdout: anytype, stderr: anytype) !void {
+    var live_args = std.array_list.Managed([]const u8).init(allocator);
+    try live_args.append("web");
+    try live_args.append(parsed.input_path);
+    try live_args.appendSlice(&.{ "--surface", parsed.surface.label(), "--headless" });
+    if (parsed.quit_after_ns) |duration_ns| {
+        try live_args.append("--quit-after");
+        try live_args.append(try std.fmt.allocPrint(allocator, "{d}ms", .{duration_ns / std.time.ns_per_ms}));
+    } else {
+        try live_args.appendSlice(&.{ "--quit-after", "1s" });
+    }
+    try kira_live.execute(allocator, live_args.items, stdout, stderr);
 }
 
 fn parseDurationNs(value: []const u8) ?u64 {

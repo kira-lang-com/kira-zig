@@ -42,6 +42,20 @@ pub fn clangTargetTripleForSelector(allocator: std.mem.Allocator, selector: ?nat
     return (try driverTarget(allocator, selector)).triple;
 }
 
+pub fn appleClangPathForSelector(allocator: std.mem.Allocator, selector: ?native.TargetSelector) !?[]const u8 {
+    const sdk = appleSdkForSelector(selector) orelse return null;
+    const result = try runCapture(allocator, &.{ "xcrun", "--sdk", @tagName(sdk), "--find", "clang" });
+    defer allocator.free(result);
+    return try allocator.dupe(u8, std.mem.trim(u8, result, " \t\r\n"));
+}
+
+pub fn appleSdkForSelector(selector: ?native.TargetSelector) ?AppleSdk {
+    const value = selector orelse return null;
+    if (std.mem.eql(u8, value.operating_system, "macos")) return .macosx;
+    if (std.mem.eql(u8, value.operating_system, "ios")) return .iphoneos;
+    return null;
+}
+
 fn driverTarget(allocator: std.mem.Allocator, selector: ?native.TargetSelector) !DriverTarget {
     if (selector) |value| {
         if (std.mem.eql(u8, value.operating_system, "windows")) {
@@ -95,6 +109,22 @@ fn driverTarget(allocator: std.mem.Allocator, selector: ?native.TargetSelector) 
         },
         else => error.UnsupportedTarget,
     };
+}
+
+fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = argv,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+    });
+    defer allocator.free(result.stderr);
+    if (result.term == .exited and result.term.exited == 0) return result.stdout;
+    allocator.free(result.stdout);
+    return error.ExternalCommandFailed;
 }
 
 pub fn macOSSdkPath(allocator: std.mem.Allocator) ![]const u8 {

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_pkg = @import("kira_build");
 const build_def = @import("kira_build_definition");
+const manifest = @import("kira_manifest");
 const diag_messages = @import("kira_diagnostic_messages");
 const diagnostics = @import("kira_diagnostics");
 const package_manager = @import("kira_package_manager");
@@ -22,7 +23,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         else => return err,
     };
     try support.validateTargetSelection(allocator, stderr, .build, input);
-    const backend = parsed.backend orelse input.default_backend orelse .vm;
+    const backend = parsed.backend orelse profileBackend(parsed.profile) orelse input.default_backend orelse .vm;
 
     if (input.target.root_path) |project_root| {
         var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
@@ -85,6 +86,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 
 const ParsedArgs = struct {
     backend: ?build_def.ExecutionTarget = null,
+    profile: ?manifest.BuildProfile = null,
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
@@ -93,6 +95,7 @@ const ParsedArgs = struct {
 
 fn parseArgs(args: []const []const u8) !ParsedArgs {
     var backend: ?build_def.ExecutionTarget = null;
+    var profile: ?manifest.BuildProfile = null;
     var offline = false;
     var locked = false;
     var timings = false;
@@ -105,6 +108,12 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             index += 1;
             if (index >= args.len) return error.InvalidArguments;
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            profile = manifest.BuildProfile.parse(args[index]) orelse return error.InvalidArguments;
             continue;
         }
         if (std.mem.eql(u8, arg, "--offline")) {
@@ -125,10 +134,18 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
 
     return .{
         .backend = backend,
+        .profile = profile,
         .offline = offline,
         .locked = locked,
         .timings = timings,
         .input_path = input_path orelse support.defaultCommandInputPath(),
+    };
+}
+
+fn profileBackend(profile: ?manifest.BuildProfile) ?build_def.ExecutionTarget {
+    return switch (profile orelse return null) {
+        .debug => .vm,
+        .profiler, .release => .llvm_native,
     };
 }
 

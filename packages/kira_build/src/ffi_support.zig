@@ -338,7 +338,7 @@ fn hexDigest(allocator: std.mem.Allocator, digest: []const u8) ![]const u8 {
 
 fn compileStaticLibraryViaClang(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
     const llvm_toolchain = try llvm_backend.LlvmToolchain.discover(allocator);
-    const clang_path = try llvm_toolchain.clangPath(allocator);
+    const clang_path = (try llvm_backend.clangDriver.appleClangPathForSelector(allocator, library.target)) orelse try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
     const llvm_ar_path = try llvm_toolchain.llvmArPath(allocator);
     defer allocator.free(llvm_ar_path);

@@ -1,0 +1,21 @@
+version = 1
+
+[root]
+name = "web_dom"
+version = "0.1.0"
+kind = "app"
+kira = "0.1.0"
+
+[[root_dependency]]
+name = "Foundation"
+source = "path"
+path = "../../foundation"
+
+[[package]]
+name = "Foundation"
+version = "0.1.0"
+kind = "library"
+kira = "0.1.0"
+module_root = "Foundation"
+source = "path"
+path = "/Users/priamc/Coding/kira-projects/kira-zig/foundation"

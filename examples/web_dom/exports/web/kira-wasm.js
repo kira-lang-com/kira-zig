@@ -1,0 +1,17 @@
+const ffi = globalThis.KiraBrowserFFI;
+const root = ffi.documentBody();
+const title = ffi.createElement("h1");
+ffi.setText(title, "Hello from Kira Wasm");
+ffi.appendChild(root, title);
+const details = ffi.createElement("p");
+ffi.setText(details, "Location: " + ffi.href() + " | UA: " + ffi.userAgent());
+ffi.appendChild(root, details);
+const button = ffi.createElement("button");
+ffi.setText(button, "Click me");
+ffi.appendChild(root, button);
+const status = ffi.createElement("p");
+ffi.setText(status, "Waiting for DOM update");
+ffi.appendChild(root, status);
+ffi.onClick(button, () => ffi.setText(status, "Kira DOM updated"));
+ffi.setTimeout(() => ffi.setText(status, "Kira DOM updated"), 250);
+ffi.consoleLog("Kira browser API call succeeded");

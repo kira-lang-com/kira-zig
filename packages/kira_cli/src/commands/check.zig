@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
+const manifest = @import("kira_manifest");
 const diag_messages = @import("kira_diagnostic_messages");
 const diagnostics = @import("kira_diagnostics");
 const package_manager = @import("kira_package_manager");
@@ -38,7 +39,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const source_path = input.target.source_path.?;
             try support.logFrontendStarted(stderr, "check", source_path);
             var system = build.BuildSystem.init(allocator);
-            if (parsed.backend) |backend| {
+            if (selectedBackend(parsed)) |backend| {
                 break :blk try system.checkForBackend(source_path, backend);
             }
             break :blk try system.checkFrontend(source_path);
@@ -75,6 +76,7 @@ fn syncProject(
 
 const ParsedArgs = struct {
     backend: ?build_def.ExecutionTarget = null,
+    profile: ?manifest.BuildProfile = null,
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
@@ -88,6 +90,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var input_path: ?[]const u8 = null;
 
     var backend: ?build_def.ExecutionTarget = null;
+    var profile: ?manifest.BuildProfile = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -95,6 +98,12 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             index += 1;
             if (index >= args.len) return error.InvalidArguments;
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            profile = manifest.BuildProfile.parse(args[index]) orelse return error.InvalidArguments;
             continue;
         }
         if (std.mem.eql(u8, arg, "--offline")) {
@@ -115,11 +124,24 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
 
     return .{
         .backend = backend,
+        .profile = profile,
         .offline = offline,
         .locked = locked,
         .timings = timings,
         .input_path = input_path orelse support.defaultCommandInputPath(),
     };
+}
+
+fn profileBackend(profile: ?manifest.BuildProfile) ?build_def.ExecutionTarget {
+    return switch (profile orelse return null) {
+        .debug => .vm,
+        .profiler, .release => .llvm_native,
+    };
+}
+
+fn selectedBackend(parsed: ParsedArgs) ?build_def.ExecutionTarget {
+    if (parsed.backend) |backend| return backend;
+    return profileBackend(parsed.profile);
 }
 
 fn timingsEnvEnabled() bool {

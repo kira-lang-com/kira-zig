@@ -44,7 +44,7 @@ pub fn buildBundles(
 
     var bundle_results = std.array_list.Managed(BundleResult).init(allocator);
     const app_bundle_id = try bundleIdForPackage(allocator, app_manifest.name);
-    try bundle_results.append(try buildProjectBundle(
+    const app_result = try buildProjectBundle(
         allocator,
         .{
             .bundle_id = app_bundle_id,
@@ -61,7 +61,8 @@ pub fn buildBundles(
             .emit_shared_library = !embed_native_in_runner,
             .native_root = native_root,
         },
-    ));
+    );
+    try bundle_results.append(app_result);
 
     for (sync_result.graph.packages) |package| {
         const package_root = std.fs.path.dirname(package.source_root) orelse continue;
@@ -98,14 +99,15 @@ pub fn buildBundles(
 
     const graph_path = try std.fs.path.join(allocator, &.{ server_graph_dir, "BundleGraph.toml" });
     try writeTomlFile(graph_path, graph);
+    const graph_json_path = try std.fs.path.join(allocator, &.{ server_graph_dir, "graph.json" });
+    try writeFile(graph_json_path, try graphJson(allocator, graph));
 
-    const main_result = bundle_results.items[0];
     return .{
         .graph = graph,
-        .main_native_object_path = main_result.native_object_path orelse return error.LiveBundleBuildFailed,
-        .main_native_library_path = main_result.native_library_path orelse "__kira_live_self__",
-        .main_native_libraries = main_result.native_libraries,
-        .native_contract_hash = try hashFilesAndStrings(allocator, &.{main_result.hybrid_path}, main_result.native_libraries),
+        .main_native_object_path = app_result.native_object_path orelse return error.LiveBundleBuildFailed,
+        .main_native_library_path = app_result.native_library_path orelse "__kira_live_self__",
+        .main_native_libraries = app_result.native_libraries,
+        .native_contract_hash = try hashFilesAndStrings(allocator, &.{app_result.hybrid_path}, app_result.native_libraries),
     };
 }
 
@@ -137,8 +139,10 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
     const bundle_dir = try std.fs.path.join(allocator, &.{ args.bundles_root, try std.fmt.allocPrint(allocator, "{s}.klbundle", .{args.bundle_id}) });
     const modules_dir = try std.fs.path.join(allocator, &.{ bundle_dir, "modules" });
     const assets_dir = try std.fs.path.join(allocator, &.{ bundle_dir, "assets" });
+    const resources_dir = try std.fs.path.join(allocator, &.{ bundle_dir, "resources" });
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, modules_dir);
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, assets_dir);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, resources_dir);
 
     const compiled = try build.compileFileForBackendWithSelector(allocator, args.entrypoint_path, .hybrid, args.selector, &.{});
     if (compiled.failed()) return error.LiveBundleBuildFailed;
@@ -160,7 +164,7 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
             null;
         try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(object_path) orelse ".");
         if (library_path) |path| try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(path) orelse ".");
-        _ = try llvm_backend.compile(allocator, .{
+        _ = llvm_backend.compile(allocator, .{
             .mode = .hybrid,
             .program = &compiled.ir_program.?,
             .module_name = std.fs.path.stem(args.entrypoint_path),
@@ -170,7 +174,7 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
             },
             .target_selector = args.selector,
             .resolved_native_libraries = compiled.native_libraries,
-        });
+        }) catch return error.LiveBundleBuildFailed;
         native_object_path = object_path;
         native_library_path = library_path;
     }
@@ -185,6 +189,7 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
     try hybrid_manifest.writeToFile(hybrid_path);
 
     const bundle_manifest_path = try std.fs.path.join(allocator, &.{ bundle_dir, "KiraBundle.toml" });
+    const content_hash = try hashPlainFiles(allocator, &.{ bytecode_path, hybrid_path });
     try writeTomlFile(bundle_manifest_path, model.BundleManifest{
         .id = args.bundle_id,
         .package_name = args.package_name,
@@ -195,6 +200,9 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
         .hybrid_rel_path = hybrid_rel_path,
         .executable = std.mem.eql(u8, args.kind, "app"),
     });
+    try writeFile(try std.fs.path.join(allocator, &.{ bundle_dir, "metadata.json" }), try bundleMetadataJson(allocator, args, content_hash));
+    try writeFile(try std.fs.path.join(allocator, &.{ bundle_dir, "diagnostics.json" }), "{\"status\":\"ok\",\"diagnostics\":[]}\n");
+    try writeFile(try std.fs.path.join(allocator, &.{ bundle_dir, "graph.json" }), try bundleLocalGraphJson(allocator, args.bundle_id, bytecode_rel_path, hybrid_rel_path, content_hash));
 
     return .{
         .spec = .{
@@ -215,6 +223,35 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
         .native_library_path = native_library_path,
         .native_libraries = compiled.native_libraries,
     };
+}
+
+fn graphJson(allocator: std.mem.Allocator, graph: model.BundleGraph) ![]const u8 {
+    var buffer: std.Io.Writer.Allocating = .init(allocator);
+    errdefer buffer.deinit();
+    const writer = &buffer.writer;
+    try writer.print("{{\"target\":\"{s}\",\"package\":\"{s}\",\"validation_app\":\"{s}\",\"main_bundle\":\"{s}\",\"bundles\":[", .{ graph.target_path, graph.target_package, graph.validation_app_path, graph.main_bundle_id });
+    for (graph.bundles, 0..) |bundle, index| {
+        if (index != 0) try writer.writeAll(",");
+        try writer.print("{{\"id\":\"{s}\",\"manifest\":\"{s}\",\"kind\":\"{s}\"}}", .{ bundle.id, bundle.manifest_rel_path, bundle.kind });
+    }
+    try writer.writeAll("]}\n");
+    return buffer.toOwnedSlice();
+}
+
+fn bundleMetadataJson(allocator: std.mem.Allocator, args: BuildProjectBundleArgs, content_hash: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"format\":\"klbundle\",\"bundle_version\":1,\"id\":\"{s}\",\"target_identity\":\"{s}\",\"profile\":\"debug\",\"backend\":\"hybrid\",\"entrypoint\":\"{s}\",\"hash\":\"{s}\",\"platform\":null,\"surface\":null}}\n",
+        .{ args.bundle_id, args.package_name, args.entrypoint_path, std.mem.trim(u8, content_hash, " \t\r\n") },
+    );
+}
+
+fn bundleLocalGraphJson(allocator: std.mem.Allocator, bundle_id: []const u8, bytecode_path: []const u8, hybrid_path: []const u8, content_hash: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"bundle\":\"{s}\",\"modules\":[{{\"bytecode\":\"{s}\",\"hybrid\":\"{s}\"}}],\"assets\":[],\"resources\":[],\"hash\":\"{s}\"}}\n",
+        .{ bundle_id, bytecode_path, hybrid_path, std.mem.trim(u8, content_hash, " \t\r\n") },
+    );
 }
 
 fn buildDependencyBundle(
@@ -250,7 +287,7 @@ fn buildDependencyBundle(
         \\[dependencies]
         \\{s} = {{ path = "{s}" }}
         \\
-        ,
+    ,
         .{ bundle_id, package_name, package_root },
     );
     try writeFile(shim_manifest_path, shim_manifest);
@@ -264,7 +301,7 @@ fn buildDependencyBundle(
         \\function main() {{
         \\    return
         \\}}
-        ,
+    ,
         .{module_root},
     );
     try writeFile(shim_entrypoint_path, shim_source);
@@ -425,6 +462,28 @@ fn hashFilesAndStrings(
         hasher.update(library.name);
         hasher.update("\n");
         hasher.update(library.artifact_path);
+        hasher.update("\n");
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const alphabet = "0123456789abcdef";
+    const out = try allocator.alloc(u8, digest.len * 2);
+    for (digest, 0..) |byte, index| {
+        out[index * 2] = alphabet[byte >> 4];
+        out[index * 2 + 1] = alphabet[byte & 0x0f];
+    }
+    return out;
+}
+
+fn hashPlainFiles(allocator: std.mem.Allocator, files: []const []const u8) ![]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("kira-klbundle-v1\n");
+    for (files) |path| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(16 * 1024 * 1024));
+        defer allocator.free(bytes);
+        hasher.update(path);
+        hasher.update("\n");
+        hasher.update(bytes);
         hasher.update("\n");
     }
     var digest: [32]u8 = undefined;

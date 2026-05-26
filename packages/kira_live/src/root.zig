@@ -1,5 +1,8 @@
 pub const RunnerKind = @import("runner_kind.zig").RunnerKind;
 pub const LivePlatform = @import("platform.zig").LivePlatform;
+pub const RunnerId = @import("platform.zig").RunnerId;
+pub const parseRunnerId = @import("platform.zig").parseRunnerId;
+pub const runnerKind = @import("platform.zig").runnerKind;
 pub const ResolvedLiveTarget = @import("target.zig").ResolvedLiveTarget;
 pub const resolveLiveTarget = @import("target.zig").resolveLiveTarget;
 pub const BundleGraph = @import("model.zig").BundleGraph;

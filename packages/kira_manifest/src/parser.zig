@@ -6,6 +6,7 @@ const ProjectManifest = @import("project_manifest.zig").ProjectManifest;
 const PackageKind = @import("project_manifest.zig").PackageKind;
 const PackageManifest = @import("package_manifest.zig").PackageManifest;
 const NativeLibManifest = @import("native_lib_manifest.zig").NativeLibManifest;
+const platform_config = @import("platform_config.zig");
 
 pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !ProjectManifest {
     var name: []const u8 = "";
@@ -40,6 +41,7 @@ pub fn parseProjectManifest(allocator: std.mem.Allocator, text: []const u8) !Pro
         }
         if (isSectionHeader(line)) {
             section = line[1 .. line.len - 1];
+            try platform_config.validateProfileSection(section);
             continue;
         }
 

@@ -21,6 +21,7 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\  remove       Remove a package dependency.
         \\  update       Update registry package dependencies.
         \\  package      Pack or inspect Kira package archives.
+        \\  export       Generate platform project/export scaffolds.
         \\  new          Scaffold an app or library package.
         \\  fetch-llvm   Install or describe the managed LLVM toolchain.
         \\  tokens       Print frontend tokens.
@@ -86,6 +87,11 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
         .remove => try writer.writeAll("usage: kira remove <Package>\n"),
         .update => try writer.writeAll("usage: kira update [<project-dir|manifest>]\n"),
         .package => try writer.writeAll("usage: kira package pack [<project-dir|manifest>]\n       kira package inspect <archive-path|project-dir>\n"),
+        .export_cmd => try writer.writeAll(
+            \\usage: kira export apple|macos|ios|tvos|visionos|windows|android|web|linux [<project-dir|manifest>] [--profile debug|profiler|release] [--surface dom|webgpu|hybrid]
+            \\Generate platform exports. Target defaults to the current project.
+            \\
+        ),
         .tokens => try writer.writeAll("usage: kira tokens [<project-dir|manifest|source>]\n"),
         .ast => try writer.writeAll("usage: kira ast [<project-dir|manifest|source>]\n"),
         .version => try writer.writeAll("usage: kira version\n"),

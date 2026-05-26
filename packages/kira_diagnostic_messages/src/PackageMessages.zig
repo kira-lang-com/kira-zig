@@ -48,3 +48,25 @@ pub fn noBuildableTarget(allocator: std.mem.Allocator, source_root: []const u8) 
         .help = "Add library source files under the package `app/` directory.",
     });
 }
+
+pub fn unknownProfile(allocator: std.mem.Allocator, profile: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KPK015_UnknownProfile,
+        .domain = .package,
+        .phase = .project_discovery,
+        .title = "unknown build profile",
+        .message = try std.fmt.allocPrint(allocator, "`{s}` is not a known Kira build profile.", .{profile}),
+        .help = "Use `debug`, `profiler`, or `release`. The profile is `profiler`, not `profile`.",
+    });
+}
+
+pub fn invalidRunnerConfig(allocator: std.mem.Allocator, runner: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KPK017_InvalidRunnerConfig,
+        .domain = .package,
+        .phase = .project_discovery,
+        .title = "invalid runner config",
+        .message = try std.fmt.allocPrint(allocator, "The runner config `{s}` could not be resolved.", .{runner}),
+        .help = "Use first-class runner ids: desktop, macos, ios, tvos, visionos, windows, android, web, or linux.",
+    });
+}

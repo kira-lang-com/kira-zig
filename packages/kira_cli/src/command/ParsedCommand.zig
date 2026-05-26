@@ -1,5 +1,6 @@
 const std = @import("std");
 const build_def = @import("kira_build_definition");
+const manifest = @import("kira_manifest");
 const app_generation = @import("kira_app_generation");
 const Duration = @import("Duration.zig");
 const CommandKind = @import("CommandKind.zig").CommandKind;
@@ -12,6 +13,7 @@ pub const VersionOptions = struct {};
 
 pub const ProjectOptions = struct {
     backend: ?build_def.ExecutionTarget = null,
+    profile: ?manifest.BuildProfile = null,
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
@@ -19,7 +21,9 @@ pub const ProjectOptions = struct {
 };
 
 pub const RunOptions = struct {
+    runner: ?manifest.RunnerId = null,
     backend: ?build_def.ExecutionTarget = null,
+    surface: manifest.WebSurface = .dom,
     offline: bool = false,
     locked: bool = false,
     trace_execution: bool = false,
@@ -31,14 +35,26 @@ pub const RunOptions = struct {
 pub const LiveMode = enum { run, runners_list, runners_build, runners_clean };
 pub const LiveRunnerKind = enum {
     desktop,
-    ios_simulator,
-    ios_device,
+    macos,
+    ios,
+    tvos,
+    visionos,
+    windows,
+    android,
+    web,
+    linux,
 
     pub fn legacyLabel(self: LiveRunnerKind) []const u8 {
         return switch (self) {
             .desktop => "desktop",
-            .ios_simulator => "ios-simulator",
-            .ios_device => "ios-device",
+            .macos => "macos",
+            .ios => "ios",
+            .tvos => "tvos",
+            .visionos => "visionos",
+            .windows => "windows",
+            .android => "android",
+            .web => "web",
+            .linux => "linux",
         };
     }
 };
@@ -49,9 +65,21 @@ pub const LiveOptions = struct {
     input_path: []const u8,
     run_for: ?Duration = null,
     quit_after: ?Duration = null,
+    profile: ?manifest.BuildProfile = null,
+    surface: manifest.WebSurface = .dom,
+    host: ?[]const u8 = null,
+    port: ?u16 = null,
+    server_url: ?[]const u8 = null,
     kill_after: bool = false,
     headless: bool = false,
     device: []const u8 = "auto",
+};
+
+pub const ExportOptions = struct {
+    family: manifest.ExportFamily,
+    input_path: []const u8 = ".",
+    profile: manifest.BuildProfile = .debug,
+    surface: manifest.WebSurface = .dom,
 };
 
 pub const NewOptions = struct {
@@ -146,6 +174,7 @@ pub const ParsedCommand = union(CommandKind) {
     update: UpdateOptions,
     package: PackageOptions,
     live: LiveOptions,
+    export_cmd: ExportOptions,
     help: HelpOptions,
     version: VersionOptions,
 

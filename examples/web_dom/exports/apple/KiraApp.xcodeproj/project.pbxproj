@@ -1,0 +1,45 @@
+// !$*UTF8*$!
+{
+archiveVersion = 1;
+classes = {};
+objectVersion = 56;
+objects = {
+A1 = {isa = PBXProject; buildConfigurationList = C0; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = A2; productRefGroup = A3; projectDirPath = ""; projectRoot = ""; targets = (TmacDebug, TiosDebug, TtvosDebug, TvisionDebug, ); };
+A2 = {isa = PBXGroup; children = (A3, FMain, ); sourceTree = "<group>"; };
+A3 = {isa = PBXGroup; children = (); name = Products; sourceTree = "<group>"; };
+FMain = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Shared/KiraRuntime/main.m; sourceTree = "<group>"; };
+BFMac = {isa = PBXBuildFile; fileRef = FMain; };
+BFIos = {isa = PBXBuildFile; fileRef = FMain; };
+BFTvos = {isa = PBXBuildFile; fileRef = FMain; };
+BFVision = {isa = PBXBuildFile; fileRef = FMain; };
+SMac = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BFMac, ); runOnlyForDeploymentPostprocessing = 0; };
+SIos = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BFIos, ); runOnlyForDeploymentPostprocessing = 0; };
+STvos = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BFTvos, ); runOnlyForDeploymentPostprocessing = 0; };
+SVision = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BFVision, ); runOnlyForDeploymentPostprocessing = 0; };
+TmacDebug = {isa = PBXNativeTarget; buildConfigurationList = C1; buildPhases = (SMac, ); buildRules = (); dependencies = (); name = "KiraApp-macOS-Debug"; productName = "KiraApp-macOS-Debug"; productType = "com.apple.product-type.application"; };
+TiosDebug = {isa = PBXNativeTarget; buildConfigurationList = C2; buildPhases = (SIos, ); buildRules = (); dependencies = (); name = "KiraApp-iOS-Debug"; productName = "KiraApp-iOS-Debug"; productType = "com.apple.product-type.application"; };
+TtvosDebug = {isa = PBXNativeTarget; buildConfigurationList = C3; buildPhases = (STvos, ); buildRules = (); dependencies = (); name = "KiraApp-tvOS-Debug"; productName = "KiraApp-tvOS-Debug"; productType = "com.apple.product-type.application"; };
+TvisionDebug = {isa = PBXNativeTarget; buildConfigurationList = C4; buildPhases = (SVision, ); buildRules = (); dependencies = (); name = "KiraApp-visionOS-Debug"; productName = "KiraApp-visionOS-Debug"; productType = "com.apple.product-type.application"; };
+C0 = {isa = XCConfigurationList; buildConfigurations = (PDebug, PProfiler, PRelease, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+C1 = {isa = XCConfigurationList; buildConfigurations = (MDebug, MProfiler, MRelease, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+C2 = {isa = XCConfigurationList; buildConfigurations = (IDebug, IProfiler, IRelease, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+C3 = {isa = XCConfigurationList; buildConfigurations = (TDebug, TProfiler, TRelease, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+C4 = {isa = XCConfigurationList; buildConfigurations = (VDebug, VProfiler, VRelease, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+PDebug = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };
+PProfiler = {isa = XCBuildConfiguration; buildSettings = {}; name = Profiler; };
+PRelease = {isa = XCBuildConfiguration; buildSettings = {}; name = Release; };
+MDebug = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-macOS-Debug"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.macos.debug"; SDKROOT = macosx; INFOPLIST_FILE = macOS/Info.plist; CODE_SIGNING_ALLOWED = NO;}; name = Debug; };
+MProfiler = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-macOS-Profiler"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.macos.profiler"; SDKROOT = macosx; INFOPLIST_FILE = macOS/Info.plist; CODE_SIGNING_ALLOWED = NO;}; name = Profiler; };
+MRelease = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-macOS-Release"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.macos.release"; SDKROOT = macosx; INFOPLIST_FILE = macOS/Info.plist; CODE_SIGNING_ALLOWED = NO;}; name = Release; };
+IDebug = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-iOS-Debug"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.ios.debug"; SDKROOT = iphoneos; INFOPLIST_FILE = iOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Debug; };
+IProfiler = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-iOS-Profiler"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.ios.profiler"; SDKROOT = iphoneos; INFOPLIST_FILE = iOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Profiler; };
+IRelease = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-iOS-Release"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.ios.release"; SDKROOT = iphoneos; INFOPLIST_FILE = iOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Release; };
+TDebug = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-tvOS-Debug"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.tvos.debug"; SDKROOT = appletvos; INFOPLIST_FILE = tvOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Debug; };
+TProfiler = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-tvOS-Profiler"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.tvos.profiler"; SDKROOT = appletvos; INFOPLIST_FILE = tvOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Profiler; };
+TRelease = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-tvOS-Release"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.tvos.release"; SDKROOT = appletvos; INFOPLIST_FILE = tvOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Release; };
+VDebug = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-visionOS-Debug"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.visionos.debug"; SDKROOT = xros; INFOPLIST_FILE = visionOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Debug; };
+VProfiler = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-visionOS-Profiler"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.visionos.profiler"; SDKROOT = xros; INFOPLIST_FILE = visionOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Profiler; };
+VRelease = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_NAME = "KiraApp-visionOS-Release"; PRODUCT_BUNDLE_IDENTIFIER = "com.kira.app.visionos.release"; SDKROOT = xros; INFOPLIST_FILE = visionOS/Info.plist; CODE_SIGNING_ALLOWED = YES;}; name = Release; };
+};
+rootObject = A1;
+}

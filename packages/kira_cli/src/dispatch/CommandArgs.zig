@@ -10,6 +10,7 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
         .build => |options| try appendProjectOptions(allocator, &list, options),
         .run => |options| try appendRunOptions(allocator, &list, options),
         .live => |options| try appendLiveOptions(allocator, &list, options),
+        .export_cmd => |options| try appendExportOptions(allocator, &list, options),
         .new => |options| {
             if (options.kind == .library) try list.append("--lib");
             try list.append(options.name);
@@ -79,6 +80,7 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
 fn appendProjectOptions(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8), options: Parsed.ProjectOptions) !void {
     _ = allocator;
     if (options.backend) |backend| try list.appendSlice(&.{ "--backend", backendLabel(backend) });
+    if (options.profile) |profile| try list.appendSlice(&.{ "--profile", profile.label() });
     if (options.offline) try list.append("--offline");
     if (options.locked) try list.append("--locked");
     if (options.timings) try list.append("--timings");
@@ -86,6 +88,7 @@ fn appendProjectOptions(allocator: std.mem.Allocator, list: *std.array_list.Mana
 }
 
 fn appendRunOptions(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8), options: Parsed.RunOptions) !void {
+    if (options.runner) |runner| try list.append(runner.label());
     if (options.backend) |backend| try list.appendSlice(&.{ "--backend", backendLabel(backend) });
     if (options.offline) try list.append("--offline");
     if (options.locked) try list.append("--locked");
@@ -95,6 +98,7 @@ fn appendRunOptions(allocator: std.mem.Allocator, list: *std.array_list.Managed(
         try list.append("--quit-after");
         try duration.appendArgs(allocator, list);
     }
+    if ((options.runner != null and options.runner.? == .web) or options.surface != .dom) try list.appendSlice(&.{ "--surface", options.surface.label() });
     try list.append(options.input_path);
 }
 
@@ -114,9 +118,22 @@ fn appendLiveOptions(allocator: std.mem.Allocator, list: *std.array_list.Managed
             }
             if (options.kill_after) try list.append("--kill-after");
             if (options.headless) try list.append("--headless");
-            if (!std.mem.eql(u8, options.device, "auto") or options.runner == .ios_device) try list.appendSlice(&.{ "--device", options.device });
+            if (options.profile) |profile| try list.appendSlice(&.{ "--profile", profile.label() });
+            if (options.runner == .web or options.surface != .dom) try list.appendSlice(&.{ "--surface", options.surface.label() });
+            if (options.host) |host| try list.appendSlice(&.{ "--host", host });
+            if (options.port) |port| try list.appendSlice(&.{ "--port", try std.fmt.allocPrint(allocator, "{d}", .{port}) });
+            if (options.server_url) |url| try list.appendSlice(&.{ "--server-url", url });
+            if (!std.mem.eql(u8, options.device, "auto") or options.runner == .ios) try list.appendSlice(&.{ "--device", options.device });
         },
     }
+}
+
+fn appendExportOptions(allocator: std.mem.Allocator, list: *std.array_list.Managed([]const u8), options: Parsed.ExportOptions) !void {
+    _ = allocator;
+    try list.append(options.family.label());
+    try list.append(options.input_path);
+    if (options.profile != .debug) try list.appendSlice(&.{ "--profile", options.profile.label() });
+    if (options.family == .web or options.surface != .dom) try list.appendSlice(&.{ "--surface", options.surface.label() });
 }
 
 fn backendLabel(backend: build_def.ExecutionTarget) []const u8 {

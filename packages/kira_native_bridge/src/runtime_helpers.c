@@ -5,6 +5,17 @@
 #include <stdarg.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <mach-o/loader.h>
+const struct mach_header *_dyld_get_image_header_containing_address(const void *address) {
+    (void)address;
+    return NULL;
+}
+#endif
+#endif
+
 #if defined(_WIN32)
 #define KIRA_BRIDGE_EXPORT __declspec(dllexport)
 #include <fcntl.h>

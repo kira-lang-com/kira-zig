@@ -79,6 +79,7 @@ The runnable sample index lives in [examples/README.md](examples/README.md). Use
 - `examples/arithmetic` — simple functions, locals, arithmetic, and structs.
 - `examples/imports_demo`, `examples/report_pipeline`, `examples/geometry_story`, and `examples/status_board` — broader language-facing examples.
 - `examples/hybrid_roundtrip` — hybrid runtime/native boundary roundtrip.
+- `examples/web_dom` — Kira Wasm DOM runner/export smoke using Foundation.Web browser bindings.
 - `examples/callbacks` and `examples/callbacks_chain` — native callbacks and callback state.
 - `examples/sokol_triangle` and `examples/sokol_runtime_entry` — Sokol/OpenGL native interop proofs using local `NativeLibs/` manifests.
 - `examples/shaders` — `.ksl` shader examples compiled by the dedicated shader pipeline.
@@ -147,7 +148,9 @@ kira add --git https://github.com/Sunlight-Horizon/GameKit.git --rev <commit> Ga
 kira package pack
 ```
 
-Library roots are checkable and buildable, but execution belongs to app/example targets: `kira run .` on a library reports `KCL020`, and `kira live .` reports `KCL021`. `kira live <target>` defaults to desktop and starts a real live server/client session: the server builds a VM/live bundle graph under the selected target's `.kira-build/live/`, launches the desktop runner client, sends bundles, verifies client load/link/entrypoint events, and waits for a presented frame before reporting the session ready. For bounded smoke tests, `kira run <example> --quit-after 5s` and `kira live desktop <example> --quit-after 5s` automatically shut down graphical/runtime sessions instead of leaving windows or child processes open. Legacy `kira live desktop <example> --run-for 5s --kill-after` remains accepted as a compatibility spelling. Live reload currently performs full-bundle hot restart in the existing runner process; incremental bundle patching is not claimed as supported yet. `ios` and `ios-simulator` are recognized live platforms, but today they audit Xcode/iPhoneSimulator availability and report a precise unsupported-runner diagnostic until the simulator client path exists. Targets that are valid for check/build/run but not live-bundle compatible are rejected before runner launch with `KCL031`.
+Library roots are checkable and buildable, but execution belongs to app/example targets: `kira run .` on a library reports `KCL020`, and `kira live .` reports `KCL021`. `kira live <target>` defaults to desktop and starts a real live server/client session: the server builds a `.klbundle` bundle graph under the selected target's `.kira-build/live/`, launches the desktop runner client, sends bundles over TCP, verifies client load/link/entrypoint events, and waits for a presented frame before reporting the session ready. For bounded smoke tests, `kira run <example> --quit-after 5s` and `kira live desktop <example> --quit-after 5s` automatically shut down graphical/runtime sessions instead of leaving windows or child processes open. Legacy `kira live desktop <example> --run-for 5s --kill-after` remains accepted as a compatibility spelling. Live reload currently performs full-bundle hot restart in the existing runner process; incremental bundle patching is not claimed as supported yet.
+
+Platform runner and export ids are first-class: `desktop`, `macos`, `ios`, `tvos`, `visionos`, `windows`, `android`, `web`, and `linux`. `kira export apple` emits a merged Xcode workspace with macOS/iOS/tvOS/visionOS schemes; `kira export web` emits the Kira Wasm DOM scaffold; Windows, Android, and Linux exports emit build-system scaffolds with precise setup diagnostics. See [docs/platforms.md](docs/platforms.md), [docs/live.md](docs/live.md), [docs/web_runner.md](docs/web_runner.md), and [docs/exports.md](docs/exports.md).
 
 LLVM discovery is explicit:
 
@@ -178,6 +181,10 @@ Kira is licensed under Apache 2.0 with the Kira Runtime Library Exception. See [
 - [Architecture](docs/architecture.md)
 - [Package graph](docs/package_graph.md)
 - [Commands](docs/commands.md)
+- [Platforms](docs/platforms.md)
+- [Live](docs/live.md)
+- [Kira Wasm web runner](docs/web_runner.md)
+- [Exports](docs/exports.md)
 - [Language inventory](docs/language_inventory.md)
 - [Native libraries](docs/native_libraries.md)
 - [KSL shaders](docs/ksl.md)

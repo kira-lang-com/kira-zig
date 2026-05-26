@@ -1,4 +1,5 @@
 const dependency = @import("dependency.zig");
+const platform_config = @import("platform_config.zig");
 
 pub const PackageKind = enum {
     app,
@@ -18,4 +19,5 @@ pub const ProjectManifest = struct {
     build_target: []const u8 = "host",
     registry_url: ?[]const u8 = null,
     registry_token_env: ?[]const u8 = null,
+    resolved_config: platform_config.ResolvedConfig = platform_config.defaultResolvedConfig(),
 };

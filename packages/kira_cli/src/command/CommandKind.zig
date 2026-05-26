@@ -17,6 +17,7 @@ pub const CommandKind = enum {
     update,
     package,
     live,
+    export_cmd,
     help,
     version,
 
@@ -40,6 +41,7 @@ pub const CommandKind = enum {
             .update => "update",
             .package => "package",
             .live => "live",
+            .export_cmd => "export",
             .help => "help",
             .version => "version",
         };
@@ -57,6 +59,8 @@ pub fn parse(command: []const u8) ?CommandKind {
             if (std.mem.eql(u8, command, "__run-hybrid-artifact")) return kind;
         } else if (kind == .live_runner) {
             if (std.mem.eql(u8, command, "__live-runner")) return kind;
+        } else if (kind == .export_cmd) {
+            if (std.mem.eql(u8, command, "export")) return kind;
         } else if (std.mem.eql(u8, command, field.name)) {
             return kind;
         }

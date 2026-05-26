@@ -15,6 +15,7 @@ const cmd_fetch_llvm = @import("commands/fetch_llvm.zig");
 const cmd_shader = @import("commands/shader.zig");
 const cmd_instruments = @import("commands/instruments.zig");
 const cmd_live = @import("commands/live.zig");
+const cmd_export = @import("commands/export.zig");
 const support = @import("support.zig");
 const cli_parser = @import("parse/Parser.zig");
 const help_text = @import("command/HelpText.zig");
@@ -136,6 +137,7 @@ fn dispatchCommand(
         .update => executeCommand(allocator, command, args, out, err, cmd_update.execute),
         .package => executeCommand(allocator, command, args, out, err, cmd_package.execute),
         .live => executeCommand(allocator, command, args, out, err, cmd_live.execute),
+        .export_cmd => executeCommand(allocator, command, args, out, err, cmd_export.execute),
         .help, .version => unreachable,
     };
 }
