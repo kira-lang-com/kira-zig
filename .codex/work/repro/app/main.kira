@@ -1,0 +1,54 @@
+struct Node {
+    var id: Int
+    var childIds: [Int]
+}
+
+struct Tree {
+    var nodes: [Node]
+    var reused: [Int]
+}
+
+function nodeFromList(nodes: borrow [Node], id: Int) -> Node {
+    var i = 0
+    while i < nodes.count {
+        if nodes[i].id == id {
+            return nodes[i]
+        }
+        i = i + 1
+    }
+    return Node { id: 0, childIds: [] }
+}
+
+function rebuild(tree: Tree) -> Tree {
+    let previous = tree.nodes
+    var next = tree
+    next.nodes = []
+    next.reused = []
+    var i = 0
+    while i < previous.count {
+        let prior = nodeFromList(previous, previous[i].id)
+        var childIds: [Int] = []
+        childIds.append(prior.id)
+        childIds.append(i)
+        next.nodes.append(Node { id: previous[i].id, childIds: move childIds })
+        next.reused.append(previous[i].id)
+        i = i + 1
+    }
+    return next
+}
+
+@Main
+function main() {
+    var tree = Tree { nodes: [], reused: [] }
+    var k = 0
+    while k < 8 {
+        tree.nodes.append(Node { id: k, childIds: [] })
+        k = k + 1
+    }
+    var frame = 0
+    while frame < 200000 {
+        tree = rebuild(move tree)
+        frame = frame + 1
+    }
+    print(tree.nodes.count)
+}

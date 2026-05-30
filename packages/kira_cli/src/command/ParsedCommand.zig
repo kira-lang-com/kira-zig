@@ -81,6 +81,10 @@ pub const ExportOptions = struct {
     input_path: []const u8 = ".",
     profile: manifest.BuildProfile = .debug,
     surface: manifest.WebSurface = .dom,
+    // Internal: set by the generated Xcode Run Script build phase to rebuild only
+    // the Kira artifacts for the active SDK ($PLATFORM_NAME) instead of regenerating
+    // the whole workspace.
+    xcode_rebuild_platform: ?[]const u8 = null,
 };
 
 pub const NewOptions = struct {

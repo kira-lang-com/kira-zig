@@ -409,12 +409,19 @@ fn appendClangCompileCommand(
 }
 
 fn shouldCompileAsObjectiveC(selector: native.TargetSelector, library: native.ResolvedNativeLibrary, source_path: []const u8) bool {
-    if (!std.mem.eql(u8, selector.operating_system, "macos") and !std.mem.eql(u8, selector.operating_system, "ios")) return false;
+    if (!isAppleOperatingSystem(selector.operating_system)) return false;
     if (library.link.frameworks.len == 0 and library.headers.frameworks.len == 0) return false;
 
     const extension = std.fs.path.extension(source_path);
     if (std.mem.eql(u8, extension, ".m") or std.mem.eql(u8, extension, ".mm")) return false;
     return std.mem.eql(u8, extension, ".c");
+}
+
+fn isAppleOperatingSystem(operating_system: []const u8) bool {
+    return std.mem.eql(u8, operating_system, "macos") or
+        std.mem.eql(u8, operating_system, "ios") or
+        std.mem.eql(u8, operating_system, "tvos") or
+        std.mem.eql(u8, operating_system, "xros");
 }
 
 fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize, build_suffix: u64) ![]const u8 {
@@ -568,6 +575,8 @@ fn makePath(path: []const u8) !void {
 }
 
 test "macOS framework-backed C source compiles as Objective-C" {
+    const macos: native.TargetSelector = .{ .architecture = "aarch64", .operating_system = "macos", .abi = "none" };
+    const linux: native.TargetSelector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" };
     const library: native.ResolvedNativeLibrary = .{
         .name = "sokol",
         .link_mode = .static,
@@ -578,9 +587,9 @@ test "macOS framework-backed C source compiles as Objective-C" {
         .link = .{ .frameworks = &.{"AppKit"} },
     };
 
-    try std.testing.expect(shouldCompileAsObjectiveC(.macos, library, "/tmp/sokol_impl.c"));
-    try std.testing.expect(!shouldCompileAsObjectiveC(.macos, library, "/tmp/sokol_impl.m"));
-    try std.testing.expect(!shouldCompileAsObjectiveC(.linux, library, "/tmp/sokol_impl.c"));
+    try std.testing.expect(shouldCompileAsObjectiveC(macos, library, "/tmp/sokol_impl.c"));
+    try std.testing.expect(!shouldCompileAsObjectiveC(macos, library, "/tmp/sokol_impl.m"));
+    try std.testing.expect(!shouldCompileAsObjectiveC(linux, library, "/tmp/sokol_impl.c"));
 }
 
 test "native artifact freshness tracks C and header content changes" {

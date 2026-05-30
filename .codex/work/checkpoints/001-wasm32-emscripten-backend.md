@@ -1,0 +1,36 @@
+# 001 - wasm32-emscripten Backend Checkpoint
+
+- timestamp: 2026-05-27T16:35:00Z
+- current task filename: `001-wasm32-emscripten-backend.md`
+- status: complete
+- last successful command: `zig-out/bin/kira run --backend wasm32-emscripten tests/pass/run/if_basic_parity/main.kira`
+- last failing command, if any:
+  - `zig-out/bin/kira check --backend wasm32-emscripten examples/hello` exits nonzero by design with `KTC003: unsupported native library target` because the package has host-native library artifacts but no `wasm32-emscripten-unknown` NativeLibs target.
+- important files changed:
+  - `packages/kira_build_definition/src/build_target.zig`
+  - `packages/kira_build/src/build_system.zig`
+  - `packages/kira_build/src/cache.zig`
+  - `packages/kira_build/src/pipeline.zig`
+  - `packages/kira_build/src/pipeline_tests.zig`
+  - `packages/kira_build/src/wasm_emscripten_tests.zig`
+  - `packages/kira_llvm_backend/src/emscripten.zig`
+  - `packages/kira_llvm_backend/src/backend.zig`
+  - `packages/kira_llvm_backend/src/backend_platform_utils.zig`
+  - `packages/kira_llvm_backend/src/clang_driver.zig`
+  - `packages/kira_llvm_backend/src/link.zig`
+  - `packages/kira_cli/src/commands/build.zig`
+  - `packages/kira_cli/src/commands/check.zig`
+  - `packages/kira_cli/src/commands/run.zig`
+  - `packages/kira_native_bridge/src/runtime_helpers.c`
+- next recommended action:
+  - verify task ordering and move to the next sorted incomplete task under `.codex/work/tasks/`.
+- whether VM/LLVM/hybrid/WASM parity was preserved or explicitly rejected:
+  - VM/LLVM/hybrid parity preserved by `zig build test` with corpus `1017 passed, 0 failed`.
+  - wasm now executes the minimal real Kira entrypoint through Emscripten and Node.
+  - browser-host native library gaps are explicitly rejected with `KTC003` target diagnostics.
+- whether AGENTS.md core laws were followed:
+  - no Python was added.
+  - no CI files or CI docs were edited.
+  - no root-level Zig files were added.
+  - no fake WASM success marker was added.
+  - `pipeline.zig` was split below the 1000-line hard limit.

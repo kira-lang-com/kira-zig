@@ -326,6 +326,7 @@ fn runInstrumented(allocator: std.mem.Allocator, parsed: ParsedRunArgs, stderr: 
     const artifact_path = switch (backend) {
         .vm => findArtifact(result.artifacts, .bytecode) orelse return error.MissingBytecodeArtifact,
         .llvm_native => findArtifact(result.artifacts, .executable) orelse return error.MissingExecutableArtifact,
+        .wasm32_emscripten => return error.UnsupportedTarget,
         .hybrid => findArtifact(result.artifacts, .hybrid_manifest) orelse return error.MissingHybridManifestArtifact,
     }.path;
 
@@ -515,6 +516,7 @@ fn instrumentOutputPath(allocator: std.mem.Allocator, output_root: []const u8, s
     return switch (backend) {
         .vm => std.fmt.allocPrint(allocator, "{s}/{s}.instruments.kbc", .{ output_root, stem }),
         .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}.instruments{s}", .{ output_root, stem, build.executableExtension() }),
+        .wasm32_emscripten => return error.UnsupportedTarget,
         .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.instruments.khm", .{ output_root, stem }),
     };
 }

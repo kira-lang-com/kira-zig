@@ -125,11 +125,18 @@ fn parseProjectCommand(allocator: std.mem.Allocator, args: []const []const u8) !
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--backend")) {
             index += 1;
-            if (index >= args.len) return failMissing("--backend", "vm, llvm, or hybrid");
+            if (index >= args.len) return failMissing("--backend", "vm, llvm, hybrid, or wasm32-emscripten");
             parsed.backend = values.parseBackend(args[index]) orelse {
                 last_value_for_error = args[index];
                 return error.InvalidBackend;
             };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--target")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--target", "wasm32-emscripten");
+            if (!std.mem.eql(u8, args[index], "wasm32-emscripten")) return failInvalid("--target", args[index], "wasm32-emscripten");
+            parsed.backend = .wasm32_emscripten;
             continue;
         }
         if (std.mem.eql(u8, arg, "--profile")) {
@@ -354,6 +361,12 @@ fn parseExport(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.E
             index += 1;
             if (index >= args.len) return failMissing("--surface", "dom, webgpu, or hybrid");
             parsed.surface = manifest.WebSurface.parse(args[index]) orelse return failInvalid("--surface", args[index], "dom, webgpu, or hybrid");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--xcode-rebuild")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--xcode-rebuild", "an Apple SDK platform name");
+            parsed.xcode_rebuild_platform = args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported export flag");

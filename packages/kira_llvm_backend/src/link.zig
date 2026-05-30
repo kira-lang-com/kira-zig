@@ -4,6 +4,7 @@ const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 const backend_utils = @import("backend_utils.zig");
 const clang_driver = @import("clang_driver.zig");
+const emscripten = @import("emscripten.zig");
 const toolchain = @import("toolchain.zig");
 
 pub fn buildRuntimeHelpersObject(
@@ -52,7 +53,7 @@ pub fn linkExecutable(
             try argv.appendSlice(&.{ "-framework", framework });
         }
     }
-    try appendHostDefaultSystemLibraries(&argv);
+    try appendDefaultSystemLibraries(&argv, selector);
 
     try runCommand(allocator, argv.items);
 }
@@ -81,16 +82,18 @@ pub fn linkSharedLibrary(
             try argv.appendSlice(&.{ "-framework", framework });
         }
     }
-    try appendHostDefaultSystemLibraries(&argv);
+    try appendDefaultSystemLibraries(&argv, selector);
 
     try runCommand(allocator, argv.items);
 }
 
-fn appendHostDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8)) !void {
+fn appendDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {
+    if (emscripten.isSelector(selector)) return;
     if (builtin.os.tag == .linux) try argv.append("-lm");
 }
 
 fn compilerDriverPathForSelector(allocator: std.mem.Allocator, selector: ?native.TargetSelector) ![]const u8 {
+    if (emscripten.isSelector(selector)) return emscripten.emccPath(allocator);
     if (try clang_driver.appleClangPathForSelector(allocator, selector)) |path| return path;
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
     return llvm_toolchain.compilerDriverPath(allocator);

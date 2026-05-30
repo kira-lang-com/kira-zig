@@ -145,7 +145,9 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, resources_dir);
 
     const compiled = try build.compileFileForBackendWithSelector(allocator, args.entrypoint_path, .hybrid, args.selector, &.{});
-    if (compiled.failed()) return error.LiveBundleBuildFailed;
+    if (compiled.failed()) {
+        return error.LiveBundleBuildFailed;
+    }
 
     const bytecode_rel_path = "modules/app.main.kirbc";
     const hybrid_rel_path = "modules/app.main.khm";
@@ -174,7 +176,9 @@ fn buildProjectBundle(allocator: std.mem.Allocator, args: BuildProjectBundleArgs
             },
             .target_selector = args.selector,
             .resolved_native_libraries = compiled.native_libraries,
-        }) catch return error.LiveBundleBuildFailed;
+        }) catch {
+            return error.LiveBundleBuildFailed;
+        };
         native_object_path = object_path;
         native_library_path = library_path;
     }

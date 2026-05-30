@@ -122,6 +122,7 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("declare void @\"kira_array_append\"(ptr, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_load\"(ptr, i64, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_release\"(ptr, ptr)\n");
+    try writer.writeAll("declare void @\"kira_array_retain\"(ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_alloc\"(i64, i64)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_payload\"(ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_recover\"(ptr, i64)\n");
@@ -1650,6 +1651,49 @@ fn emitFunctionCleanup(
             else => {},
         }
     }
+}
+
+fn retainContentsSymbolName(allocator: std.mem.Allocator, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "kira_retain_contents_{s}", .{type_name});
+}
+
+// Mirror of kira_release_contents_<T>: retains (refcount++) every array field of a
+// struct, recursing into nested ffi_struct fields. Emitted at struct copy sites where
+// the source remains a live owner, so the duplicated reference is balanced by the
+// release the copy's owner will eventually perform.
+fn appendRetainDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {
+    for (program.types) |type_decl| {
+        if (type_decl.ffi) |ffi_info| {
+            if (ffi_info != .ffi_struct) continue;
+        }
+        const retain_name = try retainContentsSymbolName(allocator, type_decl.name);
+        defer allocator.free(retain_name);
+        const struct_type_name = typeRefName(type_decl.name);
+
+        try writer.writeAll("define void ");
+        try writeLlvmSymbol(writer, retain_name);
+        try writer.writeAll("(ptr %value) {\nentry:\n");
+        for (type_decl.fields, 0..) |field, index| {
+            switch (field.ty.kind) {
+                .ffi_struct => {
+                    const field_retain = try retainContentsSymbolName(allocator, field.ty.name orelse return error.UnsupportedExecutableFeature);
+                    defer allocator.free(field_retain);
+                    try writer.print("  %retain.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
+                    try writer.writeAll("  call void ");
+                    try writeLlvmSymbol(writer, field_retain);
+                    try writer.print("(ptr %retain.field.{d})\n", .{index});
+                },
+                .array => {
+                    try writer.print("  %retain.array.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
+                    try writer.print("  %retain.array.{d} = load ptr, ptr %retain.array.field.{d}\n", .{ index, index });
+                    try writer.print("  call void @\"kira_array_retain\"(ptr %retain.array.{d})\n", .{index});
+                },
+                else => {},
+            }
+        }
+        try writer.writeAll("  ret void\n}\n");
+    }
+    if (program.types.len > 0) try writer.writeByte('\n');
 }
 
 fn appendReleaseDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {

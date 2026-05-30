@@ -98,6 +98,24 @@ pub const BundleManifest = struct {
     }
 };
 
+pub const RuntimeMode = enum {
+    live,
+    standalone,
+
+    pub fn parse(value: []const u8) ?RuntimeMode {
+        if (std.mem.eql(u8, value, "live")) return .live;
+        if (std.mem.eql(u8, value, "standalone")) return .standalone;
+        return null;
+    }
+
+    pub fn manifestName(self: RuntimeMode) []const u8 {
+        return switch (self) {
+            .live => "live",
+            .standalone => "standalone",
+        };
+    }
+};
+
 pub const RunnerManifest = struct {
     kind: RunnerKind,
     name: []const u8,
@@ -112,6 +130,8 @@ pub const RunnerManifest = struct {
     server_host: []const u8,
     server_port: u16,
     native_contract_hash: []const u8,
+    runtime_mode: RuntimeMode = .live,
+    embedded_bundles_path: ?[]const u8 = null,
 
     pub fn writeToml(self: RunnerManifest, writer: anytype) !void {
         try writer.writeAll("[runtime]\n");
@@ -119,6 +139,7 @@ pub const RunnerManifest = struct {
         try writer.print("name = \"{s}\"\n", .{self.name});
         try writer.print("bundle_id = \"{s}\"\n", .{self.bundle_id});
         try writer.print("version = \"{s}\"\n", .{self.version});
+        try writer.print("mode = \"{s}\"\n", .{self.runtime_mode.manifestName()});
         try writer.writeAll("\n[target]\n");
         try writer.print("path = \"{s}\"\n", .{self.target_path});
         try writer.print("package = \"{s}\"\n", .{self.package_name});
@@ -127,6 +148,9 @@ pub const RunnerManifest = struct {
         try writer.print("bundles = \"{s}\"\n", .{self.bundles_path});
         try writer.print("local_cache = \"{s}\"\n", .{self.local_cache_path});
         try writer.print("main_bundle = \"{s}\"\n", .{self.main_bundle_id});
+        if (self.embedded_bundles_path) |path| {
+            try writer.print("embedded_bundles = \"{s}\"\n", .{path});
+        }
         try writer.writeAll("\n[abi]\n");
         try writer.writeAll("bytecode = 1\n");
         try writer.writeAll("hostcall = 1\n");
@@ -151,6 +175,8 @@ pub const RunnerManifest = struct {
             .server_host = "127.0.0.1",
             .server_port = 0,
             .native_contract_hash = "",
+            .runtime_mode = .live,
+            .embedded_bundles_path = null,
         };
         var section: []const u8 = "";
         var lines = std.mem.splitScalar(u8, text, '\n');
@@ -167,6 +193,9 @@ pub const RunnerManifest = struct {
                 if (std.mem.eql(u8, kv.key, "name")) manifest.name = try parseOwnedString(allocator, kv.value);
                 if (std.mem.eql(u8, kv.key, "bundle_id")) manifest.bundle_id = try parseOwnedString(allocator, kv.value);
                 if (std.mem.eql(u8, kv.key, "version")) manifest.version = try parseOwnedString(allocator, kv.value);
+                if (std.mem.eql(u8, kv.key, "mode")) {
+                    manifest.runtime_mode = RuntimeMode.parse(try parseOwnedString(allocator, kv.value)) orelse return error.InvalidManifest;
+                }
                 continue;
             }
             if (std.mem.eql(u8, section, "target")) {
@@ -179,6 +208,7 @@ pub const RunnerManifest = struct {
                 if (std.mem.eql(u8, kv.key, "bundles")) manifest.bundles_path = try parseOwnedString(allocator, kv.value);
                 if (std.mem.eql(u8, kv.key, "local_cache")) manifest.local_cache_path = try parseOwnedString(allocator, kv.value);
                 if (std.mem.eql(u8, kv.key, "main_bundle")) manifest.main_bundle_id = try parseOwnedString(allocator, kv.value);
+                if (std.mem.eql(u8, kv.key, "embedded_bundles")) manifest.embedded_bundles_path = try parseOwnedString(allocator, kv.value);
                 continue;
             }
             if (std.mem.eql(u8, section, "abi")) {
@@ -259,4 +289,36 @@ test "RunnerManifest round-trips core fields" {
     try std.testing.expectEqualStrings("UiFoundationLiveRunner", parsed.name);
     try std.testing.expectEqualStrings("com.kira.basic_foundation_app", parsed.main_bundle_id);
     try std.testing.expectEqual(@as(u16, 4242), parsed.server_port);
+    try std.testing.expectEqual(RuntimeMode.live, parsed.runtime_mode);
+    try std.testing.expect(parsed.embedded_bundles_path == null);
+}
+
+test "RunnerManifest round-trips standalone export mode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    const manifest = RunnerManifest{
+        .kind = .xcode_ios,
+        .name = "BasicFoundationAppRunner",
+        .bundle_id = "com.kira.export.ios.dev",
+        .version = "0.1.0",
+        .target_path = "/tmp/ui-foundation",
+        .package_name = "KiraUIFoundation",
+        .validation_app_path = "/tmp/ui-foundation/Examples/basic-foundation-app",
+        .bundles_path = "Bundles",
+        .local_cache_path = "app-cache/KiraExport",
+        .main_bundle_id = "com.kira.basic_foundation_app",
+        .server_host = "127.0.0.1",
+        .server_port = 0,
+        .native_contract_hash = "deadbeef",
+        .runtime_mode = .standalone,
+        .embedded_bundles_path = "Bundles",
+    };
+    try manifest.writeToml(&writer);
+    const parsed = try RunnerManifest.parse(arena.allocator(), writer.buffered());
+    try std.testing.expectEqual(RuntimeMode.standalone, parsed.runtime_mode);
+    try std.testing.expectEqualStrings("Bundles", parsed.embedded_bundles_path.?);
+    try std.testing.expectEqualStrings("com.kira.basic_foundation_app", parsed.main_bundle_id);
 }

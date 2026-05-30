@@ -1,0 +1,21 @@
+event: live.ios.tools.detected xcodebuild=/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild
+event: live.ios.sdk.detected sdk=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
+event: live.ios.signing.team.configured team=F3U5976KWH
+event: live.ios.devicectl.devices.checked bytes=957
+event: live.ios.physical.detected device=F38A1A9C-CB7F-59BB-855D-AA67C0C86580
+event: live.ios.endpoint.selected url=http://192.168.1.14:42111 localhost=false
+event: live.bundle.compiled target=/Users/priamc/Coding/kira-projects/ui-foundation/Examples/basic-foundation-app output_root=/Users/priamc/Coding/kira-projects/ui-foundation/Examples/basic-foundation-app/.kira-build/live
+event: live.bundle.built artifact=.klbundle target=/Users/priamc/Coding/kira-projects/ui-foundation/Examples/basic-foundation-app
+event: live.ios.runner.generated path=/Users/priamc/Coding/kira-projects/ui-foundation/Examples/basic-foundation-app/.kira-build/live/runners/xcode-ios
+event: live.ios.runner.generic_build.succeeded target=/Users/priamc/Coding/kira-projects/ui-foundation/Examples/basic-foundation-app
+event: live.ios.signing.identity.detected team=AKD4RFY7LU
+event: live.ios.signing.identity.mismatch expected=F3U5976KWH actual=AKD4RFY7LU
+event: live.ios.runner.device_build.succeeded device=F38A1A9C-CB7F-59BB-855D-AA67C0C86580
+event: live.ios.install.blocked reason=devicectl-install-loop-not-implemented
+event: live.ios.launch.blocked reason=devicectl-launch-loop-not-implemented
+event: live.ios.live_protocol.blocked reason=devicectl-launch-loop-not-implemented
+error[KCL046]: iOS live runner is not implemented yet
+  Kira recognized platform `ios`, but this build cannot launch an iOS live client yet. Device build succeeded, but install/launch/live protocol validation still needs the devicectl app launch loop.
+  domain: cli
+  phase: runtime_execution
+  help: Use `kira live desktop <target>` today. iOS simulator support needs a simulator runner build, install, launch, and protocol connection path.

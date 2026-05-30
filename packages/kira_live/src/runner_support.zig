@@ -8,6 +8,8 @@ const RequestQuitFn = *const fn () callconv(.c) void;
 
 var active_client: ?*RunnerClient = null;
 var first_frame_sent = false;
+var standalone_active = false;
+var standalone_first_frame_emitted = false;
 
 pub export fn kira_live_runner_entry(manifest_path: [*:0]const u8) callconv(.c) c_int {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -20,6 +22,17 @@ pub fn runFromManifestPath(allocator: std.mem.Allocator, manifest_path: []const 
     const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, manifest_path, allocator, .limited(1024 * 1024));
     const runner_manifest = try model.RunnerManifest.parse(allocator, manifest_text);
     const manifest_dir = std.fs.path.dirname(manifest_path) orelse ".";
+    switch (runner_manifest.runtime_mode) {
+        .live => try runLiveFromManifest(allocator, manifest_dir, runner_manifest),
+        .standalone => try runStandaloneFromManifest(allocator, manifest_dir, runner_manifest),
+    }
+}
+
+fn runLiveFromManifest(
+    allocator: std.mem.Allocator,
+    manifest_dir: []const u8,
+    runner_manifest: model.RunnerManifest,
+) !void {
     const local_cache_root = try resolveLocalCacheRoot(allocator, manifest_dir, runner_manifest.local_cache_path);
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, local_cache_root);
 
@@ -43,6 +56,24 @@ pub fn runFromManifestPath(allocator: std.mem.Allocator, manifest_path: []const 
         const bundle_root = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{runner_manifest.main_bundle_id}) });
         try runBundle(allocator, &client, bundle_root, runner_manifest.target_path, restart_count);
     }
+}
+
+fn runStandaloneFromManifest(
+    allocator: std.mem.Allocator,
+    manifest_dir: []const u8,
+    runner_manifest: model.RunnerManifest,
+) !void {
+    const embedded_rel = runner_manifest.embedded_bundles_path orelse return error.MissingEmbeddedBundlesPath;
+    const embedded_bundles_root = if (std.fs.path.isAbsolute(embedded_rel))
+        try allocator.dupe(u8, embedded_rel)
+    else
+        try std.fs.path.join(allocator, &.{ manifest_dir, embedded_rel });
+    const bundle_root = try std.fs.path.join(allocator, &.{ embedded_bundles_root, try std.fmt.allocPrint(allocator, "{s}.klbundle", .{runner_manifest.main_bundle_id}) });
+    standalone_first_frame_emitted = false;
+    standaloneLog("live.runner.pid={d}", .{std.c.getpid()});
+    standaloneLog("live.runtime.mode=standalone", .{});
+    standaloneLog("live.bundle.loaded", .{});
+    try runBundleStandalone(allocator, bundle_root, manifest_dir);
 }
 
 fn resolveLocalCacheRoot(allocator: std.mem.Allocator, manifest_dir: []const u8, local_cache_path: []const u8) ![]const u8 {
@@ -92,6 +123,48 @@ fn appContainerPathFromRoot(allocator: std.mem.Allocator, root: []const u8, kind
         .caches => std.fs.path.join(allocator, &.{ root, "Library", "Caches" }),
         .temporary => std.fs.path.join(allocator, &.{ root, "tmp" }),
     };
+}
+
+fn runBundleStandalone(
+    allocator: std.mem.Allocator,
+    bundle_root: []const u8,
+    manifest_dir: []const u8,
+) !void {
+    standalone_active = true;
+    defer standalone_active = false;
+    const bundle_manifest_path = try std.fs.path.join(allocator, &.{ bundle_root, "KiraBundle.toml" });
+    const bundle_manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, bundle_manifest_path, allocator, .limited(1024 * 1024));
+    const bundle_manifest = try model.BundleManifest.parse(allocator, bundle_manifest_text);
+    const hybrid_path = try std.fs.path.join(allocator, &.{ bundle_root, bundle_manifest.hybrid_rel_path });
+    const runtime_allocator = std.heap.smp_allocator;
+    var hybrid_manifest = try hybrid.HybridModuleManifest.readFromFile(runtime_allocator, hybrid_path);
+    hybrid_manifest.bytecode_path = try std.fs.path.join(runtime_allocator, &.{ bundle_root, bundle_manifest.bytecode_rel_path });
+
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+    defer {
+        std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
+    }
+    var bundle_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, bundle_root, .{});
+    defer bundle_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.Options.debug_io, bundle_dir);
+    var runtime = if (std.mem.eql(u8, hybrid_manifest.native_library_path, "__kira_live_self__"))
+        try hybrid_runtime.HybridRuntime.initFromCurrentProcess(runtime_allocator, hybrid_manifest)
+    else
+        try hybrid_runtime.HybridRuntime.init(runtime_allocator, hybrid_manifest);
+    defer runtime.deinit();
+    try runtime.bridge.installFirstFrameHook(standaloneFirstFrameHook);
+    try runtime.bridge.installLogHook(standaloneLogHook);
+    startNativeQuitTimer(&runtime) catch {};
+    standaloneLog("live.bundle.linked", .{});
+    standaloneLog("live.entrypoint.started", .{});
+
+    var resource_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, manifest_dir, .{});
+    defer resource_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.Options.debug_io, resource_dir);
+
+    try runtime.run();
+    standaloneLog("live.entrypoint.finished", .{});
 }
 
 fn runBundle(
@@ -224,6 +297,47 @@ fn kiraLiveLogHook(line: [*:0]const u8) callconv(.c) void {
     if (active_client) |client| {
         client.sendText(.log_line, std.mem.span(line)) catch {};
     }
+}
+
+fn standaloneFirstFrameHook() callconv(.c) void {
+    if (standalone_first_frame_emitted) return;
+    standalone_first_frame_emitted = true;
+    standaloneLog("live.frame.presented", .{});
+}
+
+fn standaloneLogHook(line: [*:0]const u8) callconv(.c) void {
+    const text = std.mem.span(line);
+    standaloneWriteLine(text);
+}
+
+fn standaloneLog(comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, fmt, args) catch {
+        standaloneWriteLine(fmt);
+        return;
+    };
+    standaloneWriteLine(formatted);
+}
+
+const builtin = @import("builtin");
+
+const SYSLOG_LEVEL_NOTICE: c_int = 5;
+extern "c" fn syslog(priority: c_int, format: [*:0]const u8, ...) callconv(.c) void;
+
+fn standaloneWriteLine(text: []const u8) void {
+    var buf: [2048]u8 = undefined;
+    const copy_len = @min(text.len, buf.len - 1);
+    @memcpy(buf[0..copy_len], text[0..copy_len]);
+    buf[copy_len] = 0;
+    const z: [*:0]const u8 = @ptrCast(&buf);
+    if (builtin.os.tag == .macos or builtin.os.tag == .ios) {
+        syslog(SYSLOG_LEVEL_NOTICE, "%s", z);
+    }
+    var stderr_buf: [2048]u8 = undefined;
+    var writer = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buf);
+    defer writer.interface.flush() catch {};
+    writer.interface.writeAll(text) catch return;
+    writer.interface.writeByte('\n') catch return;
 }
 
 const RunnerClient = struct {

@@ -1,0 +1,25 @@
+[library]
+name = "sokol"
+link_mode = "static"
+abi = "c"
+
+[headers]
+entrypoint = "../../../third_party/sokol/sokol_bindings.h"
+include_dirs = ["../../../third_party/sokol"]
+defines = ["SOKOL_NO_ENTRY", "SOKOL_GLES3"]
+
+[autobinding]
+module = "sokol"
+output = "../app/sokol.kira"
+headers = ["../../../third_party/sokol/sokol_app.h", "../../../third_party/sokol/sokol_gfx.h", "../../../third_party/sokol/sokol_glue.h"]
+
+[bindings]
+mode = "all_public"
+
+[build]
+sources = ["sokol_gles_impl.m"]
+include_dirs = ["../../../third_party/sokol"]
+
+[target.aarch64-ios-simulator]
+static_lib = "../generated/native/aarch64-ios-simulator/libsokol.a"
+frameworks = ["UIKit", "QuartzCore", "OpenGLES", "GLKit"]

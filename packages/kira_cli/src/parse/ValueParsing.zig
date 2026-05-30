@@ -5,6 +5,7 @@ const Parsed = @import("../command/ParsedCommand.zig");
 pub fn parseBackend(text: []const u8) ?build_def.ExecutionTarget {
     if (std.mem.eql(u8, text, "vm")) return .vm;
     if (std.mem.eql(u8, text, "llvm") or std.mem.eql(u8, text, "llvm_native")) return .llvm_native;
+    if (std.mem.eql(u8, text, "wasm") or std.mem.eql(u8, text, "wasm32-emscripten")) return .wasm32_emscripten;
     if (std.mem.eql(u8, text, "hybrid")) return .hybrid;
     return null;
 }

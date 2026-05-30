@@ -41,22 +41,22 @@ const WasmExport = struct {
 
 const wasm_exports = [_]WasmExport{
     .{ .name = "kira_wasm_module_loaded", .value = 1 },
-    .{ .name = "kira_runtime_started", .value = 1 },
-    .{ .name = "kira_app_entrypoint_invoked", .value = 1 },
-    .{ .name = "kira_ui_foundation_app_started", .value = 1 },
-    .{ .name = "kira_ui_tree_built", .value = 1 },
-    .{ .name = "kira_ui_retained_tree_ready", .value = 1 },
-    .{ .name = "kira_ui_layout_non_empty", .value = 1 },
-    .{ .name = "kira_ui_draw_commands_submitted", .value = 1 },
-    .{ .name = "kira_graphics_webgpu_initialized", .value = 1 },
-    .{ .name = "kira_webgpu_pipeline_created", .value = 1 },
-    .{ .name = "kira_webgpu_frame_rendered", .value = 1 },
-    .{ .name = "kira_app_start", .value = 1 },
-    .{ .name = "kira_runtime_kind", .value = 1 },
-    .{ .name = "kira_retained_tree_initialized", .value = 1 },
-    .{ .name = "kira_layout_ran", .value = 1 },
-    .{ .name = "kira_render_commands_generated", .value = 1 },
-    .{ .name = "kira_webgpu_required", .value = 1 },
+    .{ .name = "kira_runtime_started", .value = 0 },
+    .{ .name = "kira_app_entrypoint_invoked", .value = 0 },
+    .{ .name = "kira_ui_foundation_app_started", .value = 0 },
+    .{ .name = "kira_ui_tree_built", .value = 0 },
+    .{ .name = "kira_ui_retained_tree_ready", .value = 0 },
+    .{ .name = "kira_ui_layout_non_empty", .value = 0 },
+    .{ .name = "kira_ui_draw_commands_submitted", .value = 0 },
+    .{ .name = "kira_graphics_webgpu_initialized", .value = 0 },
+    .{ .name = "kira_webgpu_pipeline_created", .value = 0 },
+    .{ .name = "kira_webgpu_frame_rendered", .value = 0 },
+    .{ .name = "kira_app_start", .value = 0 },
+    .{ .name = "kira_runtime_kind", .value = 0 },
+    .{ .name = "kira_retained_tree_initialized", .value = 0 },
+    .{ .name = "kira_layout_ran", .value = 0 },
+    .{ .name = "kira_render_commands_generated", .value = 0 },
+    .{ .name = "kira_webgpu_required", .value = 0 },
 };
 
 fn appendTypeSection(out: *std.array_list.Managed(u8)) !void {
@@ -193,4 +193,14 @@ test "generated web runtime wasm is not the placeholder header" {
     try std.testing.expect(std.mem.indexOf(u8, bytes, "kira_runtime_started") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "kira_app_entrypoint_invoked") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "placeholder\":false") != null);
+}
+
+test "generated web runtime exports do not fake deeper Kira execution layers" {
+    for (wasm_exports) |entry| {
+        if (std.mem.eql(u8, entry.name, "kira_wasm_module_loaded")) {
+            try std.testing.expectEqual(@as(u32, 1), entry.value);
+            continue;
+        }
+        try std.testing.expectEqual(@as(u32, 0), entry.value);
+    }
 }

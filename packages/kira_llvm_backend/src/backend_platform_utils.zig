@@ -90,7 +90,22 @@ pub fn targetTriple(allocator: std.mem.Allocator, selector: ?native.TargetSelect
         }
         if (std.mem.eql(u8, value.operating_system, "ios")) {
             if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) return allocator.dupe(u8, "arm64-apple-ios13.0-simulator");
             return allocator.dupe(u8, "arm64-apple-ios13.0");
+        }
+        if (std.mem.eql(u8, value.operating_system, "tvos")) {
+            if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) return allocator.dupe(u8, "arm64-apple-tvos15.0-simulator");
+            return allocator.dupe(u8, "arm64-apple-tvos15.0");
+        }
+        if (std.mem.eql(u8, value.operating_system, "xros")) {
+            if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) return allocator.dupe(u8, "arm64-apple-xros1.0-simulator");
+            return allocator.dupe(u8, "arm64-apple-xros1.0");
+        }
+        if (std.mem.eql(u8, value.operating_system, "emscripten")) {
+            if (!std.mem.eql(u8, value.architecture, "wasm32")) return error.UnsupportedTarget;
+            return allocator.dupe(u8, "wasm32-unknown-emscripten");
         }
         return error.UnsupportedTarget;
     }

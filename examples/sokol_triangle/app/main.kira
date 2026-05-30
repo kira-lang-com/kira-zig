@@ -1,5 +1,8 @@
 import sokol as sokol
 
+@FFI.Extern { library: sokol; symbol: kira_live_emit_first_frame; abi: c; }
+function kira_live_emit_first_frame(): Void;
+
 struct AppState {
     var shader: sokol.sg_shader
     var pipeline: sokol.sg_pipeline
@@ -94,6 +97,7 @@ function frame(user_data: RawPtr): Void {
     sokol.sg_draw(0, 3, 1)
     sokol.sg_end_pass()
     sokol.sg_commit()
+    kira_live_emit_first_frame()
     // sokol.sapp_request_quit()
     return
 }

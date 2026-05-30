@@ -1,0 +1,121 @@
+import sokol as sokol
+
+@FFI.Extern { library: sokol; symbol: kira_live_emit_first_frame; abi: c; }
+function kira_live_emit_first_frame(): Void;
+
+struct AppState {
+    var shader: sokol.sg_shader
+    var pipeline: sokol.sg_pipeline
+    var viewport_width: I32
+    var viewport_height: I32
+}
+
+@Main
+@Native
+function main() {
+    var state = nativeState(AppState {
+        shader: sokol.sg_shader()
+        pipeline: sokol.sg_pipeline()
+        viewport_width: 96
+        viewport_height: 96
+    })
+
+    let desc = sokol.sapp_desc {
+        init_userdata_cb: init
+        frame_userdata_cb: frame
+        cleanup_userdata_cb: cleanup
+        event_userdata_cb: event
+        user_data: nativeUserData(state)
+        width: 640
+        height: 480
+        window_title: "Kira Sokol iOS Runtime Entry"
+    }
+    sokol.sapp_run(move desc)
+    return
+}
+
+@Native
+function init(user_data: RawPtr): Void {
+    var state = nativeRecover<AppState>(user_data)
+    state.viewport_width = sokol.sapp_width()
+    state.viewport_height = sokol.sapp_height()
+
+    let desc = sokol.sg_desc {
+        environment: sokol.sglue_environment()
+    }
+    sokol.sg_setup(move desc)
+
+    let shader_desc = sokol.sg_shader_desc {
+        vertex_func: sokol.sg_shader_function {
+            source: "#version 300 es
+out vec4 color;
+const vec2 positions[3] = vec2[3](
+    vec2(0.0, 0.52),
+    vec2(0.54, -0.54),
+    vec2(-0.54, -0.54)
+);
+const vec4 colors[3] = vec4[3](
+    vec4(1.0, 0.82, 0.12, 1.0),
+    vec4(0.18, 0.9, 0.8, 1.0),
+    vec4(0.88, 0.28, 0.96, 1.0)
+);
+void main() {
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+    color = colors[gl_VertexID];
+}"
+        }
+        fragment_func: sokol.sg_shader_function {
+            source: "#version 300 es
+precision mediump float;
+in vec4 color;
+out vec4 frag_color;
+void main() {
+    frag_color = color;
+}"
+        }
+    }
+    state.shader = sokol.sg_make_shader(move shader_desc)
+
+    let pipeline_desc = sokol.sg_pipeline_desc {
+        shader: state.shader
+    }
+    state.pipeline = sokol.sg_make_pipeline(move pipeline_desc)
+    return
+}
+
+@Native
+function frame(user_data: RawPtr): Void {
+    var state = nativeRecover<AppState>(user_data)
+    state.viewport_width = sokol.sapp_width()
+    state.viewport_height = sokol.sapp_height()
+
+    let pass = sokol.sg_pass {
+        swapchain: sokol.sglue_swapchain()
+    }
+    sokol.sg_begin_pass(move pass)
+    sokol.sg_apply_viewport(0, 0, state.viewport_width, state.viewport_height, true)
+    sokol.sg_apply_pipeline(state.pipeline)
+    sokol.sg_draw(0, 3, 1)
+    sokol.sg_end_pass()
+    sokol.sg_commit()
+    kira_live_emit_first_frame()
+    sokol.sapp_request_quit()
+    return
+}
+
+@Native
+function event(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
+    var state = nativeRecover<AppState>(user_data)
+    state.viewport_width = event.framebuffer_width
+    state.viewport_height = event.framebuffer_height
+    return
+}
+
+@Native
+function cleanup(user_data: RawPtr): Void {
+    var state = nativeRecover<AppState>(user_data)
+    sokol.sg_destroy_pipeline(state.pipeline)
+    sokol.sg_destroy_shader(state.shader)
+    sokol.sg_shutdown()
+    return
+}

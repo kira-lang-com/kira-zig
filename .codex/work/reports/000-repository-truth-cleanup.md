@@ -1,0 +1,61 @@
+# 000 - Repository Truth Cleanup Report
+
+- task filename: `000-repository-truth-cleanup.md`
+- status: complete
+- files changed:
+  - deleted root scratch files: `dump_fn.zig`, `dump_ids.zig`, `dump_kbc.zig`, `dump_manifest.zig`, `dump_manifest.py`
+  - deleted repo-local Python validation files: `tests/cli_matrix.py`, `tests/platform_matrix.py`, `tests/verify_real_runtime_paths.py`
+  - updated `build.zig`
+  - updated `packages/kira_wasm_runtime/src/root.zig`
+  - updated `packages/kira_live/src/supervisor.zig`
+  - added `packages/kira_live/src/static_file_server.zig`
+  - updated `packages/kira_cli/src/commands/export.zig`
+  - added `tests/repository_truth.zig`
+  - updated `README.md`, `docs/commands.md`, `docs/web_runner.md`
+- behavior implemented:
+  - repo-local Python validation/build hooks were replaced with a Zig repo-truth verifier.
+  - `kira live web` now launches a Zig-owned static file server instead of `python3 -m http.server`.
+  - generated Wasm host modules now report only module-load capability as true; Kira runtime, app entrypoint, UI, layout, render-command, graphics, and visible-content probes remain false until a real backend produces them.
+  - browser WebGPU work now reports `HOST_WEBGPU_*` capability markers instead of Kira-owned WebGPU frame markers.
+  - iOS simulator and Android live attempts no longer emit synthetic Kira UI/render/visible-content markers after host launch/log capture.
+  - generated Apple/Android host labels now say the host runner is waiting for Kira-rendered content instead of presenting host text as Kira runtime success.
+- smoke/fake success paths removed:
+  - removed hardcoded successful Kira-owned Wasm probe values.
+  - removed `KiraWebSmoke` and `KiraWebGpuSmoke` globals.
+  - removed `KIRA_WEBGPU_PIPELINE_CREATED` and `KIRA_WEBGPU_FRAME_RENDERED` browser logs.
+  - removed live-supervisor translation of `KIRA_APP_RENDERED_VISIBLE_CONTENT` or entrypoint finish into `live.frame.presented`.
+  - removed synthetic UI Foundation/render/visible markers from iOS simulator and Android host paths.
+- tests added or updated:
+  - added `tests/repository_truth.zig`, wired into `zig build test`, `zig build repo-truth`, `zig build cli-matrix`, and `zig build verify-real-runtime`.
+  - added `kira_wasm_runtime` unit coverage proving generated host modules do not fake deeper Kira execution layers.
+- commands run:
+  - `rg -n "smoke|placeholder|fake|stub|KiraWebGpuSmoke|APP_RENDERED_VISIBLE_CONTENT|FRAME_RENDERED|WEBGPU_FRAME|WEBGPU_PIPELINE|rendered visible|basic-foundation-app smoke|return true" .`
+  - `rg -n "python|python3|pytest|unittest|http\\.server|#!/usr/bin/env python|#!/usr/bin/python|\\.py\\b" .`
+  - `fd -e py .` and `fd -e zig . -d 1` attempted; `fd` is not installed, so `rg --files` was used as fallback.
+  - `zig fmt build.zig packages/kira_wasm_runtime/src/root.zig packages/kira_live/src/supervisor.zig packages/kira_cli/src/commands/export.zig packages/kira_live/src/static_file_server.zig tests/repository_truth.zig`
+  - `zig build repo-truth`
+  - `zig build`
+  - `zig build test`
+  - `zig build verify-real-runtime`
+  - `zig-out/bin/kira live web examples/web_dom --surface webgpu --run-for 1s`
+  - `node -e '...'` to instantiate the generated Wasm and verify probe values
+- command results:
+  - `zig build repo-truth`: passed, `repository truth checks passed`.
+  - `zig build`: passed.
+  - `zig build test`: passed; corpus summary `1017 passed, 0 failed`; repo-truth passed.
+  - `zig build verify-real-runtime`: passed, `repository truth checks passed`.
+  - web live used `http://127.0.0.1:42111/`, served by the Zig static file server, and ended cleanly.
+  - Node Wasm probe returned `{"loaded":1,"runtime":0,"entry":0,"ui":0,"layout":0,"render":0,"webgpuFrame":0}`.
+- remaining failures, if any:
+  - none in local validation.
+- blocker evidence, if any:
+  - none.
+- CI-related portion intentionally untouched:
+  - `scripts/llvm/llvm_release.py` and the CI-specific doc mention in `docs/llvm_toolchain.md` remain because the user explicitly instructed not to touch CI, release workflows, CI scripts, or CI-specific docs during this run.
+  - no `.github/` files were edited.
+- exact reason completion criteria are satisfied:
+  - repo-local Python files and invocations were removed or replaced, excluding only the explicit CI/release-script allowlist above.
+  - root-level Zig clutter is gone; only `build.zig` remains at root.
+  - fake host/browser/platform markers no longer satisfy Kira-owned runtime, UI, layout, graphics, frame, or visible-content success.
+  - repo-native checks now guard against Python reintroduction, root Zig clutter, and known fake marker tokens.
+  - VM/LLVM/hybrid corpus validation still passes through `zig build test`.

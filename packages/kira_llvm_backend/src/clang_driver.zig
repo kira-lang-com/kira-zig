@@ -6,6 +6,11 @@ const native = @import("kira_native_lib_definition");
 pub const AppleSdk = enum {
     macosx,
     iphoneos,
+    iphonesimulator,
+    appletvos,
+    appletvsimulator,
+    xros,
+    xrsimulator,
 };
 
 const DriverTarget = struct {
@@ -51,8 +56,17 @@ pub fn appleClangPathForSelector(allocator: std.mem.Allocator, selector: ?native
 
 pub fn appleSdkForSelector(selector: ?native.TargetSelector) ?AppleSdk {
     const value = selector orelse return null;
+    const is_simulator = std.mem.eql(u8, value.abi, "simulator");
     if (std.mem.eql(u8, value.operating_system, "macos")) return .macosx;
-    if (std.mem.eql(u8, value.operating_system, "ios")) return .iphoneos;
+    if (std.mem.eql(u8, value.operating_system, "ios")) {
+        return if (is_simulator) .iphonesimulator else .iphoneos;
+    }
+    if (std.mem.eql(u8, value.operating_system, "tvos")) {
+        return if (is_simulator) .appletvsimulator else .appletvos;
+    }
+    if (std.mem.eql(u8, value.operating_system, "xros")) {
+        return if (is_simulator) .xrsimulator else .xros;
+    }
     return null;
 }
 
@@ -85,10 +99,46 @@ fn driverTarget(allocator: std.mem.Allocator, selector: ?native.TargetSelector) 
         }
         if (std.mem.eql(u8, value.operating_system, "ios")) {
             if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) {
+                return .{
+                    .triple = try allocator.dupe(u8, "arm64-apple-ios13.0-simulator"),
+                    .sdk = .iphonesimulator,
+                };
+            }
             return .{
                 .triple = try allocator.dupe(u8, "arm64-apple-ios13.0"),
                 .sdk = .iphoneos,
             };
+        }
+        if (std.mem.eql(u8, value.operating_system, "tvos")) {
+            if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) {
+                return .{
+                    .triple = try allocator.dupe(u8, "arm64-apple-tvos15.0-simulator"),
+                    .sdk = .appletvsimulator,
+                };
+            }
+            return .{
+                .triple = try allocator.dupe(u8, "arm64-apple-tvos15.0"),
+                .sdk = .appletvos,
+            };
+        }
+        if (std.mem.eql(u8, value.operating_system, "xros")) {
+            if (!std.mem.eql(u8, value.architecture, "aarch64")) return error.UnsupportedTarget;
+            if (std.mem.eql(u8, value.abi, "simulator")) {
+                return .{
+                    .triple = try allocator.dupe(u8, "arm64-apple-xros1.0-simulator"),
+                    .sdk = .xrsimulator,
+                };
+            }
+            return .{
+                .triple = try allocator.dupe(u8, "arm64-apple-xros1.0"),
+                .sdk = .xros,
+            };
+        }
+        if (std.mem.eql(u8, value.operating_system, "emscripten")) {
+            if (!std.mem.eql(u8, value.architecture, "wasm32")) return error.UnsupportedTarget;
+            return .{ .triple = try allocator.dupe(u8, "wasm32-unknown-emscripten") };
         }
         return error.UnsupportedTarget;
     }
@@ -168,12 +218,23 @@ pub fn appleSdkPath(allocator: std.mem.Allocator, sdk: AppleSdk) ![]const u8 {
     if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
     return switch (sdk) {
         .macosx => error.MacOSSdkUnavailable,
-        .iphoneos => error.IPhoneOSSdkUnavailable,
+        .iphoneos, .iphonesimulator => error.IPhoneOSSdkUnavailable,
+        .appletvos, .appletvsimulator => error.AppleTVOSSdkUnavailable,
+        .xros, .xrsimulator => error.XROSSdkUnavailable,
     };
 }
 
 fn sdkPathFromDeveloperDir(allocator: std.mem.Allocator, developer_dir: []const u8, sdk: AppleSdk) !?[]const u8 {
-    const sdk_dir = try std.fs.path.join(allocator, &.{ developer_dir, "Platforms", if (sdk == .macosx) "MacOSX.platform" else "iPhoneOS.platform", "Developer", "SDKs" });
+    const platform_dir = switch (sdk) {
+        .macosx => "MacOSX.platform",
+        .iphoneos => "iPhoneOS.platform",
+        .iphonesimulator => "iPhoneSimulator.platform",
+        .appletvos => "AppleTVOS.platform",
+        .appletvsimulator => "AppleTVSimulator.platform",
+        .xros => "XROS.platform",
+        .xrsimulator => "XRSimulator.platform",
+    };
+    const sdk_dir = try std.fs.path.join(allocator, &.{ developer_dir, "Platforms", platform_dir, "Developer", "SDKs" });
     defer allocator.free(sdk_dir);
     if (!directoryExists(sdk_dir)) return null;
     var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, sdk_dir, .{ .iterate = true });

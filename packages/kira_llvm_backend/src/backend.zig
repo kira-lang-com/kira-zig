@@ -6,6 +6,7 @@ const backend_api = @import("kira_backend_api");
 const llvm = @import("llvm_c.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
+pub const emscripten = @import("emscripten.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
 const text_ir_core = @import("backend_text_ir_core.zig");
 const text_ir_tail = @import("backend_text_ir_tail.zig");
@@ -536,7 +537,10 @@ fn emitObjectFileFromIr(
     selector: ?@import("kira_native_lib_definition").TargetSelector,
 ) !void {
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
-    const clang_path = (try @import("clang_driver.zig").appleClangPathForSelector(allocator, selector)) orelse try llvm_toolchain.clangPath(allocator);
+    const clang_path = if (emscripten.isSelector(selector))
+        try emscripten.emccPath(allocator)
+    else
+        (try @import("clang_driver.zig").appleClangPathForSelector(allocator, selector)) orelse try llvm_toolchain.clangPath(allocator);
     defer allocator.free(clang_path);
     var environ_map = try llvm_toolchain.processEnvironMap(allocator);
     defer environ_map.deinit();

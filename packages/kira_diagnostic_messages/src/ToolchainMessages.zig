@@ -30,6 +30,21 @@ pub fn unsupportedHostTarget(allocator: std.mem.Allocator, triple: []const u8) !
     });
 }
 
+pub fn unsupportedNativeLibraryTarget(allocator: std.mem.Allocator, target: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KTC003_UnsupportedTargetTriple,
+        .domain = .toolchain,
+        .phase = .toolchain_activation,
+        .title = "unsupported native library target",
+        .message = try std.fmt.allocPrint(
+            allocator,
+            "A native library used by this package does not provide an artifact for target `{s}`.",
+            .{target},
+        ),
+        .help = "Add a matching NativeLibs target section for this backend, or remove the native library from the browser-targeted package.",
+    });
+}
+
 pub fn invalidToolchainActivation(allocator: std.mem.Allocator, err_name: []const u8) !diagnostics.Diagnostic {
     return message.build(.{
         .code = .KTC007_InvalidToolchainActivation,

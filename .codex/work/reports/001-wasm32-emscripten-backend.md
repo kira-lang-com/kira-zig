@@ -1,0 +1,67 @@
+# 001 - wasm32-emscripten Backend Report
+
+- task filename: `001-wasm32-emscripten-backend.md`
+- status: complete
+- files changed:
+  - added `packages/kira_llvm_backend/src/emscripten.zig`
+  - updated LLVM backend target selection, clang driver, object emission, and linker paths for `wasm32-emscripten`
+  - updated `packages/kira_build_definition/src/build_target.zig` with explicit browser target environment/capabilities
+  - updated `packages/kira_build/src/build_system.zig`, `pipeline.zig`, and `cache.zig` for Emscripten build/check/package artifacts
+  - added `packages/kira_build/src/wasm_emscripten_tests.zig`
+  - split `packages/kira_build/src/pipeline_tests.zig` out of `pipeline.zig` so `pipeline.zig` is below the 1000-line hard limit
+  - updated CLI parsing/help/build/check/run paths for `--target wasm32-emscripten` and `--backend wasm32-emscripten`
+  - updated `packages/kira_native_bridge/src/runtime_helpers.c` string ABI to work under wasm32
+  - added a target-specific native-library diagnostic for browser builds
+- behavior implemented:
+  - `wasm32-emscripten` is a real execution target.
+  - the build pipeline selects an explicit `wasm32-emscripten-unknown` target selector.
+  - LLVM emits object code for the wasm32 Emscripten target.
+  - Emscripten is discovered through `EMCC`, `EMSDK/upstream/emscripten/emcc`, or `emcc` on `PATH`.
+  - the linker uses `emcc` for wasm packaging and writes `.js`, `.wasm`, and object artifacts.
+  - `kira check`, `kira build`, and `kira run` accept the wasm target/backend.
+  - `kira run --backend wasm32-emscripten` runs the emitted JS through Node and executes the real Kira entrypoint.
+  - host-only native libraries now fail with `KTC003: unsupported native library target` for `wasm32-emscripten-unknown` instead of a misleading current-host diagnostic.
+- tests added or updated:
+  - `wasm32 emscripten build runs real Kira entrypoint through node`
+  - `wasm32 emscripten reports host native library target exclusion`
+  - existing pipeline tests moved into `pipeline_tests.zig`
+- commands run:
+  - `emcc --version`
+  - `node --version`
+  - `zig fmt ...`
+  - `zig build test`
+  - `zig build`
+  - `zig build repo-truth`
+  - `zig build verify-real-runtime`
+  - `zig-out/bin/kira check --backend wasm32-emscripten tests/pass/run/if_basic_parity/main.kira`
+  - `zig-out/bin/kira build --target wasm32-emscripten tests/pass/run/if_basic_parity/main.kira`
+  - `node generated/main.js`
+  - `zig-out/bin/kira run --backend wasm32-emscripten tests/pass/run/if_basic_parity/main.kira`
+  - `zig-out/bin/kira check --backend wasm32-emscripten examples/hello`
+- command results:
+  - `emcc --version`: `emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 5.0.3-git`
+  - `node --version`: `v25.8.1`
+  - `zig build test`: passed; corpus summary `1017 passed, 0 failed`; repository truth passed; package tests passed.
+  - `zig build`: passed.
+  - `zig build repo-truth`: passed, `repository truth checks passed`.
+  - `zig build verify-real-runtime`: passed, `repository truth checks passed`.
+  - wasm check: passed with `check passed`.
+  - wasm build: wrote `generated/main.js.o`, `generated/main.js`, and `generated/main.wasm`.
+  - Node execution of generated JS: passed and printed `if-then`.
+  - wasm run: passed and printed `if-then`.
+  - `examples/hello` on wasm: intentionally rejected with `KTC003: unsupported native library target` for `wasm32-emscripten-unknown`.
+- remaining failures, if any:
+  - none in local validation.
+- blocker evidence, if any:
+  - none.
+- CI-related portion intentionally untouched:
+  - no `.github/`, workflow, release workflow, CI script, CI-specific doc, or CI configuration file was edited or used as validation.
+- file-size handling:
+  - `packages/kira_build/src/pipeline.zig` was over 1000 lines after this task and was split by moving tests to `packages/kira_build/src/pipeline_tests.zig`; it is now 873 lines.
+  - new task files are small: `wasm_emscripten_tests.zig` is 164 lines and `pipeline_tests.zig` is 317 lines.
+  - existing touched files over 600 lines but below the hard 1000-line threshold remain candidates for future focused extraction.
+- exact reason completion criteria are satisfied:
+  - Kira source now reaches typecheck, IR, LLVM target emission, Emscripten link/package, runtime startup, and real Kira entrypoint execution for the minimal wasm case.
+  - wasm validation executes real Kira output, not a JS placeholder, host page load, browser capability check, or fake success marker.
+  - unsupported host-native package content is target-rejected with a clear diagnostic and test coverage.
+  - VM/LLVM/hybrid corpus validation still passes through `zig build test`.

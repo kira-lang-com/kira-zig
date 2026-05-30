@@ -191,6 +191,7 @@ fn timingsEnvEnabled() bool {
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "llvm")) return .llvm_native;
+    if (std.mem.eql(u8, arg, "wasm") or std.mem.eql(u8, arg, "wasm32-emscripten")) return .wasm32_emscripten;
     if (std.mem.eql(u8, arg, "hybrid")) return .hybrid;
     return null;
 }

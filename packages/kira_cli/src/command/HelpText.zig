@@ -46,7 +46,7 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
             \\
         ),
         .build => try writer.writeAll(
-            \\usage: kira build [--backend vm|llvm|hybrid] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
+            \\usage: kira build [--backend vm|llvm|hybrid|wasm32-emscripten] [--target wasm32-emscripten] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
             \\Build a target. Libraries are validated as package roots; apps/examples emit backend artifacts.
             \\
         ),

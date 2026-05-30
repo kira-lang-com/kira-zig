@@ -136,12 +136,14 @@ fn appendExportOptions(allocator: std.mem.Allocator, list: *std.array_list.Manag
     try list.append(options.input_path);
     if (options.profile != .debug) try list.appendSlice(&.{ "--profile", options.profile.label() });
     if (options.family == .web or options.surface != .dom) try list.appendSlice(&.{ "--surface", options.surface.label() });
+    if (options.xcode_rebuild_platform) |platform| try list.appendSlice(&.{ "--xcode-rebuild", platform });
 }
 
 fn backendLabel(backend: build_def.ExecutionTarget) []const u8 {
     return switch (backend) {
         .vm => "vm",
         .llvm_native => "llvm",
+        .wasm32_emscripten => "wasm32-emscripten",
         .hybrid => "hybrid",
     };
 }

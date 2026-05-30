@@ -1,0 +1,28 @@
+# 000 - Repository Truth Cleanup Checkpoint
+
+- timestamp: 2026-05-27T15:42:15Z
+- current task filename: `000-repository-truth-cleanup.md`
+- status: complete
+- last successful command: `node -e '...'` verified generated Wasm probes as `loaded=1` and all deeper Kira-owned probes `0`
+- last failing command, if any: earlier `zig build` attempts failed while wiring `kira-static-file-server`; fixed by using Zig 0.16 init args, stream writer APIs, and correct `readFileAlloc` argument order
+- important files changed:
+  - `build.zig`
+  - `packages/kira_wasm_runtime/src/root.zig`
+  - `packages/kira_live/src/supervisor.zig`
+  - `packages/kira_live/src/static_file_server.zig`
+  - `packages/kira_cli/src/commands/export.zig`
+  - `tests/repository_truth.zig`
+  - `README.md`
+  - `docs/commands.md`
+  - `docs/web_runner.md`
+  - deleted root dump files and repo-local Python validation files
+- next recommended action:
+  - proceed to `001-wasm32-emscripten-backend.md`; keep `scripts/llvm/llvm_release.py` untouched unless the user lifts the no-CI restriction
+- whether VM/LLVM/hybrid/WASM parity was preserved or explicitly rejected:
+  - VM/LLVM/hybrid parity preserved by `zig build test` with corpus `1017 passed, 0 failed`
+  - generated Wasm host module no longer claims Kira runtime/UI/graphics success; deeper WASM execution remains future task work rather than fake success
+- whether AGENTS.md core laws were followed:
+  - no repo-local Python validation/build path remains, with CI/release Python intentionally untouched by explicit user instruction
+  - no unexpected root-level Zig files remain
+  - smoke/fake Kira success paths touched by this task were removed or converted to host-owned markers
+  - no CI files or workflow configuration were edited

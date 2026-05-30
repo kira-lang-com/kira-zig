@@ -45,3 +45,8 @@ pub const parseShaderFile = @import("shader/pipeline.zig").parseFile;
 pub const checkShaderFile = @import("shader/pipeline.zig").checkFile;
 pub const buildShaderFile = @import("shader/pipeline.zig").buildFile;
 pub const buildShaderFileForTarget = @import("shader/pipeline.zig").buildFileForTarget;
+
+test {
+    _ = @import("pipeline_tests.zig");
+    _ = @import("wasm_emscripten_tests.zig");
+}

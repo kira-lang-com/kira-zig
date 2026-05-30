@@ -102,6 +102,10 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
             try runExecutable(allocator, executable.path, input.target.root_path, parsed.trace_execution, parsed.quit_after_ns, stdout, stderr);
         },
+        .wasm32_emscripten => {
+            const executable = findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
+            try runWasmNode(allocator, executable.path, input.target.root_path, stdout, stderr);
+        },
         .hybrid => {
             const manifest_artifact = findHybridManifest(result.artifacts) orelse return error.MissingHybridManifestArtifact;
             if (parsed.quit_after_ns) |duration_ns| {
@@ -340,6 +344,7 @@ fn runtimeMemoryDetailEnabled() bool {
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "llvm")) return .llvm_native;
+    if (std.mem.eql(u8, arg, "wasm") or std.mem.eql(u8, arg, "wasm32-emscripten")) return .wasm32_emscripten;
     if (std.mem.eql(u8, arg, "hybrid")) return .hybrid;
     return null;
 }
@@ -369,8 +374,27 @@ fn runOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: []
     return switch (backend) {
         .vm => std.fmt.allocPrint(allocator, "{s}/{s}.run.kbc", .{ output_root, stem }),
         .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}.run{s}", .{ output_root, stem, build.executableExtension() }),
+        .wasm32_emscripten => std.fmt.allocPrint(allocator, "{s}/{s}.run.js", .{ output_root, stem }),
         .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.run.khm", .{ output_root, stem }),
     };
+}
+
+fn runWasmNode(allocator: std.mem.Allocator, path: []const u8, project_root: ?[]const u8, stdout: anytype, stderr: anytype) !void {
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{ "node", path },
+        .cwd = if (project_root) |root| .{ .path = root } else .inherit,
+        .expand_arg0 = .expand,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.stdout.len > 0) try stdout.writeAll(result.stdout);
+    if (result.stderr.len > 0) try stderr.writeAll(result.stderr);
+    if (result.term == .exited and result.term.exited == 0) return;
+    try stderr.print("wasm32-emscripten executable failed: {s}\n", .{path});
+    return error.CommandFailed;
 }
 
 fn runExecutable(

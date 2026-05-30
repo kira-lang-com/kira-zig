@@ -56,12 +56,14 @@ typedef struct {
 typedef struct {
     size_t len;
     KiraBridgeValue *items;
+    /*
+     * Reference count for the pure-native path (no VM allocator installed).
+     * Appended last so `len`/`items` keep offsets 0/8 — hybrid/VM arrays that
+     * only read those fields are unaffected, and all refcount touches below are
+     * gated on `kira_array_alloc_fn == NULL` so VM-owned arrays never read it.
+     */
+    size_t refcount;
 } KiraArray;
-
-typedef struct KiraArrayRegistryNode {
-    KiraArray *array;
-    struct KiraArrayRegistryNode *next;
-} KiraArrayRegistryNode;
 
 typedef struct {
     uint64_t type_id;
@@ -74,7 +76,6 @@ static void *(*kira_array_alloc_fn)(size_t) = NULL;
 static void (*kira_array_free_fn)(void *, size_t) = NULL;
 static void (*kira_live_first_frame_hook)(void) = NULL;
 static void (*kira_live_log_hook)(const char*) = NULL;
-static KiraArrayRegistryNode *kira_active_arrays = NULL;
 static int kira_trace_execution_enabled = -1;
 #if defined(_WIN32)
 static int kira_stdout_binary_configured = 0;
@@ -121,44 +122,25 @@ static void kira_array_repair_invalid_storage(KiraArray *array) {
     }
 }
 
-static void kira_array_register(KiraArray *array) {
-    if (array == NULL) return;
-    KiraArrayRegistryNode *node = (KiraArrayRegistryNode *)malloc(sizeof(KiraArrayRegistryNode));
-    if (node == NULL) return;
-    node->array = array;
-    node->next = kira_active_arrays;
-    kira_active_arrays = node;
-}
-
 static int kira_array_is_active(const KiraArray *array) {
-    if (array == NULL || kira_bridge_probably_invalid_pointer(array)) return 0;
-    for (KiraArrayRegistryNode *node = kira_active_arrays; node != NULL; node = node->next) {
-        if (node->array == array) return 1;
-    }
     /*
-     * Hybrid runtime calls can pass arrays whose native layout was allocated by
-     * the Zig VM bridge rather than by kira_array_alloc in this C helper. Those
-     * borrowed arrays are still valid for native reads, writes, and appends for
-     * the duration of the call, so registry membership cannot be the validity
-     * check. Keep rejecting null and sentinel-small pointers, and let the VM own
-     * final destruction after it syncs the borrowed layout back.
+     * Validity contract: reject only null and sentinel-small pointers. There is
+     * deliberately no live-array registry to consult.
+     *
+     * A global linked-list registry (kira_active_arrays) used to exist here, but
+     * once profiling removed the registry scan from this function the registry
+     * became write-only dead weight: kira_array_register malloc'd a node on every
+     * kira_array_alloc and kira_array_unregister was never called, so the list
+     * grew unbounded — a genuine native memory leak under UI workloads. The whole
+     * registry has been removed. Membership could never be the validity check
+     * anyway: hybrid runtime calls pass arrays whose native layout was allocated
+     * by the Zig VM bridge rather than by kira_array_alloc in this C helper, and
+     * those borrowed arrays are valid for native reads, writes, and appends for
+     * the duration of the call. The VM owns final destruction after it syncs the
+     * borrowed layout back.
      */
+    if (array == NULL || kira_bridge_probably_invalid_pointer(array)) return 0;
     return 1;
-}
-
-static int kira_array_unregister(KiraArray *array) {
-    if (array == NULL) return 0;
-    KiraArrayRegistryNode **cursor = &kira_active_arrays;
-    while (*cursor != NULL) {
-        if ((*cursor)->array == array) {
-            KiraArrayRegistryNode *node = *cursor;
-            *cursor = node->next;
-            free(node);
-            return 1;
-        }
-        cursor = &(*cursor)->next;
-    }
-    return 0;
 }
 
 KIRA_BRIDGE_EXPORT void kira_set_execution_trace_enabled(uint8_t enabled) {
@@ -239,10 +221,10 @@ KIRA_BRIDGE_EXPORT void kira_native_write_f64(double value) {
     fflush(stdout);
 }
 
-KIRA_BRIDGE_EXPORT void kira_native_write_string(const unsigned char *ptr, size_t len) {
+KIRA_BRIDGE_EXPORT void kira_native_write_string(const unsigned char *ptr, uint64_t len) {
     kira_prepare_stdout();
     kira_trace_log("NATIVE", "PRINT", "string len=%llu", (unsigned long long)len);
-    fwrite(ptr, 1, len, stdout);
+    fwrite(ptr, 1, (size_t)len, stdout);
     fflush(stdout);
 }
 
@@ -269,7 +251,7 @@ KIRA_BRIDGE_EXPORT void kira_native_print_f64(double value) {
     kira_native_write_newline();
 }
 
-KIRA_BRIDGE_EXPORT void kira_native_print_string(const unsigned char *ptr, size_t len) {
+KIRA_BRIDGE_EXPORT void kira_native_print_string(const unsigned char *ptr, uint64_t len) {
     kira_native_write_string(ptr, len);
     kira_native_write_newline();
 }
@@ -280,8 +262,23 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
     if (array == NULL) return NULL;
     array->len = (size_t)len;
     array->items = array->len == 0 ? NULL : (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
-    kira_array_register(array);
+    array->refcount = 1;
     return array;
+}
+
+/*
+ * Reference counting (pure-native path only). The LLVM backend emits a retain
+ * whenever it duplicates an array reference (a struct value that holds the array
+ * is shallow-copied, or the array is read out of a struct field into a new
+ * owner) and a release when an owner dies. Arrays are freed when the count hits
+ * zero. When a VM allocator is installed (hybrid), retain/release are no-ops and
+ * the VM owns destruction — the refcount field is never touched, so VM arrays
+ * that lack it are safe.
+ */
+KIRA_BRIDGE_EXPORT void kira_array_retain(KiraArray *array) {
+    if (kira_array_alloc_fn != NULL) return;
+    if (!kira_array_is_active(array)) return;
+    array->refcount += 1;
 }
 
 KIRA_BRIDGE_EXPORT int64_t kira_array_len(const KiraArray *array) {
@@ -325,12 +322,63 @@ KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, K
 }
 
 KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *)) {
-    (void)release_raw_ptr;
     if (!kira_array_is_active(array)) {
         kira_trace_log("NATIVE", "ARRAY_RELEASE_SKIP", "array=%p", (void *)array);
         return;
     }
+
+    /*
+     * Hybrid path: the VM owns and reclaims array memory via its own
+     * native-layout destructors, and VM arrays may not carry a refcount field.
+     * Defer, and never touch the refcount.
+     */
+    if (kira_array_alloc_fn != NULL) {
+        kira_trace_log("NATIVE", "ARRAY_RELEASE_DEFERRED", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
+        return;
+    }
+
     kira_array_repair_invalid_storage(array);
+    (void)release_raw_ptr;
+
+    /*
+     * Reference-counted free — SCAFFOLDED BUT NOT YET ENABLED.
+     *
+     * The refcount primitives (kira_array_alloc sets refcount=1, kira_array_retain,
+     * and the kira_retain_contents_<T> generator in the LLVM backend) are in place.
+     * Turning the block below on reclaims the per-frame retained-tree garbage. It is
+     * gated off because the backend does not yet emit *balanced* retain/release:
+     *   - retains at every reference duplication (struct shallow-copy of a borrowed
+     *     source, array-element struct loads), and
+     *   - releases at every owned drop, including field move-outs like
+     *     `let previous = tree.nodes; next.nodes = []` that currently orphan the old
+     *     array with no drop.
+     * The move-vs-borrow distinction that decides retain-or-not lives in Kira's
+     * borrow checker, whose move/liveness facts are not yet threaded into the IR.
+     * Enabling free before that balance exists double-frees shared arrays and
+     * crashes on device (observed). Until the backend emits balanced ops driven by
+     * the borrow checker, defer — leak rather than crash. Full design + repro:
+     * .codex/work/reports/array-registry-leak-and-promotion.md.
+     */
+#if defined(KIRA_ARRAY_REFCOUNT_ENABLED)
+    if (array->refcount == 0) {
+        kira_trace_log("NATIVE", "ARRAY_RELEASE_UNDERFLOW", "array=%p", (void *)array);
+        return;
+    }
+    array->refcount -= 1;
+    if (array->refcount != 0) return;
+    if (release_raw_ptr != NULL && array->items != NULL &&
+        !kira_bridge_probably_invalid_pointer(array->items)) {
+        for (size_t i = 0; i < array->len; i++) {
+            if (array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
+                void *element = (void *)array->items[i].payload.raw_ptr;
+                if (element != NULL) release_raw_ptr(element);
+            }
+        }
+    }
+    kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
+    kira_bridge_free(array, sizeof(KiraArray));
+    return;
+#endif
     kira_trace_log("NATIVE", "ARRAY_RELEASE_DEFERRED", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
 }
 

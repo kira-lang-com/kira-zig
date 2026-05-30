@@ -236,7 +236,22 @@ pub fn compileFileToIrForTarget(
     timingPrint("[kira:timing] buildProgramGraph path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
 
     const native_import_start = nowNs();
-    const native_libraries = try ffi_support.prepareImportedNativeLibrariesForTarget(allocator, parsed.native_libraries, merged_program.imports, module_map, target_selector);
+    const native_libraries = ffi_support.prepareImportedNativeLibrariesForTarget(allocator, parsed.native_libraries, merged_program.imports, module_map, target_selector) catch |err| switch (err) {
+        error.UnsupportedTarget => {
+            const display_target = try displayTargetSelector(allocator, target_selector);
+            try diags.append(try diag_messages.ToolchainMessages.unsupportedNativeLibraryTarget(allocator, display_target));
+            timingPrint("[kira:timing] prepareImportedNativeLibraries path={s} imports={d} native_libraries=0 ns={d}\n", .{ parsed.source.path, merged_program.imports.len, elapsedNs(native_import_start) });
+            timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
+            return .{
+                .source = parsed.source,
+                .diagnostics = try diags.toOwnedSlice(),
+                .ir_program = null,
+                .native_libraries = &.{},
+                .failure_stage = .backend_prepare,
+            };
+        },
+        else => return err,
+    };
     timingPrint("[kira:timing] prepareImportedNativeLibraries path={s} imports={d} native_libraries={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, native_libraries.len, elapsedNs(native_import_start) });
 
     const validate_start = nowNs();
@@ -328,7 +343,11 @@ pub fn compileFileForBackendWithSelector(
     explicit_native_libraries: []const native.ResolvedNativeLibrary,
 ) !ExecutablePipelineResult {
     const total_start = nowNs();
-    const frontend = try compileFileToIrForTarget(allocator, path, target_selector);
+    const effective_selector = if (target == .wasm32_emscripten and target_selector == null)
+        try llvm_backend.emscripten.selector(allocator)
+    else
+        target_selector;
+    const frontend = try compileFileToIrForTarget(allocator, path, effective_selector);
     if (frontend.ir_program == null or diagnostics.hasErrors(frontend.diagnostics)) {
         timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
         return .{
@@ -373,18 +392,18 @@ pub fn compileFileForBackendWithSelector(
                 .failure_stage = frontend.failure_stage,
             };
         },
-        .llvm_native => {
+        .llvm_native, .wasm32_emscripten => {
             const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .llvm_native,
                 .program = &ir_program,
                 .module_name = std.fs.path.stem(path),
                 .emit = dummyNativeEmitOptions(),
-                .target_selector = target_selector,
+                .target_selector = effective_selector,
                 .resolved_native_libraries = merged_native_libraries,
             }) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
-                timingPrint("[kira:timing] llvm_backend.validate path={s} backend=llvm_native ns={d}\n", .{ path, elapsedNs(llvm_start) });
+                timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
                 timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
                 return .{
                     .source = frontend.source,
@@ -395,7 +414,7 @@ pub fn compileFileForBackendWithSelector(
                     .failure_stage = .backend_prepare,
                 };
             };
-            timingPrint("[kira:timing] llvm_backend.validate path={s} backend=llvm_native ns={d}\n", .{ path, elapsedNs(llvm_start) });
+            timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
             timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
             return .{
                 .source = frontend.source,
@@ -428,7 +447,7 @@ pub fn compileFileForBackendWithSelector(
                 .program = &ir_program,
                 .module_name = std.fs.path.stem(path),
                 .emit = dummyNativeEmitOptions(),
-                .target_selector = target_selector,
+                .target_selector = effective_selector,
                 .resolved_native_libraries = merged_native_libraries,
             }) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
@@ -475,7 +494,7 @@ pub fn checkFileForBackendWithSelector(
     const prepared = try compileFileForBackendWithSelector(allocator, path, target, target_selector, &.{});
     const reached_ir = prepared.ir_program != null or prepared.failure_stage == .ir or prepared.failure_stage == .backend_prepare;
     const reached_bytecode = prepared.bytecode_module != null;
-    const reached_llvm = (target == .llvm_native or target == .hybrid) and prepared.failure_stage == null and prepared.ir_program != null;
+    const reached_llvm = (target == .llvm_native or target == .wasm32_emscripten or target == .hybrid) and prepared.failure_stage == null and prepared.ir_program != null;
     timingPrint("[kira:timing] checkFileForBackend.total path={s} backend={s} reached_ir={any} reached_bytecode={any} reached_llvm={any} ns={d}\n", .{
         path,
         @tagName(target),
@@ -624,6 +643,11 @@ fn packageNameForNativeLibrary(library: native.ResolvedNativeLibrary) []const u8
     return library.name;
 }
 
+fn displayTargetSelector(allocator: std.mem.Allocator, selector: ?native.TargetSelector) ![]const u8 {
+    const value = selector orelse return allocator.dupe(u8, "host");
+    return std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ value.architecture, value.operating_system, value.abi });
+}
+
 pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResult {
     const source_start = nowNs();
     const source = try source_pkg.SourceFile.fromPath(allocator, path);
@@ -703,7 +727,21 @@ fn parseFileWithNativePreparation(
 
     const native_libraries = if (prepare_native) blk: {
         const native_start = nowNs();
-        const libraries = try ffi_support.prepareNativeLibrariesForTarget(allocator, path, program.imports, target_selector);
+        const libraries = ffi_support.prepareNativeLibrariesForTarget(allocator, path, program.imports, target_selector) catch |err| switch (err) {
+            error.UnsupportedTarget => {
+                const display_target = try displayTargetSelector(allocator, target_selector);
+                try diags.append(try diag_messages.ToolchainMessages.unsupportedNativeLibraryTarget(allocator, display_target));
+                timingPrint("[kira:timing] prepareNativeLibraries path={s} native_libraries=0 ns={d}\n", .{ path, elapsedNs(native_start) });
+                return .{
+                    .source = lexed.source,
+                    .diagnostics = try diags.toOwnedSlice(),
+                    .program = null,
+                    .native_libraries = &.{},
+                    .failure_stage = .backend_prepare,
+                };
+            },
+            else => return err,
+        };
         timingPrint("[kira:timing] prepareNativeLibraries path={s} native_libraries={d} ns={d}\n", .{ path, libraries.len, elapsedNs(native_start) });
         break :blk libraries;
     } else blk: {
@@ -832,321 +870,4 @@ fn validateImports(
         });
         return error.DiagnosticsEmitted;
     }
-}
-
-test "check and build stop points share imported graph diagnostics" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "App/app");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/project.toml",
-        .data =
-        \\[project]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/app/main.kira",
-        .data =
-        \\import support as Support
-        \\
-        \\@Main
-        \\function main() {
-        \\    return;
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/app/support.kira",
-        .data = "function helper( { return; }\n",
-    });
-
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", arena.allocator());
-    const checked = try checkFileForBackend(arena.allocator(), source_path, .vm);
-    const built = try compileFileForBackend(arena.allocator(), source_path, .vm, &.{});
-
-    try std.testing.expectEqual(FrontendStage.graph, checked.failure_stage.?);
-    try std.testing.expectEqual(FrontendStage.graph, built.failure_stage.?);
-    try std.testing.expectEqualStrings(checked.diagnostics[0].code.?, built.diagnostics[0].code.?);
-    try std.testing.expectEqualStrings(checked.diagnostics[0].title, built.diagnostics[0].title);
-}
-
-test "check reaches backend preparation for selected backend" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "App/app");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/app/main.kira",
-        .data =
-        \\@Main
-        \\function main() {
-        \\    nativeHelper();
-        \\    return;
-        \\}
-        \\
-        \\@Native
-        \\function nativeHelper() {
-        \\    return;
-        \\}
-        ,
-    });
-
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", arena.allocator());
-    const result = try checkFileForBackend(arena.allocator(), source_path, .vm);
-
-    try std.testing.expect(result.failed());
-    try std.testing.expectEqual(FrontendStage.backend_prepare, result.failure_stage.?);
-    try std.testing.expectEqualStrings("KBE001", result.diagnostics[0].code.?);
-}
-
-test "built-in Foundation resolves before installed package conflicts" {
-    const package_manager_pkg = @import("kira_package_manager");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/App/app");
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/ConflictFoundation");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/App/kira.toml",
-        .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\Foundation = { path = "../ConflictFoundation" }
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/App/app/main.kira",
-        .data =
-        \\import Foundation
-        \\
-        \\@Main
-        \\function main() {
-        \\    Foundation.printLine("ok");
-        \\    return;
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/ConflictFoundation/kira.toml",
-        .data =
-        \\[package]
-        \\name = "Foundation"
-        \\version = "9.9.9"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "Foundation"
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/ConflictFoundation/Foundation.kira",
-        .data = "function broken( { return; }\n",
-    });
-
-    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/App", arena.allocator());
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/App/app/main.kira", arena.allocator());
-
-    var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
-    _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
-
-    const result = try checkFile(arena.allocator(), source_path);
-    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
-}
-
-test "path dependency rooted at repo root resolves module file from app directory" {
-    const package_manager_pkg = @import("kira_package_manager");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/KiraUI/app");
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/CardExample/app");
-
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/KiraUI/kira.toml",
-        .data =
-        \\[package]
-        \\name = "KiraUI"
-        \\version = "0.1.0"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "KiraUI"
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/KiraUI/app/kiraui.kira",
-        .data =
-        \\function hello() {
-        \\    return;
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/CardExample/kira.toml",
-        .data =
-        \\[package]
-        \\name = "CardExample"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\KiraUI = { path = "../KiraUI" }
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/CardExample/app/main.kira",
-        .data =
-        \\import KiraUI
-        \\
-        \\@Main
-        \\function main() {
-        \\    hello();
-        \\    return;
-        \\}
-        ,
-    });
-
-    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/CardExample", arena.allocator());
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/CardExample/app/main.kira", arena.allocator());
-    var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(arena.allocator());
-    _ = try package_manager_pkg.syncProject(arena.allocator(), app_root, "0.1.0", .{}, &package_diags);
-
-    const result = try checkFile(arena.allocator(), source_path);
-    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
-}
-
-test "current library root import exposes declarations from every library file" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/UILibrary/app");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UILibrary/kira.toml",
-        .data =
-        \\[package]
-        \\name = "UILibrary"
-        \\version = "0.1.0"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "UI"
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UILibrary/app/main.kira",
-        .data =
-        \\import UI
-        \\
-        \\@Main
-        \\function main() {
-        \\    header()
-        \\    footer()
-        \\    return;
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UILibrary/app/UI.kira",
-        .data =
-        \\function header() {
-        \\    return;
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UILibrary/app/Footer.kira",
-        .data =
-        \\function footer() {
-        \\    return;
-        \\}
-        ,
-    });
-
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/UILibrary/app/main.kira", arena.allocator());
-    const result = try checkFile(arena.allocator(), source_path);
-    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
-}
-
-test "compile frontend deduplicates mixed-separator paths while walking current package imports" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, "Workspace/callbacks/app");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/callbacks/project.toml",
-        .data =
-        \\[project]
-        \\name = "callbacks"
-        \\version = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "llvm"
-        \\build_target = "host"
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/callbacks/app/main.kira",
-        .data =
-        \\import callbacks as cb
-        \\
-        \\@Main
-        \\function main() {
-        \\    cb.hello()
-        \\    return
-        \\}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/callbacks/app/callbacks.kira",
-        .data =
-        \\function hello() {
-        \\    return
-        \\}
-        ,
-    });
-
-    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Workspace/callbacks/app", arena.allocator());
-    const mixed_source_path = try std.fmt.allocPrint(arena.allocator(), "{s}/main.kira", .{app_root});
-    const result = try compileFileToIr(arena.allocator(), mixed_source_path);
-
-    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
-    try std.testing.expect(result.ir_program != null);
 }

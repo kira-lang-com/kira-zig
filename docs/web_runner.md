@@ -13,7 +13,7 @@ Web surfaces are typed:
 - `webgpu`
 - `hybrid`
 
-The current executable proofs are `dom` and `webgpu`. Web exports and web live runs write a generated Kira Wasm runtime module, load it through `WebAssembly.instantiate`, and expose the runtime status to browser glue. `webgpu` additionally creates a canvas, requests a WebGPU adapter/device, builds a WGSL triangle pipeline, submits one render pass, and records browser-side smoke state. `hybrid` is still rejected with a precise diagnostic until it has a browser VM/native boundary runner.
+The current executable proofs are host-surface probes for `dom` and `webgpu`. Web exports and web live runs write a generated Kira Wasm runtime module and load it through `WebAssembly.instantiate`, but host probes are reported with `HOST_*` markers and do not satisfy Kira runtime, UI, layout, graphics frame, or visible-content success. `webgpu` additionally creates a canvas, requests a WebGPU adapter/device, builds a WGSL triangle pipeline, and submits one host render pass as browser capability evidence only. `hybrid` is still rejected with a precise diagnostic until it has a browser VM/native boundary runner.
 
 Foundation.Web browser APIs are FFI-backed. The generated binding surface includes DOM node handles, console logging, navigator/location access, attributes/styles/classes, stable callback registration/invocation/removal, DOM event hooks, timers, callback cleanup, and WebGPU capability detection. Generated JS glue lives in web exports as `kira-browser-ffi.generated.js`.
 
@@ -22,7 +22,7 @@ Foundation.Web browser APIs are FFI-backed. The generated binding surface includ
 - creating DOM elements
 - setting text
 - appending children
-- logging `Kira browser API call succeeded`
+- logging `HOST_BROWSER_API_CALL_SUCCEEDED`
 - showing location/user-agent data
 - updating text to `Kira DOM updated`
 
@@ -36,4 +36,4 @@ kira export web examples/web_dom --surface dom
 kira export web examples/web_dom --surface webgpu
 ```
 
-The generated `kira-app.wasm` artifact is a real Wasm module with exported runtime probes. Kira no longer emits an 8-byte header-only placeholder and the web runner does not require `emcc` for this generated-runtime path.
+The generated `kira-app.wasm` artifact is a real Wasm module with exported probes. Only module-load capability is true in this generated host module; deeper Kira-owned runtime/app/UI/layout/render probes remain false until a real backend path produces them. Kira no longer emits an 8-byte header-only placeholder and the web runner does not require `emcc` for this generated-runtime path.

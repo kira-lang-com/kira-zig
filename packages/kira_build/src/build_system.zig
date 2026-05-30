@@ -217,6 +217,7 @@ pub const BuildSystem = struct {
         return switch (request.target.execution) {
             .vm => self.buildBytecodeArtifact(request),
             .llvm_native => self.buildNativeArtifact(request),
+            .wasm32_emscripten => self.buildWasmEmscriptenArtifact(request),
             .hybrid => self.buildHybridArtifact(request),
         };
     }
@@ -243,6 +244,26 @@ pub const BuildSystem = struct {
     }
 
     pub fn buildNativeArtifact(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        return self.buildLlvmExecutableArtifact(request, .llvm_native);
+    }
+
+    pub fn buildWasmEmscriptenArtifact(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        var wasm_request = request;
+        wasm_request.target.selector = try llvm_backend.emscripten.selector(self.allocator);
+        llvm_backend.emscripten.validateAvailable(self.allocator) catch |err| {
+            const source = try @import("kira_source").SourceFile.fromPath(self.allocator, request.source_path);
+            const backend_diagnostics = try pipeline.backendDiagnostics(self.allocator, source.path, err);
+            return .{
+                .source = source,
+                .diagnostics = backend_diagnostics,
+                .failure_kind = .toolchain,
+                .failure_stage = .backend_prepare,
+            };
+        };
+        return self.buildLlvmExecutableArtifact(wasm_request, .wasm32_emscripten);
+    }
+
+    fn buildLlvmExecutableArtifact(self: BuildSystem, request: build_def.BuildRequest, mode: build_def.ExecutionTarget) !BuildArtifactOutcome {
         const total_start = nowTimestamp();
         const compiled = try self.compileForBackend(request);
         if (compiled.failed()) {
@@ -276,9 +297,10 @@ pub const BuildSystem = struct {
                 .failure_stage = .backend_prepare,
             };
         };
-        pipeline.timingPrint("[kira:timing] llvm_backend.compile path={s} backend=llvm_native ns={d}\n", .{ request.source_path, elapsedNs(emit_start) });
+        pipeline.timingPrint("[kira:timing] llvm_backend.compile path={s} backend={s} ns={d}\n", .{ request.source_path, @tagName(mode), elapsedNs(emit_start) });
 
-        const artifacts = try self.allocator.alloc(build_def.Artifact, backend_result.artifacts.len);
+        const extra_wasm_artifacts: usize = if (mode == .wasm32_emscripten) 1 else 0;
+        const artifacts = try self.allocator.alloc(build_def.Artifact, backend_result.artifacts.len + extra_wasm_artifacts);
         for (backend_result.artifacts, 0..) |artifact, index| {
             artifacts[index] = .{
                 .kind = switch (artifact.kind) {
@@ -291,7 +313,13 @@ pub const BuildSystem = struct {
                 .path = artifact.path,
             };
         }
-        pipeline.timingPrint("[kira:timing] buildNativeArtifact.total path={s} ns={d}\n", .{ request.source_path, elapsedNs(total_start) });
+        if (mode == .wasm32_emscripten) {
+            artifacts[backend_result.artifacts.len] = .{
+                .kind = .executable,
+                .path = try replaceExtension(self.allocator, request.output_path, ".wasm"),
+            };
+        }
+        pipeline.timingPrint("[kira:timing] buildLlvmExecutableArtifact.total path={s} backend={s} ns={d}\n", .{ request.source_path, @tagName(mode), elapsedNs(total_start) });
         return .{ .artifacts = artifacts };
     }
 

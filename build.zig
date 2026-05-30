@@ -2,6 +2,7 @@ const std = @import("std");
 const kira_toolchain = @import("packages/kira_toolchain/src/root.zig");
 const llvm_metadata = @import("packages/kira_build/src/llvm_metadata.zig");
 const toolchain_layout = @import("packages/kira_llvm_toolchain_layout/src/root.zig");
+const test_roots = @import("build_support/test_roots.zig").test_roots;
 const kirac_version = "0.1.0";
 const kira_primary_executable = "kirac";
 const kira_bootstrapper_name = "kira-bootstrapper";
@@ -123,6 +124,7 @@ pub fn build(b: *std.Build) void {
     const live_options = b.addOptions();
     live_options.addOption([]const u8, "repo_root", repo_root);
     live_options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
+    live_options.addOption([]const u8, "static_file_server_path", b.getInstallPath(.bin, "kira-static-file-server"));
     modules.get("kira_live").?.addOptions("kira_live_build_options", live_options);
 
     if (llvm_probe) |probe| {
@@ -230,6 +232,9 @@ pub fn build(b: *std.Build) void {
         .root_module = live_desktop_module,
     });
     const install_live_desktop_runner = b.addInstallArtifact(live_desktop_runner, .{});
+    const static_file_server_module = b.createModule(.{ .root_source_file = b.path("packages/kira_live/src/static_file_server.zig"), .target = target, .optimize = optimize });
+    const static_file_server = b.addExecutable(.{ .name = "kira-static-file-server", .root_module = static_file_server_module });
+    const install_static_file_server = b.addInstallArtifact(static_file_server, .{});
 
     const run_cmd = b.addRunArtifact(cli);
     if (b.args) |args| run_cmd.addArgs(args);
@@ -261,47 +266,27 @@ pub fn build(b: *std.Build) void {
     const live_desktop_step = b.step("live-desktop-runner", "Build the generic desktop live runner executable");
     live_desktop_step.dependOn(&install_live_desktop_runner.step);
 
-    const cli_matrix_cmd = b.addSystemCommand(&.{ "python3", "tests/cli_matrix.py" });
-    cli_matrix_cmd.step.dependOn(b.getInstallStep());
+    const repository_truth_module = b.createModule(.{ .root_source_file = b.path("tests/repository_truth.zig"), .target = target, .optimize = optimize });
+    const repository_truth = b.addExecutable(.{ .name = "kira-repository-truth", .root_module = repository_truth_module });
+    const platform_matrix_module = b.createModule(.{ .root_source_file = b.path("tests/platform_validation_matrix.zig"), .target = target, .optimize = optimize });
+    const platform_matrix = b.addExecutable(.{ .name = "kira-platform-validation-matrix", .root_module = platform_matrix_module });
+    const cli_matrix_cmd = b.addRunArtifact(repository_truth);
     const cli_matrix_step = b.step("cli-matrix", "Run the discovered sibling-project CLI matrix");
     cli_matrix_step.dependOn(&cli_matrix_cmd.step);
 
-    const real_runtime_verify_cmd = b.addSystemCommand(&.{ "python3", "tests/verify_real_runtime_paths.py" });
-    real_runtime_verify_cmd.step.dependOn(b.getInstallStep());
+    const real_runtime_verify_cmd = b.addRunArtifact(repository_truth);
+    const platform_matrix_cmd = b.addRunArtifact(platform_matrix);
     const real_runtime_verify_step = b.step("verify-real-runtime", "Verify real runtime, Wasm, device runner, and backend policy paths");
     real_runtime_verify_step.dependOn(&real_runtime_verify_cmd.step);
+    real_runtime_verify_step.dependOn(&platform_matrix_cmd.step);
+    const repo_truth_step = b.step("repo-truth", "Reject Python, root Zig clutter, and fake validation markers");
+    repo_truth_step.dependOn(&real_runtime_verify_cmd.step);
+    const platform_matrix_step = b.step("platform-validation-matrix", "Verify platform validation matrix wiring and anti-smoke evidence");
+    platform_matrix_step.dependOn(&platform_matrix_cmd.step);
 
     const test_step = b.step("test", "Run package tests");
-    const test_roots = [_][]const u8{
-        "kira_toolchain",
-        "kira_lexer",
-        "kira_diagnostics",
-        "kira_diagnostic_messages",
-        "kira_parser",
-        "kira_semantics",
-        "kira_shader_model",
-        "kira_ksl_syntax_model",
-        "kira_ksl_parser",
-        "kira_shader_ir",
-        "kira_ksl_semantics",
-        "kira_glsl_backend",
-        "kira_wgsl_backend",
-        "kira_hlsl_backend",
-        "kira_msl_backend",
-        "kira_spirv_backend",
-        "kira_bytecode",
-        "kira_vm_runtime",
-        "kira_manifest",
-        "kira_package_manager",
-        "kira_program_graph",
-        "kira_native_lib_definition",
-        "kira_build",
-        "kira_instruments",
-        "kira_cli",
-        "kira_live",
-        "kira_llvm_backend",
-        "kira_native_bridge",
-    };
+    test_step.dependOn(&real_runtime_verify_cmd.step);
+    test_step.dependOn(&platform_matrix_cmd.step);
     for (test_roots) |name| {
         const unit_tests = b.addTest(.{
             .root_module = modules.get(name).?,
@@ -353,6 +338,7 @@ pub fn build(b: *std.Build) void {
     b.default_step.dependOn(&cli.step);
     b.default_step.dependOn(&bootstrapper.step);
     b.default_step.dependOn(&kira_main.step);
+    b.default_step.dependOn(&install_static_file_server.step);
 }
 
 fn preferredDefaultTarget(host: std.Target) std.Target.Query {

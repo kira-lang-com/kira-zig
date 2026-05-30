@@ -110,6 +110,13 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             backend = parseBackend(args[index]) orelse return error.InvalidArguments;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--target")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            if (!std.mem.eql(u8, args[index], "wasm32-emscripten")) return error.InvalidArguments;
+            backend = .wasm32_emscripten;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--profile")) {
             index += 1;
             if (index >= args.len) return error.InvalidArguments;
@@ -159,6 +166,7 @@ fn timingsEnvEnabled() bool {
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "llvm")) return .llvm_native;
+    if (std.mem.eql(u8, arg, "wasm32-emscripten") or std.mem.eql(u8, arg, "wasm")) return .wasm32_emscripten;
     if (std.mem.eql(u8, arg, "hybrid")) return .hybrid;
     return null;
 }
@@ -167,6 +175,7 @@ fn defaultOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem
     return switch (backend) {
         .vm => std.fmt.allocPrint(allocator, "{s}/{s}.kbc", .{ output_root, stem }),
         .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ output_root, stem, build_pkg.executableExtension() }),
+        .wasm32_emscripten => std.fmt.allocPrint(allocator, "{s}/{s}.js", .{ output_root, stem }),
         .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.khm", .{ output_root, stem }),
     };
 }

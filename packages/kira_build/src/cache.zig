@@ -62,6 +62,7 @@ pub const Entry = struct {
         return switch (self.target) {
             .vm => std.fs.path.join(self.allocator, &.{ self.root_path, "main.kbc" }),
             .llvm_native => std.fs.path.join(self.allocator, &.{ self.root_path, try executableName(self.allocator, "main") }),
+            .wasm32_emscripten => std.fs.path.join(self.allocator, &.{ self.root_path, "main.js" }),
             .hybrid => std.fs.path.join(self.allocator, &.{ self.root_path, "main.khm" }),
         };
     }
@@ -71,6 +72,7 @@ pub const Entry = struct {
         return switch (self.target) {
             .vm => fileExistsNonEmptyJoin(self.root_path, "main.kbc"),
             .llvm_native => fileExistsNonEmptyJoin(self.root_path, objectName()) and fileExistsNonEmptyJoin(self.root_path, executableNamePage("main")),
+            .wasm32_emscripten => fileExistsNonEmptyJoin(self.root_path, objectName()) and fileExistsNonEmptyJoin(self.root_path, "main.js") and fileExistsNonEmptyJoin(self.root_path, "main.wasm"),
             .hybrid => fileExistsNonEmptyJoin(self.root_path, "main.kbc") and
                 fileExistsNonEmptyJoin(self.root_path, objectName()) and
                 fileExistsNonEmptyJoin(self.root_path, sharedLibraryName()) and
@@ -106,6 +108,7 @@ pub const Entry = struct {
         return switch (self.target) {
             .vm => self.restoreVm(output_path),
             .llvm_native => self.restoreLlvm(output_path),
+            .wasm32_emscripten => self.restoreWasm(output_path),
             .hybrid => self.restoreHybrid(output_path),
         };
     }
@@ -128,6 +131,17 @@ pub const Entry = struct {
                 try copyFile(output_path, executable_stage);
                 try publishStagedFileAtomic(object_stage, try self.join(objectName()));
                 try publishStagedFileAtomic(executable_stage, try self.join(executableNamePage("main")));
+            },
+            .wasm32_emscripten => {
+                const object_stage = try stage.join(objectName());
+                const js_stage = try stage.join("main.js");
+                const wasm_stage = try stage.join("main.wasm");
+                try copyFile(try defaultObjectPath(self.allocator, output_path), object_stage);
+                try copyFile(output_path, js_stage);
+                try copyFile(try replaceExtension(self.allocator, output_path, ".wasm"), wasm_stage);
+                try publishStagedFileAtomic(object_stage, try self.join(objectName()));
+                try publishStagedFileAtomic(js_stage, try self.join("main.js"));
+                try publishStagedFileAtomic(wasm_stage, try self.join("main.wasm"));
             },
             .hybrid => {
                 const bytecode_stage = try stage.join("main.kbc");
@@ -170,6 +184,20 @@ pub const Entry = struct {
         const artifacts = try self.allocator.alloc(build_def.Artifact, 2);
         artifacts[0] = .{ .kind = .native_object, .path = object_path };
         artifacts[1] = .{ .kind = .executable, .path = try self.allocator.dupe(u8, output_path) };
+        return artifacts;
+    }
+
+    fn restoreWasm(self: Entry, output_path: []const u8) ![]build_def.Artifact {
+        const object_path = try defaultObjectPath(self.allocator, output_path);
+        const wasm_path = try replaceExtension(self.allocator, output_path, ".wasm");
+        try copyFile(try self.join(objectName()), object_path);
+        try copyFile(try self.join("main.js"), output_path);
+        try copyFile(try self.join("main.wasm"), wasm_path);
+
+        const artifacts = try self.allocator.alloc(build_def.Artifact, 3);
+        artifacts[0] = .{ .kind = .native_object, .path = object_path };
+        artifacts[1] = .{ .kind = .executable, .path = try self.allocator.dupe(u8, output_path) };
+        artifacts[2] = .{ .kind = .executable, .path = wasm_path };
         return artifacts;
     }
 
@@ -548,6 +576,7 @@ fn backendName(target: build_def.ExecutionTarget) []const u8 {
     return switch (target) {
         .vm => "vm",
         .llvm_native => "llvm",
+        .wasm32_emscripten => "wasm32-emscripten",
         .hybrid => "hybrid",
     };
 }
