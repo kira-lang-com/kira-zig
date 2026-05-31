@@ -193,7 +193,7 @@ fn resolveVariant(
             .call_virtual => |value| {
                 if (value.dst) |dst| register_types[dst] = value.return_ty;
             },
-            .store_local, .array_set, .array_append, .native_state_field_set, .store_indirect, .copy_indirect, .branch, .jump, .label, .print, .ret => {},
+            .store_local, .array_set, .array_append, .native_state_field_set, .store_indirect, .copy_indirect, .branch, .jump, .label, .print, .ret, .scope_enter, .scope_exit => {},
         }
     }
 

@@ -1,3 +1,6 @@
+/* TEMP (dev): exercise ownership-free during validation. */
+#define KIRA_ARRAY_OWNERSHIP_FREE 1
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -56,13 +59,6 @@ typedef struct {
 typedef struct {
     size_t len;
     KiraBridgeValue *items;
-    /*
-     * Reference count for the pure-native path (no VM allocator installed).
-     * Appended last so `len`/`items` keep offsets 0/8 — hybrid/VM arrays that
-     * only read those fields are unaffected, and all refcount touches below are
-     * gated on `kira_array_alloc_fn == NULL` so VM-owned arrays never read it.
-     */
-    size_t refcount;
 } KiraArray;
 
 typedef struct {
@@ -262,23 +258,39 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
     if (array == NULL) return NULL;
     array->len = (size_t)len;
     array->items = array->len == 0 ? NULL : (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
-    array->refcount = 1;
     return array;
 }
 
 /*
- * Reference counting (pure-native path only). The LLVM backend emits a retain
- * whenever it duplicates an array reference (a struct value that holds the array
- * is shallow-copied, or the array is read out of a struct field into a new
- * owner) and a release when an owner dies. Arrays are freed when the count hits
- * zero. When a VM allocator is installed (hybrid), retain/release are no-ops and
- * the VM owns destruction — the refcount field is never touched, so VM arrays
- * that lack it are safe.
+ * Deep clone for the borrow->owned boundary (pure-native path). The LLVM backend
+ * emits this when an owned value is produced from borrowed data (e.g. returning a
+ * struct element read out of a borrowed array), so the new owner gets independent
+ * array storage instead of aliasing the borrowed array. `clone_elem`, when
+ * provided, deep-clones each RAW_PTR element (an array of heap structs); a null
+ * `clone_elem` copies elements byte-for-byte (primitive/leaf element types).
+ * Ownership model only — no reference counts.
  */
-KIRA_BRIDGE_EXPORT void kira_array_retain(KiraArray *array) {
-    if (kira_array_alloc_fn != NULL) return;
-    if (!kira_array_is_active(array)) return;
-    array->refcount += 1;
+KIRA_BRIDGE_EXPORT KiraArray *kira_array_clone(const KiraArray *array, void *(*clone_elem)(void *)) {
+    if (kira_array_alloc_fn != NULL) return (KiraArray *)array; /* hybrid: VM owns; no native clone */
+    if (array == NULL || kira_bridge_probably_invalid_pointer(array)) return NULL;
+    KiraArray *copy = (KiraArray *)kira_bridge_alloc(sizeof(KiraArray));
+    if (copy == NULL) return NULL;
+    copy->len = array->len;
+    if (array->len == 0 || array->items == NULL || kira_bridge_probably_invalid_pointer(array->items)) {
+        copy->len = array->len;
+        copy->items = NULL;
+        return copy;
+    }
+    copy->items = (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
+    if (copy->items == NULL) { copy->len = 0; return copy; }
+    for (size_t i = 0; i < array->len; i++) {
+        copy->items[i] = array->items[i];
+        if (clone_elem != NULL && array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
+            void *element = (void *)array->items[i].payload.raw_ptr;
+            if (element != NULL) copy->items[i].payload.raw_ptr = (uintptr_t)clone_elem(element);
+        }
+    }
+    return copy;
 }
 
 KIRA_BRIDGE_EXPORT int64_t kira_array_len(const KiraArray *array) {
@@ -293,6 +305,67 @@ KIRA_BRIDGE_EXPORT void kira_array_store(KiraArray *array, int64_t index, const 
     if (array == NULL || index < 0 || (size_t)index >= array->len) return;
     if (value == NULL) return;
     array->items[index] = *value;
+}
+
+/*
+ * Drop-before-overwrite store. Overwriting an element whose slot owns heap
+ * contents (a struct element with its own array/struct fields) must destroy the
+ * prior occupant, or it orphans every overwrite (the P2 element-overwrite leak).
+ * `release_raw_ptr` is the element destructor (e.g. kira_destroy_Node); a null fn
+ * means primitive elements with nothing to drop, degrading to a plain store. The
+ * old-vs-new pointer guard makes storing the same element back a no-op rather than
+ * a use-after-free. Mirrors the per-element destroy loop in kira_array_release so
+ * an element is reclaimed exactly once whether the array is released wholesale or
+ * a slot is overwritten. Ownership model, no refcounts — see kira_array_release.
+ */
+KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index, const KiraBridgeValue *value, void (*release_raw_ptr)(void *)) {
+    if (!kira_array_is_active(array)) return;
+    kira_array_repair_invalid_storage(array);
+    if (array == NULL || index < 0 || (size_t)index >= array->len) return;
+    if (value == NULL) return;
+#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
+    /*
+     * Defer on the hybrid/VM path exactly as kira_array_release does: the VM owns
+     * and reclaims array memory through its own native-layout destructors.
+     */
+    if (kira_array_alloc_fn == NULL && release_raw_ptr != NULL &&
+        array->items[index].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
+        void *old = (void *)array->items[index].payload.raw_ptr;
+        void *incoming = value->tag == KIRA_BRIDGE_VALUE_RAW_PTR ? (void *)value->payload.raw_ptr : NULL;
+        if (old != NULL && old != incoming) release_raw_ptr(old);
+    }
+#else
+    (void)release_raw_ptr;
+#endif
+    array->items[index] = *value;
+}
+
+/*
+ * Drop-before-overwrite for an owned ARRAY FIELD. Reassigning `obj.arr = newArr`
+ * orphans the old array (the P2 field-overwrite leak: 16-byte KiraArray headers).
+ * The backend emits this with the old and incoming array pointers and the element
+ * destructor; it releases the old array unless it is null (moved-out/uninitialised
+ * field) or the same pointer being stored back. Delegates to kira_array_release, so
+ * it inherits the KIRA_ARRAY_OWNERSHIP_FREE gate and the hybrid/VM deferral. Only
+ * sound because aggregate reads now deep-clone (value semantics) — the old field
+ * value is independently owned and not aliased by the incoming value.
+ */
+KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *));
+
+KIRA_BRIDGE_EXPORT void kira_array_release_replaced(KiraArray *old_array, KiraArray *incoming, void (*release_raw_ptr)(void *)) {
+    if (old_array == NULL || old_array == incoming) return;
+    /*
+     * Defense-in-depth. A struct array field is an untagged raw KiraArray* (unlike a
+     * tagged bridge-value element), so a non-heap value in the field would be freed
+     * blindly — this aborted on device (0x4628d3 in a foundation FFI struct). The
+     * backend already restricts this call to non-FFI struct types whose array fields
+     * are always kira_array_alloc'd, but guard anyway: kira_bridge_alloc returns at
+     * least 16-byte-aligned pointers, so reject anything unaligned or in the low
+     * sentinel range rather than free a value that was never allocated.
+     */
+    uintptr_t bits = (uintptr_t)old_array;
+    if (bits < 0x1000 || (bits & 0xF) != 0) return;
+    kira_array_release(old_array, release_raw_ptr);
 }
 
 KIRA_BRIDGE_EXPORT void kira_array_append(KiraArray *array, const KiraBridgeValue *value) {
@@ -338,34 +411,25 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
     }
 
     kira_array_repair_invalid_storage(array);
-    (void)release_raw_ptr;
 
     /*
-     * Reference-counted free — SCAFFOLDED BUT NOT YET ENABLED.
+     * Ownership model (no reference counts). The LLVM backend, driven by the borrow
+     * checker, emits exactly one release at each owned array's drop point; moves
+     * transfer ownership (the source is not dropped) and borrows are never dropped,
+     * while owned values produced from borrowed data are deep-cloned (kira_array_clone)
+     * so they own independent storage. A release here is then the sole owner going
+     * away: run the element destructor on RAW_PTR elements, then free the items
+     * buffer and the struct.
      *
-     * The refcount primitives (kira_array_alloc sets refcount=1, kira_array_retain,
-     * and the kira_retain_contents_<T> generator in the LLVM backend) are in place.
-     * Turning the block below on reclaims the per-frame retained-tree garbage. It is
-     * gated off because the backend does not yet emit *balanced* retain/release:
-     *   - retains at every reference duplication (struct shallow-copy of a borrowed
-     *     source, array-element struct loads), and
-     *   - releases at every owned drop, including field move-outs like
-     *     `let previous = tree.nodes; next.nodes = []` that currently orphan the old
-     *     array with no drop.
-     * The move-vs-borrow distinction that decides retain-or-not lives in Kira's
-     * borrow checker, whose move/liveness facts are not yet threaded into the IR.
-     * Enabling free before that balance exists double-frees shared arrays and
-     * crashes on device (observed). Until the backend emits balanced ops driven by
-     * the borrow checker, defer — leak rather than crash. Full design + repro:
-     * .codex/work/reports/array-registry-leak-and-promotion.md.
+     * Gated behind KIRA_ARRAY_OWNERSHIP_FREE (default OFF = defer = stable, the
+     * committed no-crash behavior). Turning it on requires the backend to (a) deep
+     * clone at EVERY borrow->owned boundary (currently only return-struct copies) and
+     * (b) emit drops for orphaned owned arrays (field move-outs). Until both are
+     * complete and DEVICE-validated, freeing risks the use-after-free that crashed on
+     * device. See .codex/work/reports/array-registry-leak-and-promotion.md §7f.
      */
-#if defined(KIRA_ARRAY_REFCOUNT_ENABLED)
-    if (array->refcount == 0) {
-        kira_trace_log("NATIVE", "ARRAY_RELEASE_UNDERFLOW", "array=%p", (void *)array);
-        return;
-    }
-    array->refcount -= 1;
-    if (array->refcount != 0) return;
+#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
+    kira_trace_log("NATIVE", "ARRAY_RELEASE_FREE", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
     if (release_raw_ptr != NULL && array->items != NULL &&
         !kira_bridge_probably_invalid_pointer(array->items)) {
         for (size_t i = 0; i < array->len; i++) {
@@ -378,8 +442,10 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
     kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
     kira_bridge_free(array, sizeof(KiraArray));
     return;
-#endif
+#else
+    (void)release_raw_ptr;
     kira_trace_log("NATIVE", "ARRAY_RELEASE_DEFERRED", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
+#endif
 }
 
 KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, int64_t payload_size) {

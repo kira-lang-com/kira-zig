@@ -151,6 +151,7 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
                 register_types[dst] = value.return_type;
             },
             .ret => {},
+            .scope_enter, .scope_exit => {},
         }
     }
     return register_types;

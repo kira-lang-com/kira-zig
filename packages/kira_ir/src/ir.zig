@@ -186,6 +186,20 @@ pub const Instruction = union(enum) {
     call_virtual: VirtualCall,
     call_value: CallValue,
     ret: Return,
+    // Scope markers for drop elaboration. `scope_enter` opens a droppable scope
+    // (loop body); `scope_exit` closes it, dropping owned values created within the
+    // scope (loop-body locals + register temporaries) at iteration end so they are
+    // not leaked until function exit. LLVM-backend only; the VM/bytecode path treats
+    // them as no-ops (the VM reclaims via its own native-layout destructors).
+    scope_enter: ScopeEnter,
+    scope_exit: ScopeExit,
+};
+
+pub const ScopeEnter = struct {};
+
+pub const ScopeExit = struct {
+    // Mapped IR local ids declared within the scope, to be dropped on scope exit.
+    locals: []const u32,
 };
 
 pub const ConstInt = struct {

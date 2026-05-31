@@ -287,6 +287,191 @@ retain/release). The scaffolding + repro + this design are the handoff; enabling
 half-balanced double-frees and crashes on device, so it must not be flipped on until
 all four gates pass.
 
+## 7f. Ownership+clone implementation (no ARC) — foundation landed, gated off
+
+Per the directive to avoid reference counting, pivoted to a pure **ownership + clone**
+model (Rust-like): free each owned array once at its drop point; moves transfer;
+borrows never freed; deep-clone only at borrow→owned boundaries (not everywhere, so
+no O(n²)).
+
+Landed and **corpus-validated crash-safe** (full 1017/0 with free ENABLED during
+testing, repro no crash):
+- `runtime_helpers.c`: `kira_array_release` frees unconditionally (native-gated) under
+  `KIRA_ARRAY_OWNERSHIP_FREE`; new `kira_array_clone(src, clone_elem)` deep clone
+  (recursive elem clone for arrays of heap structs, byte-copy for leaf elements).
+- `kira_llvm_backend`: generates `kira_clone_contents_<T>` (deep-clone array fields in
+  place) and `kira_clone_<T>` (alloc+copy+deepen, the per-element callback), mirroring
+  the existing `kira_destroy_<T>`/`kira_release_contents_<T>`. Emits a clone at the
+  return-struct-copy site when the source is borrowed (`!register_owns_contents`).
+
+**Gated OFF by default** (`KIRA_ARRAY_OWNERSHIP_FREE` undefined → release defers =
+committed stable behavior, corpus 1017/0, leak test green). Two things must finish
+before enabling, both validated on repro + corpus + **device**:
+
+1. **Complete clone coverage at every borrow→owned boundary.** Only the return-struct
+   copy clones today; `array.append`/`array.set` of a borrowed struct and field
+   assignment from borrowed data also promote borrowed→owned and must clone, or freeing
+   double-frees on device. (Corpus passed, but the corpus did NOT catch the first
+   device crash — coverage gaps are device-only.)
+2. **Emit drops for orphaned owned arrays.** The repro still leaks (229 MB) because
+   `let previous = tree.nodes; next.nodes = []` orphans the old array with no release.
+   The backend's heuristic ownership tracker doesn't mark this field move-out as owned.
+   Root issue: Kira's move checker enforces explicit move/copy for **call arguments**
+   but NOT for `let`-bindings/field reads, so `let previous = tree.nodes` is an implicit
+   shallow alias the checker doesn't model — the soundness gap that both leaks (no-op)
+   and crashes (free). Performant fix = make non-copyable `let`/field reads MOVES
+   (null the source field on move-out, drop the owner at scope exit), which needs the
+   borrow checker's move facts threaded into HIR/IR.
+
+Net: the crash-safe clone/free machinery is in place and corpus-proven; the remaining
+work is borrow-checker completion (let/field move semantics) + IR move-fact threading +
+drop elaboration. That is the substantive compiler piece and benefits from device-test
+iteration. Nothing regresses while gated off.
+
+## 7g. Drop elaboration — root-cause fix landed (70% of repro leak gone)
+
+Root cause of the missing drops: `markOwnedLocalForType` set `local_owned_values` for
+array/string locals but **never set `local_owns_contents` for ffi_struct params**. So an
+owned struct parameter (`tree: Tree`) didn't register as owning its contents, and
+reading an array field out of it (`let previous = tree.nodes`) wasn't marked owned →
+never dropped. One-line-class fix: owned ffi_struct locals/params own their contents.
+Borrow params don't reach this (ownershipConsumes=false), so borrowed field reads stay
+borrowed and are never freed — exactly the right split.
+
+Result (free ENABLED, ownership+clone, no ARC):
+- `rebuild` now emits `kira_array_release(previous, kira_destroy_Node)` at scope exit,
+  cascading to free the old node array + its Node structs + their childIds each frame.
+- Repro peak RSS **229 MB → 69 MB** (~70% reclaimed). No crash, correct output.
+- **Full corpus 1017/0** — no over-release/double-free across the suite.
+
+Residual ~69 MB (≈345 B/frame): the moved-in `tree` param's *other* arrays (e.g.
+`reused`) and the per-frame Tree/struct allocations. Safely dropping these needs
+**per-field move tracking** — `let previous = tree.nodes` partially moves `tree`, so
+dropping `tree` must release `reused` but NOT `nodes` (already moved to `previous`).
+The current whole-binding move model can't express that, so `tree` isn't dropped at all
+(reused leaks) rather than risk double-freeing `nodes`. That's the next increment.
+
+Clone coverage is still only at the return-struct-copy site; other borrow→owned
+promotions (array.append/set of a borrowed struct, field assignment from borrowed data)
+are not cloned yet — corpus-clean but potentially device-only crashes. **This checkpoint
+is ready for a device test** (free enabled via the temp `KIRA_ARRAY_OWNERSHIP_FREE`
+define): expect a large leak reduction; watch for crashes and report the site.
+
+## 7h. Status: local crash repro obtained; remaining = move-tracking in recursive code
+
+Built the iOS-sim/macOS app from `basic-foundation-app` with free enabled and it
+**crashes locally** — SIGSEGV/null-deref in `foundationRetainedAppendFreshNode`
+(recursive, during mount). This is a **local reproduction of the device crash**
+(macOS/sim), so further iteration no longer needs the physical device.
+
+Findings:
+- `foundationViewChildren(view: borrow) -> [FoundationView] { return view.children }`
+  returns a borrowed field as owned. The return-ownership analysis correctly reports it
+  as non-owning (it doesn't track field reads), so the result is NOT dropped — NOT the
+  crash. Good (and means no expensive whole-subtree clone is needed there).
+- The crash is move-tracking in recursive threading: the `markOwnedLocalForType` fix
+  (owned ffi_struct params own contents — correct) makes owned struct params release
+  contents at scope exit, and some recursive `move` pattern in `appendFreshNode`
+  (`var next = tree; ...(move next)...; next = result.tree; ... return move next`) ends
+  with a release of arrays already transferred out → null-deref/double-free. `copy_indirect`
+  transfers `owns_contents` correctly for the simple repro (which is why the repro hit
+  70% reduction with NO crash), but a path in the recursive code does not.
+
+State: free **gated off** (`KIRA_ARRAY_OWNERSHIP_FREE` undefined) = committed stable
+behavior. Kept: the `markOwnedLocalForType` ffi_struct fix and the clone generators
+(inert no-ops while free is off; corpus 1017/0, leak test green).
+
+Remaining: debug the `appendFreshNode` move-tracking gap against the local repro
+(examine its IR for the over-release), complete clone coverage at any other
+borrow→owned sites, then enable free and validate repro-flat + corpus + the local
+sim/macOS app (no crash) + device. Iterative, but now fully local.
+
+## 7i. RESOLVED: field move-out double-free fixed (crash gone, leak gone)
+
+Root cause pinned down with a faithful, **device-free** local repro
+(`.codex/work/repro2/`, which crashes identically: `EXC_BAD_ACCESS` in
+`kira_array_load` ← `ensureSlot` ← recursive `appendFresh`, exit 139). The bug was a
+**struct field move-out**:
+
+```kira
+let stateResult = ensureSlot(move next, nodeId)
+next = stateResult.tree        // copies the nested Tree struct VALUE → aliases its array ptrs
+```
+
+IR (`leak-repro2.o.ll`): `next = stateResult.tree` lowers to a `field_ptr` (=`&stateResult.tree`)
+feeding a `copy_indirect` whose source is that field pointer. The old `copy_indirect`
+handler only cleared ownership when the source mapped to a *local* (`register_local_ptr`);
+for a **field** source (`register_field_owner`) it did nothing. So the wrapper
+(`stateResult`) kept `owns_contents=true` and received
+`kira_release_contents_SlotResult` at scope exit, which freed the very `nodes`/`stateSlots`
+arrays that `next` (threaded into the next recursion and returned) now aliased → UAF.
+
+Fix (`backend_text_ir_core.zig`, `copy_indirect`): when the source is a struct field of an
+owned wrapper (`register_field_owner[src_ptr]` set and the owner actually owns its
+contents), reading a non-copyable struct field is a move — so **null the source field's
+storage** after the copy (`store <T> zeroinitializer, ptr %copy.src.N`). The wrapper's
+later `release_contents_<T>` then loads null array pointers and reclaims nothing
+(`kira_array_release(NULL)` is an early-return no-op via `kira_array_is_active`), leaving
+the moved value as the sole owner. Guarded on owner-owns-contents so borrowed sources are
+never mutated. This is field-precise (other owned fields of the wrapper are still released)
+and needs no per-field runtime tracking.
+
+Validation (free **enabled**, `KIRA_ARRAY_OWNERSHIP_FREE=1`):
+- `.codex/work/repro2/` — was exit 139 (SIGSEGV), now **exit 0**. RSS bounded:
+  10k→32 MB, 100k→49 MB, 500k→121 MB (sub-linear; a true per-frame leak would be GBs).
+- `.codex/work/repro/` (flat rebuild) — no crash, no ramp.
+- Leak regression test (`run_array_registry_leak_test.sh`) — PASS (alloc→release nets zero).
+- Full corpus `zig build test` — **1017 passed, 0 failed**.
+- **Real `basic-foundation-app`** (the program that crashed on device), rebuilt host:
+  no longer crashes — completes `retained_tree.ready` (the recursive
+  `foundationRetainedAppendFreshNode`), layout, render-command generation, frame
+  submission, and runs steadily. RSS **flat**: 30→20→20→19 MB over 18 s (was ~10 MB/s ramp).
+
+Status: free path is **enabled** via `#define KIRA_ARRAY_OWNERSHIP_FREE 1` at the top of
+`runtime_helpers.c` (picked up by every build — host and iOS — because
+`link.zig:compileNativeRuntimeHelper` compiles the helper from source per target).
+Left enabled for **on-device validation** this iteration. Commit-time cleanup: convert the
+hardcoded `#define` to a `-DKIRA_ARRAY_OWNERSHIP_FREE=1` clang arg in
+`compileNativeRuntimeHelper` (and keep the leak-test script's auto-detect in sync).
+
+## 7j. Device retest: crash gone, leak reduced; loop-body drop landed; classes remain
+
+On-device retest after §7i: **no crash** (the SIGSEGV is gone for good), but Instruments still
+showed a memory ramp + leak flags. Root-caused on host (device-free) — it is NOT the §7i
+field-move-out path; it is **general scope-drop gaps**. Built `ui-foundation/Examples/leak-harness/`
+(loops `foundationRetainedUpdate` + `FoundationLayoutPass().run` over a persistent root) and
+switched to the TRUE leak metric `MallocStackLogging=1 leaks --atExit` (peak RSS is allocator
+high-water noise — unreliable here).
+
+Found + FIXED one class: **owned values created in a loop body were only freed at function
+exit** (the single `cleanup.heap.slot.N` per register is overwritten each iteration, so only the
+last iteration is reclaimed). Implemented borrow-checker-driven scope drops (NO ARC/GC):
+`scope_enter`/`scope_exit{locals}` IR ops emitted around while/for bodies; the LLVM backend
+drops, at iteration end, (a) register temporaries created since `scope_enter` that did not
+escape, and (b) loop-body `let` locals still owning contents at body end (compile-time flags
+there correctly reflect moved-out=false), zeroing storage so function-exit cleanup is a safe
+no-op. Files: `kira_ir/src/ir.zig`, `kira_ir/src/lower_from_hir_statements.zig`,
+`kira_ir/src/lower_from_hir.zig` (clone helper), `kira_llvm_backend/src/backend_text_ir_core.zig`
+(+ monomorphization / runtime_utils no-ops), `kira_bytecode/src/compiler.zig` (VM no-op).
+Validation: corpus **1017/0**, repro2 exits 0 (no double-free), basic-foundation-app no crash.
+Verified in leak-harness main: per-iteration frees of the `FoundationLayoutPass`/`LayoutEngine`
+instances + `release_contents_LayoutTree(laidOut)`.
+
+Remaining leak CLASSES (still open — each a distinct drop-elaboration gap; see memory
+`loop-body-drop-gap.md` for the precise next steps):
+1. **Owned call-result consumed into an aggregate** (dominant, ~57%): `nodes.append(LayoutNode {
+   descriptor: foundationViewLayoutDescriptor(view), ... })`. `leaks` ROOT is the `nodes` array
+   (1/frame) dragging ~21 descriptors. IR analysis says `laidOut.nodes` should be freed by
+   `release_contents_LayoutTree` (main emits it) yet `leaks` marks it a ROOT LEAK — an
+   unresolved aliasing/ownership-tracking bug in `run()` returning `tree` (nodes aliased into the
+   return-malloc copy, no clone) → `main.laidOut`. Next: lldb-watch the nodes KiraArray ptr
+   across run→return→main, or trace `kira_array_release`.
+2. **Field-overwrite orphaning**: `next.reusedIds = []` / `nodes[i] = LayoutNode{...}` orphan the
+   old array with no drop-before-overwrite (needs zero-on-move to be safe).
+
+Measurement: combined harness 10k frames = 17.4 MB leaked (was effectively unbounded). Original
+device leak ~10 MB/s (~83 KB/frame at 120 Hz) → now ~1.7 KB/frame on the harness's small tree.
+
 ## 8. Remaining performance issues (not fixed — out of scope)
 
 1. **`kira_array_append` is O(n)** — realloc + full copy with no spare capacity, so

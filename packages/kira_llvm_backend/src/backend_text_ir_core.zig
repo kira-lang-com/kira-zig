@@ -119,10 +119,12 @@ pub fn buildTextLlvmIr(
     try writer.writeAll("declare ptr @\"kira_array_alloc\"(i64)\n");
     try writer.writeAll("declare i64 @\"kira_array_len\"(ptr)\n");
     try writer.writeAll("declare void @\"kira_array_store\"(ptr, i64, ptr)\n");
+    try writer.writeAll("declare void @\"kira_array_store_release\"(ptr, i64, ptr, ptr)\n");
+    try writer.writeAll("declare void @\"kira_array_release_replaced\"(ptr, ptr, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_append\"(ptr, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_load\"(ptr, i64, ptr)\n");
     try writer.writeAll("declare void @\"kira_array_release\"(ptr, ptr)\n");
-    try writer.writeAll("declare void @\"kira_array_retain\"(ptr)\n");
+    try writer.writeAll("declare ptr @\"kira_array_clone\"(ptr, ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_alloc\"(i64, i64)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_payload\"(ptr)\n");
     try writer.writeAll("declare ptr @\"kira_native_state_recover\"(ptr, i64)\n");
@@ -134,6 +136,7 @@ pub fn buildTextLlvmIr(
         try writer.writeAll("declare void @\"kira_hybrid_call_runtime\"(i32, ptr, i32, ptr)\n");
     }
     try appendReleaseDefinitions(allocator, writer, request.program);
+    try appendCloneDefinitions(allocator, writer, request.program);
     for (function_decls.items) |decl| {
         try writer.writeAll(decl);
         try writer.writeByte('\n');
@@ -197,6 +200,10 @@ pub fn buildTextFunctionBody(
     var block_terminated = false;
     var owned_values = std.array_list.Managed(OwnedValue).init(allocator);
     defer owned_values.deinit();
+    // Stack of owned_values lengths captured at each scope_enter, so scope_exit can
+    // drop register temporaries created within the scope (loop-body iteration drop).
+    var scope_stack = std.array_list.Managed(usize).init(allocator);
+    defer scope_stack.deinit();
     const register_owned_ptr = try allocator.alloc(bool, register_types.len);
     defer allocator.free(register_owned_ptr);
     @memset(register_owned_ptr, false);
@@ -961,9 +968,37 @@ pub fn buildTextFunctionBody(
                 }
                 try writer.print("  %array.set.pack.ptr.{d} = alloca %kira.bridge.value\n", .{temp_index});
                 try writer.print("  store %kira.bridge.value %array.set.pack.{d}, ptr %array.set.pack.ptr.{d}\n", .{ temp_index, temp_index });
-                try writer.print("  call void @\"kira_array_store\"(ptr %array.set.ptr.{d}, i64 %r{d}, ptr %array.set.pack.ptr.{d})\n", .{
+                // Drop-before-overwrite: overwriting a slot that owns a heap struct
+                // element (with its own array fields) without releasing the prior
+                // occupant orphans it every time (the P2 element-overwrite leak). Pass
+                // the element destructor so the runtime drops the old occupant first.
+                //
+                // GATE: only drop when the incoming value *owns its contents*. The
+                // ownership model deep-clones at every borrow->owned boundary, so an
+                // owned value has independent storage and cannot alias the slot's
+                // nested arrays — dropping the old element is then safe. A value that
+                // does NOT own its contents is a shallow element read/alias (e.g.
+                // `var copied = arr[i]; copied.field.append(x); arr[i] = copied`),
+                // whose nested arrays are the SAME pointers the slot holds; dropping
+                // them would free memory the stored value still references (UAF/double
+                // free). For those we fall back to a plain store (a null fn) — leaky
+                // but safe — until element reads carry move/clone semantics. A null fn
+                // (primitive elements) is likewise a plain overwrite.
+                const set_drops = value.src < register_owns_contents.len and register_owns_contents[value.src];
+                const set_release_fn = if (set_drops)
+                    try arrayElementDestroySymbol(allocator, request.program, register_types[value.array])
+                else
+                    null;
+                defer if (set_release_fn) |name| allocator.free(name);
+                try writer.print("  call void @\"kira_array_store_release\"(ptr %array.set.ptr.{d}, i64 %r{d}, ptr %array.set.pack.ptr.{d}, ptr ", .{
                     value.src, value.index, temp_index,
                 });
+                if (set_release_fn) |name| {
+                    try writeLlvmSymbol(writer, name);
+                } else {
+                    try writer.writeAll("null");
+                }
+                try writer.writeAll(")\n");
                 if (register_owned_ptr[value.src] and register_types[value.src].kind != .ffi_struct) register_escaped[value.src] = true;
                 if (register_local_ptr[value.src]) |source_local| {
                     switch (variant.local_types[source_local].kind) {
@@ -1147,6 +1182,16 @@ pub fn buildTextFunctionBody(
                     },
                     .array => {
                         try writer.print("  %store.arrayptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ value.src, value.src });
+                        // Plain store — NO drop-before-overwrite. Field-drop was attempted
+                        // twice and crashed on device both times (malloc abort in
+                        // foundationRetainedUpdate). A struct array field is an untagged raw
+                        // KiraArray*; the foundation retained structs hold non-heap values
+                        // there (FFI/native, not zero-initialised), and neither an FFI-type
+                        // gate nor an alignment guard reliably distinguishes a real owned
+                        // array from garbage. The 16-byte field-overwrite leak is ACCEPTED;
+                        // freeing here is unsafe without per-field type tagging. Do not
+                        // reintroduce without device validation. (Array ELEMENT drop is fine
+                        // — bridge values are tagged; see kira_array_store_release.)
                         try writer.print("  store ptr %store.arrayptr.{d}, ptr %store.ptr.{d}\n", .{ value.src, value.src });
                     },
                     .float => {
@@ -1200,6 +1245,50 @@ pub fn buildTextFunctionBody(
                 }
                 if (register_local_ptr[value.src_ptr]) |source_local| {
                     if (local_owns_contents[source_local]) local_owns_contents[source_local] = false;
+                }
+                // Field move-out (P1): when the source is a struct field of an owned
+                // wrapper (e.g. `tree = result.tree`), the shallow copy above aliases the
+                // nested array pointers into the destination. The wrapper still receives
+                // kira_release_contents at scope exit, which would free those arrays out
+                // from under the new owner (use-after-free). Reading the field is a move:
+                // null the source field after the copy (the wrapper's release then loads
+                // null and reclaims nothing) AND mark the destination the sole owner so it
+                // is dropped exactly once. Guarded on the wrapper actually owning its
+                // contents so borrowed sources are never mutated.
+                //
+                // NOTE: this is the device-validated P1 behavior. A clone-on-copy +
+                // move-when-dead generalization was attempted but REVERTED — it gave wrong
+                // results / a blue screen on device (the foundation app's FFI/native
+                // structs do not follow pure-Kira value semantics, so cloning/zeroing
+                // their fields corrupted them). Do not reintroduce without device testing.
+                if (value.src_ptr < register_field_owner.len) {
+                    if (register_field_owner[value.src_ptr]) |owner_reg| {
+                        var owner_owns = owner_reg < register_owns_contents.len and register_owns_contents[owner_reg];
+                        if (!owner_owns and owner_reg < register_local_ptr.len) {
+                            if (register_local_ptr[owner_reg]) |owner_local| {
+                                owner_owns = owner_local < local_owns_contents.len and local_owns_contents[owner_local];
+                            }
+                        }
+                        if (owner_owns) {
+                            try writer.print("  store {s} zeroinitializer, ptr %copy.src.{d}\n", .{ struct_type_name, value.src_ptr });
+                            if (value.dst_ptr < register_owns_contents.len) register_owns_contents[value.dst_ptr] = true;
+                            if (value.dst_ptr < register_local_ptr.len) {
+                                if (register_local_ptr[value.dst_ptr]) |dst_local| {
+                                    if (dst_local < local_owns_contents.len) local_owns_contents[dst_local] = true;
+                                }
+                            }
+                            if (value.dst_ptr < register_field_owner.len) {
+                                if (register_field_owner[value.dst_ptr]) |dst_owner| {
+                                    if (dst_owner < register_owns_contents.len) register_owns_contents[dst_owner] = true;
+                                    if (dst_owner < register_local_ptr.len) {
+                                        if (register_local_ptr[dst_owner]) |dst_owner_local| {
+                                            if (dst_owner_local < local_owns_contents.len) local_owns_contents[dst_owner_local] = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             .branch => |value| {
@@ -1323,6 +1412,20 @@ pub fn buildTextFunctionBody(
                         try writer.print("  store {s} %return.struct.value.{d}, ptr %return.struct.copy.{d}\n", .{
                             struct_type_name, temp_index, temp_index,
                         });
+                        // If the source struct is borrowed (not an owned value being
+                        // moved out), this shallow copy aliases its array fields. Deep
+                        // clone them so the returned owner has independent storage and
+                        // can be dropped exactly once without freeing the borrowed
+                        // source's arrays (ownership model, not reference counting).
+                        if (!register_owns_contents[src]) {
+                            if (register_types[src].name) |copy_type_name| {
+                                const clone_name = try cloneContentsSymbolName(allocator, copy_type_name);
+                                defer allocator.free(clone_name);
+                                try writer.writeAll("  call void ");
+                                try writeLlvmSymbol(writer, clone_name);
+                                try writer.print("(ptr %return.struct.copy.{d})\n", .{temp_index});
+                            }
+                        }
                         try writer.print("  %return.struct.ptrint.{d} = ptrtoint ptr %return.struct.copy.{d} to i64\n", .{
                             temp_index, temp_index,
                         });
@@ -1344,6 +1447,89 @@ pub fn buildTextFunctionBody(
                     try writer.writeAll("  ret void\n");
                 }
                 block_terminated = true;
+            },
+            .scope_enter => {
+                try scope_stack.append(owned_values.items.len);
+            },
+            .scope_exit => |value| {
+                const snapshot = scope_stack.pop() orelse 0;
+                // Drop register temporaries created within the scope (heap structs,
+                // class instances, temporary arrays) that did not escape to an outer
+                // binding. Mark them escaped so function-exit cleanup does not free them
+                // again, and null heap slots so the redundant free is a no-op.
+                var ov_index: usize = snapshot;
+                while (ov_index < owned_values.items.len) : (ov_index += 1) {
+                    const owned = owned_values.items[ov_index];
+                    if (register_escaped[owned.reg]) continue;
+                    const cleanup_temp = temp_counter;
+                    temp_counter += 1;
+                    switch (owned.kind) {
+                        .array => {
+                            const release_fn = try arrayElementDestroySymbol(allocator, request.program, owned.ty);
+                            defer if (release_fn) |name| allocator.free(name);
+                            try writer.print("  %scope.array.ptr.{d} = inttoptr i64 %r{d} to ptr\n", .{ cleanup_temp, owned.reg });
+                            try writer.print("  call void @\"kira_array_release\"(ptr %scope.array.ptr.{d}, ptr ", .{cleanup_temp});
+                            if (release_fn) |name| {
+                                try writeLlvmSymbol(writer, name);
+                            } else {
+                                try writer.writeAll("null");
+                            }
+                            try writer.writeAll(")\n");
+                        },
+                        .heap_ptr => {
+                            try writer.print("  %scope.heap.ptr.{d} = load ptr, ptr %cleanup.heap.slot.{d}\n", .{ cleanup_temp, owned.reg });
+                            try writer.print("  call void @free(ptr %scope.heap.ptr.{d})\n", .{cleanup_temp});
+                            try writer.print("  store ptr null, ptr %cleanup.heap.slot.{d}\n", .{owned.reg});
+                        },
+                        .raw_heap => {
+                            try writer.print("  %scope.raw.bits.{d} = and i64 %r{d}, 9223372036854775807\n", .{ cleanup_temp, owned.reg });
+                            try writer.print("  %scope.raw.ptr.{d} = inttoptr i64 %scope.raw.bits.{d} to ptr\n", .{ cleanup_temp, cleanup_temp });
+                            try writer.print("  call void @free(ptr %scope.raw.ptr.{d})\n", .{cleanup_temp});
+                        },
+                    }
+                    register_escaped[owned.reg] = true;
+                }
+                // Drop scope-local owned bindings (loop-body `let`s / loop binding) that
+                // still own their contents at body end. The compile-time ownership flags
+                // here correctly reflect moved-out=false (moves earlier in the body
+                // cleared them). Zero the storage so the function-exit cleanup re-running
+                // on the same slot is a safe no-op, and clear the flag so it is skipped.
+                for (value.locals) |local_index| {
+                    if (local_index >= variant.local_types.len) continue;
+                    const local_type = variant.local_types[local_index];
+                    switch (local_type.kind) {
+                        .ffi_struct => {
+                            if (!local_owns_contents[local_index]) continue;
+                            const release_name = try releaseContentsSymbolName(allocator, local_type.name orelse continue);
+                            defer allocator.free(release_name);
+                            const struct_type_name = typeRefName(local_type.name orelse continue);
+                            try writer.writeAll("  call void ");
+                            try writeLlvmSymbol(writer, release_name);
+                            try writer.print("(ptr %local.storage.{d})\n", .{local_index});
+                            try writer.print("  store {s} zeroinitializer, ptr %local.storage.{d}\n", .{ struct_type_name, local_index });
+                            local_owns_contents[local_index] = false;
+                        },
+                        .array => {
+                            if (!local_owned_values[local_index]) continue;
+                            const release_fn = try arrayElementDestroySymbol(allocator, request.program, local_type);
+                            defer if (release_fn) |name| allocator.free(name);
+                            const cleanup_temp = temp_counter;
+                            temp_counter += 1;
+                            try writer.print("  %scope.local.array.val.{d} = load i64, ptr %local{d}\n", .{ cleanup_temp, local_index });
+                            try writer.print("  %scope.local.array.ptr.{d} = inttoptr i64 %scope.local.array.val.{d} to ptr\n", .{ cleanup_temp, cleanup_temp });
+                            try writer.print("  call void @\"kira_array_release\"(ptr %scope.local.array.ptr.{d}, ptr ", .{cleanup_temp});
+                            if (release_fn) |name| {
+                                try writeLlvmSymbol(writer, name);
+                            } else {
+                                try writer.writeAll("null");
+                            }
+                            try writer.writeAll(")\n");
+                            try writer.print("  store i64 0, ptr %local{d}\n", .{local_index});
+                            local_owned_values[local_index] = false;
+                        },
+                        else => {},
+                    }
+                }
             },
         }
     }
@@ -1392,6 +1578,13 @@ fn markOwnedLocalForType(
     if (index >= local_owned_values.len or index >= local_owns_contents.len) return;
     switch (value_type.kind) {
         .array, .raw_ptr, .string => local_owned_values[index] = true,
+        // An owned struct parameter owns its contents: reading an array field out of
+        // it yields an owned value that must be dropped at scope exit. Without this,
+        // owned struct params were treated as not owning their arrays, so field
+        // move-outs (e.g. `let previous = tree.nodes`) leaked. Borrow params don't
+        // reach here (ownershipConsumes is false), so borrowed field reads stay
+        // borrowed and are never freed.
+        .ffi_struct => local_owns_contents[index] = true,
         else => {},
     }
 }
@@ -1653,45 +1846,100 @@ fn emitFunctionCleanup(
     }
 }
 
-fn retainContentsSymbolName(allocator: std.mem.Allocator, type_name: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "kira_retain_contents_{s}", .{type_name});
+fn cloneContentsSymbolName(allocator: std.mem.Allocator, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "kira_clone_contents_{s}", .{type_name});
 }
 
-// Mirror of kira_release_contents_<T>: retains (refcount++) every array field of a
-// struct, recursing into nested ffi_struct fields. Emitted at struct copy sites where
-// the source remains a live owner, so the duplicated reference is balanced by the
-// release the copy's owner will eventually perform.
-fn appendRetainDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {
+fn cloneSymbolName(allocator: std.mem.Allocator, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "kira_clone_{s}", .{type_name});
+}
+
+// Element deep-clone symbol for an array field, mirroring arrayElementDestroySymbol:
+// arrays of heap structs need each element cloned (kira_clone_<Element>), arrays of
+// leaf/primitive elements clone byte-for-byte (null callback).
+fn arrayElementCloneSymbol(allocator: std.mem.Allocator, program: *const ir.Program, array_ty: ir.ValueType) !?[]const u8 {
+    const array_name = array_ty.name orelse return null;
+    const type_decl = findTypeDecl(program, array_name) orelse return null;
+    if (type_decl.ffi) |ffi_info| {
+        return switch (ffi_info) {
+            .ffi_struct => try cloneSymbolName(allocator, type_decl.name),
+            .array => |array_info| blk: {
+                if (array_info.element.kind != .ffi_struct) break :blk null;
+                break :blk try cloneSymbolName(allocator, array_info.element.name orelse return error.UnsupportedExecutableFeature);
+            },
+            else => null,
+        };
+    }
+    return try cloneSymbolName(allocator, type_decl.name);
+}
+
+// Ownership-model deep clone (NOT reference counting). kira_clone_contents_<T> replaces
+// each array field of a struct in place with an independent deep copy, recursing into
+// nested ffi_struct fields. kira_clone_<T> allocates a fresh heap struct, byte-copies
+// it, then deepens its contents. Emitted at borrow->owned boundaries (e.g. returning a
+// struct read out of a borrowed array) so the produced owner does not alias borrowed
+// storage and can be dropped exactly once.
+fn appendCloneDefinitions(allocator: std.mem.Allocator, writer: anytype, program: *const ir.Program) !void {
     for (program.types) |type_decl| {
         if (type_decl.ffi) |ffi_info| {
             if (ffi_info != .ffi_struct) continue;
         }
-        const retain_name = try retainContentsSymbolName(allocator, type_decl.name);
-        defer allocator.free(retain_name);
+        const clone_contents_name = try cloneContentsSymbolName(allocator, type_decl.name);
+        defer allocator.free(clone_contents_name);
+        const clone_name = try cloneSymbolName(allocator, type_decl.name);
+        defer allocator.free(clone_name);
         const struct_type_name = typeRefName(type_decl.name);
 
         try writer.writeAll("define void ");
-        try writeLlvmSymbol(writer, retain_name);
+        try writeLlvmSymbol(writer, clone_contents_name);
         try writer.writeAll("(ptr %value) {\nentry:\n");
         for (type_decl.fields, 0..) |field, index| {
             switch (field.ty.kind) {
                 .ffi_struct => {
-                    const field_retain = try retainContentsSymbolName(allocator, field.ty.name orelse return error.UnsupportedExecutableFeature);
-                    defer allocator.free(field_retain);
-                    try writer.print("  %retain.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
+                    const field_clone = try cloneContentsSymbolName(allocator, field.ty.name orelse return error.UnsupportedExecutableFeature);
+                    defer allocator.free(field_clone);
+                    try writer.print("  %clone.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
                     try writer.writeAll("  call void ");
-                    try writeLlvmSymbol(writer, field_retain);
-                    try writer.print("(ptr %retain.field.{d})\n", .{index});
+                    try writeLlvmSymbol(writer, field_clone);
+                    try writer.print("(ptr %clone.field.{d})\n", .{index});
                 },
                 .array => {
-                    try writer.print("  %retain.array.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
-                    try writer.print("  %retain.array.{d} = load ptr, ptr %retain.array.field.{d}\n", .{ index, index });
-                    try writer.print("  call void @\"kira_array_retain\"(ptr %retain.array.{d})\n", .{index});
+                    const elem_clone = try arrayElementCloneSymbol(allocator, program, field.ty);
+                    defer if (elem_clone) |name| allocator.free(name);
+                    try writer.print("  %clone.array.field.{d} = getelementptr inbounds {s}, ptr %value, i32 0, i32 {d}\n", .{ index, struct_type_name, index });
+                    try writer.print("  %clone.array.old.{d} = load ptr, ptr %clone.array.field.{d}\n", .{ index, index });
+                    try writer.print("  %clone.array.new.{d} = call ptr @\"kira_array_clone\"(ptr %clone.array.old.{d}, ptr ", .{ index, index });
+                    if (elem_clone) |name| {
+                        try writeLlvmSymbol(writer, name);
+                    } else {
+                        try writer.writeAll("null");
+                    }
+                    try writer.writeAll(")\n");
+                    try writer.print("  store ptr %clone.array.new.{d}, ptr %clone.array.field.{d}\n", .{ index, index });
                 },
                 else => {},
             }
         }
         try writer.writeAll("  ret void\n}\n");
+
+        // kira_clone_<T>(i64 ptrint) -> i64: null-safe heap struct deep clone, used as
+        // the per-element callback for arrays of heap structs.
+        try writer.writeAll("define i64 ");
+        try writeLlvmSymbol(writer, clone_name);
+        try writer.writeAll("(i64 %srcint) {\nentry:\n");
+        try writer.writeAll("  %src = inttoptr i64 %srcint to ptr\n");
+        try writer.writeAll("  %isnull = icmp eq ptr %src, null\n");
+        try writer.writeAll("  br i1 %isnull, label %nullret, label %body\nnullret:\n  ret i64 0\nbody:\n");
+        try writer.print("  %size.ptr = getelementptr {s}, ptr null, i32 1\n", .{struct_type_name});
+        try writer.writeAll("  %size = ptrtoint ptr %size.ptr to i64\n");
+        try writer.writeAll("  %dst = call ptr @malloc(i64 %size)\n");
+        try writer.print("  %val = load {s}, ptr %src\n", .{struct_type_name});
+        try writer.print("  store {s} %val, ptr %dst\n", .{struct_type_name});
+        try writer.writeAll("  call void ");
+        try writeLlvmSymbol(writer, clone_contents_name);
+        try writer.writeAll("(ptr %dst)\n");
+        try writer.writeAll("  %dstint = ptrtoint ptr %dst to i64\n");
+        try writer.writeAll("  ret i64 %dstint\n}\n");
     }
     if (program.types.len > 0) try writer.writeByte('\n');
 }

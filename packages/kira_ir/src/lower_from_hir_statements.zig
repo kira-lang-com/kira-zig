@@ -3,6 +3,43 @@ const ir = @import("ir.zig");
 const model = @import("kira_semantics_model");
 const type_impl = @import("lower_from_hir_types.zig");
 
+// Collect the mapped IR local ids declared within a loop body so the backend can
+// drop them at the end of each iteration (scope_exit). Recurses into if/match/switch
+// branches (those share the loop body's scope and have no scope_exit of their own) but
+// NOT into nested while/for bodies (they emit their own scope_exit). Local storage is
+// zero-initialised, so listing a local that a given runtime path never assigned is
+// harmless (the backend's release runs on null and is a no-op).
+fn collectBodyLocals(lowerer: anytype, locals: *std.array_list.Managed(u32), body: []const model.Statement) !void {
+    for (body) |statement| {
+        switch (statement) {
+            .let_stmt => |node| try locals.append(lowerer.mapLocal(node.local_id)),
+            .if_stmt => |node| {
+                try collectBodyLocals(lowerer, locals, node.then_body);
+                if (node.else_body) |else_body| try collectBodyLocals(lowerer, locals, else_body);
+            },
+            .match_stmt => |node| {
+                for (node.arms) |arm| {
+                    if (arm.pattern == .binding) try locals.append(lowerer.mapLocal(arm.pattern.binding.local_id));
+                    if (arm.pattern == .variant) {
+                        if (arm.pattern.variant.as_binding_local_id) |bid| try locals.append(lowerer.mapLocal(bid));
+                    }
+                    try collectBodyLocals(lowerer, locals, arm.body);
+                }
+            },
+            .switch_stmt, .for_stmt, .while_stmt => {},
+            else => {},
+        }
+    }
+}
+
+fn buildScopeExitLocals(lowerer: anytype, body: []const model.Statement, extra_binding: ?u32) ![]const u32 {
+    var locals = std.array_list.Managed(u32).init(lowerer.allocator);
+    errdefer locals.deinit();
+    if (extra_binding) |bid| try locals.append(bid);
+    try collectBodyLocals(lowerer, &locals, body);
+    return locals.toOwnedSlice();
+}
+
 pub fn lowerIfStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.IfStatement) !bool {
     const condition_reg = try lowerer.lowerExpr(instructions, node.condition);
     const then_label = lowerer.freshLabel();
@@ -232,10 +269,13 @@ pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed
                 .ty = binding_ty,
             } });
             try lowerer.storeValueToLocal(instructions, node.binding_local_id, binding_ty, item_reg);
+            try instructions.append(.{ .scope_enter = .{} });
             try lowerer.loop_stack.append(.{ .break_label = end_label, .continue_label = loop_label });
             const body_terminated = try lowerer.lowerStatements(instructions, node.body);
             _ = lowerer.loop_stack.pop();
             if (!body_terminated) {
+                const scope_locals = try buildScopeExitLocals(lowerer, node.body, node.binding_local_id);
+                try instructions.append(.{ .scope_exit = .{ .locals = scope_locals } });
                 const one_reg = lowerer.freshRegister();
                 try instructions.append(.{ .const_int = .{ .dst = one_reg, .value = 1 } });
                 const next_reg = lowerer.freshRegister();
@@ -264,10 +304,13 @@ pub fn lowerWhileStatement(lowerer: anytype, instructions: *std.array_list.Manag
     } });
 
     try instructions.append(.{ .label = .{ .id = body_label } });
+    try instructions.append(.{ .scope_enter = .{} });
     try lowerer.loop_stack.append(.{ .break_label = end_label, .continue_label = loop_label });
     const body_terminated = try lowerer.lowerStatements(instructions, node.body);
     _ = lowerer.loop_stack.pop();
     if (!body_terminated) {
+        const scope_locals = try buildScopeExitLocals(lowerer, node.body, null);
+        try instructions.append(.{ .scope_exit = .{ .locals = scope_locals } });
         try instructions.append(.{ .jump = .{ .label = loop_label } });
     }
     try instructions.append(.{ .label = .{ .id = end_label } });

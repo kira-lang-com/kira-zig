@@ -1,0 +1,77 @@
+struct View {
+    var id: Int
+    var children: [View]
+}
+struct Node { var id: Int; var childIds: [Int] }
+struct Slot { var nodeId: Int; var value: Int }
+struct Tree {
+    var nextId: Int
+    var nodes: [Node]
+    var stateSlots: [Slot]
+}
+struct SlotResult { var tree: Tree; var slot: Int }
+struct NodeResult { var tree: Tree; var nodeId: Int }
+
+function ensureSlot(tree: Tree, nodeId: Int) -> SlotResult {
+    var next = tree
+    var index = 0
+    while index < next.stateSlots.count {
+        if next.stateSlots[index].nodeId == nodeId {
+            return SlotResult { tree: move next, slot: index }
+        }
+        index = index + 1
+    }
+    next.stateSlots.append(Slot { nodeId: nodeId, value: 0 })
+    let slotIndex = next.stateSlots.count - 1
+    return SlotResult { tree: move next, slot: slotIndex }
+}
+
+function viewChildren(view: borrow View) -> [View] { return view.children }
+
+function nodeWithChildren(node: borrow Node, childIds: [Int]) -> Node {
+    return Node { id: node.id, childIds: move childIds }
+}
+
+function appendFresh(tree: Tree, view: borrow View) -> NodeResult {
+    var next = tree
+    let nodeId = next.nextId
+    next.nextId = next.nextId + 1
+    let stateResult = ensureSlot(move next, nodeId)
+    next = stateResult.tree
+    let nodeIndex = next.nodes.count
+    let children = viewChildren(view)
+    next.nodes.append(Node { id: nodeId, childIds: [] })
+    var childIds: [Int] = []
+    var childOffset = 0
+    while childOffset < children.count {
+        let childResult = appendFresh(move next, children[childOffset])
+        next = childResult.tree
+        childIds.append(childResult.nodeId)
+        childOffset = childOffset + 1
+    }
+    let current = next.nodes[nodeIndex]
+    next.nodes[nodeIndex] = nodeWithChildren(current, move childIds)
+    return NodeResult { tree: move next, nodeId: nodeId }
+}
+
+function makeView(id: Int, depth: Int) -> View {
+    var kids: [View] = []
+    if depth > 0 {
+        var i = 0
+        while i < 2 { kids.append(makeView(id * 10 + i, depth - 1)); i = i + 1 }
+    }
+    return View { id: id, children: move kids }
+}
+
+@Main
+function main() {
+    var frame = 0
+    while frame < 50000 {
+        let root = makeView(1, 3)
+        var tree = Tree { nextId: 1, nodes: [], stateSlots: [] }
+        let result = appendFresh(move tree, root)
+        tree = result.tree
+        frame = frame + 1
+    }
+    print(0)
+}

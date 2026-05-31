@@ -1524,6 +1524,9 @@ fn cloneInstruction(allocator: std.mem.Allocator, instruction: ir.Instruction) !
             .return_type = value.return_type,
             .dst = value.dst,
         } },
+        .scope_exit => |value| .{ .scope_exit = .{
+            .locals = try cloneU32Slice(allocator, value.locals),
+        } },
         else => instruction,
     };
 }

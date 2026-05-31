@@ -237,6 +237,9 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .dst = value.dst,
                 } }),
                 .ret => |value| try instructions.append(.{ .ret = .{ .src = value.src } }),
+                // Scope markers drive native (LLVM) drop elaboration only; the VM
+                // reclaims via its own native-layout destructors, so emit nothing.
+                .scope_enter, .scope_exit => {},
             }
         }
 
