@@ -65,6 +65,27 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
             if (callee_decl.is_extern) return ffi.lowerExternCall(fc, call, callee_decl);
             const callee_fn = fc.functions.get(call.callee) orelse return error.MissingFunctionDeclaration;
             const fn_ty = try fc.types.functionType(fc.allocator, callee_decl);
+            // Rust move semantics across the boundary: an owned/move struct argument is moved
+            // into the callee, which now fully owns it. Hand over a caller-stable heap shell so
+            // the callee can drop it safely — moveOrCloneToHeap returns the source pointer when
+            // it is already owned heap, or moves a stack-backed source into heap, and in both
+            // cases stops the caller from also freeing it. Without this the callee (which now
+            // owns the shell) could be handed a stack pointer and free it. Native only; hybrid
+            // struct args stay VM-managed.
+            if (fc.drop_enabled and fc.request.mode == .llvm_native) {
+                for (call.args, 0..) |arg, i| {
+                    const mode = if (i < callee_decl.param_ownership.len) callee_decl.param_ownership[i] else ir.OwnershipMode.owned;
+                    switch (mode) {
+                        .owned, .move => {},
+                        else => continue,
+                    }
+                    const pt = if (i < callee_decl.param_types.len) callee_decl.param_types[i] else continue;
+                    if (pt.kind != .ffi_struct) continue;
+                    const name = pt.name orelse continue;
+                    if (fc.dtors.map.get(name) == null) continue;
+                    fc.registers[arg] = drop.moveOrCloneToHeap(fc, arg, name);
+                }
+            }
             const args = try fc.allocator.alloc(llvm.c.LLVMValueRef, call.args.len);
             defer fc.allocator.free(args);
             for (call.args, 0..) |arg, index| args[index] = fc.registers[arg];
@@ -79,7 +100,12 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
             for (call.args, 0..) |arg, i| {
                 const mode = if (i < callee_decl.param_ownership.len) callee_decl.param_ownership[i] else ir.OwnershipMode.owned;
                 switch (mode) {
-                    .owned, .move => drop.onEscape(fc, arg),
+                    // Enums are treated as Copy across the call boundary: the callee never
+                    // takes ownership of an enum parameter (it has no drop slot, and a store
+                    // into a struct field clones it), so the caller must KEEP ownership and
+                    // free its own enum at scope exit. Escaping it would orphan the value the
+                    // caller allocated — a per-call leak (every SizeMode/Alignment view arg).
+                    .owned, .move => if (arg >= fc.register_types.len or fc.register_types[arg].kind != .enum_instance) drop.onEscape(fc, arg),
                     else => {},
                 }
             }
@@ -110,7 +136,7 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
         api.LLVMConstNull(fc.types.ptr_ty)
     else blk: {
         const arr_ty = api.LLVMArrayType2(fc.types.bridge_ty, call.args.len);
-        const arr = api.LLVMBuildAlloca(b, arr_ty, "rt.args");
+        const arr = fc.entryAlloca(arr_ty, "rt.args");
         for (call.args, 0..) |arg, index| {
             var idx = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(fc.types.i32, 0, 0), api.LLVMConstInt(fc.types.i32, @intCast(index), 0) };
             const slot = api.LLVMBuildInBoundsGEP2(b, arr_ty, arr, &idx, idx.len, "rt.slot");
@@ -122,7 +148,7 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
         break :blk arr;
     };
 
-    const result_slot = api.LLVMBuildAlloca(b, fc.types.bridge_ty, "rt.result");
+    const result_slot = fc.entryAlloca(fc.types.bridge_ty, "rt.result");
     var rt_args = [_]llvm.c.LLVMValueRef{
         api.LLVMConstInt(fc.types.i32, call.callee, 0),
         args_ptr,

@@ -106,6 +106,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .dst = value.dst,
                     .function_id = value.function_id,
                     .captures = value.captures,
+                    .capture_ownership = try lowerOwnershipModes(allocator, value.capture_ownership),
                 } }),
                 .add => |value| try instructions.append(.{ .add = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .alloc_native_state => |value| try instructions.append(.{ .alloc_native_state = .{
@@ -130,7 +131,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .op = @enumFromInt(@intFromEnum(value.op)),
                 } }),
                 .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src } }),
-                .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local } }),
+                .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local, .ownership = lowerOwnershipMode(value.ownership) } }),
                 .local_ptr => |value| try instructions.append(.{ .local_ptr = .{ .dst = value.dst, .local = value.local } }),
                 .subobject_ptr => |value| try instructions.append(.{ .subobject_ptr = .{
                     .dst = value.dst,
@@ -226,6 +227,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                 .call_value => |value| try instructions.append(.{ .call_value = .{
                     .callee = value.callee,
                     .args = value.args,
+                    .param_ownership = try lowerOwnershipModes(allocator, value.param_ownership),
                     .dst = value.dst,
                 } }),
                 .call_virtual => |value| try instructions.append(.{ .call_virtual = .{

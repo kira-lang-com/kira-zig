@@ -434,6 +434,7 @@ pub const LocalExpr = struct {
     name: []const u8,
     ty: ResolvedType,
     storage: FieldStorage,
+    ownership: OwnershipMode = .borrow_read,
     span: source_pkg.Span,
 };
 
@@ -581,6 +582,7 @@ pub const Capture = struct {
     local_id: u32,
     source_local_id: u32,
     by_ref: bool = false,
+    ownership: OwnershipMode = .borrow_read,
     name: []const u8,
     ty: ResolvedType,
     span: source_pkg.Span,

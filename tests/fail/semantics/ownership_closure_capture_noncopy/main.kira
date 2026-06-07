@@ -1,0 +1,21 @@
+struct Mesh {
+    let id: Int
+}
+
+function inspect(mesh: borrow Mesh) -> Int {
+    return mesh.id
+}
+
+function makePrinter(mesh: Mesh): () -> Void {
+    return { in
+        print(inspect(mesh))
+    }
+}
+
+@Main
+function main() {
+    let mesh = Mesh { id: 9 }
+    let printer = makePrinter(move mesh)
+    printer()
+    return
+}

@@ -85,7 +85,7 @@ pub const HybridRuntime = struct {
         @memset(materialized_args, false);
         defer {
             for (materialized_args, 0..) |materialized, index| {
-                if (materialized) self.vm.releaseManagedValue(runtime_args[index]);
+                if (materialized) self.vm.dropManagedValue(runtime_args[index]);
             }
         }
         const native_arg_ptrs = try self.allocator.alloc(usize, args.len);
@@ -152,8 +152,14 @@ pub const HybridRuntime = struct {
                 native_ptr,
             );
         }
+        for (native_arg_ptrs, 0..) |native_ptr, index| {
+            if (native_ptr == 0 or !materialized_args[index]) continue;
+            if (result == .raw_ptr and result.raw_ptr == runtime_args[index].raw_ptr) continue;
+            self.vm.dropManagedValue(runtime_args[index]);
+        }
 
         var bridge_result = runtime_abi.bridgeValueFromValue(result);
+        var result_owned_by_pending = false;
         if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
             const type_name = function_decl.return_type.name orelse return error.RuntimeFailure;
             const native_result = try self.vm.lowerStructToNativeLayout(
@@ -168,13 +174,12 @@ pub const HybridRuntime = struct {
             });
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_result });
         } else {
-            self.vm.retainManagedValue(result);
-            errdefer self.vm.releaseManagedValue(result);
             try self.pending_callback_return_values.append(self.allocator, result);
+            result_owned_by_pending = true;
         }
         self.trimPendingCallbackReturns();
         if (out_result) |ptr| ptr.* = bridge_result;
-        self.vm.releaseManagedValue(result);
+        if (!result_owned_by_pending) self.vm.dropManagedValue(result);
         runtime_abi.emitExecutionTrace("CALLBACK", "RETURN", "runtime->native fn={s}({d}) tag={s}", .{
             function_decl.name,
             function_id,
@@ -188,14 +193,14 @@ pub const HybridRuntime = struct {
         }
         self.pending_callback_native_structs.clearRetainingCapacity();
         for (self.pending_callback_return_values.items) |value| {
-            self.vm.releaseManagedValue(value);
+            self.vm.dropManagedValue(value);
         }
         self.pending_callback_return_values.clearRetainingCapacity();
     }
 
     fn trimPendingCallbackReturns(self: *HybridRuntime) void {
         // Native callbacks may keep returned bridge arrays/structs across frames.
-        // Retain them for the runtime lifetime; cleanupPendingCallbackReturns releases them on deinit.
+        // Keep them alive for the runtime lifetime; cleanupPendingCallbackReturns drops them on deinit.
         _ = self;
     }
 

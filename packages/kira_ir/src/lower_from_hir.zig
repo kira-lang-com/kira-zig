@@ -652,6 +652,12 @@ fn lowerOwnershipModeSlice(allocator: std.mem.Allocator, modes: []const model.Ow
     return lowered;
 }
 
+fn lowerCaptureOwnershipSlice(allocator: std.mem.Allocator, captures: []const model.Capture) ![]const ir.OwnershipMode {
+    const lowered = try allocator.alloc(ir.OwnershipMode, captures.len);
+    for (captures, 0..) |capture, index| lowered[index] = lowerOwnershipMode(capture.ownership);
+    return lowered;
+}
+
 fn lowerCallbackParamTypes(allocator: std.mem.Allocator, program: model.Program, callback: model.hir.CallbackExpr) ![]ir.ValueType {
     const lowered = try allocator.alloc(ir.ValueType, callback.params.len + callback.captures.len);
     for (callback.params, 0..) |param, index| {
@@ -667,8 +673,7 @@ fn lowerCallbackParamOwnership(allocator: std.mem.Allocator, callback: model.hir
     const lowered = try allocator.alloc(ir.OwnershipMode, callback.params.len + callback.captures.len);
     for (callback.params, 0..) |param, index| lowered[index] = lowerOwnershipMode(param.ownership);
     for (callback.captures, 0..) |capture, index| {
-        _ = capture;
-        lowered[callback.params.len + index] = .borrow_read;
+        lowered[callback.params.len + index] = lowerOwnershipMode(capture.ownership);
     }
     return lowered;
 }
@@ -873,11 +878,37 @@ pub const Lowerer = struct {
             .match_stmt => |node| return statement_impl.lowerMatchStatement(self, instructions, node),
             .switch_stmt => |node| return statement_impl.lowerSwitchStatement(self, instructions, node),
             .return_stmt => |node| {
-                const src = if (node.value) |value| try self.lowerExpr(instructions, value) else null;
+                const src = if (node.value) |value| try self.lowerReturnExpr(instructions, value) else null;
                 try instructions.append(.{ .ret = .{ .src = src } });
                 return true;
             },
         }
+    }
+
+    fn lowerReturnExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
+        if (expr.* == .local and !self.isBoxedLocal(expr.local.local_id)) {
+            const dst = self.freshRegister();
+            try instructions.append(.{ .load_local = .{
+                .dst = dst,
+                .local = self.mapLocal(expr.local.local_id),
+                .ownership = .move,
+            } });
+            return dst;
+        }
+        if (expr.* == .field) {
+            const field_ty = try lowerResolvedType(self.program, expr.field.ty);
+            if (field_ty.kind == .ffi_struct) {
+                const ptr = try self.lowerExpr(instructions, expr);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .load_indirect = .{
+                    .dst = dst,
+                    .ptr = ptr,
+                    .ty = field_ty,
+                } });
+                return dst;
+            }
+        }
+        return self.lowerExpr(instructions, expr);
     }
 
     pub fn lowerExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
@@ -937,7 +968,7 @@ pub const Lowerer = struct {
                                 try instructions.append(.{ .local_ptr = .{ .dst = reg, .local = source_local } });
                             }
                         } else {
-                            try instructions.append(.{ .load_local = .{ .dst = reg, .local = source_local } });
+                            try instructions.append(.{ .load_local = .{ .dst = reg, .local = source_local, .ownership = lowerOwnershipMode(capture.ownership) } });
                         }
                         try captures.append(reg);
                     }
@@ -945,6 +976,7 @@ pub const Lowerer = struct {
                         .dst = dst,
                         .function_id = function_id,
                         .captures = try captures.toOwnedSlice(),
+                        .capture_ownership = try lowerCaptureOwnershipSlice(self.allocator, node.captures),
                     } });
                 }
                 break :blk dst;
@@ -1208,7 +1240,7 @@ pub const Lowerer = struct {
                     try instructions.append(.{ .load_local = .{ .dst = ptr, .local = local_id } });
                     try instructions.append(.{ .load_indirect = .{ .dst = dst, .ptr = ptr, .ty = try lowerResolvedType(self.program, node.ty) } });
                 } else {
-                    try instructions.append(.{ .load_local = .{ .dst = dst, .local = local_id } });
+                    try instructions.append(.{ .load_local = .{ .dst = dst, .local = local_id, .ownership = lowerOwnershipMode(node.ownership) } });
                 }
                 break :blk dst;
             },
@@ -1511,6 +1543,7 @@ fn cloneInstruction(allocator: std.mem.Allocator, instruction: ir.Instruction) !
             .dst = value.dst,
             .function_id = value.function_id,
             .captures = try cloneU32Slice(allocator, value.captures),
+            .capture_ownership = try cloneOwnershipModeSlice(allocator, value.capture_ownership),
         } },
         .call => |value| .{ .call = .{
             .callee = value.callee,

@@ -1,0 +1,40 @@
+// Regression: a struct owns its enum-typed fields — destroying the struct frees them
+// and copying it (incl. a borrowed-field read into a new struct) clones them. Before
+// the fix enum fields were never freed (leak) or aliased (double free).
+enum Kind {
+    None
+    Tagged(Int)
+}
+
+struct Box {
+    let kind: Kind
+    let n: Int
+}
+
+function make(x: Int) -> Box {
+    return Box { kind: Kind.Tagged(x), n: x }
+}
+
+function classify(b: borrow Box) -> Int {
+    match b.kind {
+        None -> { return 0 }
+        Tagged(v) -> { return v }
+    }
+}
+
+function rebrand(b: borrow Box) -> Box {
+    return Box { kind: b.kind, n: b.n + 100 }
+}
+
+@Main
+function main() {
+    var frame = 0
+    var total = 0
+    while frame < 3 {
+        let box = make(frame + 1)
+        let copy = rebrand(box)
+        total = total + classify(box) + classify(copy)
+        frame = frame + 1
+    }
+    print(total)
+}

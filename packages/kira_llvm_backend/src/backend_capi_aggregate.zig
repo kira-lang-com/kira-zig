@@ -39,7 +39,7 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
     const b = fc.builder;
     const ptr = api.LLVMBuildIntToPtr(b, fc.registers[v.ptr], fc.types.ptr_ty, "store.ptr");
     const src = fc.registers[v.src];
-    switch (v.ty.kind) {
+    sw: switch (v.ty.kind) {
         .integer => {
             const storage = try fc.storageType(v.ty);
             const value = if (storage == fc.types.i64) src else api.LLVMBuildTrunc(b, src, storage, "store.trunc");
@@ -51,30 +51,31 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             _ = api.LLVMBuildStore(b, value, ptr);
         },
         .array => {
-            // Drop-before-overwrite: free the field's current array before replacing it,
-            // or every reassignment (`s.arr = ...`) orphans the prior array. Struct array
-            // fields always own independent storage (copy_indirect deep-clones, and the
-            // borrowed-source branch below clones), and borrow-checking keeps any borrowed
-            // read of the old value from being live across this store, so the release is
-            // safe. The guard skips storing the same array back to its own field.
-            if (fc.drop_enabled) {
-                const old = api.LLVMBuildLoad2(b, fc.types.ptr_ty, ptr, "store.arr.prev");
-                const newp = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.arr.newp");
-                const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, newp, "store.arr.same");
-                const rel_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.arr.rel");
-                const cont_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.arr.cont");
-                _ = api.LLVMBuildCondBr(b, same, cont_block, rel_block);
-                api.LLVMPositionBuilderAtEnd(b, rel_block);
-                const elem = fc.dtors.elementDestroy(fc.request.program, v.ty);
-                var rargs = [_]llvm.c.LLVMValueRef{ old, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
-                _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_release.ty, fc.runtime_decls.array_release.fn_value, &rargs, rargs.len, "");
-                _ = api.LLVMBuildBr(b, cont_block);
-                api.LLVMPositionBuilderAtEnd(b, cont_block);
+            if (!fc.drop_enabled) {
+                const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
+                _ = api.LLVMBuildStore(b, value, ptr);
+                break :sw;
             }
-            if (fc.drop_enabled and !drop.isOwned(fc, v.src)) {
-                // Storing a borrowed/aliased array into an owned struct field: deep
-                // clone so the struct owns independent storage (its destructor frees
-                // the clone; the borrowed original stays untouched).
+            // Self-store is a no-op. The `var x = obj.arr; x[i] = ...; obj.arr = x` idiom
+            // aliases the field into `x`, mutates in place, then writes the SAME array back.
+            // Cloning here (x reads as borrowed) would store a fresh copy and orphan the
+            // original the field still pointed at — a per-call leak that is quadratic in a
+            // loop. When the source already is the field's current array, leave it untouched.
+            const old = api.LLVMBuildLoad2(b, fc.types.ptr_ty, ptr, "store.arr.prev");
+            const newp = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.arr.newp");
+            const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, newp, "store.arr.same");
+            const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.arr.work");
+            const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.arr.done");
+            _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+            api.LLVMPositionBuilderAtEnd(b, work_block);
+            // Drop-before-overwrite: free the field's (different) prior array. Borrow-checking
+            // keeps any borrowed read of the old value from being live across this store.
+            const reldtor = fc.dtors.elementDestroy(fc.request.program, v.ty);
+            var rargs = [_]llvm.c.LLVMValueRef{ old, reldtor orelse api.LLVMConstNull(fc.types.ptr_ty) };
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_release.ty, fc.runtime_decls.array_release.fn_value, &rargs, rargs.len, "");
+            if (!drop.isOwned(fc, v.src)) {
+                // Borrowed array into an owned field: deep clone so the struct owns
+                // independent storage (its destructor frees the clone; the original is untouched).
                 const sptr = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.arr.src");
                 const elem = fc.dtors.elementClone(fc.request.program, v.ty);
                 var cargs = [_]llvm.c.LLVMValueRef{ sptr, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
@@ -82,12 +83,33 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                 _ = api.LLVMBuildStore(b, clone, ptr);
             } else {
                 // Fresh/owned array moves into the field; the struct destructor frees it.
-                const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
+                const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.arr.move");
+                _ = api.LLVMBuildStore(b, value, ptr);
+                drop.onEscape(fc, v.src);
+            }
+            _ = api.LLVMBuildBr(b, done_block);
+            api.LLVMPositionBuilderAtEnd(b, done_block);
+        },
+        .enum_instance => {
+            // An enum struct field is owned by the struct (its destructor frees it, and
+            // copies clone it — see backend_capi_destructors). Match the array-field rule:
+            //   owned source  -> MOVE the heap enum pointer in and escape the source slot.
+            //   borrowed src   -> CLONE the enum block so the struct owns independent
+            //                     storage and the borrowed original is untouched. Storing a
+            //                     borrowed field (`Other { mode: src.mode }`) without cloning
+            //                     would alias one enum into two owners -> double free.
+            if (fc.drop_enabled and fc.request.mode == .llvm_native and !drop.isOwned(fc, v.src)) {
+                const sptr = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.src");
+                var cargs = [_]llvm.c.LLVMValueRef{sptr};
+                const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "store.enum.clone");
+                _ = api.LLVMBuildStore(b, clone, ptr);
+            } else {
+                const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.move");
                 _ = api.LLVMBuildStore(b, value, ptr);
                 drop.onEscape(fc, v.src);
             }
         },
-        .construct_any, .raw_ptr, .enum_instance => {
+        .construct_any, .raw_ptr => {
             // Storing a Kira String into a CString field passes the string's data pointer
             // (the {ptr,len} pair degrades to a char*), matching the text backend. String
             // literals are NUL-terminated globals, so the pointer is a valid C string.
@@ -128,7 +150,7 @@ pub fn lowerArrayGet(fc: *FunctionCodegen, v: ir.ArrayGet) !void {
     const api = fc.api;
     const b = fc.builder;
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.getptr");
-    const slot = api.LLVMBuildAlloca(b, fc.types.bridge_ty, "array.get.slot");
+    const slot = fc.entryAlloca(fc.types.bridge_ty, "array.get.slot");
     var args = [_]llvm.c.LLVMValueRef{ arr, fc.registers[v.index], slot };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_load.ty, fc.runtime_decls.array_load.fn_value, &args, args.len, "");
     const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "array.get.bv");
@@ -166,7 +188,7 @@ pub fn lowerArraySet(fc: *FunctionCodegen, v: ir.ArraySet) !void {
     const b = fc.builder;
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.setptr");
     const bv = try buildElementBridge(fc, v.src);
-    const slot = api.LLVMBuildAlloca(b, fc.types.bridge_ty, "array.set.slot");
+    const slot = fc.entryAlloca(fc.types.bridge_ty, "array.set.slot");
     _ = api.LLVMBuildStore(b, bv, slot);
     // Drop the element being overwritten when it owns heap contents (a struct element
     // with its own arrays/sub-structs), or each overwrite orphans the prior occupant.
@@ -192,7 +214,7 @@ pub fn lowerArrayAppend(fc: *FunctionCodegen, v: ir.ArrayAppend) !void {
     const b = fc.builder;
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.appendptr");
     const bv = try buildElementBridge(fc, v.src);
-    const slot = api.LLVMBuildAlloca(b, fc.types.bridge_ty, "array.append.slot");
+    const slot = fc.entryAlloca(fc.types.bridge_ty, "array.append.slot");
     _ = api.LLVMBuildStore(b, bv, slot);
     var args = [_]llvm.c.LLVMValueRef{ arr, slot };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_append.ty, fc.runtime_decls.array_append.fn_value, &args, args.len, "");

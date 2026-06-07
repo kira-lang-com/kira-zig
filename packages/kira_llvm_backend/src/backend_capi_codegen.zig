@@ -60,11 +60,35 @@ pub const FunctionCodegen = struct {
     // local -> struct_contents cleanup slot index for copy_indirect destinations.
     copy_dest_slot: []?u32 = &.{},
 
+    // Build a scratch `alloca` in the function entry block regardless of where the
+    // builder is currently positioned. LLVM only reclaims (and SROA/mem2reg only
+    // promotes) allocas placed in the entry block; an alloca emitted at an arbitrary
+    // insertion point inside a loop body becomes a *dynamic* stack allocation whose
+    // space is not released until the function returns — so a per-iteration scratch
+    // slot (array op / runtime-call / FFI bridge buffer) grows the stack every
+    // iteration and overflows it. These scratch slots are written and consumed
+    // immediately, so hoisting the alloca to the entry block (allocated once, reused
+    // each iteration) is both correct and the standard LLVM idiom. The store/use of
+    // the slot stays at the caller's current position.
+    pub fn entryAlloca(self: *FunctionCodegen, ty: llvm.c.LLVMTypeRef, name: [:0]const u8) llvm.c.LLVMValueRef {
+        const api = self.api;
+        const restore = api.LLVMGetInsertBlock(self.builder);
+        const entry = api.LLVMGetEntryBasicBlock(self.function_value);
+        const terminator = api.LLVMGetBasicBlockTerminator(entry);
+        if (terminator != null) {
+            api.LLVMPositionBuilderBefore(self.builder, terminator);
+        } else {
+            api.LLVMPositionBuilderAtEnd(self.builder, entry);
+        }
+        const slot = api.LLVMBuildAlloca(self.builder, ty, name.ptr);
+        api.LLVMPositionBuilderAtEnd(self.builder, restore);
+        return slot;
+    }
+
     pub fn lower(self: *FunctionCodegen) !void {
         const api = self.api;
         const entry_block = api.LLVMAppendBasicBlockInContext(self.types.context, self.function_value, "entry");
         api.LLVMPositionBuilderAtEnd(self.builder, entry_block);
-
 
         try drop.setup(self);
         defer drop.teardown(self);
@@ -294,7 +318,10 @@ pub const FunctionCodegen = struct {
             .const_closure => |v| try closures.lowerConstClosure(self, v),
             .call_value => |v| try closures.lowerCallValue(self, v),
             .string_len => |v| self.registers[v.dst] = api.LLVMBuildExtractValue(b, self.registers[v.string], 1, "string.len"),
-            .alloc_enum => |v| { try aggregate.lowerAllocEnum(self, v); drop.onAlloc(self, v.dst); },
+            .alloc_enum => |v| {
+                try aggregate.lowerAllocEnum(self, v);
+                drop.onAlloc(self, v.dst);
+            },
             .enum_tag => |v| {
                 const base = api.LLVMBuildIntToPtr(b, self.registers[v.src], self.types.ptr_ty, "enum.tag.base");
                 var idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(self.types.i64, 0, 0)};
@@ -483,4 +510,3 @@ pub const FunctionCodegen = struct {
         return api.LLVMConstNamedStruct(self.types.string_ty, &fields, fields.len);
     }
 };
-

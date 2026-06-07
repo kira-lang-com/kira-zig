@@ -1,0 +1,37 @@
+// Regression / parity: a `borrow mut` struct parameter must let the callee mutate the
+// caller's struct in place — the caller observes the change. The VM used to deep-copy
+// every struct argument (even borrows), so mutations were lost while LLVM was correct.
+struct Box {
+    var n: Int
+}
+
+struct Pair {
+    var a: Int
+    var b: Int
+}
+
+function bump(b: borrow mut Box, by: Int) {
+    b.n = b.n + by
+    return
+}
+
+function swapAdd(p: borrow mut Pair) {
+    let old = p.a
+    p.a = p.b
+    p.b = old + 1
+    return
+}
+
+@Main
+function main() {
+    var box = Box { n: 5 }
+    bump(box, 10)
+    bump(box, 3)
+
+    var pair = Pair { a: 2, b: 7 }
+    swapAdd(pair)
+
+    print(box.n)
+    print(pair.a)
+    print(pair.b)
+}

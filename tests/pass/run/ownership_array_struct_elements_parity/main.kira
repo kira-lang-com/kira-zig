@@ -1,0 +1,33 @@
+// Regression: an empty `[]` array annotated with an element type must carry that
+// element type so the backend can drop each struct element. Before the fix the
+// element type was lost and struct elements leaked (native).
+struct Cell {
+    let a: Int
+    let b: Int
+}
+
+function build(n: Int) -> [Cell] {
+    var cells: [Cell] = []
+    var i = 0
+    while i < n {
+        cells.append(Cell { a: i, b: i + 1 })
+        i = i + 1
+    }
+    return cells
+}
+
+@Main
+function main() {
+    var frame = 0
+    var total = 0
+    while frame < 3 {
+        let cells = build(4)
+        var i = 0
+        while i < cells.count {
+            total = total + cells[i].a + cells[i].b
+            i = i + 1
+        }
+        frame = frame + 1
+    }
+    print(total)
+}

@@ -109,8 +109,10 @@ pub fn externFunctionType(
     return api.LLVMFunctionType(ret, params.ptr, @intCast(params.len), 0);
 }
 
-// Marshal a single Kira register value into the C ABI value for `param_type`.
-fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32) !llvm.c.LLVMValueRef {
+// Marshal a single Kira register value into the C ABI value for `param_type`. A transient
+// CString buffer allocated for the call is appended to `cstr_temps` so the caller can free
+// it after the call returns (the `const char*` is borrowed for the duration of the call).
+fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32, cstr_temps: *std.array_list.Managed(llvm.c.LLVMValueRef)) !llvm.c.LLVMValueRef {
     const api = fc.api;
     const b = fc.builder;
     const arg = fc.registers[arg_reg];
@@ -118,7 +120,8 @@ fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32) !llv
     switch (param_type.kind) {
         .construct_any, .array, .raw_ptr, .enum_instance => {
             // A Kira String passed to a CString parameter is copied into a fresh
-            // NUL-terminated buffer (the callee expects char*, not {ptr,len}).
+            // NUL-terminated buffer (the callee expects char*, not {ptr,len}). The buffer
+            // is a transient owned by this call site; record it so it is freed afterwards.
             if (arg_type.kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) {
                 const str_ptr = api.LLVMBuildExtractValue(b, arg, 0, "carg.str.ptr");
                 const str_len = api.LLVMBuildExtractValue(b, arg, 1, "carg.str.len");
@@ -130,6 +133,7 @@ fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32) !llv
                 var nul_idx = [_]llvm.c.LLVMValueRef{str_len};
                 const nul_slot = api.LLVMBuildInBoundsGEP2(b, fc.types.i8, buf, &nul_idx, nul_idx.len, "carg.nul.slot");
                 _ = api.LLVMBuildStore(b, api.LLVMConstInt(fc.types.i8, 0, 0), nul_slot);
+                try cstr_temps.append(buf);
                 return buf;
             }
             return api.LLVMBuildIntToPtr(b, arg, fc.types.ptr_ty, "carg.ptr");
@@ -173,7 +177,7 @@ fn storeResult(fc: *FunctionCodegen, dst: u32, ret_type: ir.ValueType, result: l
         },
         .ffi_struct => {
             const struct_ty = fc.struct_types.get(ret_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
-            const slot = api.LLVMBuildAlloca(b, struct_ty, "cret.struct.slot");
+            const slot = fc.entryAlloca(struct_ty, "cret.struct.slot");
             _ = api.LLVMBuildStore(b, result, slot);
             fc.registers[dst] = api.LLVMBuildPtrToInt(b, slot, fc.types.i64, "cret.struct.int");
         },
@@ -207,16 +211,26 @@ pub fn lowerExternCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Func
     var sret_ptr: ?llvm.c.LLVMValueRef = null;
     if (sret) {
         const struct_ty = fc.struct_types.get(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
-        const slot = api.LLVMBuildAlloca(b, struct_ty, "cret.sret.slot");
+        const slot = fc.entryAlloca(struct_ty, "cret.sret.slot");
         sret_ptr = slot;
         args[0] = slot;
     }
+    var cstr_temps = std.array_list.Managed(llvm.c.LLVMValueRef).init(fc.allocator);
+    defer cstr_temps.deinit();
     for (call.args, 0..) |arg, index| {
         const param_type = if (index < callee_decl.param_types.len) callee_decl.param_types[index] else fc.register_types[arg];
-        args[index + extra] = try marshalArg(fc, param_type, arg);
+        args[index + extra] = try marshalArg(fc, param_type, arg, &cstr_temps);
     }
 
     const result = api.LLVMBuildCall2(b, fn_ty, callee_fn, args.ptr, @intCast(args.len), "");
+
+    // Free each transient String->CString buffer now that the call has consumed it. A C
+    // `const char*` parameter is borrowed for the call's duration only; leaving these
+    // unfreed leaks one buffer per extern string argument per call (every text-draw frame).
+    for (cstr_temps.items) |buf| {
+        var free_args = [_]llvm.c.LLVMValueRef{buf};
+        _ = api.LLVMBuildCall2(b, fc.runtime_decls.free.ty, fc.runtime_decls.free.fn_value, &free_args, free_args.len, "");
+    }
 
     // An owned aggregate passed to the extern escapes Kira's tracking (the C side may
     // retain it); stop tracking so we neither free-while-live nor double-free.

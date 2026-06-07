@@ -4,6 +4,7 @@ pub const Construct = bytecode.Construct;
 pub const ConstructImplementation = bytecode.ConstructImplementation;
 pub const LifecycleHook = bytecode.LifecycleHook;
 pub const Function = bytecode.Function;
+pub const OwnershipMode = bytecode.OwnershipMode;
 pub const TypeDecl = bytecode.TypeDecl;
 pub const TypeKind = bytecode.TypeKind;
 pub const MethodMember = bytecode.MethodMember;

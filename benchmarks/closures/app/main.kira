@@ -1,0 +1,18 @@
+function applyTwice(f: borrow (Int) -> Int, x: Int) -> Int {
+    return f(f(x))
+}
+@Main
+function main() {
+    var i = 0
+    var acc = 0
+    while i < 1000000 {
+        let base = i
+        let add: (Int) -> Int = { x in
+            return x + base
+        }
+        acc = acc + applyTwice(add, 10)
+        i = i + 1
+    }
+    print(acc)
+    return
+}

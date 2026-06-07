@@ -2,8 +2,6 @@ class Frame {
     let value: Int
 }
 
-class Root {}
-
 @Native
 function register(handler: (Frame) -> Void) {
     handler(Frame(2))
@@ -11,21 +9,21 @@ function register(handler: (Frame) -> Void) {
 }
 
 @Native
-function build(root: Root) {
+function build(root: Int) {
     let frame = Frame(5)
     print(frame.value)
-    print(9)
+    print(root + 4)
     return
 }
 
 @Main
 @Native
 function main() {
-    let root = Root()
+    let rootId = 5
     register { frame in
         let returned = Frame(frame.value + 1)
         print(returned.value)
-        build(root)
+        build(rootId)
     }
     return
 }

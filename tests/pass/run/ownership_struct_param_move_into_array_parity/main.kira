@@ -1,0 +1,38 @@
+// Regression: moving an owned struct parameter into a container must transfer the
+// caller's heap shell (Rust move), not clone it and orphan the original. The orphan
+// leaked on the native backend.
+struct Item {
+    let v: Int
+}
+
+function appendItem(items: borrow mut [Item], item: Item) {
+    var out = items
+    out.append(move item)
+    return
+}
+
+function build(n: Int) -> [Item] {
+    var items: [Item] = []
+    var i = 0
+    while i < n {
+        appendItem(items, Item { v: i * 2 })
+        i = i + 1
+    }
+    return items
+}
+
+@Main
+function main() {
+    var frame = 0
+    var total = 0
+    while frame < 3 {
+        let items = build(3)
+        var i = 0
+        while i < items.count {
+            total = total + items[i].v
+            i = i + 1
+        }
+        frame = frame + 1
+    }
+    print(total)
+}

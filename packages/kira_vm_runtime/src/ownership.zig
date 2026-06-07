@@ -30,8 +30,6 @@ pub const StructFieldsObject = struct {
 };
 
 const ObjectRecord = struct {
-    ref_count: usize,
-    pin_count: usize = 0,
     origin: ObjectOrigin = .runtime_alloc,
     kind: ObjectKind,
 };
@@ -77,21 +75,21 @@ pub const Heap = struct {
         while (self.pin_frames.items.len != 0) self.endBoundaryPinScope();
         while (self.objects.count() != 0) {
             var iterator = self.objects.iterator();
-            if (iterator.next()) |entry| self.releasePtr(entry.key_ptr.*);
+            if (iterator.next()) |entry| self.dropPtr(entry.key_ptr.*);
         }
         self.objects.deinit();
     }
 
     pub fn registerArray(self: *Heap, object: *ArrayObject) !usize {
         const ptr = @intFromPtr(object);
-        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .array = object } });
+        try self.objects.put(ptr, .{ .kind = .{ .array = object } });
         self.recordAlloc(.array);
         return ptr;
     }
 
     pub fn registerClosure(self: *Heap, object: *ClosureObject) !usize {
         const ptr = @intFromPtr(object);
-        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .closure = object } });
+        try self.objects.put(ptr, .{ .kind = .{ .closure = object } });
         self.recordAlloc(.closure);
         return ptr;
     }
@@ -108,7 +106,7 @@ pub const Heap = struct {
             owned_fields[0] = .{ .void = {} };
         }
         const ptr = @intFromPtr(owned_fields.ptr);
-        try self.objects.put(ptr, .{ .ref_count = 1, .origin = origin, .kind = .{ .struct_fields = .{
+        try self.objects.put(ptr, .{ .origin = origin, .kind = .{ .struct_fields = .{
             .type_name = type_name,
             .fields = owned_fields,
         } } });
@@ -122,7 +120,7 @@ pub const Heap = struct {
             return;
         }
         const ptr = @intFromPtr(bytes.ptr);
-        try self.objects.put(ptr, .{ .ref_count = 1, .kind = .{ .string_bytes = bytes } });
+        try self.objects.put(ptr, .{ .kind = .{ .string_bytes = bytes } });
         self.recordAlloc(.string_bytes);
     }
 
@@ -133,8 +131,6 @@ pub const Heap = struct {
     pub fn endBoundaryPinScope(self: *Heap) void {
         if (self.pin_frames.items.len == 0) return;
         const frame = self.pin_frames.pop().?;
-        var iterator = frame.pinned.iterator();
-        while (iterator.next()) |entry| self.unpinPtr(entry.key_ptr.*);
         var mutable = frame;
         mutable.pinned.deinit(self.allocator);
     }
@@ -154,9 +150,6 @@ pub const Heap = struct {
     pub fn emitCurrentTypeReport(self: *const Heap) void {
         const TypeStats = struct {
             current: usize = 0,
-            ref_total: usize = 0,
-            pin_total: usize = 0,
-            zero_ref_pinned: usize = 0,
             runtime_alloc: usize = 0,
             native_materialize: usize = 0,
         };
@@ -170,9 +163,6 @@ pub const Heap = struct {
                     const result = counts.getOrPut(value.type_name) catch continue;
                     if (!result.found_existing) result.value_ptr.* = .{};
                     result.value_ptr.current += 1;
-                    result.value_ptr.ref_total += entry.value_ptr.ref_count;
-                    result.value_ptr.pin_total += entry.value_ptr.pin_count;
-                    if (entry.value_ptr.ref_count == 0 and entry.value_ptr.pin_count != 0) result.value_ptr.zero_ref_pinned += 1;
                     switch (entry.value_ptr.origin) {
                         .runtime_alloc => result.value_ptr.runtime_alloc += 1,
                         .native_materialize => result.value_ptr.native_materialize += 1,
@@ -185,13 +175,10 @@ pub const Heap = struct {
         var count_iterator = counts.iterator();
         while (count_iterator.next()) |entry| {
             std.debug.print(
-                "Kira runtime memory detail: structType={s} current={d} refTotal={d} pinTotal={d} zeroRefPinned={d} runtimeAlloc={d} nativeMaterialize={d}\n",
+                "Kira runtime memory detail: structType={s} current={d} runtimeAlloc={d} nativeMaterialize={d}\n",
                 .{
                     entry.key_ptr.*,
                     entry.value_ptr.current,
-                    entry.value_ptr.ref_total,
-                    entry.value_ptr.pin_total,
-                    entry.value_ptr.zero_ref_pinned,
                     entry.value_ptr.runtime_alloc,
                     entry.value_ptr.native_materialize,
                 },
@@ -199,14 +186,9 @@ pub const Heap = struct {
         }
     }
 
-    pub fn retainValue(self: *Heap, value: runtime_abi.Value) void {
-        if (value == .raw_ptr) self.retainPtr(value.raw_ptr);
-        if (value == .string and value.string.len != 0) self.retainPtr(@intFromPtr(value.string.ptr));
-    }
-
-    pub fn releaseValue(self: *Heap, value: runtime_abi.Value) void {
-        if (value == .raw_ptr) self.releasePtr(value.raw_ptr);
-        if (value == .string and value.string.len != 0) self.releasePtr(@intFromPtr(value.string.ptr));
+    pub fn dropValue(self: *Heap, value: runtime_abi.Value) void {
+        if (value == .raw_ptr) self.dropPtr(value.raw_ptr);
+        if (value == .string and value.string.len != 0) self.dropPtr(@intFromPtr(value.string.ptr));
     }
 
     pub fn isManagedValue(self: *const Heap, value: runtime_abi.Value) bool {
@@ -225,6 +207,14 @@ pub const Heap = struct {
         };
     }
 
+    pub fn getArray(self: *const Heap, ptr: usize) ?*const ArrayObject {
+        const record = self.objects.getPtr(ptr) orelse return null;
+        return switch (record.kind) {
+            .array => |array| array,
+            else => null,
+        };
+    }
+
     pub fn getStructTypeName(self: *const Heap, ptr: usize) ?[]const u8 {
         const record = self.objects.getPtr(ptr) orelse return null;
         return switch (record.kind) {
@@ -233,28 +223,26 @@ pub const Heap = struct {
         };
     }
 
-    pub fn assignOwned(self: *Heap, slot: *runtime_abi.Value, value: runtime_abi.Value) void {
+    pub fn assignTransferred(self: *Heap, slot: *runtime_abi.Value, value: runtime_abi.Value) void {
         const old = slot.*;
         slot.* = value;
-        self.releaseValue(old);
+        self.dropValue(old);
     }
 
     pub fn assignBorrowed(self: *Heap, slot: *runtime_abi.Value, value: runtime_abi.Value) void {
-        self.retainValue(value);
         const old = slot.*;
         slot.* = value;
-        self.releaseValue(old);
+        self.dropValue(old);
     }
 
-    pub fn releaseSlots(self: *Heap, slots: []runtime_abi.Value) void {
-        for (slots) |*slot| self.assignOwned(slot, .{ .void = {} });
+    pub fn dropSlots(self: *Heap, slots: []runtime_abi.Value) void {
+        for (slots) |*slot| self.assignTransferred(slot, .{ .void = {} });
     }
 
     pub fn replaceArrayItem(self: *Heap, slot: *runtime_abi.BridgeValue, value: runtime_abi.Value) void {
-        self.retainValue(value);
         const old = runtime_abi.bridgeValueToValue(slot.*);
         slot.* = runtime_abi.bridgeValueFromValue(value);
-        self.releaseValue(old);
+        self.dropValue(old);
     }
 
     pub fn appendArrayItem(self: *Heap, object: *ArrayObject, value: runtime_abi.Value) !void {
@@ -264,26 +252,14 @@ pub const Heap = struct {
         for (old_items[0..object.len], 0..) |item, index| {
             new_items[index] = item;
         }
-        self.retainValue(value);
         new_items[object.len] = runtime_abi.bridgeValueFromValue(value);
         self.allocator.free(old_items);
         object.items = new_items.ptr;
         object.len = new_len;
     }
 
-    fn retainPtr(self: *Heap, ptr: usize) void {
+    fn dropPtr(self: *Heap, ptr: usize) void {
         if (ptr == 0) return;
-        if (self.objects.getPtr(ptr)) |record| record.ref_count += 1;
-    }
-
-    fn releasePtr(self: *Heap, ptr: usize) void {
-        if (ptr == 0) return;
-        const record_ptr = self.objects.getPtr(ptr) orelse return;
-        if (record_ptr.ref_count == 0) return;
-        record_ptr.ref_count -= 1;
-        if (record_ptr.ref_count != 0 or record_ptr.pin_count != 0) {
-            return;
-        }
         const removed = self.objects.fetchRemove(ptr) orelse return;
         self.recordFree(removed.value.kind);
         self.destroy(removed.value.kind);
@@ -297,7 +273,6 @@ pub const Heap = struct {
         try visited.put(self.allocator, ptr, {});
         if (!frame.pinned.contains(ptr)) {
             try frame.pinned.put(self.allocator, ptr, {});
-            record.pin_count += 1;
         }
         switch (record.kind) {
             .array => |object| {
@@ -311,17 +286,6 @@ pub const Heap = struct {
             },
             .string_bytes => {},
         }
-    }
-
-    fn unpinPtr(self: *Heap, ptr: usize) void {
-        if (ptr == 0) return;
-        const record_ptr = self.objects.getPtr(ptr) orelse return;
-        if (record_ptr.pin_count == 0) return;
-        record_ptr.pin_count -= 1;
-        if (record_ptr.pin_count != 0 or record_ptr.ref_count != 0) return;
-        const removed = self.objects.fetchRemove(ptr) orelse return;
-        self.recordFree(removed.value.kind);
-        self.destroy(removed.value.kind);
     }
 
     const StatsKind = enum {
@@ -381,17 +345,17 @@ pub const Heap = struct {
         switch (kind) {
             .array => |object| {
                 const items = object.items[0..@max(object.len, 1)];
-                for (items[0..object.len]) |item| self.releaseValue(runtime_abi.bridgeValueToValue(item));
+                for (items[0..object.len]) |item| self.dropValue(runtime_abi.bridgeValueToValue(item));
                 self.allocator.free(items);
                 self.allocator.destroy(object);
             },
             .closure => |closure| {
-                self.releaseSlots(closure.captures);
+                self.dropSlots(closure.captures);
                 self.allocator.free(closure.captures);
                 self.allocator.destroy(closure);
             },
             .struct_fields => |value| {
-                self.releaseSlots(value.fields);
+                self.dropSlots(value.fields);
                 self.allocator.free(value.fields);
             },
             .string_bytes => |bytes| self.allocator.free(bytes),
@@ -399,7 +363,7 @@ pub const Heap = struct {
     }
 };
 
-test "boundary pin scopes preserve managed graphs until unpinned" {
+test "boundary pin scopes do not own managed graphs" {
     var heap = Heap.init(std.testing.allocator);
     defer heap.deinit();
 
@@ -411,30 +375,13 @@ test "boundary pin scopes preserve managed graphs until unpinned" {
     fields[0] = .{ .raw_ptr = nested_ptr };
     const root_ptr = try heap.registerStruct("Root", fields);
 
-    heap.releaseValue(.{ .raw_ptr = nested_ptr });
     try heap.beginBoundaryPinScope();
     defer heap.endBoundaryPinScope();
     try heap.pinBoundaryValue(.{ .raw_ptr = root_ptr });
 
-    heap.releaseValue(.{ .raw_ptr = root_ptr });
-    try std.testing.expectEqual(@as(usize, 2), heap.count());
-}
-
-test "unpin destroys zero-ref objects" {
-    var heap = Heap.init(std.testing.allocator);
-    defer heap.deinit();
-
-    const fields = try std.testing.allocator.alloc(runtime_abi.Value, 1);
-    fields[0] = .{ .integer = 1 };
-    const ptr = try heap.registerStruct("Value", fields);
-
-    try heap.beginBoundaryPinScope();
-    try heap.pinBoundaryValue(.{ .raw_ptr = ptr });
-    heap.releaseValue(.{ .raw_ptr = ptr });
-    try std.testing.expectEqual(@as(usize, 1), heap.count());
-    heap.endBoundaryPinScope();
-
+    heap.dropValue(.{ .raw_ptr = root_ptr });
     try std.testing.expectEqual(@as(usize, 0), heap.count());
+    heap.endBoundaryPinScope();
 }
 
 test "empty structs use managed non-zero storage" {
@@ -446,6 +393,6 @@ test "empty structs use managed non-zero storage" {
 
     try std.testing.expect(ptr != 0);
     try std.testing.expect(heap.isManagedValue(.{ .raw_ptr = ptr }));
-    heap.releaseValue(.{ .raw_ptr = ptr });
+    heap.dropValue(.{ .raw_ptr = ptr });
     try std.testing.expectEqual(@as(usize, 0), heap.count());
 }

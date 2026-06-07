@@ -342,7 +342,7 @@ fn pbxproj(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) ![]const u8 {
     var ldflags = std.array_list.Managed(u8).init(allocator);
-    try ldflags.appendSlice("\"");
+    try ldflags.appendSlice("\"-Wl,-force_load,");
     try ldflags.appendSlice(support_library_path);
     try ldflags.appendSlice("\"");
     if (platform == .ios or platform == .ios_simulator) {

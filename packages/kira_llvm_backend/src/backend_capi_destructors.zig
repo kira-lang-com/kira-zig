@@ -26,6 +26,10 @@ pub const Destructors = struct {
     // Tag-safe owned-closure drop (kira_destroy_closure(i64)): frees a heap closure
     // block, no-ops a callable-value function id. Used for owned closure parameters.
     destroy_closure: capi.RuntimeDecls.Decl,
+    // Deep-copy a 16-byte heap enum block (kira_enum_clone(ptr)->ptr): null->null, else
+    // malloc+memcpy. An owned enum field is cloned on struct copy and freed on struct
+    // destroy, so each struct copy owns an independent enum (no aliasing/double-free).
+    enum_clone: capi.RuntimeDecls.Decl,
 
     pub fn deinit(self: *Destructors, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
@@ -76,9 +80,12 @@ pub fn build(
     var closure_param = [_]llvm.c.LLVMTypeRef{types.i64};
     const void_i64_ty = api.LLVMFunctionType(types.void_ty, &closure_param, closure_param.len, 0);
     const destroy_closure = api.LLVMAddFunction(module_ref, "kira_destroy_closure", void_i64_ty);
+    const ptr_ptr_ty = api.LLVMFunctionType(types.ptr_ty, &ptr_param, ptr_param.len, 0);
+    const enum_clone = api.LLVMAddFunction(module_ref, "kira_enum_clone", ptr_ptr_ty);
     var result = Destructors{
         .destroy_raw_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_raw },
         .destroy_closure = .{ .ty = void_i64_ty, .fn_value = destroy_closure },
+        .enum_clone = .{ .ty = ptr_ptr_ty, .fn_value = enum_clone },
     };
 
     const builder = api.LLVMCreateBuilderInContext(types.context);
@@ -90,6 +97,28 @@ pub fn build(
         var args = [_]llvm.c.LLVMValueRef{api.LLVMGetParam(destroy_raw, 0)};
         _ = api.LLVMBuildCall2(builder, runtime.free.ty, runtime.free.fn_value, &args, args.len, "");
         _ = api.LLVMBuildRetVoid(builder);
+    }
+
+    // kira_enum_clone: an enum value is a heap 16-byte block { i64 tag, i64 payload }
+    // (see lowerAllocEnum). Deep-copy it so a struct copy owns an independent enum; a
+    // null field clones to null. The payload is copied verbatim (a heap string/struct
+    // payload would still be shared — enums in the layout corpus carry inline payloads).
+    {
+        const entry = api.LLVMAppendBasicBlockInContext(types.context, enum_clone, "entry");
+        const copy_block = api.LLVMAppendBasicBlockInContext(types.context, enum_clone, "copy");
+        const null_block = api.LLVMAppendBasicBlockInContext(types.context, enum_clone, "nullret");
+        api.LLVMPositionBuilderAtEnd(builder, entry);
+        const src = api.LLVMGetParam(enum_clone, 0);
+        const is_null = api.LLVMBuildICmp(builder, llvm.c.LLVMIntEQ, src, api.LLVMConstNull(types.ptr_ty), "ec.isnull");
+        _ = api.LLVMBuildCondBr(builder, is_null, null_block, copy_block);
+        api.LLVMPositionBuilderAtEnd(builder, null_block);
+        _ = api.LLVMBuildRet(builder, api.LLVMConstNull(types.ptr_ty));
+        api.LLVMPositionBuilderAtEnd(builder, copy_block);
+        var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(types.i64, 16, 0)};
+        const dst = api.LLVMBuildCall2(builder, runtime.malloc.ty, runtime.malloc.fn_value, &margs, margs.len, "ec.dst");
+        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, api.LLVMConstInt(types.i64, 16, 0) };
+        _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
+        _ = api.LLVMBuildRet(builder, dst);
     }
 
     // Pass 1: declare all type helpers so bodies can reference each other.
@@ -158,6 +187,15 @@ fn buildReleaseContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: c
                 var args = [_]llvm.c.LLVMValueRef{ arr, elem orelse api.LLVMConstNull(types.ptr_ty) };
                 _ = api.LLVMBuildCall2(b, runtime.array_release.ty, runtime.array_release.fn_value, &args, args.len, "");
             },
+            .enum_instance => {
+                // An owned enum field is a heap block the struct owns; free it (free(null)
+                // is a safe no-op for an unset field). Paired with the enum clone below so
+                // every struct copy owns its enum and the frees stay balanced.
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.enumfield");
+                const enum_ptr = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "rc.enum");
+                var args = [_]llvm.c.LLVMValueRef{enum_ptr};
+                _ = api.LLVMBuildCall2(b, dtors.destroy_raw_ptr.ty, dtors.destroy_raw_ptr.fn_value, &args, args.len, "");
+            },
             else => {},
         }
     }
@@ -204,6 +242,15 @@ fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: cap
                 const elem = dtors.elementClone(program, field.ty);
                 var args = [_]llvm.c.LLVMValueRef{ old, elem orelse api.LLVMConstNull(types.ptr_ty) };
                 const new = api.LLVMBuildCall2(b, runtime.array_clone.ty, runtime.array_clone.fn_value, &args, args.len, "cc.new");
+                _ = api.LLVMBuildStore(b, new, field_ptr);
+            },
+            .enum_instance => {
+                // Deep-copy the owned enum block so the copy owns it independently
+                // (paired with the free in release_contents). kira_enum_clone(null)=null.
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.enumfield");
+                const old = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "cc.enumold");
+                var args = [_]llvm.c.LLVMValueRef{old};
+                const new = api.LLVMBuildCall2(b, dtors.enum_clone.ty, dtors.enum_clone.fn_value, &args, args.len, "cc.enumnew");
                 _ = api.LLVMBuildStore(b, new, field_ptr);
             },
             else => {},

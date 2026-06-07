@@ -1,0 +1,22 @@
+function pick(i: Int) -> String {
+    if i > 0 {
+        return "positive"
+    }
+    return "zero"
+}
+function passthrough(s: String) -> String {
+    return s
+}
+@Main
+function main() {
+    var i = 0
+    var total = 0
+    while i < 1000000 {
+        let a = pick(i)
+        let b = passthrough(move a)
+        total = total + 1
+        i = i + 1
+    }
+    print(total)
+    return
+}

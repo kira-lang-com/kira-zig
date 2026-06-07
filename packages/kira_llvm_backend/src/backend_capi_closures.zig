@@ -50,14 +50,32 @@ pub fn lowerCallValue(fc: *FunctionCodegen, v: ir.CallValue) !void {
     const args = try fc.allocator.alloc(llvm.c.LLVMValueRef, v.args.len + 1);
     defer fc.allocator.free(args);
     args[0] = fc.registers[v.callee];
+    // A closure body is an ordinary function: when an owned/move struct argument reaches it,
+    // the callee fully owns and drops it (struct params are struct_heap in native mode), so
+    // the closure call must move the struct in just like a direct Call — hand over a
+    // caller-stable heap shell and relinquish it, or both sides free it (double free).
+    // Closures-as-arguments and other kinds are still borrow-passed: the dispatcher does not
+    // drop them, so escaping would leak.
+    if (fc.drop_enabled and fc.request.mode == .llvm_native) {
+        for (v.args, 0..) |arg, i| {
+            const mode = if (i < v.param_ownership.len) v.param_ownership[i] else ir.OwnershipMode.owned;
+            switch (mode) {
+                .owned, .move => {},
+                else => continue,
+            }
+            const pt = if (i < v.param_types.len) v.param_types[i] else continue;
+            if (pt.kind != .ffi_struct) continue;
+            const name = pt.name orelse continue;
+            if (fc.dtors.map.get(name) == null) continue;
+            fc.registers[arg] = drop.moveOrCloneToHeap(fc, arg, name);
+        }
+    }
     for (v.args, 0..) |arg, index| args[index + 1] = fc.registers[arg];
     const result = api.LLVMBuildCall2(b, decl.fn_ty, decl.fn_value, args.ptr, @intCast(args.len), "");
-    // NOTE: arguments are intentionally NOT drop-escaped here. The call_value dispatcher
-    // does not run a callee owned-param drop the way a direct Call does, so escaping an
-    // owned arg (e.g. a closure passed by value) would leak it — nothing would free it.
-    // The caller keeps ownership (borrow-pass); conservative — never a double-free.
-    // (ir.CallValue.param_ownership is plumbed through for when the dispatcher learns to
-    // take ownership of owned/move args and free them.)
+    // Other argument kinds are intentionally NOT drop-escaped here. The call_value dispatcher
+    // does not run a callee owned-param drop for them (e.g. a closure passed by value), so
+    // escaping would leak — nothing would free it. The caller keeps ownership (borrow-pass);
+    // conservative — never a double-free.
     if (v.dst) |dst| {
         fc.registers[dst] = result;
         // A native callback's owned-aggregate result is fresh caller-stable heap the caller

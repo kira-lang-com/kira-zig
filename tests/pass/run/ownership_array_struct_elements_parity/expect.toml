@@ -1,4 +1,4 @@
-backends = ["vm", "llvm", "hybrid"]
+backends = ["hybrid", "vm", "llvm"]
 
 [phases.check]
 result = "pass"
@@ -8,4 +8,4 @@ result = "pass"
 
 [phases.run]
 result = "pass"
-stdout = "60\n"
+stdout = "48\n"

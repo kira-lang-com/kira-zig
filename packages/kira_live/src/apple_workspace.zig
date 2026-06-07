@@ -10,6 +10,7 @@ const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const llvm_backend = @import("kira_llvm_backend");
 const manifest = @import("kira_manifest");
+const apple_app_sources = @import("apple_app_sources.zig");
 
 pub const Platform = enum { macos, ios, tvos, visionos };
 
@@ -35,6 +36,7 @@ pub const Generated = struct {
     project_path: []const u8,
     scheme_names: []const []const u8,
     unavailable: []const PlatformStatus,
+    native_execution: bool,
 };
 
 pub const PlatformStatus = struct {
@@ -178,7 +180,7 @@ pub fn generate(
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, resources_dir);
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, work_root);
 
-    try shared.writeFile(try std.fs.path.join(allocator, &.{ sources_dir, "main.m" }), unifiedMainSource());
+    try shared.writeFile(try std.fs.path.join(allocator, &.{ sources_dir, "main.m" }), apple_app_sources.unifiedMainSource());
     // Native (llvm) targets compile this trivial TU so Xcode runs the linker; `main`
     // is provided by kira_native_app.o (OTHER_LDFLAGS). Both source files are always
     // written; only the one wired into the active target's Sources phase is compiled.
@@ -236,7 +238,7 @@ pub fn generate(
         // Per-platform Info.plist.
         try shared.writeFile(
             try std.fs.path.join(allocator, &.{ resources_dir, meta.plist_basename }),
-            try infoPlist(allocator, platform, product_name, meta.bundle_id),
+            try apple_app_sources.infoPlist(allocator, platform, product_name, meta.bundle_id),
         );
 
         try specs.append(.{
@@ -304,6 +306,7 @@ pub fn generate(
         .project_path = project_dir,
         .scheme_names = try schemes.toOwnedSlice(),
         .unavailable = try unavailable.toOwnedSlice(),
+        .native_execution = native_execution,
     };
 }
 
@@ -450,7 +453,7 @@ fn buildLdflags(
     native_libraries: []const native.ResolvedNativeLibrary,
 ) ![]const u8 {
     var out = std.array_list.Managed(u8).init(allocator);
-    try out.appendSlice("\"");
+    try out.appendSlice("\"-Wl,-force_load,");
     try out.appendSlice(support_lib);
     try out.appendSlice("\", \"");
     try out.appendSlice(native_object);
@@ -543,79 +546,12 @@ fn writeRunnerManifest(
     try shared.writeTomlFile(try std.fs.path.join(allocator, &.{ resources_dir, "KiraRunner.toml" }), runner_manifest);
 }
 
-fn unifiedMainSource() []const u8 {
-    return
-    \\#import <Foundation/Foundation.h>
-    \\
-    \\// Unified Kira Runner Entry: identical for macOS, iOS, iPadOS, tvOS and visionOS.
-    \\// The KiraRunner.toml `mode` field selects standalone playback vs. live reload.
-    \\extern int kira_live_runner_entry(const char *manifest_path);
-    \\
-    \\int main(int argc, char **argv) {
-    \\    (void)argc;
-    \\    (void)argv;
-    \\#if defined(KIRA_TARGET_UNAVAILABLE)
-    \\    @autoreleasepool {
-    \\        NSLog(@"Kira: this platform target has no native backend build yet.");
-    \\    }
-    \\    return 0;
-    \\#else
-    \\    @autoreleasepool {
-    \\        NSString *path = [[NSBundle mainBundle] pathForResource:@"KiraRunner" ofType:@"toml"];
-    \\        return kira_live_runner_entry([path UTF8String]);
-    \\    }
-    \\#endif
-    \\}
-    \\
-    ;
-}
-
-fn infoPlist(allocator: std.mem.Allocator, platform: Platform, name: []const u8, bundle_id: []const u8) ![]const u8 {
-    _ = bundle_id;
-    const requires_ios = switch (platform) {
-        .macos => "",
-        else => "<key>LSRequiresIPhoneOS</key><true/>",
-    };
-    const launch = switch (platform) {
-        .macos => "<key>NSHighResolutionCapable</key><true/>",
-        else => "<key>UILaunchScreen</key><dict/><key>UIApplicationSupportsMultipleScenes</key><false/>",
-    };
-    const orientations = switch (platform) {
-        .ios => "<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>",
-        else => "",
-    };
-    // ProMotion: iPhone caps CADisplayLink at 60 Hz unless this key opts in. The
-    // display-link integration already requests the screen's maximumFramesPerSecond,
-    // so this is the only missing piece to let 120 Hz devices run at 120. It is a
-    // no-op on 60 Hz iPhones and on iPad (which already allows high refresh).
-    const promotion = switch (platform) {
-        .ios => "<key>CADisableMinimumFrameDurationOnPhone</key><true/>",
-        else => "",
-    };
-    return std.fmt.allocPrint(allocator,
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        \\<plist version="1.0"><dict><key>CFBundleName</key><string>{s}</string><key>CFBundleDisplayName</key><string>{s}</string><key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string><key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>LSSupportsGameMode</key><false/>{s}{s}{s}{s}</dict></plist>
-        \\
-    , .{ name, name, requires_ios, launch, orientations, promotion });
-}
-
 test "platform metadata covers every Apple platform" {
     inline for (.{ Platform.macos, Platform.ios, Platform.tvos, Platform.visionos }) |p| {
         const meta = platformMeta(p);
         try std.testing.expect(meta.product_suffix.len > 0);
         try std.testing.expect(meta.sdkroot.len > 0);
     }
-}
-
-test "iOS Info.plist opts into ProMotion (>60 Hz) and macOS does not" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const key = "CADisableMinimumFrameDurationOnPhone";
-    const ios = try infoPlist(arena.allocator(), .ios, "Demo", "com.kira.demo");
-    try std.testing.expect(std.mem.indexOf(u8, ios, key) != null);
-    const mac = try infoPlist(arena.allocator(), .macos, "Demo", "com.kira.demo");
-    try std.testing.expect(std.mem.indexOf(u8, mac, key) == null);
 }
 
 test "visionOS arch uses zig visionos triple but xros clang selector" {

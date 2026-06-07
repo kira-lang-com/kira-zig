@@ -1,0 +1,31 @@
+struct Point {
+    let x: Int
+    let y: Int
+}
+function makePoint(i: Int) -> Point {
+    return Point { x: i, y: i + 1 }
+}
+function sumPoints(pts: borrow [Point]) -> Int {
+    var total = 0
+    for p in pts {
+        total = total + p.x + p.y
+    }
+    return total
+}
+@Main
+function main() {
+    var frame = 0
+    var grand = 0
+    while frame < 200000 {
+        var pts: [Point] = []
+        var i = 0
+        while i < 8 {
+            pts.append(makePoint(i))
+            i = i + 1
+        }
+        grand = grand + sumPoints(pts)
+        frame = frame + 1
+    }
+    print(grand)
+    return
+}

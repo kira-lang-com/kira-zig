@@ -75,12 +75,21 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
             }
             (@as(*u8, @ptrFromInt(address))).* = if (value.boolean) 1 else 0;
         },
-        .construct_any, .enum_instance => {
+        .enum_instance => {
+            if (value != .raw_ptr) {
+                vm.rememberError("runtime enum field cannot be lowered to native memory");
+                return error.RuntimeFailure;
+            }
+            (@as(*usize, @ptrFromInt(address))).* = if (value.raw_ptr == 0) 0 else try vm.copyEnumToNativeLayout(module, field_ty.name orelse {
+                vm.rememberError("enum field type is missing a name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr);
+        },
+        .construct_any => {
             if (value != .raw_ptr) {
                 vm.rememberError("runtime managed pointer field cannot be lowered to native memory");
                 return error.RuntimeFailure;
             }
-            vm.heap.retainValue(value);
             (@as(*usize, @ptrFromInt(address))).* = value.raw_ptr;
         },
         .raw_ptr => {
@@ -146,13 +155,22 @@ pub fn readNativeFieldValue(
             break :blk .{ .string = if (value_ptr.ptr) |ptr| ptr[0..value_ptr.len] else "" };
         },
         .boolean => .{ .boolean = (@as(*const u8, @ptrFromInt(address))).* != 0 },
-        .construct_any, .enum_instance => blk: {
+        .enum_instance => blk: {
             const raw_ptr = (@as(*const usize, @ptrFromInt(address))).*;
-            const managed = runtime_abi.Value{ .raw_ptr = raw_ptr };
-            vm.heap.retainValue(managed);
-            break :blk managed;
+            break :blk runtime_abi.Value{ .raw_ptr = if (raw_ptr == 0) 0 else try vm.copyEnumFromNativeLayout(module, field_decl.ty.name orelse {
+                vm.rememberError("enum field type is missing a name");
+                return error.RuntimeFailure;
+            }, raw_ptr) };
         },
-        .raw_ptr => .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+        .construct_any => blk: {
+            const raw_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+            break :blk runtime_abi.Value{ .raw_ptr = raw_ptr };
+        },
+        .raw_ptr => try vm.materializeCallbackValueFromNative(
+            module,
+            field_decl.ty,
+            .{ .raw_ptr = (@as(*const usize, @ptrFromInt(address))).* },
+        ),
         .array => blk: {
             const array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
             break :blk .{ .raw_ptr = if (array_ptr == 0) 0 else try vm.copyArrayFromNativeLayout(module, field_decl.ty, array_ptr) };

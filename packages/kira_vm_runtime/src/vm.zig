@@ -57,7 +57,7 @@ pub const Vm = struct {
         var exported_iterator = self.exported_native_closures.iterator();
         while (exported_iterator.next()) |entry| {
             const exported = entry.value_ptr.*;
-            for (exported.captures) |capture| self.heap.releaseValue(capture);
+            for (exported.captures) |capture| self.heap.dropValue(capture);
             self.allocator.free(exported.captures);
             const byte_len = 16 + exported.captures.len * @sizeOf(runtime_abi.BridgeValue);
             const word_count = @max(1, std.math.divCeil(usize, byte_len, @sizeOf(u64)) catch unreachable);
@@ -118,12 +118,13 @@ pub const Vm = struct {
         }
     }
 
-    pub fn releaseManagedValue(self: *Vm, value: runtime_abi.Value) void {
-        self.heap.releaseValue(value);
+    pub fn dropManagedValue(self: *Vm, value: runtime_abi.Value) void {
+        self.heap.dropValue(value);
     }
 
     pub fn retainManagedValue(self: *Vm, value: runtime_abi.Value) void {
-        self.heap.retainValue(value);
+        _ = self;
+        _ = value;
     }
 
     pub fn beginNativeBoundary(self: *Vm) !void {
@@ -144,7 +145,7 @@ pub const Vm = struct {
             return error.RuntimeFailure;
         };
         const result = try self.runFunctionById(module, entry_function_id, &.{}, writer, .{});
-        self.heap.releaseValue(result);
+        self.heap.dropValue(result);
     }
 
     pub fn runFunctionById(
@@ -198,7 +199,7 @@ pub const Vm = struct {
         for (captures) |*capture| capture.* = .{ .void = {} };
         var initialized: usize = 0;
         errdefer {
-            self.heap.releaseSlots(captures[0..initialized]);
+            self.heap.dropSlots(captures[0..initialized]);
             self.allocator.free(captures);
         }
         for (0..capture_count) |index| {
@@ -213,6 +214,9 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }, capture_value.raw_ptr) };
                     capture_is_owned = true;
+                } else if (capture_ty.kind == .raw_ptr) {
+                    capture_value = try self.materializeCallbackValueFromNative(module, capture_ty, capture_value);
+                    capture_is_owned = true;
                 }
             } else if (external_capture_types) |capture_types| {
                 if (index >= capture_types.len) {
@@ -226,10 +230,13 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }, capture_value.raw_ptr) };
                     capture_is_owned = true;
+                } else if (capture_ty.kind == .raw_ptr) {
+                    capture_value = try self.materializeCallbackValueFromNative(module, capture_ty, capture_value);
+                    capture_is_owned = true;
                 }
             }
             if (capture_is_owned) {
-                self.heap.assignOwned(&captures[index], capture_value);
+                self.heap.assignTransferred(&captures[index], capture_value);
             } else {
                 self.heap.assignBorrowed(&captures[index], capture_value);
             }
@@ -283,7 +290,7 @@ pub const Vm = struct {
         for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
         var initialized: usize = 0;
         errdefer {
-            for (items[0..initialized]) |item| self.heap.releaseValue(runtime_abi.bridgeValueToValue(item));
+            for (items[0..initialized]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
             self.allocator.free(items);
         }
         for (source.items[0..source.len], 0..) |item, index| {
@@ -307,7 +314,7 @@ pub const Vm = struct {
         for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
         var initialized: usize = 0;
         errdefer {
-            for (items[0..initialized]) |item| self.heap.releaseValue(runtime_abi.bridgeValueToValue(item));
+            for (items[0..initialized]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
             self.allocator.free(items);
         }
         for (source.items[0..source.len], 0..) |item, index| {
@@ -317,7 +324,7 @@ pub const Vm = struct {
         }
 
         const old_items = destination.items[0..@max(destination.len, 1)];
-        for (old_items[0..destination.len]) |item| self.heap.releaseValue(runtime_abi.bridgeValueToValue(item));
+        for (old_items[0..destination.len]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
         self.allocator.free(old_items);
         destination.len = source.len;
         destination.items = items.ptr;
@@ -361,7 +368,7 @@ pub const Vm = struct {
             .array => {
                 if (value == .raw_ptr) self.destroyArrayNativeLayout(module, ty, value.raw_ptr);
             },
-            .enum_instance, .construct_any => self.heap.releaseValue(value),
+            .enum_instance, .construct_any => self.heap.dropValue(value),
             else => {},
         }
     }
@@ -397,7 +404,14 @@ pub const Vm = struct {
         @memset(local_owned, false);
         for (function_decl.local_types, 0..) |local_ty, index| {
             if (local_ty.kind != .ffi_struct) continue;
-            if (index < function_decl.param_count and !hooks.copy_struct_args_by_value) continue;
+            if (index < function_decl.param_count) {
+                // A borrow/`borrow mut` struct parameter ALIASES the caller's struct (so
+                // mutations propagate); it gets no private copy destination. In hybrid mode
+                // (copy_struct_args_by_value=false) no struct param is copied. Only an
+                // owned/move/copy struct param in pure-VM mode needs a fresh destination.
+                const mode = ownershipModeAt(function_decl.param_ownership, index);
+                if (!hooks.copy_struct_args_by_value or mode == .borrow_read or mode == .borrow_mut) continue;
+            }
             const type_name = local_ty.name orelse {
                 self.rememberError("struct local type is missing a name");
                 return error.RuntimeFailure;
@@ -411,10 +425,19 @@ pub const Vm = struct {
         for (args, 0..) |arg, index| {
             if (function_decl.local_types[index].kind == .ffi_struct) {
                 if (arg != .raw_ptr or arg.raw_ptr == 0) {
-                    self.rememberError("struct argument requires a valid pointer");
+                    self.rememberFmt(
+                        "struct argument requires a valid pointer (function={s}, arg={d}, tag={s})",
+                        .{ function_decl.name, index, @tagName(arg) },
+                    );
                     return error.RuntimeFailure;
                 }
-                if (hooks.copy_struct_args_by_value) {
+                const struct_mode = ownershipModeAt(function_decl.param_ownership, index);
+                if (struct_mode == .borrow_read or struct_mode == .borrow_mut) {
+                    // Alias the caller's struct: a `borrow mut` callee mutates it in place and
+                    // the caller observes the change (matches the LLVM/native backend). The slot
+                    // is non-owning, so it is not freed at frame exit — the caller still owns it.
+                    self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
+                } else if (hooks.copy_struct_args_by_value) {
                     const type_name = function_decl.local_types[index].name orelse {
                         self.rememberError("struct local type is missing a name");
                         return error.RuntimeFailure;
@@ -428,7 +451,10 @@ pub const Vm = struct {
                     try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
                 } else self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
             } else {
-                self.setSlotBorrowed(&locals[index], &local_owned[index], arg);
+                switch (ownershipModeAt(function_decl.param_ownership, index)) {
+                    .owned, .move => self.setSlotOwned(&locals[index], &local_owned[index], arg),
+                    .borrow_read, .borrow_mut, .copy => self.setSlotBorrowed(&locals[index], &local_owned[index], arg),
+                }
             }
         }
 
@@ -453,7 +479,7 @@ pub const Vm = struct {
                     self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = raw_ptr });
                 },
                 .const_closure => |value| {
-                    const closure_ptr = try self.allocateClosure(registers, value.function_id, value.captures);
+                    const closure_ptr = try self.allocateClosure(registers, value.function_id, value.captures, value.capture_ownership);
                     runtime_abi.emitExecutionTrace("CALLABLE", "CONST_CLOSURE", "dst={d} fn={d} raw=0x{x} captures={d}", .{ value.dst, value.function_id, closure_ptr, value.captures.len });
                     self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = closure_ptr });
                 },
@@ -506,8 +532,52 @@ pub const Vm = struct {
                 .unary => |value| {
                     self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try value_impl.unaryValue(self, registers[value.src], value.op));
                 },
-                .store_local => |value| self.setSlotBorrowed(&locals[value.local], &local_owned[value.local], registers[value.src]),
-                .load_local => |value| self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], locals[value.local]),
+                .store_local => |value| {
+                    if (register_owned[value.src]) {
+                        self.transferSlot(
+                            &locals[value.local],
+                            &local_owned[value.local],
+                            &registers[value.src],
+                            &register_owned[value.src],
+                        );
+                    } else {
+                        const local_type = if (value.local < function_decl.local_types.len)
+                            function_decl.local_types[value.local]
+                        else
+                            bytecode.TypeRef{ .kind = .raw_ptr };
+                        if (local_type.kind == .ffi_struct) {
+                            const stored = try self.cloneBorrowedLocalValue(module, local_type, registers[value.src]);
+                            self.setSlotOwned(&locals[value.local], &local_owned[value.local], stored);
+                        } else {
+                            self.setSlotBorrowed(&locals[value.local], &local_owned[value.local], registers[value.src]);
+                        }
+                    }
+                },
+                .load_local => |value| switch (value.ownership) {
+                    .move, .owned => {
+                        self.transferSlot(
+                            &registers[value.dst],
+                            &register_owned[value.dst],
+                            &locals[value.local],
+                            &local_owned[value.local],
+                        );
+                        if (value.local < function_decl.local_types.len) {
+                            const local_ty = function_decl.local_types[value.local];
+                            if (local_ty.kind == .ffi_struct and locals[value.local] == .void) {
+                                const type_name = local_ty.name orelse {
+                                    self.rememberError("moved struct local requires a named type");
+                                    return error.RuntimeFailure;
+                                };
+                                self.setSlotOwned(
+                                    &locals[value.local],
+                                    &local_owned[value.local],
+                                    .{ .raw_ptr = try self.allocateStruct(module, type_name) },
+                                );
+                            }
+                        }
+                    },
+                    .borrow_read, .borrow_mut, .copy => self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], locals[value.local]),
+                },
                 .local_ptr => |value| self.setSlotUnmanaged(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(&locals[value.local]) }),
                 .subobject_ptr => |value| {
                     const base = registers[value.base];
@@ -521,7 +591,10 @@ pub const Vm = struct {
                 .field_ptr => |value| {
                     const base = registers[value.base];
                     if (base != .raw_ptr or base.raw_ptr == 0) {
-                        self.rememberError("field access requires a valid struct pointer");
+                        self.rememberFmt(
+                            "field access requires a valid struct pointer: {s}.{d}",
+                            .{ value.base_type_name, value.field_index },
+                        );
                         return error.RuntimeFailure;
                     }
                     const base_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(base.raw_ptr);
@@ -564,9 +637,16 @@ pub const Vm = struct {
                     const payload: [*]runtime_abi.BridgeValue = @ptrFromInt(state_value.raw_ptr);
                     const field_index: usize = @intCast(value.field_index);
                     const old = runtime_abi.bridgeValueToValue(payload[field_index]);
-                    self.heap.retainValue(registers[value.src]);
-                    payload[field_index] = runtime_abi.bridgeValueFromValue(registers[value.src]);
-                    self.heap.releaseValue(old);
+                    const stored = if (register_owned[value.src])
+                        registers[value.src]
+                    else
+                        try self.cloneBorrowedValueForStore(module, value.field_ty, registers[value.src]);
+                    payload[field_index] = runtime_abi.bridgeValueFromValue(stored);
+                    if (register_owned[value.src]) {
+                        register_owned[value.src] = false;
+                        registers[value.src] = .{ .void = {} };
+                    }
+                    self.heap.dropValue(old);
                     _ = value.field_ty;
                 },
                 .c_string_to_string => |value| {
@@ -602,13 +682,17 @@ pub const Vm = struct {
                         self.rememberError("array index is out of bounds");
                         return error.RuntimeFailure;
                     }
-                    var item_value = runtime_abi.bridgeValueToValue(array_ptr.items[index]);
-                    if (value.ty.kind == .ffi_struct and item_value == .raw_ptr and item_value.raw_ptr != 0 and !self.isManagedStructPointer(item_value.raw_ptr)) {
-                        item_value = .{ .raw_ptr = try self.copyStructFromNativeLayout(module, value.ty.name orelse {
+                    const item_value = runtime_abi.bridgeValueToValue(array_ptr.items[index]);
+                    if (value.ty.kind == .ffi_struct and item_value == .raw_ptr and item_value.raw_ptr != 0) {
+                        const type_name = value.ty.name orelse {
                             self.rememberError("array element struct type is missing a name");
                             return error.RuntimeFailure;
-                        }, item_value.raw_ptr) };
-                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], item_value);
+                        };
+                        const copied = if (self.isManagedStructPointer(item_value.raw_ptr))
+                            try self.cloneStructValue(module, type_name, item_value.raw_ptr)
+                        else
+                            try self.copyStructFromNativeLayout(module, type_name, item_value.raw_ptr);
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = copied });
                     } else {
                         self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], item_value);
                     }
@@ -626,7 +710,15 @@ pub const Vm = struct {
                         self.rememberError("array index is out of bounds");
                         return error.RuntimeFailure;
                     }
-                    self.heap.replaceArrayItem(&array_ptr.items[index], registers[value.src]);
+                    const stored = if (register_owned[value.src])
+                        registers[value.src]
+                    else
+                        try self.cloneBorrowedManagedValueDynamic(module, registers[value.src]);
+                    self.heap.replaceArrayItem(&array_ptr.items[index], stored);
+                    if (register_owned[value.src]) {
+                        register_owned[value.src] = false;
+                        registers[value.src] = .{ .void = {} };
+                    }
                 },
                 .array_append => |value| {
                     const array_value = registers[value.array];
@@ -635,13 +727,33 @@ pub const Vm = struct {
                         return error.RuntimeFailure;
                     }
                     const array_ptr: *ArrayObject = @ptrFromInt(array_value.raw_ptr);
-                    try self.heap.appendArrayItem(array_ptr, registers[value.src]);
+                    const stored = if (register_owned[value.src])
+                        registers[value.src]
+                    else
+                        try self.cloneBorrowedManagedValueDynamic(module, registers[value.src]);
+                    try self.heap.appendArrayItem(array_ptr, stored);
+                    if (register_owned[value.src]) {
+                        register_owned[value.src] = false;
+                        registers[value.src] = .{ .void = {} };
+                    }
                 },
                 .enum_tag => |value| {
                     const enum_value = registers[value.src];
                     if (enum_value != .raw_ptr or enum_value.raw_ptr == 0) {
                         self.rememberError("enum tag access requires a valid enum value");
                         return error.RuntimeFailure;
+                    }
+                    if (!self.isManagedStructPointer(enum_value.raw_ptr)) {
+                        const native_words: [*]const u64 = @ptrFromInt(enum_value.raw_ptr);
+                        if (native_words[0] > std.math.maxInt(i64)) {
+                            self.rememberFmt(
+                                "native enum tag is out of range: ptr=0x{x} tag={d}",
+                                .{ enum_value.raw_ptr, native_words[0] },
+                            );
+                            return error.RuntimeFailure;
+                        }
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(native_words[0]) });
+                        continue;
                     }
                     const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
                     if (enum_ptr[0] != .integer) {
@@ -655,6 +767,12 @@ pub const Vm = struct {
                     if (enum_value != .raw_ptr or enum_value.raw_ptr == 0) {
                         self.rememberError("enum payload access requires a valid enum value");
                         return error.RuntimeFailure;
+                    }
+                    if (!self.isManagedStructPointer(enum_value.raw_ptr)) {
+                        const native_words: [*]const u64 = @ptrFromInt(enum_value.raw_ptr);
+                        const payload = try self.enumPayloadFromNativeWord(module, value.payload_ty, native_words[1]);
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], payload);
+                        continue;
                     }
                     const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
                     self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], enum_ptr[1]);
@@ -671,7 +789,15 @@ pub const Vm = struct {
                             self.rememberError("struct load type is missing a name");
                             return error.RuntimeFailure;
                         };
-                        self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try self.resolveStructValuePointer(type_name, ptr.raw_ptr) });
+                        const src_ptr = try self.resolveStructValuePointer(type_name, ptr.raw_ptr);
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = if (src_ptr == 0) 0 else try self.cloneStructValue(module, type_name, src_ptr) });
+                    } else if (value.ty.kind == .enum_instance) {
+                        const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
+                        const enum_name = value.ty.name orelse {
+                            self.rememberError("enum load type is missing a name");
+                            return error.RuntimeFailure;
+                        };
+                        self.setSlotOwned(&registers[value.dst], &register_owned[value.dst], try self.cloneEnumValue(module, enum_name, slot_ptr.*));
                     } else {
                         const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
                         self.setSlotBorrowed(&registers[value.dst], &register_owned[value.dst], slot_ptr.*);
@@ -692,14 +818,29 @@ pub const Vm = struct {
                         try self.copyStructValueInto(module, type_name, dst_ptr, registers[value.src]);
                     } else {
                         const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
-                        self.heap.assignBorrowed(slot_ptr, registers[value.src]);
+                        const stored = if (register_owned[value.src])
+                            registers[value.src]
+                        else
+                            try self.cloneBorrowedValueForStore(module, value.ty, registers[value.src]);
+                        self.heap.assignTransferred(slot_ptr, stored);
+                        if (register_owned[value.src]) {
+                            register_owned[value.src] = false;
+                            registers[value.src] = .{ .void = {} };
+                        }
                     }
                 },
                 .copy_indirect => |value| {
                     const dst_ptr_value = registers[value.dst_ptr];
                     const src_ptr_value = registers[value.src_ptr];
                     if (dst_ptr_value != .raw_ptr or src_ptr_value != .raw_ptr or dst_ptr_value.raw_ptr == 0 or src_ptr_value.raw_ptr == 0) {
-                        self.rememberError("struct copy requires valid pointers");
+                        self.rememberFmt(
+                            "struct copy requires valid pointers: {s} dst_ok={d} src_ok={d}",
+                            .{
+                                value.type_name,
+                                if (dst_ptr_value == .raw_ptr and dst_ptr_value.raw_ptr != 0) @as(u8, 1) else @as(u8, 0),
+                                if (src_ptr_value == .raw_ptr and src_ptr_value.raw_ptr != 0) @as(u8, 1) else @as(u8, 0),
+                            },
+                        );
                         return error.RuntimeFailure;
                     }
                     const dst_ptr = try self.ensureStructDestinationPointer(module, value.type_name, dst_ptr_value.raw_ptr);
@@ -722,10 +863,14 @@ pub const Vm = struct {
                 .label => {},
                 .print => |value| try builtins.printValue(writer, module, registers[value.src], value.ty),
                 .call_runtime => |value| {
-                    const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
+                    const callee = module.findFunctionById(value.function_id) orelse {
+                        self.rememberError("bytecode function id is out of range");
+                        return error.RuntimeFailure;
+                    };
+                    const call_args = try self.collectTransferredArgs(registers, register_owned, value.args, callee.param_ownership);
                     defer self.allocator.free(call_args);
-                    const result = try self.runFunctionById(module, value.function_id, call_args, writer, hooks);
-                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
+                    const result = try self.runFunction(module, callee, call_args, writer, hooks);
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.dropValue(result);
                 },
                 .call_native => |value| {
                     const callback = hooks.call_native orelse {
@@ -736,7 +881,7 @@ pub const Vm = struct {
                     defer self.allocator.free(call_args);
                     var result = try callback(hooks.context, value.function_id, call_args);
                     result = try self.materializeNativeResult(module, value.return_ty, result);
-                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.dropValue(result);
                 },
                 .call_virtual => |value| {
                     const receiver_value = registers[value.receiver];
@@ -771,15 +916,18 @@ pub const Vm = struct {
                         native_value = try self.materializeNativeResult(module, value.return_ty, native_value);
                         break :native_result native_value;
                     };
-                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.dropValue(result);
                 },
                 .call_value => |value| {
                     const callee_value = registers[value.callee];
                     if (callee_value != .raw_ptr) {
-                        self.rememberError("indirect call requires a callable function value");
+                        self.rememberFmt(
+                            "indirect call requires a callable function value (callee_register={d}, tag={s})",
+                            .{ value.callee, @tagName(callee_value) },
+                        );
                         return error.RuntimeFailure;
                     }
-                    const call_args = try helper_impl.collectArgs(self.allocator, registers, value.args);
+                    const call_args = try self.collectTransferredArgs(registers, register_owned, value.args, value.param_ownership);
                     defer self.allocator.free(call_args);
                     const result = if (self.heap.getClosure(callee_value.raw_ptr)) |closure| closure_call: {
                         runtime_abi.emitExecutionTrace("CALLABLE", "INVOKE_CLOSURE", "raw=0x{x} fn={d} captures={d}", .{ callee_value.raw_ptr, closure.function_id, closure.captures.len });
@@ -809,11 +957,16 @@ pub const Vm = struct {
                         self.rememberError("indirect call received an unmanaged raw pointer that is not a runtime closure");
                         return error.RuntimeFailure;
                     };
-                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.releaseValue(result);
+                    if (value.dst) |dst| self.setSlotOwned(&registers[dst], &register_owned[dst], result) else self.heap.dropValue(result);
                 },
                 .ret => |value| {
                     const result = if (value.src) |src| registers[src] else runtime_abi.Value{ .void = {} };
-                    if (value.src == null or register_owned[value.src.?]) self.heap.retainValue(result);
+                    if (value.src) |src| {
+                        if (register_owned[src]) {
+                            register_owned[src] = false;
+                            registers[src] = .{ .void = {} };
+                        }
+                    }
                     return result;
                 },
             }
@@ -828,22 +981,28 @@ pub const Vm = struct {
         self.last_error_len = length;
     }
 
+    fn rememberFmt(self: *Vm, comptime fmt: []const u8, args: anytype) void {
+        const message = std.fmt.bufPrint(&self.last_error_buffer, fmt, args) catch {
+            self.last_error_len = 0;
+            return;
+        };
+        self.last_error_len = message.len;
+    }
+
     fn setSlotOwned(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
         const old = slot.*;
         const old_owned = owned.*;
         slot.* = value;
         owned.* = self.heap.isManagedValue(value);
-        if (old_owned) self.heap.releaseValue(old);
+        if (old_owned) self.heap.dropValue(old);
     }
 
     fn setSlotBorrowed(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
-        const new_owned = self.heap.isManagedValue(value);
-        if (new_owned) self.heap.retainValue(value);
         const old = slot.*;
         const old_owned = owned.*;
         slot.* = value;
-        owned.* = new_owned;
-        if (old_owned) self.heap.releaseValue(old);
+        owned.* = false;
+        if (old_owned) self.heap.dropValue(old);
     }
 
     fn setSlotUnmanaged(self: *Vm, slot: *runtime_abi.Value, owned: *bool, value: runtime_abi.Value) void {
@@ -851,11 +1010,57 @@ pub const Vm = struct {
         const old_owned = owned.*;
         slot.* = value;
         owned.* = false;
-        if (old_owned) self.heap.releaseValue(old);
+        if (old_owned) self.heap.dropValue(old);
+    }
+
+    fn transferSlot(
+        self: *Vm,
+        dst: *runtime_abi.Value,
+        dst_owned: *bool,
+        src: *runtime_abi.Value,
+        src_owned: *bool,
+    ) void {
+        const old = dst.*;
+        const old_owned = dst_owned.*;
+        dst.* = src.*;
+        dst_owned.* = src_owned.*;
+        if (src_owned.*) {
+            src.* = .{ .void = {} };
+            src_owned.* = false;
+        }
+        if (old_owned) self.heap.dropValue(old);
+    }
+
+    fn collectTransferredArgs(
+        self: *Vm,
+        registers: []runtime_abi.Value,
+        register_owned: []bool,
+        argument_registers: []const u32,
+        param_ownership: []const bytecode.OwnershipMode,
+    ) ![]runtime_abi.Value {
+        const values = try self.allocator.alloc(runtime_abi.Value, argument_registers.len);
+        for (argument_registers, 0..) |register_index, index| {
+            values[index] = registers[register_index];
+            switch (ownershipModeAt(param_ownership, index)) {
+                .owned, .move => {
+                    if (register_owned[register_index]) {
+                        register_owned[register_index] = false;
+                        registers[register_index] = .{ .void = {} };
+                    }
+                },
+                .borrow_read, .borrow_mut, .copy => {},
+            }
+        }
+        return values;
+    }
+
+    fn ownershipModeAt(values: []const bytecode.OwnershipMode, index: usize) bytecode.OwnershipMode {
+        if (index < values.len) return values[index];
+        return .owned;
     }
 
     fn releaseTrackedSlots(self: *Vm, slots: []runtime_abi.Value, owned: []const bool) void {
-        for (slots, owned) |slot, is_owned| if (is_owned) self.heap.releaseValue(slot);
+        for (slots, owned) |slot, is_owned| if (is_owned) self.heap.dropValue(slot);
     }
 
     fn copyCString(self: *Vm, value: runtime_abi.Value) !runtime_abi.Value {
@@ -869,13 +1074,29 @@ pub const Vm = struct {
         return .{ .string = owned };
     }
 
-    fn allocateClosure(self: *Vm, registers: []const runtime_abi.Value, function_id: u32, capture_registers: []const u32) !usize {
+    fn allocateClosure(
+        self: *Vm,
+        registers: []const runtime_abi.Value,
+        function_id: u32,
+        capture_registers: []const u32,
+        capture_ownership: []const bytecode.OwnershipMode,
+    ) !usize {
         const closure = try self.allocator.create(ClosureObject);
         const captures = try self.allocator.alloc(runtime_abi.Value, capture_registers.len);
         for (captures) |*capture| capture.* = .{ .void = {} };
-        for (capture_registers, 0..) |reg, index| self.heap.assignBorrowed(&captures[index], registers[reg]);
+        for (capture_registers, 0..) |reg, index| {
+            switch (captureOwnershipAt(capture_ownership, index)) {
+                .owned, .move, .copy => self.heap.assignTransferred(&captures[index], registers[reg]),
+                .borrow_read, .borrow_mut => self.heap.assignBorrowed(&captures[index], registers[reg]),
+            }
+        }
         closure.* = .{ .function_id = function_id, .captures = captures };
         return self.heap.registerClosure(closure);
+    }
+
+    fn captureOwnershipAt(capture_ownership: []const bytecode.OwnershipMode, index: usize) bytecode.OwnershipMode {
+        if (index < capture_ownership.len) return capture_ownership[index];
+        return .borrow_read;
     }
 
     fn allocateStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8) !usize {
@@ -950,7 +1171,7 @@ pub const Vm = struct {
 
     fn preserveNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) !runtime_abi.Value {
         return switch (ty.kind) {
-            .ffi_struct, .array, .enum_instance, .construct_any => try self.copyValueToNativeLayout(module, ty, value),
+            .ffi_struct, .array, .enum_instance, .construct_any, .raw_ptr => try self.copyValueToNativeLayout(module, ty, value),
             else => value,
         };
     }
@@ -958,6 +1179,7 @@ pub const Vm = struct {
     fn materializeNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) !runtime_abi.Value {
         return switch (ty.kind) {
             .ffi_struct, .array, .enum_instance, .construct_any => try self.copyValueFromNativeLayout(module, ty, value),
+            .raw_ptr => try self.materializeCallbackValueFromNative(module, ty, value),
             else => value,
         };
     }
@@ -982,7 +1204,11 @@ pub const Vm = struct {
                 if (value != .raw_ptr or value.raw_ptr == 0) return;
                 self.destroyArrayNativeLayout(module, ty, value.raw_ptr);
             },
-            .enum_instance, .construct_any => self.heap.releaseValue(value),
+            .enum_instance => {
+                if (value != .raw_ptr or value.raw_ptr == 0) return;
+                self.destroyEnumNativeLayout(module, ty.name orelse return, value.raw_ptr);
+            },
+            .construct_any => self.heap.dropValue(value),
             else => {},
         }
     }
@@ -1035,8 +1261,14 @@ pub const Vm = struct {
                 if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
                 break :blk .{ .raw_ptr = try self.copyArrayToNativeLayout(module, ty, value.raw_ptr) };
             },
-            .enum_instance, .construct_any => blk: {
-                self.heap.retainValue(value);
+            .enum_instance => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyEnumToNativeLayout(module, ty.name orelse {
+                    self.rememberError("enum type is missing a name");
+                    return error.RuntimeFailure;
+                }, value.raw_ptr) };
+            },
+            .construct_any => blk: {
                 break :blk value;
             },
             .raw_ptr => blk: {
@@ -1085,12 +1317,29 @@ pub const Vm = struct {
                 if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
                 break :blk .{ .raw_ptr = try self.copyArrayFromNativeLayout(module, ty, value.raw_ptr) };
             },
-            .enum_instance, .construct_any => blk: {
-                self.heap.retainValue(value);
+            .enum_instance => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+                break :blk .{ .raw_ptr = try self.copyEnumFromNativeLayout(module, ty.name orelse {
+                    self.rememberError("enum type is missing a name");
+                    return error.RuntimeFailure;
+                }, value.raw_ptr) };
+            },
+            .construct_any => blk: {
                 break :blk value;
             },
+            .raw_ptr => try self.materializeCallbackValueFromNative(module, ty, value),
             else => value,
         };
+    }
+
+    pub fn materializeCallbackValueFromNative(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+        if (ty.kind != .raw_ptr) return value;
+        const name = ty.name orelse return value;
+        if (!isCallbackTypeName(name)) return value;
+        if (value != .raw_ptr or value.raw_ptr == 0) return value;
+        if (self.heap.getClosure(value.raw_ptr) != null) return value;
+        if (!runtime_abi.isTaggedNativeClosurePointer(value.raw_ptr)) return value;
+        return .{ .raw_ptr = try self.materializeNativeClosure(module, value.raw_ptr, null) };
     }
 
     pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize) !usize {
@@ -1129,7 +1378,6 @@ pub const Vm = struct {
         const slots: [*]runtime_abi.BridgeValue = @ptrFromInt(raw_ptr + 16);
         for (closure.captures, 0..) |capture, index| {
             const lowered = try self.copyValueToNativeLayout(module, capture_types[index], capture);
-            self.heap.retainValue(lowered);
             retained_captures[index] = lowered;
             slots[index] = runtime_abi.bridgeValueFromValue(lowered);
         }
@@ -1212,7 +1460,7 @@ pub const Vm = struct {
 
         const old = slot_ptr.*;
         slot_ptr.* = .{ .raw_ptr = try self.allocateStruct(module, expected_type_name) };
-        self.heap.releaseValue(old);
+        self.heap.dropValue(old);
         return slot_ptr.raw_ptr;
     }
 
@@ -1229,19 +1477,195 @@ pub const Vm = struct {
         };
         const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_raw_ptr);
         if (src_value == .raw_ptr and src_value.raw_ptr != 0) {
-            const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_value.raw_ptr);
-            try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+            if (self.isManagedStructPointer(src_value.raw_ptr)) {
+                const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_value.raw_ptr);
+                try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+            } else {
+                try self.copyStructFromNativeLayoutInto(module, type_name, dst_raw_ptr, src_value.raw_ptr);
+            }
             return;
         }
         if (src_value == .raw_ptr and src_value.raw_ptr == 0) {
             const default_ptr = try self.allocateStruct(module, type_name);
-            defer self.heap.releaseValue(.{ .raw_ptr = default_ptr });
+            defer self.heap.dropValue(.{ .raw_ptr = default_ptr });
             const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(default_ptr);
             try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
             return;
         }
         self.rememberError("struct copy source must be a struct value");
         return error.RuntimeFailure;
+    }
+
+    fn cloneStructValue(self: *Vm, module: *const bytecode.Module, type_name: []const u8, src_raw_ptr: usize) !usize {
+        const type_decl = helper_impl.findType(module, type_name) orelse {
+            self.rememberError("struct type could not be resolved");
+            return error.RuntimeFailure;
+        };
+        const fresh = try self.allocateStruct(module, type_name);
+        errdefer self.heap.dropValue(.{ .raw_ptr = fresh });
+        const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(fresh);
+        const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_raw_ptr);
+        try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
+        return fresh;
+    }
+
+    fn cloneBorrowedValueForStore(
+        self: *Vm,
+        module: *const bytecode.Module,
+        value_type: bytecode.TypeRef,
+        value: runtime_abi.Value,
+    ) anyerror!runtime_abi.Value {
+        if (!self.heap.isManagedValue(value)) return value;
+        return switch (value_type.kind) {
+            .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, value_type), value),
+            .enum_instance => try self.cloneEnumValue(module, value_type.name orelse {
+                self.rememberError("enum store type is missing a name");
+                return error.RuntimeFailure;
+            }, value),
+            .ffi_struct => blk: {
+                if (value != .raw_ptr or value.raw_ptr == 0) break :blk value;
+                const type_name = value_type.name orelse {
+                    self.rememberError("struct store type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                const copied = if (self.isManagedStructPointer(value.raw_ptr))
+                    try self.cloneStructValue(module, type_name, value.raw_ptr)
+                else
+                    try self.copyStructFromNativeLayout(module, type_name, value.raw_ptr);
+                break :blk runtime_abi.Value{ .raw_ptr = copied };
+            },
+            .string => if (value.string.len == 0) value else blk: {
+                const owned = try self.allocator.dupe(u8, value.string);
+                errdefer self.allocator.free(owned);
+                try self.heap.registerString(owned);
+                break :blk runtime_abi.Value{ .string = owned };
+            },
+            .raw_ptr => blk: {
+                const name = value_type.name orelse break :blk value;
+                if (!isCallbackTypeName(name) or value != .raw_ptr or value.raw_ptr == 0) break :blk value;
+                break :blk runtime_abi.Value{ .raw_ptr = try self.cloneClosureValue(module, value.raw_ptr) };
+            },
+            else => value,
+        };
+    }
+
+    fn cloneClosureValue(self: *Vm, module: *const bytecode.Module, closure_ptr: usize) anyerror!usize {
+        const source = self.heap.getClosure(closure_ptr) orelse {
+            self.rememberError("callback store source is not a valid closure");
+            return error.RuntimeFailure;
+        };
+        const captures = try self.allocator.alloc(runtime_abi.Value, source.captures.len);
+        for (captures) |*capture| capture.* = .{ .void = {} };
+        var initialized: usize = 0;
+        errdefer {
+            self.heap.dropSlots(captures[0..initialized]);
+            self.allocator.free(captures);
+        }
+
+        const function_decl = module.findFunctionById(source.function_id);
+        const capture_types = if (function_decl) |decl| blk: {
+            if (source.captures.len > decl.param_count) {
+                self.rememberError("closure capture metadata is inconsistent");
+                return error.RuntimeFailure;
+            }
+            const start = decl.param_count - source.captures.len;
+            break :blk decl.local_types[start..decl.param_count];
+        } else null;
+
+        for (source.captures, 0..) |capture, index| {
+            const cloned = if (capture_types) |types|
+                try self.cloneBorrowedValueForStore(module, types[index], capture)
+            else
+                capture;
+            self.heap.assignTransferred(&captures[index], cloned);
+            initialized += 1;
+        }
+
+        const clone = try self.allocator.create(ClosureObject);
+        errdefer self.allocator.destroy(clone);
+        clone.* = .{
+            .function_id = source.function_id,
+            .is_native = source.is_native,
+            .captures = captures,
+        };
+        return self.heap.registerClosure(clone);
+    }
+
+    fn cloneBorrowedManagedValueDynamic(self: *Vm, module: *const bytecode.Module, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+        if (!self.heap.isManagedValue(value)) return value;
+        return switch (value) {
+            .string => |bytes| if (bytes.len == 0) value else blk: {
+                const owned = try self.allocator.dupe(u8, bytes);
+                errdefer self.allocator.free(owned);
+                try self.heap.registerString(owned);
+                break :blk runtime_abi.Value{ .string = owned };
+            },
+            .raw_ptr => |ptr| blk: {
+                if (self.heap.getClosure(ptr) != null) {
+                    break :blk runtime_abi.Value{ .raw_ptr = try self.cloneClosureValue(module, ptr) };
+                }
+                if (self.heap.getArray(ptr)) |array| {
+                    break :blk runtime_abi.Value{ .raw_ptr = try self.cloneArrayValueDynamic(module, array) };
+                }
+                if (self.heap.getStructTypeName(ptr)) |type_name| {
+                    if (helper_impl.findType(module, type_name) != null) {
+                        break :blk runtime_abi.Value{ .raw_ptr = try self.cloneStructValue(module, type_name, ptr) };
+                    }
+                    if (enumTypeExists(module, type_name)) {
+                        break :blk try self.cloneEnumValue(module, type_name, value);
+                    }
+                }
+                break :blk value;
+            },
+            else => value,
+        };
+    }
+
+    fn cloneArrayValueDynamic(self: *Vm, module: *const bytecode.Module, source: *const ArrayObject) anyerror!usize {
+        const object = try self.allocator.create(ArrayObject);
+        errdefer self.allocator.destroy(object);
+        const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+        for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+        var initialized: usize = 0;
+        errdefer {
+            for (items[0..initialized]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
+            self.allocator.free(items);
+        }
+        for (source.items[0..source.len], 0..) |item, index| {
+            const cloned = try self.cloneBorrowedManagedValueDynamic(module, runtime_abi.bridgeValueToValue(item));
+            items[index] = runtime_abi.bridgeValueFromValue(cloned);
+            initialized += 1;
+        }
+        object.* = .{
+            .len = source.len,
+            .items = items.ptr,
+        };
+        return self.heap.registerArray(object);
+    }
+
+    fn enumTypeExists(module: *const bytecode.Module, type_name: []const u8) bool {
+        for (module.enums) |enum_decl| {
+            if (std.mem.eql(u8, enum_decl.name, type_name)) return true;
+        }
+        return false;
+    }
+
+    fn cloneBorrowedLocalValue(
+        self: *Vm,
+        module: *const bytecode.Module,
+        value_type: bytecode.TypeRef,
+        value: runtime_abi.Value,
+    ) !runtime_abi.Value {
+        if (value_type.kind != .ffi_struct or value != .raw_ptr or value.raw_ptr == 0) return value;
+        const type_name = value_type.name orelse {
+            self.rememberError("local struct type is missing a name");
+            return error.RuntimeFailure;
+        };
+        const copied = if (self.isManagedStructPointer(value.raw_ptr))
+            try self.cloneStructValue(module, type_name, value.raw_ptr)
+        else
+            try self.copyStructFromNativeLayout(module, type_name, value.raw_ptr);
+        return .{ .raw_ptr = copied };
     }
 
     fn resolveVirtualMethod(
@@ -1276,19 +1700,22 @@ pub const Vm = struct {
                     return error.RuntimeFailure;
                 };
                 if (src_ptr[index] != .raw_ptr) {
-                    self.rememberError("nested struct copy source must be a pointer");
+                    self.rememberFmt(
+                        "nested struct copy source must be a pointer: {s}.{s}",
+                        .{ type_decl.name, field_decl.name },
+                    );
                     return error.RuntimeFailure;
                 }
                 if (dst_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0) {
                     const old = dst_ptr[index];
                     dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-                    self.heap.releaseValue(old);
+                    self.heap.dropValue(old);
                 }
                 if (src_ptr[index].raw_ptr == 0) {
                     // Treat null nested pointers as zero/default nested structs.
                     const old = dst_ptr[index];
                     dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-                    self.heap.releaseValue(old);
+                    self.heap.dropValue(old);
                     continue;
                 }
                 const nested_dst: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
@@ -1301,12 +1728,32 @@ pub const Vm = struct {
                 const cloned = try self.cloneArrayValueDeep(module, element_ty, src_ptr[index]);
                 const old = dst_ptr[index];
                 dst_ptr[index] = cloned;
-                self.heap.releaseValue(old);
+                self.heap.dropValue(old);
+            } else if (field_decl.ty.kind == .enum_instance and src_ptr[index] == .raw_ptr and src_ptr[index].raw_ptr != 0) {
+                const type_name = field_decl.ty.name orelse {
+                    self.rememberError("enum field type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                const old = dst_ptr[index];
+                dst_ptr[index] = self.cloneEnumValue(module, type_name, src_ptr[index]) catch |err| {
+                    if (err == error.RuntimeFailure) {
+                        if (self.lastError()) |message| {
+                            var previous: [256]u8 = undefined;
+                            const previous_len = @min(message.len, previous.len);
+                            @memcpy(previous[0..previous_len], message[0..previous_len]);
+                            self.rememberFmt(
+                                "{s}; owner={s}.{s}",
+                                .{ previous[0..previous_len], type_decl.name, field_decl.name },
+                            );
+                        }
+                    }
+                    return err;
+                };
+                self.heap.dropValue(old);
             } else {
-                self.heap.retainValue(src_ptr[index]);
                 const old = dst_ptr[index];
                 dst_ptr[index] = src_ptr[index];
-                self.heap.releaseValue(old);
+                self.heap.dropValue(old);
             }
         }
     }
@@ -1333,9 +1780,12 @@ pub const Vm = struct {
                 .ffi_struct => blk: {
                     if (element != .raw_ptr or element.raw_ptr == 0) break :blk element;
                     const nested_name = element_ty.name orelse break :blk element;
+                    if (!self.isManagedStructPointer(element.raw_ptr)) {
+                        break :blk runtime_abi.Value{ .raw_ptr = try self.copyStructFromNativeLayout(module, nested_name, element.raw_ptr) };
+                    }
                     const fresh = try self.allocateStruct(module, nested_name);
                     const nested_type = helper_impl.findType(module, nested_name) orelse {
-                        self.heap.releaseValue(.{ .raw_ptr = fresh });
+                        self.heap.dropValue(.{ .raw_ptr = fresh });
                         self.rememberError("array element struct type could not be resolved");
                         return error.RuntimeFailure;
                     };
@@ -1345,14 +1795,226 @@ pub const Vm = struct {
                     break :blk runtime_abi.Value{ .raw_ptr = fresh };
                 },
                 .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, element_ty), element),
-                else => retain: {
-                    self.heap.retainValue(element);
-                    break :retain element;
+                .enum_instance => blk: {
+                    if (element != .raw_ptr or element.raw_ptr == 0) break :blk element;
+                    const enum_name = element_ty.name orelse break :blk element;
+                    break :blk try self.cloneEnumValue(module, enum_name, element);
                 },
+                else => element,
             };
             dst_array.items[index] = runtime_abi.bridgeValueFromValue(cloned);
         }
         return .{ .raw_ptr = dst_ptr };
+    }
+
+    fn cloneEnumValue(self: *Vm, module: *const bytecode.Module, type_name: []const u8, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+        if (value != .raw_ptr or value.raw_ptr == 0) return value;
+        if (!self.isManagedStructPointer(value.raw_ptr)) {
+            var native_candidate = value.raw_ptr;
+            var depth: usize = 0;
+            while (depth < 8) : (depth += 1) {
+                const native_words: [*]const u64 = @ptrFromInt(native_candidate);
+                if (self.enumNativeVariant(module, type_name, native_words[0])) |_| {
+                    return .{ .raw_ptr = try self.copyEnumFromNativeLayout(module, type_name, native_candidate) };
+                }
+                const next_candidate: usize = @intCast(native_words[0]);
+                if (next_candidate == 0 or next_candidate == native_candidate or next_candidate % @alignOf(u64) != 0) break;
+                native_candidate = next_candidate;
+            }
+        }
+        const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(value.raw_ptr);
+        if (src[0] == .raw_ptr and src[0].raw_ptr != 0 and src[0].raw_ptr != value.raw_ptr) {
+            return self.cloneEnumValue(module, type_name, src[0]);
+        }
+        if (src[0] != .integer) {
+            const native_words: [*]const u64 = @ptrFromInt(value.raw_ptr);
+            var chain_candidate: usize = value.raw_ptr;
+            var chain_words = [_]u64{0} ** 4;
+            var chain_index: usize = 0;
+            while (chain_index < chain_words.len) : (chain_index += 1) {
+                const chain_ptr: [*]const u64 = @ptrFromInt(chain_candidate);
+                chain_words[chain_index] = chain_ptr[0];
+                const next_candidate: usize = @intCast(chain_ptr[0]);
+                if (next_candidate == 0 or next_candidate == chain_candidate or next_candidate % @alignOf(u64) != 0) break;
+                chain_candidate = next_candidate;
+            }
+            self.rememberFmt(
+                "enum clone requires an integer tag slot: type={s} ptr=0x{x} first_word=0x{x} chain=0x{x},0x{x},0x{x},0x{x}",
+                .{ type_name, value.raw_ptr, native_words[0], chain_words[0], chain_words[1], chain_words[2], chain_words[3] },
+            );
+            return error.RuntimeFailure;
+        }
+        const payload_ty = self.enumPayloadType(module, type_name, @intCast(src[0].integer)) orelse bytecode.TypeRef{ .kind = .void };
+        const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+        errdefer self.allocator.free(slots);
+        slots[0] = src[0];
+        slots[1] = switch (payload_ty.kind) {
+            .ffi_struct => blk: {
+                if (src[1] != .raw_ptr or src[1].raw_ptr == 0) break :blk src[1];
+                break :blk .{ .raw_ptr = try self.cloneStructValue(module, payload_ty.name orelse type_name, src[1].raw_ptr) };
+            },
+            .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, payload_ty), src[1]),
+            .enum_instance => try self.cloneEnumValue(module, payload_ty.name orelse type_name, src[1]),
+            else => src[1],
+        };
+        return .{ .raw_ptr = try self.heap.registerStruct(type_name, slots) };
+    }
+
+    pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
+        const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+        if (src[0] != .integer) {
+            self.rememberError("enum native copy requires an integer tag slot");
+            return error.RuntimeFailure;
+        }
+        const words = try self.allocator.alloc(u64, 2);
+        errdefer self.allocator.free(words);
+        const discriminant: u32 = @intCast(src[0].integer);
+        const payload_ty = self.enumPayloadType(module, type_name, discriminant) orelse {
+            self.rememberFmt(
+                "enum native copy could not resolve discriminant: type={s} tag={d} ptr=0x{x}",
+                .{ type_name, discriminant, runtime_ptr },
+            );
+            return error.RuntimeFailure;
+        };
+        words[0] = @as(u64, @intCast(discriminant));
+        words[1] = try self.enumPayloadToNativeWord(module, payload_ty, src[1]);
+        return @intFromPtr(words.ptr);
+    }
+
+    pub fn copyEnumFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+        if (self.isManagedStructPointer(native_ptr)) {
+            const cloned = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = native_ptr });
+            return if (cloned == .raw_ptr) cloned.raw_ptr else 0;
+        }
+        const resolved_ptr = try self.resolveNativeEnumLayoutPointer(module, type_name, native_ptr);
+        const words: [*]const u64 = @ptrFromInt(resolved_ptr);
+        const native_variant = self.enumNativeVariant(module, type_name, words[0]) orelse {
+            const runtime_slots: [*]align(1) const runtime_abi.Value = @ptrFromInt(resolved_ptr);
+            if (runtime_slots[0] == .integer) {
+                const discriminant: u32 = @intCast(runtime_slots[0].integer);
+                if (self.enumPayloadType(module, type_name, discriminant)) |payload_ty| {
+                    const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+                    errdefer self.allocator.free(slots);
+                    slots[0] = runtime_slots[0];
+                    slots[1] = switch (payload_ty.kind) {
+                        .ffi_struct => blk: {
+                            if (runtime_slots[1] != .raw_ptr or runtime_slots[1].raw_ptr == 0) break :blk runtime_slots[1];
+                            break :blk .{ .raw_ptr = try self.cloneStructValue(module, payload_ty.name orelse type_name, runtime_slots[1].raw_ptr) };
+                        },
+                        .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, payload_ty), runtime_slots[1]),
+                        .enum_instance => try self.cloneEnumValue(module, payload_ty.name orelse type_name, runtime_slots[1]),
+                        else => runtime_slots[1],
+                    };
+                    return self.heap.registerStruct(type_name, slots);
+                }
+            }
+            self.rememberFmt(
+                "enum native copy found an invalid discriminant: type={s} tag={d} ptr=0x{x}",
+                .{ type_name, words[0], resolved_ptr },
+            );
+            return error.RuntimeFailure;
+        };
+        const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+        errdefer self.allocator.free(slots);
+        slots[0] = .{ .integer = @intCast(native_variant.discriminant) };
+        slots[1] = try self.enumPayloadFromNativeWord(module, native_variant.payload_ty, words[1]);
+        return self.heap.registerStruct(type_name, slots);
+    }
+
+    fn resolveNativeEnumLayoutPointer(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+        var candidate = native_ptr;
+        var depth: usize = 0;
+        while (depth < 4) : (depth += 1) {
+            const words: [*]const u64 = @ptrFromInt(candidate);
+            if (self.enumNativeVariant(module, type_name, words[0]) != null) return candidate;
+            const next_candidate: usize = @intCast(words[0]);
+            if (next_candidate == 0 or next_candidate == candidate or next_candidate % @alignOf(u64) != 0) break;
+            candidate = next_candidate;
+        }
+        return native_ptr;
+    }
+
+    pub fn destroyEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+        if (native_ptr == 0) return;
+        const words: [*]u64 = @ptrFromInt(native_ptr);
+        if (self.enumNativeVariant(module, type_name, words[0])) |native_variant| {
+            self.destroyEnumNativePayload(module, native_variant.payload_ty, words[1]);
+        }
+        const native_words: []u64 = words[0..2];
+        self.allocator.free(native_words);
+    }
+
+    const EnumNativeVariant = struct {
+        discriminant: u32,
+        payload_ty: bytecode.TypeRef,
+    };
+
+    fn enumNativeVariant(self: *Vm, module: *const bytecode.Module, type_name: []const u8, word: u64) ?EnumNativeVariant {
+        if (word > std.math.maxInt(u32)) return null;
+        const discriminant: u32 = @intCast(word);
+        const payload_ty = self.enumPayloadType(module, type_name, discriminant) orelse return null;
+        return .{
+            .discriminant = discriminant,
+            .payload_ty = payload_ty,
+        };
+    }
+
+    fn enumPayloadType(self: *Vm, module: *const bytecode.Module, type_name: []const u8, discriminant: u32) ?bytecode.TypeRef {
+        _ = self;
+        for (module.enums) |enum_decl| {
+            if (!std.mem.eql(u8, enum_decl.name, type_name)) continue;
+            for (enum_decl.variants) |variant| {
+                if (variant.discriminant == discriminant) return variant.payload_ty orelse bytecode.TypeRef{ .kind = .void };
+            }
+        }
+        return null;
+    }
+
+    fn enumPayloadToNativeWord(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!u64 {
+        return switch (payload_ty.kind) {
+            .void => 0,
+            .integer => if (value == .integer) @as(u64, @bitCast(value.integer)) else 0,
+            .boolean => if (value == .boolean and value.boolean) 1 else 0,
+            .float => if (value == .float) @as(u64, @bitCast(value.float)) else 0,
+            .string => blk: {
+                if (value != .string) break :blk 0;
+                const boxed = try self.allocator.create(runtime_abi.BridgeString);
+                boxed.* = .{ .ptr = if (value.string.len == 0) null else value.string.ptr, .len = value.string.len };
+                break :blk @intFromPtr(boxed);
+            },
+            .raw_ptr, .construct_any => if (value == .raw_ptr) value.raw_ptr else 0,
+            .ffi_struct, .array, .enum_instance => blk: {
+                const copied = try self.copyValueToNativeLayout(module, payload_ty, value);
+                break :blk if (copied == .raw_ptr) copied.raw_ptr else 0;
+            },
+        };
+    }
+
+    fn enumPayloadFromNativeWord(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) anyerror!runtime_abi.Value {
+        return switch (payload_ty.kind) {
+            .void => .{ .void = {} },
+            .integer => .{ .integer = @as(i64, @bitCast(word)) },
+            .boolean => .{ .boolean = word != 0 },
+            .float => .{ .float = @as(f64, @bitCast(word)) },
+            .string => blk: {
+                if (word == 0) break :blk runtime_abi.Value{ .string = "" };
+                const boxed: *const runtime_abi.BridgeString = @ptrFromInt(@as(usize, @intCast(word)));
+                break :blk runtime_abi.Value{ .string = if (boxed.ptr) |ptr| ptr[0..boxed.len] else "" };
+            },
+            .raw_ptr, .construct_any => .{ .raw_ptr = @intCast(word) },
+            .ffi_struct, .array, .enum_instance => try self.copyValueFromNativeLayout(module, payload_ty, .{ .raw_ptr = @intCast(word) }),
+        };
+    }
+
+    fn destroyEnumNativePayload(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) void {
+        if (word == 0) return;
+        switch (payload_ty.kind) {
+            .ffi_struct => self.destroyStructNativeLayout(module, payload_ty.name orelse return, @intCast(word)),
+            .array => self.destroyArrayNativeLayout(module, payload_ty, @intCast(word)),
+            .enum_instance => self.destroyEnumNativeLayout(module, payload_ty.name orelse return, @intCast(word)),
+            .string => self.allocator.destroy(@as(*runtime_abi.BridgeString, @ptrFromInt(@as(usize, @intCast(word))))),
+            else => {},
+        }
     }
 
     fn materializeNativeResult(
@@ -1381,7 +2043,7 @@ pub const Vm = struct {
         for (fields) |*field| field.* = .{ .void = {} };
         var initialized: usize = 0;
         errdefer {
-            for (fields[0..initialized]) |field| self.heap.releaseValue(field);
+            for (fields[0..initialized]) |field| self.heap.dropValue(field);
             self.allocator.free(fields);
         }
         for (type_decl.fields, 0..) |field_decl, index| {
@@ -1409,7 +2071,7 @@ pub const Vm = struct {
                     if (fields[index] != .raw_ptr or fields[index].raw_ptr == 0) {
                         const old = fields[index];
                         fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-                        self.heap.releaseValue(old);
+                        self.heap.dropValue(old);
                     }
                     try self.copyStructFromNativeLayoutInto(module, nested_name, fields[index].raw_ptr, address);
                 },
@@ -1418,7 +2080,7 @@ pub const Vm = struct {
                     if (native_array_ptr == 0) {
                         const old = fields[index];
                         fields[index] = .{ .raw_ptr = 0 };
-                        self.heap.releaseValue(old);
+                        self.heap.dropValue(old);
                         continue;
                     }
                     if (fields[index] == .raw_ptr and fields[index].raw_ptr != 0) {
@@ -1427,12 +2089,12 @@ pub const Vm = struct {
                     }
                     const old = fields[index];
                     fields[index] = .{ .raw_ptr = try self.copyArrayFromNativeLayout(module, field_decl.ty, native_array_ptr) };
-                    self.heap.releaseValue(old);
+                    self.heap.dropValue(old);
                 },
                 else => {
                     const old = fields[index];
                     fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
-                    self.heap.releaseValue(old);
+                    self.heap.dropValue(old);
                 },
             }
         }
@@ -1474,10 +2136,11 @@ pub const Vm = struct {
                 .ffi_struct => if (field_decl.ty.name) |nested_name| {
                     self.destroyStructNativeLayoutFields(module, nested_name, address);
                 },
-                .enum_instance, .construct_any => {
-                    const raw_ptr = (@as(*const usize, @ptrFromInt(address))).*;
-                    self.heap.releaseValue(.{ .raw_ptr = raw_ptr });
+                .enum_instance => {
+                    const enum_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+                    self.destroyEnumNativeLayout(module, field_decl.ty.name orelse return, enum_ptr);
                 },
+                .construct_any => {},
                 else => {},
             }
         }
@@ -1606,8 +2269,142 @@ test "materializes native closure struct captures using external metadata" {
     try std.testing.expectEqual(@as(i64, 65537), handle_values[0].integer);
 
     try std.testing.expectEqual(@as(usize, 2), vm.heap.stats.structs_current);
-    vm.releaseManagedValue(.{ .raw_ptr = closure_ptr });
+    vm.dropManagedValue(.{ .raw_ptr = closure_ptr });
     try std.testing.expectEqual(@as(usize, 0), vm.heap.stats.structs_current);
+}
+
+test "materializes tagged native closure captures as runtime closures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const callback_capture_ty = bytecode.TypeRef{ .kind = .raw_ptr, .name = "(borrow FoundationUiContext) -> FoundationView" };
+    const outer_local_types = [_]bytecode.TypeRef{
+        .{ .kind = .raw_ptr, .name = "GraphicsFrame" },
+        callback_capture_ty,
+    };
+    const inner_local_types = [_]bytecode.TypeRef{
+        .{ .kind = .raw_ptr, .name = "FoundationUiContext" },
+    };
+    const functions = [_]bytecode.Function{
+        .{
+            .id = 100,
+            .name = "innerBuilder",
+            .param_count = 1,
+            .register_count = 0,
+            .local_count = 1,
+            .local_types = @constCast(&inner_local_types),
+            .instructions = &.{},
+        },
+        .{
+            .id = 200,
+            .name = "outerFrame",
+            .param_count = 2,
+            .register_count = 0,
+            .local_count = 2,
+            .local_types = @constCast(&outer_local_types),
+            .instructions = &.{},
+        },
+    };
+    const module = bytecode.Module{
+        .functions = @constCast(&functions),
+        .entry_function_id = null,
+    };
+
+    const NativeInnerClosure = extern struct {
+        function_id: i64,
+        capture_count: i64,
+    };
+    const inner = try arena.allocator().create(NativeInnerClosure);
+    inner.* = .{
+        .function_id = 100,
+        .capture_count = 0,
+    };
+
+    const NativeOuterClosure = extern struct {
+        function_id: i64,
+        capture_count: i64,
+        captures: [1]runtime_abi.BridgeValue,
+    };
+    const outer = try arena.allocator().create(NativeOuterClosure);
+    outer.* = .{
+        .function_id = 200,
+        .capture_count = 1,
+        .captures = .{runtime_abi.bridgeValueFromValue(.{ .raw_ptr = runtime_abi.tagNativeClosurePointer(@intFromPtr(inner)) })},
+    };
+
+    const outer_ptr = try vm.materializeNativeClosure(&module, runtime_abi.tagNativeClosurePointer(@intFromPtr(outer)), null);
+    const outer_closure = vm.heap.getClosure(outer_ptr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), outer_closure.captures.len);
+    try std.testing.expect(outer_closure.captures[0] == .raw_ptr);
+
+    const inner_ptr = outer_closure.captures[0].raw_ptr;
+    const inner_closure = vm.heap.getClosure(inner_ptr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 100), inner_closure.function_id);
+    try std.testing.expectEqual(@as(usize, 0), inner_closure.captures.len);
+
+    vm.dropManagedValue(.{ .raw_ptr = outer_ptr });
+}
+
+test "materializes callback fields when copying native structs to runtime" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const callback_ty = bytecode.TypeRef{ .kind = .raw_ptr, .name = "(borrow mut GraphicsFrame) -> Void" };
+    const frame_handler_locals = [_]bytecode.TypeRef{
+        .{ .kind = .raw_ptr, .name = "GraphicsFrame" },
+    };
+    const fields = [_]bytecode.Field{
+        .{ .name = "frameHandler", .ty = callback_ty },
+    };
+    const types = [_]bytecode.TypeDecl{
+        .{ .name = "GraphicsApplication", .fields = @constCast(&fields) },
+    };
+    const functions = [_]bytecode.Function{
+        .{
+            .id = 300,
+            .name = "frameHandler",
+            .param_count = 1,
+            .register_count = 0,
+            .local_count = 1,
+            .local_types = @constCast(&frame_handler_locals),
+            .instructions = &.{},
+        },
+    };
+    const module = bytecode.Module{
+        .types = @constCast(&types),
+        .functions = @constCast(&functions),
+        .entry_function_id = null,
+    };
+
+    const NativeClosure = extern struct {
+        function_id: i64,
+        capture_count: i64,
+    };
+    const native_closure = try arena.allocator().create(NativeClosure);
+    native_closure.* = .{
+        .function_id = 300,
+        .capture_count = 0,
+    };
+
+    const layout = try native_layout.structLayout(&module, "GraphicsApplication");
+    const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
+    const native_words = try arena.allocator().alloc(u64, word_count);
+    @memset(native_words, 0);
+    const native_app_ptr = @intFromPtr(native_words.ptr);
+    const handler_offset = try native_layout.fieldOffset(&module, "GraphicsApplication", 0);
+    (@as(*usize, @ptrFromInt(native_app_ptr + handler_offset))).* = runtime_abi.tagNativeClosurePointer(@intFromPtr(native_closure));
+
+    const runtime_app_ptr = try vm.copyStructFromNativeLayout(&module, "GraphicsApplication", native_app_ptr);
+    const runtime_fields: [*]const runtime_abi.Value = @ptrFromInt(runtime_app_ptr);
+    try std.testing.expect(runtime_fields[0] == .raw_ptr);
+    try std.testing.expect(!runtime_abi.isTaggedNativeClosurePointer(runtime_fields[0].raw_ptr));
+    const closure = vm.heap.getClosure(runtime_fields[0].raw_ptr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 300), closure.function_id);
+    try std.testing.expectEqual(@as(usize, 0), closure.captures.len);
+
+    vm.dropManagedValue(.{ .raw_ptr = runtime_app_ptr });
 }
 
 test "hybrid_native_bridge_materialization_cleanup" {
@@ -1639,7 +2436,7 @@ test "hybrid_native_bridge_materialization_cleanup" {
     const array_ptr = try vm.allocateArray(0);
     const array_object: *ArrayObject = @ptrFromInt(array_ptr);
     try vm.heap.appendArrayItem(array_object, .{ .raw_ptr = point_ptr });
-    vm.releaseManagedValue(.{ .raw_ptr = point_ptr });
+    vm.dropManagedValue(.{ .raw_ptr = point_ptr });
 
     const native_array_ptr = try vm.copyArrayToNativeLayout(&module, .{ .kind = .array, .name = "Point" }, array_ptr);
     vm.destroyArrayNativeLayout(&module, .{ .kind = .array, .name = "Point" }, native_array_ptr);
@@ -1652,8 +2449,8 @@ test "hybrid_native_bridge_materialization_cleanup" {
     const native_batch_ptr = try vm.copyStructToNativeLayout(&module, "Batch", batch_ptr);
     vm.destroyStructNativeLayout(&module, "Batch", native_batch_ptr);
 
-    vm.releaseManagedValue(.{ .raw_ptr = batch_ptr });
-    vm.releaseManagedValue(.{ .raw_ptr = array_ptr });
+    vm.dropManagedValue(.{ .raw_ptr = batch_ptr });
+    vm.dropManagedValue(.{ .raw_ptr = array_ptr });
     try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
 }
 
@@ -1691,7 +2488,7 @@ test "hybrid_native_bridge_repeated_materialization_cleanup" {
             fields[0] = .{ .integer = @intCast(iteration + index) };
             fields[1] = .{ .integer = @intCast((iteration + 1) * (index + 1)) };
             try vm.heap.appendArrayItem(points, .{ .raw_ptr = point_ptr });
-            vm.releaseManagedValue(.{ .raw_ptr = point_ptr });
+            vm.dropManagedValue(.{ .raw_ptr = point_ptr });
             try vm.heap.appendArrayItem(weights, .{ .integer = @intCast(index) });
         }
 
@@ -1709,9 +2506,9 @@ test "hybrid_native_bridge_repeated_materialization_cleanup" {
         const native_batch = try vm.copyStructToNativeLayout(&module, "Batch", batch_ptr);
         vm.destroyStructNativeLayout(&module, "Batch", native_batch);
 
-        vm.releaseManagedValue(.{ .raw_ptr = batch_ptr });
-        vm.releaseManagedValue(.{ .raw_ptr = points_ptr });
-        vm.releaseManagedValue(.{ .raw_ptr = weights_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = batch_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = points_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = weights_ptr });
         try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
     }
 }
@@ -1749,7 +2546,7 @@ test "hybrid_runtime_array_append_cleanup_stress" {
         }
         try vm.syncArrayFromNativeLayout(&module, .{ .kind = .array, .name = "I64" }, array_ptr, native_array_ptr);
         vm.destroyArrayNativeLayout(&module, .{ .kind = .array, .name = "I64" }, native_array_ptr);
-        vm.releaseManagedValue(.{ .raw_ptr = array_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = array_ptr });
         try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
     }
 }
@@ -1791,7 +2588,7 @@ test "hybrid_recursive_aggregate_sync_cleanup_stress" {
                 fields[0] = .{ .integer = @intCast(iteration + row_index) };
                 fields[1] = .{ .integer = @intCast(point_index) };
                 try vm.heap.appendArrayItem(points, .{ .raw_ptr = point_ptr });
-                vm.releaseManagedValue(.{ .raw_ptr = point_ptr });
+                vm.dropManagedValue(.{ .raw_ptr = point_ptr });
             }
 
             const row_ptr = try vm.allocateStruct(&module, "Row");
@@ -1799,8 +2596,8 @@ test "hybrid_recursive_aggregate_sync_cleanup_stress" {
             row_fields_ptr[0] = .{ .raw_ptr = points_ptr };
             vm.retainManagedValue(.{ .raw_ptr = points_ptr });
             try vm.heap.appendArrayItem(rows, .{ .raw_ptr = row_ptr });
-            vm.releaseManagedValue(.{ .raw_ptr = row_ptr });
-            vm.releaseManagedValue(.{ .raw_ptr = points_ptr });
+            vm.dropManagedValue(.{ .raw_ptr = row_ptr });
+            vm.dropManagedValue(.{ .raw_ptr = points_ptr });
         }
 
         const scene_ptr = try vm.allocateStruct(&module, "Scene");
@@ -1814,8 +2611,8 @@ test "hybrid_recursive_aggregate_sync_cleanup_stress" {
         }
         vm.destroyStructNativeLayout(&module, "Scene", native_scene);
 
-        vm.releaseManagedValue(.{ .raw_ptr = scene_ptr });
-        vm.releaseManagedValue(.{ .raw_ptr = rows_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = scene_ptr });
+        vm.dropManagedValue(.{ .raw_ptr = rows_ptr });
         try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
     }
 }
@@ -1876,7 +2673,7 @@ test "hybrid_native_state_field_set_releases_replaced_managed_values" {
     defer {
         if (box.runtime_payload != 0) {
             const runtime_payload: [*]runtime_abi.BridgeValue = @ptrFromInt(box.runtime_payload);
-            vm.heap.releaseValue(runtime_abi.bridgeValueToValue(runtime_payload[0]));
+            vm.heap.dropValue(runtime_abi.bridgeValueToValue(runtime_payload[0]));
             vm.allocator.free(@as([]runtime_abi.BridgeValue, runtime_payload[0..1]));
         }
         vm.allocator.free(native_payload);
@@ -1887,7 +2684,7 @@ test "hybrid_native_state_field_set_releases_replaced_managed_values" {
     var writer = std.Io.Writer.fixed(&buffer);
     for (0..200) |_| {
         const result = try vm.runFunctionById(&module, 0, &.{.{ .raw_ptr = @intFromPtr(box) }}, &writer, .{});
-        vm.releaseManagedValue(result);
+        vm.dropManagedValue(result);
         try std.testing.expectEqual(@as(usize, 1), vm.heap.count());
     }
 }
@@ -2209,6 +3006,64 @@ test "native state recovery mutates persistent payload" {
     try std.testing.expectEqual(@as(i64, 9), result.integer);
 }
 
+test "native state field set clones borrowed callbacks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const callback_ty = bytecode.TypeRef{ .kind = .raw_ptr, .name = "() -> I64" };
+    const module = bytecode.Module{
+        .types = @constCast(&[_]bytecode.TypeDecl{.{
+            .name = "CallbackState",
+            .fields = @constCast(&[_]bytecode.Field{.{ .name = "callback", .ty = callback_ty }}),
+        }}),
+        .functions = @constCast(&[_]bytecode.Function{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .return_type = .{ .kind = .integer, .name = "I64" },
+                .register_count = 6,
+                .local_count = 1,
+                .local_types = @constCast(&[_]bytecode.TypeRef{callback_ty}),
+                .instructions = @constCast(&[_]bytecode.Instruction{
+                    .{ .const_closure = .{ .dst = 0, .function_id = 1, .captures = &.{} } },
+                    .{ .store_local = .{ .local = 0, .src = 0 } },
+                    .{ .load_local = .{ .dst = 1, .local = 0 } },
+                    .{ .alloc_struct = .{ .dst = 2, .type_name = "CallbackState" } },
+                    .{ .alloc_native_state = .{ .dst = 3, .src = 2, .type_name = "CallbackState", .type_id = 91 } },
+                    .{ .native_state_field_set = .{ .state = 3, .field_index = 0, .src = 1, .field_ty = callback_ty } },
+                    .{ .load_local = .{ .dst = 0, .local = 0, .ownership = .move } },
+                    .{ .const_int = .{ .dst = 0, .value = 0 } },
+                    .{ .native_state_field_get = .{ .dst = 4, .state = 3, .field_index = 0, .field_ty = callback_ty } },
+                    .{ .call_value = .{ .callee = 4, .args = &.{}, .dst = 5 } },
+                    .{ .ret = .{ .src = 5 } },
+                }),
+            },
+            .{
+                .id = 1,
+                .name = "callback",
+                .param_count = 0,
+                .return_type = .{ .kind = .integer, .name = "I64" },
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = @constCast(&[_]bytecode.Instruction{
+                    .{ .const_int = .{ .dst = 0, .value = 42 } },
+                    .{ .ret = .{ .src = 0 } },
+                }),
+            },
+        }),
+        .entry_function_id = 0,
+    };
+
+    var discard_buffer: [1]u8 = undefined;
+    var discarding: std.Io.Writer.Discarding = .init(&discard_buffer);
+    const result = try vm.runFunctionById(&module, 0, &.{}, &discarding.writer, .{});
+    try std.testing.expectEqual(@as(i64, 42), result.integer);
+    try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
+}
+
 test "native state preserves nested enum values inside arrays of structs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2270,6 +3125,54 @@ test "native state preserves nested enum values inside arrays of structs" {
     var discard_buffer_4: [1]u8 = undefined;
     var discarding_4: std.Io.Writer.Discarding = .init(&discard_buffer_4);
     const result = try vm.runFunctionById(&module, 0, &.{}, &discarding_4.writer, .{});
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "native state preserves direct enum struct fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const mode_enum_ty = bytecode.TypeRef{ .kind = .enum_instance, .name = "Mode" };
+    const module = bytecode.Module{
+        .types = @constCast(&[_]bytecode.TypeDecl{.{
+            .name = "State",
+            .fields = @constCast(&[_]bytecode.Field{.{ .name = "mode", .ty = mode_enum_ty }}),
+        }}),
+        .enums = @constCast(&[_]bytecode.EnumTypeDecl{.{
+            .name = "Mode",
+            .variants = @constCast(&[_]bytecode.EnumVariantDecl{
+                .{ .name = "None", .discriminant = 0 },
+                .{ .name = "Surface", .discriminant = 1 },
+            }),
+        }}),
+        .functions = @constCast(&[_]bytecode.Function{.{
+            .id = 0,
+            .name = "main",
+            .param_count = 0,
+            .return_type = .{ .kind = .integer, .name = "I64" },
+            .register_count = 8,
+            .local_count = 0,
+            .local_types = &.{},
+            .instructions = @constCast(&[_]bytecode.Instruction{
+                .{ .alloc_struct = .{ .dst = 0, .type_name = "State" } },
+                .{ .field_ptr = .{ .dst = 1, .base = 0, .base_type_name = "State", .field_index = 0, .field_ty = mode_enum_ty } },
+                .{ .alloc_enum = .{ .dst = 2, .enum_type_name = "Mode", .discriminant = 1 } },
+                .{ .store_indirect = .{ .ptr = 1, .src = 2, .ty = mode_enum_ty } },
+                .{ .alloc_native_state = .{ .dst = 3, .src = 0, .type_name = "State", .type_id = 81 } },
+                .{ .recover_native_state = .{ .dst = 4, .state = 3, .type_name = "State", .type_id = 81 } },
+                .{ .field_ptr = .{ .dst = 5, .base = 4, .base_type_name = "State", .field_index = 0, .field_ty = mode_enum_ty } },
+                .{ .load_indirect = .{ .dst = 6, .ptr = 5, .ty = mode_enum_ty } },
+                .{ .enum_tag = .{ .dst = 7, .src = 6 } },
+                .{ .ret = .{ .src = 7 } },
+            }),
+        }}),
+        .entry_function_id = 0,
+    };
+
+    var discard_buffer: [1]u8 = undefined;
+    var discarding: std.Io.Writer.Discarding = .init(&discard_buffer);
+    const result = try vm.runFunctionById(&module, 0, &.{}, &discarding.writer, .{});
     try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 

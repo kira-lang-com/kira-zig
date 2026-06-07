@@ -87,9 +87,20 @@ static void kira_prepare_stdout(void) {
 }
 
 static int kira_trace_enabled(void) {
-    if (kira_trace_execution_enabled >= 0) return kira_trace_execution_enabled;
-    const char *value = getenv("KIRA_TRACE_EXECUTION");
-    return value != NULL && value[0] != '\0' && value[0] != '0';
+    /*
+     * Memoize the environment lookup. This is called from kira_trace_log on every
+     * array release, print, and bridge op, so a fresh getenv() here (a locked,
+     * linear scan of the process environment) on each call dominated the runtime of
+     * allocation-heavy native programs — the per-operation trace check was the bulk
+     * of `kira_array_release`'s self time under profiling. Resolve the env var once
+     * and cache it; kira_set_execution_trace_enabled still overrides explicitly.
+     */
+    if (kira_trace_execution_enabled < 0) {
+        const char *value = getenv("KIRA_TRACE_EXECUTION");
+        kira_trace_execution_enabled =
+            (value != NULL && value[0] != '\0' && value[0] != '0') ? 1 : 0;
+    }
+    return kira_trace_execution_enabled;
 }
 
 static void kira_trace_log(const char *domain, const char *event, const char *fmt, ...) {

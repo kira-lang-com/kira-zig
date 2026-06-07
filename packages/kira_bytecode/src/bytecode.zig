@@ -1,5 +1,6 @@
 const std = @import("std");
 const instruction = @import("instruction.zig");
+const ownership_mode = @import("ownership_mode.zig");
 
 pub const Module = struct {
     constructs: []Construct = &.{},
@@ -67,13 +68,7 @@ pub const TypeDecl = struct {
     methods: []MethodMember = &.{},
 };
 
-pub const OwnershipMode = enum(u8) {
-    owned,
-    borrow_read,
-    borrow_mut,
-    move,
-    copy,
-};
+pub const OwnershipMode = ownership_mode.OwnershipMode;
 
 pub const TypeKind = enum(u8) {
     class,
@@ -103,7 +98,7 @@ pub const Field = struct {
 };
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBC1");
+    try writer.writeAll("KBC4");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -199,6 +194,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.function_id, .little);
                     try writer.writeInt(u32, @as(u32, @intCast(value.captures.len)), .little);
                     for (value.captures) |capture| try writer.writeInt(u32, capture, .little);
+                    try writeOwnershipModes(writer, value.capture_ownership);
                 },
                 .alloc_struct => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -263,6 +259,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                 .load_local => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.local, .little);
+                    try writer.writeByte(@intFromEnum(value.ownership));
                 },
                 .local_ptr => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -372,7 +369,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writeCallPayload(writer, value.args, value.dst);
                     try writeTypeRef(writer, value.return_ty);
                 },
-                .call_value => |value| try writeIndirectCall(writer, value.callee, value.args, value.dst),
+                .call_value => |value| {
+                    try writeIndirectCall(writer, value.callee, value.args, value.dst);
+                    try writeOwnershipModes(writer, value.param_ownership);
+                },
                 .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
             }
         }
@@ -385,8 +385,14 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
 
     var magic: [4]u8 = undefined;
     try reader.readSliceAll(&magic);
-    const has_ownership_metadata = std.mem.eql(u8, &magic, "KBC1");
-    if (!has_ownership_metadata and !std.mem.eql(u8, &magic, "KBC0")) return error.InvalidBytecode;
+    const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4");
+    const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4");
+    const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4");
+    const has_indirect_call_ownership = std.mem.eql(u8, &magic, "KBC4");
+    if (!has_function_ownership and
+        !std.mem.eql(u8, &magic, "KBC0") and
+        !std.mem.eql(u8, &magic, "KBC2"))
+        return error.InvalidBytecode;
 
     const construct_count = try reader.takeInt(u32, .little);
     const construct_implementation_count = try reader.takeInt(u32, .little);
@@ -482,12 +488,12 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         const function_id = try reader.takeInt(u32, .little);
         const name = try readString(allocator, reader);
         const param_count = try reader.takeInt(u32, .little);
-        const param_ownership = if (has_ownership_metadata)
+        const param_ownership = if (has_function_ownership)
             try readOwnershipModes(allocator, reader)
         else
             try defaultOwnershipModes(allocator, param_count, .owned);
         const return_type = try readTypeRef(allocator, reader);
-        const return_ownership: OwnershipMode = if (has_ownership_metadata) @enumFromInt(try reader.takeByte()) else .owned;
+        const return_ownership: OwnershipMode = if (has_function_ownership) try readOwnershipMode(reader) else .owned;
         const register_count = try reader.takeInt(u32, .little);
         const local_count = try reader.takeInt(u32, .little);
         const local_type_count = try reader.takeInt(u32, .little);
@@ -529,10 +535,15 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     const capture_count = try reader.takeInt(u32, .little);
                     const captures = try allocator.alloc(u32, capture_count);
                     for (0..capture_count) |index| captures[index] = try reader.takeInt(u32, .little);
+                    const capture_ownership = if (has_closure_ownership)
+                        try readOwnershipModes(allocator, reader)
+                    else
+                        try defaultOwnershipModes(allocator, capture_count, .borrow_read);
                     try instructions.append(.{ .const_closure = .{
                         .dst = dst,
                         .function_id = closure_function_id,
                         .captures = captures,
+                        .capture_ownership = capture_ownership,
                     } });
                 },
                 .alloc_struct => try instructions.append(.{ .alloc_struct = .{
@@ -601,6 +612,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .load_local => try instructions.append(.{ .load_local = .{
                     .dst = try reader.takeInt(u32, .little),
                     .local = try reader.takeInt(u32, .little),
+                    .ownership = if (has_load_ownership) try readOwnershipMode(reader) else .borrow_read,
                 } }),
                 .local_ptr => try instructions.append(.{ .local_ptr = .{
                     .dst = try reader.takeInt(u32, .little),
@@ -701,7 +713,14 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .call_runtime => try instructions.append(.{ .call_runtime = try readRuntimeCall(allocator, reader) }),
                 .call_native => try instructions.append(.{ .call_native = try readNativeCall(allocator, reader) }),
                 .call_virtual => try instructions.append(.{ .call_virtual = try readVirtualCall(allocator, reader) }),
-                .call_value => try instructions.append(.{ .call_value = try readIndirectCall(allocator, reader) }),
+                .call_value => {
+                    var value = try readIndirectCall(allocator, reader);
+                    value.param_ownership = if (has_indirect_call_ownership)
+                        try readOwnershipModes(allocator, reader)
+                    else
+                        try defaultOwnershipModes(allocator, @as(u32, @intCast(value.args.len)), .owned);
+                    try instructions.append(.{ .call_value = value });
+                },
                 .ret => try instructions.append(.{ .ret = .{
                     .src = blk: {
                         const raw = try reader.takeInt(i32, .little);
@@ -747,8 +766,19 @@ fn writeOwnershipModes(writer: anytype, values: []const OwnershipMode) !void {
 fn readOwnershipModes(allocator: std.mem.Allocator, reader: anytype) ![]const OwnershipMode {
     const count = try reader.takeInt(u32, .little);
     const values = try allocator.alloc(OwnershipMode, count);
-    for (0..count) |index| values[index] = @enumFromInt(try reader.takeByte());
+    for (0..count) |index| values[index] = try readOwnershipMode(reader);
     return values;
+}
+
+fn readOwnershipMode(reader: anytype) !OwnershipMode {
+    return switch (try reader.takeByte()) {
+        @intFromEnum(OwnershipMode.owned) => .owned,
+        @intFromEnum(OwnershipMode.borrow_read) => .borrow_read,
+        @intFromEnum(OwnershipMode.borrow_mut) => .borrow_mut,
+        @intFromEnum(OwnershipMode.move) => .move,
+        @intFromEnum(OwnershipMode.copy) => .copy,
+        else => error.InvalidBytecode,
+    };
 }
 
 fn defaultOwnershipModes(allocator: std.mem.Allocator, count: u32, mode: OwnershipMode) ![]const OwnershipMode {

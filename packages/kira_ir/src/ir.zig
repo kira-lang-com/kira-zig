@@ -236,6 +236,7 @@ pub const ConstClosure = struct {
     dst: u32,
     function_id: u32,
     captures: []const u32,
+    capture_ownership: []const OwnershipMode = &.{},
 };
 
 pub const LocalPtr = struct {
@@ -314,6 +315,7 @@ pub const StoreLocal = struct {
 pub const LoadLocal = struct {
     dst: u32,
     local: u32,
+    ownership: OwnershipMode = .borrow_read,
 };
 
 pub const SubobjectPtr = struct {

@@ -12,6 +12,8 @@ Kira now has an explicit ownership-oriented call model.
 - Trivial values like `Int`, `Float`, `Bool`, `CString`, and `RawPtr` still pass by value without `move`.
 - Use-after-move diagnostics are emitted for later local uses.
 - Borrowed parameters cannot be moved by the callee.
+- Closure captures are lowered with an explicit capture ownership mode.
+- Trivial immutable closure captures are copied, mutable local captures are borrowed, and non-Copy owned captures are rejected before backend lowering.
 - Borrowed return types are parsed but still rejected until returned-borrow lifetime validation exists.
 - Ownership metadata is preserved in semantic function headers, HIR, IR, bytecode, and LLVM monomorphization data.
 
@@ -28,7 +30,7 @@ Kira now has an explicit ownership-oriented call model.
 - Non-trivial `copy expr` is reserved, but clone semantics are not implemented yet.
 - Returned borrows are reserved, but lifetime validation is not implemented yet.
 - Field-sensitive partial moves are not implemented yet.
-- Closure escape borrow analysis is not implemented yet.
+- Closure escape borrow analysis and capture-by-move syntax are not implemented yet; non-Copy closure captures fail with `KSEM117`.
 - LLVM ownership metadata is carried through the pipeline, but borrow-aware native ABI lowering such as `readonly` or `noalias` is not implemented yet.
 
 ## `any` examples

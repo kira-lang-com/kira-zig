@@ -1,0 +1,14 @@
+function add(a: Int, b: Int) -> Int {
+    return a + b
+}
+@Main
+function main() {
+    var i = 0
+    var acc = 0
+    while i < 2000000 {
+        acc = add(acc, i)
+        i = i + 1
+    }
+    print(acc)
+    return
+}

@@ -27,11 +27,15 @@ pub fn run(
     const developer_dir = std.mem.trim(u8, developer_dir_capture, " \t\r\n");
 
     const apple_root = try std.fs.path.join(allocator, &.{ target.output_root, "apple" });
-    _ = workspace.generate(allocator, target, .{
+    const generated = workspace.generate(allocator, target, .{
         .apple_root = apple_root,
         .mode = .live,
         .server_host = "127.0.0.1",
         .server_port = 0,
+        .platforms = switch (platform) {
+            .macos => &.{.macos},
+            .ios_simulator => &.{.ios},
+        },
     }) catch {
         try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveSmokeUnsupportedTarget(allocator, parsed.input_path));
         return error.CommandFailed;
@@ -66,8 +70,8 @@ pub fn run(
     const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, source_manifest, allocator, .limited(1024 * 1024));
 
     switch (platform) {
-        .macos => try runMacOS(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, stdout, stderr),
-        .ios_simulator => try runIosSimulator(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, stdout, stderr),
+        .macos => try runMacOS(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, stdout, stderr),
+        .ios_simulator => try runIosSimulator(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, stdout, stderr),
     }
 }
 
@@ -83,12 +87,13 @@ fn runMacOS(
     product_name: []const u8,
     manifest_text: []const u8,
     server: *shared.LiveServer,
+    native_execution: bool,
     stdout: anytype,
     stderr: anytype,
 ) !void {
     shared.runToolWithDeveloperDir(allocator, developer_dir, null, &.{
-        "xcodebuild", "-project", project_path, "-scheme", scheme, "-configuration", "Debug",
-        "-derivedDataPath", derived_data, "-sdk", "macosx", "build", "CODE_SIGNING_ALLOWED=NO",
+        "xcodebuild",       "-project",   project_path, "-scheme", scheme,  "-configuration",          "Debug",
+        "-derivedDataPath", derived_data, "-sdk",       "macosx",  "build", "CODE_SIGNING_ALLOWED=NO",
     }) catch {
         try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.macOSRunnerBuildFailed(allocator, target.target_root));
         return error.CommandFailed;
@@ -98,6 +103,7 @@ fn runMacOS(
     const app_dir = try std.fs.path.join(allocator, &.{ derived_data, "Build", "Products", "Debug", try std.fmt.allocPrint(allocator, "{s}.app", .{product_name}) });
     const app_exec = try std.fs.path.join(allocator, &.{ app_dir, "Contents", "MacOS", product_name });
     const bundled_manifest = try std.fs.path.join(allocator, &.{ app_dir, "Contents", "Resources", "KiraRunner.toml" });
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(bundled_manifest) orelse app_dir);
     try shared.writeFile(bundled_manifest, manifest_text);
     try shared.emitEvent(stdout, "live.server.started", "host=127.0.0.1 port={d} runner=macos", .{server.port});
 
@@ -107,6 +113,7 @@ fn runMacOS(
     defer environ_map.deinit();
     if (parsed.run_for_ns) |duration_ns| {
         try environ_map.put("KIRA_LIVE_QUIT_AFTER_NS", try std.fmt.allocPrint(allocator, "{d}", .{duration_ns}));
+        try environ_map.put("KIRA_GRAPHICS_QUIT_AFTER_FRAMES", try std.fmt.allocPrint(allocator, "{d}", .{graphicsQuitAfterFrames(duration_ns)}));
     }
     const io = io_impl.io();
     var child = try std.process.spawn(io, .{
@@ -119,9 +126,96 @@ fn runMacOS(
     });
     try shared.emitEvent(stdout, "live.runner.launched", "pid={any}", .{child.id});
 
-    var connection = (try shared.acceptClientOrDiagnose(allocator, server, &child, io, target, stdout, stderr)) orelse return;
+    var connection = (try acceptMacOSClientOrRunnerExit(allocator, server, &child, target, stdout, stderr)) orelse {
+        if (native_execution and child.id == null) {
+            try shared.emitEvent(stdout, "live.native.runner.finished", "target={s}", .{target.target_root});
+            return;
+        }
+        return;
+    };
     defer connection.close();
     try driveSession(parsed, target, bundles, &connection, "macos", stdout);
+}
+
+fn acceptMacOSClientOrRunnerExit(
+    allocator: std.mem.Allocator,
+    server: *shared.LiveServer,
+    child: *std.process.Child,
+    target: live.ResolvedLiveTarget,
+    stdout: anytype,
+    stderr: anytype,
+) !?shared.LiveConnection {
+    const start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
+    while (shared.elapsedSince(start) < 30 * std.time.ns_per_s) {
+        if (try shared.waitReadable(server.server.socket.handle, 250)) {
+            try shared.emitEvent(stdout, "live.client.connecting", "target={s}", .{target.target_root});
+            return try server.accept();
+        }
+        if (try shared.pollChildExited(child)) return null;
+    }
+    try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveClientFailedToConnect(allocator, target.target_root));
+    return null;
+}
+
+fn graphicsQuitAfterFrames(duration_ns: u64) u64 {
+    const frame_ns = std.time.ns_per_s / 60;
+    return @max(1, (duration_ns + frame_ns - 1) / frame_ns);
+}
+
+fn runSimulatorNativeConsole(
+    allocator: std.mem.Allocator,
+    parsed: live_args.ParsedArgs,
+    device_name: []const u8,
+    bundle_id: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !void {
+    const process_environ = shared.inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    var environ_map = try std.process.Environ.createMap(process_environ, allocator);
+    defer environ_map.deinit();
+    const stamp = std.c.getpid();
+    const tmp_root = "/tmp";
+    const stdout_path = try std.fs.path.join(allocator, &.{ tmp_root, try std.fmt.allocPrint(allocator, "kira-ios-native-{d}.stdout.log", .{stamp}) });
+    const stderr_path = try std.fs.path.join(allocator, &.{ tmp_root, try std.fmt.allocPrint(allocator, "kira-ios-native-{d}.stderr.log", .{stamp}) });
+    defer allocator.free(stdout_path);
+    defer allocator.free(stderr_path);
+    if (parsed.run_for_ns) |duration_ns| {
+        try environ_map.put("SIMCTL_CHILD_KIRA_LIVE_QUIT_AFTER_NS", try std.fmt.allocPrint(allocator, "{d}", .{duration_ns}));
+        try environ_map.put("SIMCTL_CHILD_KIRA_GRAPHICS_QUIT_AFTER_FRAMES", try std.fmt.allocPrint(allocator, "{d}", .{graphicsQuitAfterFrames(duration_ns)}));
+    }
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{
+            "xcrun",
+            "simctl",
+            "launch",
+            "--terminate-running-process",
+            try std.fmt.allocPrint(allocator, "--stdout={s}", .{stdout_path}),
+            try std.fmt.allocPrint(allocator, "--stderr={s}", .{stderr_path}),
+            device_name,
+            bundle_id,
+        },
+        .expand_arg0 = .expand,
+        .environ_map = &environ_map,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (!(result.term == .exited and result.term.exited == 0)) return error.CommandFailed;
+    if (result.stdout.len != 0) try stdout.writeAll(result.stdout);
+    const wait_ns = if (parsed.run_for_ns) |duration_ns| duration_ns + 2 * std.time.ns_per_s else 5 * std.time.ns_per_s;
+    try std.Options.debug_io.sleep(.fromNanoseconds(@intCast(wait_ns)), .awake);
+    _ = shared.runToolCapture(allocator, &.{ "xcrun", "simctl", "terminate", device_name, bundle_id }) catch null;
+    if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, stdout_path, allocator, .limited(1024 * 1024))) |out| {
+        defer allocator.free(out);
+        if (out.len != 0) try stdout.writeAll(out);
+    } else |_| {}
+    if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, stderr_path, allocator, .limited(1024 * 1024))) |err| {
+        defer allocator.free(err);
+        if (err.len != 0) try stderr.writeAll(err);
+    } else |_| {}
 }
 
 fn runIosSimulator(
@@ -136,15 +230,16 @@ fn runIosSimulator(
     product_name: []const u8,
     manifest_text: []const u8,
     server: *shared.LiveServer,
+    native_execution: bool,
     stdout: anytype,
     stderr: anytype,
 ) !void {
     const device_name = "iPhone 17 Pro";
     const bundle_id = "com.kira.live.dev";
     shared.runToolWithDeveloperDir(allocator, developer_dir, null, &.{
-        "xcodebuild", "-project", project_path, "-scheme", scheme, "-configuration", "Debug",
-        "-derivedDataPath", derived_data, "-sdk", "iphonesimulator",
-        "-destination", "platform=iOS Simulator,name=iPhone 17 Pro", "build", "CODE_SIGNING_ALLOWED=NO",
+        "xcodebuild",              "-project",   project_path, "-scheme",         scheme,         "-configuration",                            "Debug",
+        "-derivedDataPath",        derived_data, "-sdk",       "iphonesimulator", "-destination", "platform=iOS Simulator,name=iPhone 17 Pro", "build",
+        "CODE_SIGNING_ALLOWED=NO",
     }) catch {
         try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.iosLiveUnsupported(allocator, parsed.platform.label(), "The unified KiraApp iOS scheme did not build for the simulator."));
         return error.CommandFailed;
@@ -159,6 +254,15 @@ fn runIosSimulator(
     try shared.runTool(allocator, &.{ "xcrun", "simctl", "bootstatus", device_name, "-b" });
     try shared.runTool(allocator, &.{ "xcrun", "simctl", "install", device_name, app_path });
     try shared.emitEvent(stdout, "live.ios.simulator.install.succeeded", "bundle={s}", .{bundle_id});
+
+    if (native_execution) {
+        try shared.emitEvent(stdout, "live.ios.simulator.launch.started", "bundle={s}", .{bundle_id});
+        try runSimulatorNativeConsole(allocator, parsed, device_name, bundle_id, stdout, stderr);
+        try shared.emitEvent(stdout, "live.ios.simulator.launch.succeeded", "bundle={s}", .{bundle_id});
+        try shared.emitEvent(stdout, "live.native.runner.finished", "target={s}", .{target.target_root});
+        return;
+    }
+
     try shared.emitEvent(stdout, "live.server.started", "host=127.0.0.1 port={d} runner=ios-simulator", .{server.port});
     try shared.runTool(allocator, &.{ "xcrun", "simctl", "launch", "--terminate-running-process", device_name, bundle_id });
     try shared.emitEvent(stdout, "live.ios.simulator.launch.succeeded", "bundle={s}", .{bundle_id});

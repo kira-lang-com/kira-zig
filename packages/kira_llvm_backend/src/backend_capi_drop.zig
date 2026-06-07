@@ -108,6 +108,12 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 const kind: OwnedKind = switch (callee.return_type.kind) {
                     .ffi_struct => .struct_heap,
                     .array => .array,
+                    // A returned enum is a fresh heap block the callee allocated and handed
+                    // over; the caller owns it and frees it at scope exit unless it is moved
+                    // on (a store into a field moves it; a borrow-arg pass keeps it). Native
+                    // only — a hybrid runtime call returns a VM-owned enum. This is the
+                    // per-frame `graphicsEventKindFromRaw`/`...ButtonFromRaw` leak.
+                    .enum_instance => if (fc.request.mode == .llvm_native) .raw else continue,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -124,6 +130,7 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 const kind: OwnedKind = switch (v.return_type.kind) {
                     .ffi_struct => .struct_heap,
                     .array => .array,
+                    .enum_instance => if (fc.request.mode == .llvm_native) .raw else continue,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -156,7 +163,18 @@ pub fn setup(fc: *FunctionCodegen) !void {
             else => continue,
         }
         const kind: OwnedKind = switch (pt.kind) {
-            .ffi_struct => if (pt.name != null and fc.dtors.map.get(pt.name.?) != null) .struct_contents else continue,
+            // A moved-in struct is fully owned by the callee (Rust move semantics): the
+            // caller hands over a caller-stable heap shell (lowerCall normalizes any stack
+            // source to heap) and relinquishes it, so the callee drops shell + contents at
+            // exit (kira_destroy) unless it moves the value onward. This replaces the older
+            // split model (callee releases only contents, caller keeps the shell) which
+            // leaked every owned struct argument — neither side freed the shell.
+            // HYBRID EXCEPTION: a struct value crossing the VM bridge is VM-managed, so the
+            // native callee must not free its shell; keep the contents-only model there.
+            .ffi_struct => if (pt.name != null and fc.dtors.map.get(pt.name.?) != null)
+                (if (fc.request.mode == .hybrid) .struct_contents else .struct_heap)
+            else
+                continue,
             .array => .array,
             // A moved-in closure / heap value: the callee owns it and frees it at exit
             // (tag-safe so callable-values are a no-op). This reclaims owned closure

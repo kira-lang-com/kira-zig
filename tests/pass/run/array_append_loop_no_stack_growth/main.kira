@@ -1,0 +1,20 @@
+// Regression: scratch slots for array ops (array.append.slot / array.get.slot) must be
+// alloca'd in the function entry block, not at the loop-body insertion point. An alloca
+// outside the entry block is a dynamic stack allocation LLVM never reclaims until the
+// function returns, so building an array inside a loop grew the native stack every
+// iteration and overflowed it (signal 11) past ~32k iterations. The fix hoists these
+// reusable scratch allocas to the entry block (FunctionCodegen.entryAlloca). The loop
+// count here is deliberately above the old crash threshold.
+@Main
+function main() {
+    var i = 0
+    var acc = 0
+    while i < 60000 {
+        var xs: [Int] = []
+        xs.append(i)
+        acc = acc + xs[0]
+        i = i + 1
+    }
+    print(acc)
+    return
+}

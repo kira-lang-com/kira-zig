@@ -1,0 +1,42 @@
+// Regression: the `var x = obj.arr; x[i] = ...; obj.arr = x` in-place mutation idiom
+// stores the same array back into the field it came from. That self-store must be a
+// no-op; cloning it orphaned the original array (a per-call, quadratic native leak).
+// Uses owned/move so the result is observable across vm/llvm/hybrid alike.
+enum Tag {
+    A
+    B(Int)
+}
+
+struct Node {
+    let t: Tag
+    let v: Int
+}
+
+struct Tree {
+    var nodes: [Node]
+}
+
+function setV(tree: Tree, index: Int, x: Int) -> Tree {
+    var out = tree
+    let node = out.nodes[index]
+    var nodes = out.nodes
+    nodes[index] = Node { t: node.t, v: x }
+    out.nodes = nodes
+    return out
+}
+
+@Main
+function main() {
+    var frame = 0
+    var total = 0
+    while frame < 3 {
+        var tree = Tree { nodes: [] }
+        tree.nodes.append(Node { t: Tag.B(1), v: 0 })
+        tree.nodes.append(Node { t: Tag.A, v: 0 })
+        tree = setV(move tree, 0, 5)
+        tree = setV(move tree, 1, 7)
+        total = total + tree.nodes[0].v + tree.nodes[1].v
+        frame = frame + 1
+    }
+    print(total)
+}

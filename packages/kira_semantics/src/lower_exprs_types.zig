@@ -178,6 +178,7 @@ fn lowerMoveExpr(
             .name = try ctx.allocator.dupe(u8, local.name),
             .ty = local.binding.ty,
             .storage = local.binding.storage,
+            .ownership = .move,
             .span = exprSpan(node.operand.*),
         } };
         local.binding.moved = true;
@@ -452,6 +453,12 @@ pub fn lowerExpectedValue(
         try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, expected_type, actual_type);
         return error.DiagnosticsEmitted;
     }
+    // Ownership: an element-less array literal (`[]`) infers no element type, so its
+    // lowered value carries `[<unknown>]` with a null name. Without the element type
+    // the backend cannot reach the per-element destructor and leaks every element it
+    // later accumulates. The coercion target supplies the missing element type, so
+    // stamp it onto the value here — the array now knows precisely what it owns.
+    propagateExpectedArrayElementType(lowered, expected_type);
     if (expected_type.kind == .string and actual_type.kind == .c_string) {
         const converted = try ctx.allocator.create(model.Expr);
         converted.* = .{ .c_string_to_string = .{
@@ -461,6 +468,21 @@ pub fn lowerExpectedValue(
         return converted;
     }
     return lowered;
+}
+
+// Stamp an expected named-array type onto an array-literal value whose own inference
+// produced no element type (an empty `[]`, or a literal nested under one). The element
+// type is what lets ownership-driven drop reach each element's destructor; an array that
+// does not know its element type cannot free what it holds. Recurses into nested array
+// literals so `[[]]`-style values inherit their element type at every level.
+fn propagateExpectedArrayElementType(value: *model.Expr, expected_type: model.ResolvedType) void {
+    if (expected_type.kind != .array) return;
+    const expected_name = expected_type.name orelse return;
+    if (value.* != .array) return;
+    if (value.array.ty.name == null) value.array.ty = expected_type;
+    const element_type = shared.resolvedTypeFromText(expected_name) catch return;
+    if (element_type.kind != .array) return;
+    for (value.array.elements) |element| propagateExpectedArrayElementType(element, element_type);
 }
 
 pub fn lowerAssignmentTarget(

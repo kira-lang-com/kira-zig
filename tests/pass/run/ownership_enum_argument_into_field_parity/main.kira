@@ -1,0 +1,38 @@
+// Regression: passing an owned enum as an argument that the callee stores into a struct
+// field. The caller keeps ownership of the enum (enums are Copy across the call boundary;
+// the callee clones it into the field), so the caller frees its own value and the field
+// owns an independent copy. Escaping it orphaned the caller's enum — a per-call native leak
+// (every SizeMode/Alignment view argument in the UI layout tree).
+enum Mode {
+    Hug
+    Fixed(Int)
+}
+
+struct View {
+    let width: Mode
+    let height: Mode
+    let n: Int
+}
+
+function makeView(width: Mode, height: Mode, n: Int) -> View {
+    return View { width: width, height: height, n: n }
+}
+
+function span(m: borrow Mode) -> Int {
+    match m {
+        Hug -> { return 1 }
+        Fixed(v) -> { return v }
+    }
+}
+
+@Main
+function main() {
+    var frame = 0
+    var total = 0
+    while frame < 4 {
+        let view = makeView(Mode.Fixed(frame + 2), Mode.Hug, frame)
+        total = total + span(view.width) + span(view.height) + view.n
+        frame = frame + 1
+    }
+    print(total)
+}

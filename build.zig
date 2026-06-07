@@ -270,12 +270,15 @@ pub fn build(b: *std.Build) void {
     const repository_truth = b.addExecutable(.{ .name = "kira-repository-truth", .root_module = repository_truth_module });
     const platform_matrix_module = b.createModule(.{ .root_source_file = b.path("tests/platform_validation_matrix.zig"), .target = target, .optimize = optimize });
     const platform_matrix = b.addExecutable(.{ .name = "kira-platform-validation-matrix", .root_module = platform_matrix_module });
+    const memory_validation_module = b.createModule(.{ .root_source_file = b.path("tests/memory_validation.zig"), .target = target, .optimize = optimize });
+    const memory_validation = b.addExecutable(.{ .name = "kira-memory-validation", .root_module = memory_validation_module });
     const cli_matrix_cmd = b.addRunArtifact(repository_truth);
     const cli_matrix_step = b.step("cli-matrix", "Run the discovered sibling-project CLI matrix");
     cli_matrix_step.dependOn(&cli_matrix_cmd.step);
 
     const real_runtime_verify_cmd = b.addRunArtifact(repository_truth);
     const platform_matrix_cmd = b.addRunArtifact(platform_matrix);
+    const memory_validation_cmd = b.addRunArtifact(memory_validation);
     const real_runtime_verify_step = b.step("verify-real-runtime", "Verify real runtime, Wasm, device runner, and backend policy paths");
     real_runtime_verify_step.dependOn(&real_runtime_verify_cmd.step);
     real_runtime_verify_step.dependOn(&platform_matrix_cmd.step);
@@ -339,6 +342,24 @@ pub fn build(b: *std.Build) void {
     if (stable_tests) run_corpus.setEnvironmentVariable("KIRA_CORPUS_STABLE", "1");
     run_corpus.stdio = .inherit;
     test_step.dependOn(&run_corpus.step);
+
+    const verify_memory_step = b.step("verify-memory", "Verify ownership, move, callback, retained-tree, and memory accounting coverage");
+    verify_memory_step.dependOn(&memory_validation_cmd.step);
+    verify_memory_step.dependOn(test_step);
+    const verify_leaks_step = b.step("verify-leaks", "Run allocator-backed tests and memory coverage checks for leak-sensitive paths");
+    verify_leaks_step.dependOn(&memory_validation_cmd.step);
+    verify_leaks_step.dependOn(test_step);
+
+    // Performance harness: build the kira CLI, then run every benchmarks/<name>
+    // project across backends and print a wall-clock table. The runner receives the
+    // freshly built CLI path as its first argument and executes from the repo root.
+    const benchmark_module = b.createModule(.{ .root_source_file = b.path("benchmarks/benchmark_runner.zig"), .target = target, .optimize = optimize });
+    const benchmark_runner = b.addExecutable(.{ .name = "kira-benchmark", .root_module = benchmark_module });
+    const benchmark_cmd = b.addRunArtifact(benchmark_runner);
+    benchmark_cmd.addArtifactArg(cli);
+    benchmark_cmd.stdio = .inherit;
+    const bench_step = b.step("bench", "Run the Kira performance benchmark suite across backends");
+    bench_step.dependOn(&benchmark_cmd.step);
 
     b.default_step.dependOn(&cli.step);
     b.default_step.dependOn(&bootstrapper.step);

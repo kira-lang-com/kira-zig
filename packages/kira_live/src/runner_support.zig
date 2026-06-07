@@ -14,7 +14,10 @@ var standalone_first_frame_emitted = false;
 pub export fn kira_live_runner_entry(manifest_path: [*:0]const u8) callconv(.c) c_int {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    runFromManifestPath(arena.allocator(), std.mem.span(manifest_path)) catch return 1;
+    runFromManifestPath(arena.allocator(), std.mem.span(manifest_path)) catch |err| {
+        std.debug.print("live.runner.error={s}\n", .{@errorName(err)});
+        return 1;
+    };
     return 0;
 }
 
@@ -163,7 +166,14 @@ fn runBundleStandalone(
     defer resource_dir.close(std.Options.debug_io);
     try std.process.setCurrentDir(std.Options.debug_io, resource_dir);
 
-    try runtime.run();
+    runtime.run() catch |err| {
+        if (err == error.RuntimeFailure) {
+            if (runtime.vm.lastError()) |message| {
+                std.debug.print("hybrid runtime failure: {s}\n", .{message});
+            }
+        }
+        return err;
+    };
     standaloneLog("live.entrypoint.finished", .{});
 }
 
@@ -208,7 +218,14 @@ fn runBundle(
     var target_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, target_root, .{});
     defer target_dir.close(std.Options.debug_io);
     try std.process.setCurrentDir(std.Options.debug_io, target_dir);
-    try runtime.run();
+    runtime.run() catch |err| {
+        if (err == error.RuntimeFailure) {
+            if (runtime.vm.lastError()) |message| {
+                std.debug.print("hybrid runtime failure: {s}\n", .{message});
+            }
+        }
+        return err;
+    };
     if (restart_count == 0) {
         try client.sendText(.log_line, "live.entrypoint.finished");
     } else {

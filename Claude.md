@@ -1,6 +1,6 @@
 @Agents.md
 
-You can check the work at .codex/ if needed
+You can check the work at .codex/ if needed.
 
 ## Commit conventions
 

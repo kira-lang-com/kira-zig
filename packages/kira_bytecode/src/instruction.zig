@@ -1,3 +1,5 @@
+const ownership_mode = @import("ownership_mode.zig");
+
 pub const OpCode = enum(u8) {
     const_int,
     const_float,
@@ -54,7 +56,7 @@ pub const Instruction = union(OpCode) {
     const_bool: struct { dst: u32, value: bool },
     const_null_ptr: struct { dst: u32 },
     const_function: struct { dst: u32, function_id: u32, representation: FunctionConstRepresentation = .callable_value },
-    const_closure: struct { dst: u32, function_id: u32, captures: []const u32 },
+    const_closure: struct { dst: u32, function_id: u32, captures: []const u32, capture_ownership: []const ownership_mode.OwnershipMode = &.{} },
     alloc_struct: struct { dst: u32, type_name: []const u8 },
     alloc_enum: struct { dst: u32, enum_type_name: []const u8, discriminant: u32, payload_src: ?u32 = null },
     alloc_native_state: struct { dst: u32, src: u32, type_name: []const u8, type_id: u64 },
@@ -67,7 +69,7 @@ pub const Instruction = union(OpCode) {
     compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp },
     unary: struct { dst: u32, src: u32, op: UnaryOp },
     store_local: struct { local: u32, src: u32 },
-    load_local: struct { dst: u32, local: u32 },
+    load_local: struct { dst: u32, local: u32, ownership: ownership_mode.OwnershipMode = .borrow_read },
     local_ptr: struct { dst: u32, local: u32 },
     subobject_ptr: struct { dst: u32, base: u32, offset: u32 },
     field_ptr: struct { dst: u32, base: u32, base_type_name: []const u8, field_index: u32, field_ty: TypeRef },
@@ -92,7 +94,7 @@ pub const Instruction = union(OpCode) {
     call_runtime: struct { function_id: u32, args: []const u32, dst: ?u32 = null },
     call_native: struct { function_id: u32, args: []const u32, dst: ?u32 = null, return_ty: TypeRef = .{ .kind = .void } },
     call_virtual: struct { receiver: u32, static_type_name: []const u8, method_name: []const u8, args: []const u32, return_ty: TypeRef = .{ .kind = .void }, dst: ?u32 = null },
-    call_value: struct { callee: u32, args: []const u32, dst: ?u32 = null },
+    call_value: struct { callee: u32, args: []const u32, param_ownership: []const ownership_mode.OwnershipMode = &.{}, dst: ?u32 = null },
     ret: struct { src: ?u32 = null },
 };
 

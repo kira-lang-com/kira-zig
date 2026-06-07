@@ -1075,16 +1075,18 @@ fn captureBinding(
     outer: model.LocalBinding,
     use_span: source_pkg.Span,
 ) !model.LocalBinding {
-    _ = use_span;
     if (frame.active_scope.get(name)) |binding| return binding;
-    // A mutable local is captured by reference (a pointer to the enclosing frame's local
-    // slot) so that mutations inside the closure propagate to the enclosing scope; an
-    // immutable local is captured by value. NOTE: a by-reference capture dangles if the
-    // closure escapes its defining frame (returned/stored) — see
-    // [[escaping-closure-capture-uaf]]. Making escaping closures safe requires escape
-    // analysis (capture-by-move only when the closure escapes) or heap-boxed upvalues, so
-    // that non-escaping by-ref mutation (callback_mutable_value_capture) keeps working.
+
+    if (!isTrivialCaptureType(outer.ty)) {
+        try emitNonCopyClosureCapture(ctx, name, outer.ty, use_span, outer.decl_span);
+        return error.DiagnosticsEmitted;
+    }
+
+    // Mutable locals are captured as explicit borrows of their enclosing storage slot.
+    // Immutable trivial locals are copied into the closure. Non-trivial user values are
+    // rejected above so the VM cannot hide ownership bugs with heap retention.
     const by_ref = outer.storage != .immutable;
+    const capture_ownership: model.OwnershipMode = if (by_ref) .borrow_mut else .copy;
 
     const local_id = frame.next_local_id.*;
     frame.next_local_id.* += 1;
@@ -1111,11 +1113,40 @@ fn captureBinding(
         .local_id = local_id,
         .source_local_id = outer.id,
         .by_ref = by_ref,
+        .ownership = capture_ownership,
         .name = local_name,
         .ty = outer.ty,
         .span = outer.decl_span,
     });
     return frame.active_scope.get(name).?;
+}
+
+fn isTrivialCaptureType(ty: model.ResolvedType) bool {
+    return switch (ty.kind) {
+        .void, .integer, .float, .boolean, .c_string, .raw_ptr, .callback => true,
+        else => false,
+    };
+}
+
+fn emitNonCopyClosureCapture(
+    ctx: *Context,
+    name: []const u8,
+    ty: model.ResolvedType,
+    use_span: source_pkg.Span,
+    decl_span: source_pkg.Span,
+) !void {
+    const ty_text = try typeTextFromResolved(ctx.allocator, ty);
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM117",
+        .title = "closure capture requires explicit ownership",
+        .message = try std.fmt.allocPrint(ctx.allocator, "The closure captures non-Copy value `{s}` of type {s}.", .{ name, ty_text }),
+        .labels = &.{
+            diagnostics.primaryLabel(use_span, "non-Copy value is captured here"),
+            diagnostics.secondaryLabel(decl_span, "captured value is declared here"),
+        },
+        .help = "Pass the value through a borrow parameter, move it into a supported owner before creating the closure, or capture only Copy values.",
+    });
 }
 
 pub fn emitUnsupportedMutableCapture(

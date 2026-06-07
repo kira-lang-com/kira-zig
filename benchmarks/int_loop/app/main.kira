@@ -1,0 +1,11 @@
+@Main
+function main() {
+    var i = 0
+    var acc = 0
+    while i < 5000000 {
+        acc = acc + i
+        i = i + 1
+    }
+    print(acc)
+    return
+}

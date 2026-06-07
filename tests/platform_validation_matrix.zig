@@ -77,7 +77,7 @@ const rows = [_]MatrixRow{
         .name = "kira export apple and kira live emit one unified KiraApp workspace with the shared runner entry",
         .evidence = &.{
             .{ .path = "packages/kira_cli/src/commands/export.zig", .token = "apple_workspace.generate" },
-            .{ .path = "packages/kira_live/src/apple_workspace.zig", .token = "extern int kira_live_runner_entry" },
+            .{ .path = "packages/kira_live/src/apple_app_sources.zig", .token = "extern int kira_live_runner_entry" },
             .{ .path = "packages/kira_live/src/apple_pbxproj.zig", .token = "OTHER_LDFLAGS[sdk=" },
             .{ .path = "packages/kira_live/src/apple_live.zig", .token = "workspace.generate" },
             .{ .path = "packages/kira_live/src/runner_support.zig", .token = "runStandaloneFromManifest" },

@@ -1,0 +1,36 @@
+struct Node {
+    let label: String
+    let width: Int
+    let children: [Node]
+}
+function leaf(w: Int) -> Node {
+    return Node { label: "leaf", width: w, children: [] }
+}
+function row(w: Int) -> Node {
+    var kids: [Node] = []
+    var i = 0
+    while i < 4 {
+        kids.append(leaf(w + i))
+        i = i + 1
+    }
+    return Node { label: "row", width: w, children: move kids }
+}
+function sumWidth(n: borrow Node) -> Int {
+    var total = n.width
+    for c in n.children {
+        total = total + c.width
+    }
+    return total
+}
+@Main
+function main() {
+    var frame = 0
+    var grand = 0
+    while frame < 200000 {
+        let r = row(frame)
+        grand = grand + sumWidth(r)
+        frame = frame + 1
+    }
+    print(grand)
+    return
+}

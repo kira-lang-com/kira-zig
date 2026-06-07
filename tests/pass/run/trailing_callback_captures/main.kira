@@ -45,7 +45,7 @@ function main() {
     }
 
     let app = App()
-    let message = "tick"
+    let message = 40
     app.tick { in
         print(message)
     }

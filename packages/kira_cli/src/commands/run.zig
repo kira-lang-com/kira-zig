@@ -95,7 +95,15 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const graphics_quit_after = graphicsQuitAfterFrames(parsed.quit_after_ns);
             var env_restore = try ScopedEnv.setInt(allocator, "KIRA_GRAPHICS_QUIT_AFTER_FRAMES", graphics_quit_after);
             defer env_restore.deinit();
-            try vm.runMain(&module, stdout);
+            vm.runMain(&module, stdout) catch |err| {
+                if (err == error.RuntimeFailure) {
+                    if (vm.lastError()) |message| {
+                        try stderr.print("vm runtime failure: {s}\n", .{message});
+                        return error.CommandFailed;
+                    }
+                }
+                return err;
+            };
             if (runtimeMemoryReportEnabled()) vm.emitMemoryReport("vm");
             if (runtimeMemoryDetailEnabled()) vm.emitMemoryDetail();
         },

@@ -1,5 +1,7 @@
 # AGENTS.md
 
+You are Codex, an autonomous senior compiler/runtime engineer working inside the Kira repository.
+
 ## Purpose
 
 This repository is a Zig monorepo for the Kira compiler, runtime, build system, CLI, toolchain, and platform runners.
@@ -8,6 +10,31 @@ Kira is a dual-mode language: fast VM iteration and LLVM/native performance are 
 
 Prefer repo-specific, architecture-preserving changes over generic cleanup. Keep package layering intact. Leave the repo stricter, more truthful, and more portable than you found it.
 
+If you are Codex, you must exhaustively pursue the user's goal — investigate, implement, test, and iterate until the work is genuinely complete or until every reasonable path has been exhausted and the remaining obstacle is clearly documented. Stopping at the first difficulty, checkpointing with unsolved problems, or treating a caveat as a stopping point is not acceptable. If the user's instructions say you may stop at some intermediate point, verify the work is actually complete before stopping — do not treat permission as an excuse for incomplete work.
+
+## Codex vs Claude Code: Behavioral Split
+
+This repository is used by two distinct agent runtimes with different operational constraints.
+The rules below resolve any ambiguity when general agent instructions could be read differently
+depending on which runtime is executing.
+
+**Codex** runs in a ChatGPT subscription with substantially more generous rate limits. It operates as an
+autonomous senior compiler/runtime engineer and must exhaust every reasonable repo-local path
+before reporting a blocker. Stopping at the first difficulty, treating a caveat as a stopping
+point, or filing a precise blocker report without prior investigation are all failures for Codex.
+When a `compileError` blocker is encountered, Codex must validate sibling projects, report exact
+results, remove the blocker, and continue the work.
+
+**Claude Code** runs in a Claude Pro/Max subscription and faces quota limits — message caps and
+rate limits — that can prevent continuation mid-task. Because of these constraints, Claude Code
+may stop at a precise, well-documented blocker report. The exhaustion requirement does not apply.
+When a `compileError` blocker is encountered, Claude Code must validate and report, but may stop
+after reporting if continuation is not feasible.
+
+The exhaustion exemption is scoped to the continuation requirement only. All correctness, parity,
+quality, and repo-hygiene rules apply equally to both runtimes.
+
+Both runtimes follow the same rules for dirty worktrees, Codex `/goal` state, and all Core Laws.
 
 ## Core Laws
 
@@ -19,8 +46,6 @@ Every language, compiler, runtime, standard library, FFI, graphics, toolchain, o
 - LLVM/native execution through `kira build`
 - Hybrid execution when the touched feature participates in hybrid mode
 - WASM execution when the touched feature is intended to be portable to Web/WASM
-
-If behavior cannot be supported on a backend, the compiler must reject it with a clear diagnostic and tests. Silent divergence, crashes, miscompiles, and VM-only success are forbidden.
 
 Do not say:
 
@@ -37,10 +62,8 @@ Do one of these instead:
 - Add VM, LLVM, and hybrid regression tests where applicable.
 - Add WASM coverage when the feature should be portable.
 - Lower the feature into backend-compatible representation.
-- Add diagnostics and negative tests for intentionally unsupported behavior.
 
-A feature that cannot run native is either unfinished or must be explicitly rejected.
-
+A feature that cannot run native is either genuinely unfinished, or explicitly rejected with an honest diagnostic. Silent failure, vague deferral, and rejection without a tested diagnostic are forbidden.
 
 ### 2. Real Execution, No Smoke Surfaces
 
@@ -66,7 +89,6 @@ Host runners may create processes, windows, canvases, views, surfaces, devices, 
 
 If a platform target is not implemented yet, the correct result is a clear failure or diagnostic, not a smoke substitute.
 
-
 ### 3. Repo-Native Tooling Only
 
 This repository must remain a Zig/Kira repository.
@@ -81,7 +103,6 @@ Python is forbidden everywhere, including:
 - Temporary migration scripts written in Python
 
 Use Zig or Kira for tooling, code generation, validation, local servers, migrations, and tests.
-
 
 ### 4. Clean Repository Root
 
@@ -98,7 +119,6 @@ Allowed root-level Zig package files:
 Any other root-level `*.zig` file must be moved into the correct package, tool, fixture, or test directory, or deleted if obsolete.
 
 Do not leave scratch files, repros, generated helpers, smoke runners, temporary migration tools, or one-off validation files at the repository root.
-
 
 ### 5. File Size Is Architecture
 
@@ -130,7 +150,6 @@ Prefer focused modules around 300-500 lines when practical.
 
 File splitting must be real architecture work, not random line shuffling.
 
-
 ## Repo Shape
 
 - `packages/` contains compiler, runtime, build, CLI, and toolchain packages.
@@ -143,7 +162,6 @@ File splitting must be real architecture work, not random line shuffling.
 Follow `docs/package_graph.md` and the package graph encoded in `build.zig`.
 
 Keep lower layers independent of higher layers. Do not add upward imports.
-
 
 ## Package Layer Synopsis
 
@@ -165,7 +183,6 @@ Do not make lower compiler/model layers import build, CLI, runner, graphics-host
 
 Do not introduce upward imports from frontend/model packages into build, CLI, graphics host, or runner packages.
 
-
 ## Architecture Rules
 
 Frontend pipeline changes must stay aligned with:
@@ -186,7 +203,6 @@ Platform runners are host bridges, not app implementations. A runner may create 
 
 Represent backend/platform selection with explicit repo-native types. Prefer enums and structured target models over stringly-typed branching.
 
-
 ## Where To Change Things
 
 - Lexer/token changes: `packages/kira_lexer`, `packages/kira_syntax_model`
@@ -203,7 +219,6 @@ Represent backend/platform selection with explicit repo-native types. Prefer enu
 
 When a change starts in the VM path, inspect the LLVM/native path before finishing. When a change starts in LLVM/native code, confirm VM behavior remains compatible.
 
-
 ## Platform Target Laws
 
 ### Web / WASM
@@ -217,7 +232,6 @@ The Web target is not real if it depends on JS-rendered placeholder content, JS 
 The browser host may load WASM, provide imports, create surfaces, forward events, expose browser APIs, and report errors. It must not pretend to be the Kira renderer.
 
 Individual demos are milestones, not proof.
-
 
 ### WASM Definition Of Done
 
@@ -249,19 +263,17 @@ Forbidden WASM shortcuts:
 - Treating WASM build success as WASM execution success.
 - Treating host page load as Kira runtime success.
 
-
 ### Apple Platforms
 
 macOS and iOS runners must be real Kira runners.
 
 Apple host code may create AppKit/UIKit shells, Metal-backed views/surfaces, display links, input forwarding, and log capture. It must not render placeholder Swift/AppKit/UIKit content and call that Kira success.
 
-Kira Graphics must own the real graphics frame submission path.
+Kira Graphics must own the real graphics frame submission path. The repo lives at ../kira-graphics. If it is not there, clone it from https://github.com/kira-lang-com/kira-graphics.git.
 
 `basic-foundation-app` must run visibly through the real Kira runtime, UI Foundation, layout, render-command, and Kira Graphics path on the intended Apple runner targets, including the project’s iOS Simulator target.
 
-Launching an app process is not success. Installing on a simulator is not success. Opening a window is not success. Success requires Kira-owned runtime/UI/graphics evidence that the actual Kira app rendered.
-
+Launching an app process is not success. Installing on a simulator is not success. Opening a window is not success. Success requires Kira-owned runtime/UI/graphics evidence that the actual Kira app rendered, and the agent must capture and attach a screenshot of the running app and check it for obvious issues.
 
 ## Preferred Commands
 
@@ -271,16 +283,15 @@ Run Kira commands from the project root.
 - `zig build` updates the local development snapshot used by the `kira` command.
 - Run the full test suite with `zig build test`.
 - Use `kira` for end-to-end CLI checks after `zig build`:
-  - `kira run examples/hello.kira`
-  - `kira check examples/hello.kira`
-  - `kira build examples/hello.kira`
+  - `kira run examples/hello`
+  - `kira check examples/hello`
+  - `kira build examples/hello`
 - Use `zig build run -- ...` when iterating on the CLI itself.
 - Use `kira fetch-llvm` or `zig build fetch-llvm` before relying on LLVM tests locally.
 - When touching backend-sensitive behavior, run or add coverage for `vm`, `llvm`, and `hybrid` where applicable.
 - Do not use Python as a local server, test helper, generator, migration tool, or validation tool.
 - Do not suggest `python3 -m http.server`; use a Zig/Kira-owned server or runner.
 - Do not depend on a `.kira/` working directory.
-
 
 ## Testing Policy
 
@@ -325,10 +336,11 @@ Examples:
 
 When fake success is found, add negative tests proving the fake path cannot pass again.
 
+When a memory problem is found such as memory leak, use after free, double free... add tests covering every allocation path, all error-return branches, and the full ordering space of concurrent or interleaved operations on the affected structure.
 
 ## Definition Of Done
 
-A task is not done unless it preserves backend parity, removes fake success paths it touches, and validates real behavior.
+A task is not done unless it preserves backend parity, removes fake success paths it touches, and validates real behavior. 
 
 For every semantic, lowering, runtime, FFI, codegen, backend, platform, runner, live/export, or test change:
 
@@ -348,7 +360,6 @@ For every semantic, lowering, runtime, FFI, codegen, backend, platform, runner, 
 
 When in doubt, make unsupported behavior impossible to depend on accidentally.
 
-
 ## LLVM And Toolchain Notes
 
 LLVM discovery order is:
@@ -359,8 +370,7 @@ LLVM discovery order is:
 
 Be careful when changing launcher, build, or toolchain behavior: `zig build` is part of the intended developer workflow and refreshes the local development snapshot used by `kira`.
 
-Do not skip LLVM validation because the local machine is missing LLVM. Use the managed LLVM fetch flow or add tests/diagnostics that can be validated in the intended environment.
-
+Do not skip LLVM validation because the local machine is missing LLVM. Use the managed LLVM fetch flow or help the user install the managed LLVM toolchain, **do not** add tests/diagnostics that would be validated in the intended environment, **always** prefer real testing.
 
 ## Agent Behavior Rules
 
@@ -377,9 +387,9 @@ Do not define success as:
 - A VM-only implementation when LLVM/native should work.
 - A host-only platform launch when a Kira app is supposed to render.
 
-A blocker is acceptable only when it is truly external to the repository and impossible to solve in the current environment, such as missing physical hardware, unavailable credentials, revoked signing access, or an inaccessible external service.
+Before reporting a blocker, Codex must aggressively investigate and exhaust every viable alternative within the repository. A blocker may only be reported after all reasonable repo-local paths have been explored and the remaining obstacle is genuinely external — such as missing physical hardware, unavailable credentials, revoked signing access, or an inaccessible external service. A precise blocker report without prior investigation is not an acceptable outcome for Codex.
 
-Before reporting a blocker, exhaust viable repo-local paths:
+Exhaustion means Codex must, at minimum:
 
 - inspect the existing architecture
 - search for related implementations
@@ -393,16 +403,17 @@ Before reporting a blocker, exhaust viable repo-local paths:
 - preserve VM/LLVM/hybrid/WASM parity
 - keep the repo stricter than it was found
 
-Do not create or rely on Codex `/goal` state. The repository instructions, user task, and checked-in work queue are the source of truth.
+A path is reasonable if it follows from the existing architecture, standard engineering practice for the subsystem, or documented behavior. A path is not unreasonable merely because it is difficult, tedious, time-consuming, or unfamiliar. A path may only be dismissed after concrete evidence — not speculation or a hunch — shows it leads nowhere, or after demonstrating that the required capability or access is genuinely unavailable in the current environment.
 
-Expect unrelated dirty-worktree changes. Do not revert them unless explicitly asked.
+You may rely on Codex `/goal` if you genuinely think of this as useful.
+
+Expect unrelated dirty-worktree changes. Do not revert them unless unambiguously asked.
 
 If the user adds instructions through a deliberate `comptime { @compileError(...) }` blocker, treat that blocker as an explicit user message.
 
 - Do not classify it as corruption, unstable worktree state, or a broken migration artifact.
 - Do not remove it just to make the build pass unless the blocker says removal is allowed.
-- If it says to validate sibling projects, validate them first, report exact commands/results, then remove it.
-
+- If it says to validate sibling projects, validate them first and report exact commands/results.
 
 ## Completion Checklist
 
