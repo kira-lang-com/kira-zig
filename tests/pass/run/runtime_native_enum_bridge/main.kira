@@ -1,0 +1,49 @@
+enum Shade {
+    Light,
+    Dark
+}
+
+@Native
+struct Swatch {
+    let shade: Shade = Shade.Light
+    let weight: Int = 0
+}
+
+@Runtime
+function pickShade(flag: Bool) -> Shade {
+    if flag { return Shade.Dark }
+    return Shade.Light
+}
+
+@Native
+function makeSwatch(flag: Bool) -> Swatch {
+    return Swatch { shade: pickShade(flag), weight: 3 }
+}
+
+// The "dispatch" target: a @Runtime function receiving the native struct (with an enum
+// field) as an argument — mirrors RunFoundationApp's event handler (runtime 206).
+@Runtime
+function onSwatch(s: borrow Swatch) -> Int {
+    match s.shade {
+        Light -> { return 1 }
+        Dark -> { return 2 }
+    }
+}
+
+// Mirrors impl_218: build an owned native struct, copy it, pass the copy across the
+// native->VM boundary (the dispatch), then let both drop.
+@Native
+function handle(flag: Bool) -> Int {
+    var original = makeSwatch(flag)
+    var copy = original
+    let r = onSwatch(copy)
+    return r
+}
+
+@Main
+@Runtime
+function main() {
+    print(handle(false))
+    print(handle(true))
+    return
+}

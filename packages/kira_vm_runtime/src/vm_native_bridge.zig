@@ -1,0 +1,788 @@
+//! Native-layout bridge for the VM.
+//!
+//! Everything that copies, materializes, synchronizes, or destroys values
+//! across the VM <-> native representation boundary lives here: struct/array/
+//! enum native-layout copies, native-state preservation and recovery, and
+//! closure export/materialization. Functions take the owning `Vm` as their
+//! first parameter; `Vm` keeps thin method wrappers for the public surface
+//! (used by the hybrid runtime, the interpreter, and vm_helpers), so the
+//! call-site API is unchanged.
+
+const std = @import("std");
+const bytecode = @import("kira_bytecode");
+const runtime_abi = @import("kira_runtime_abi");
+const native_layout = @import("native_layout.zig");
+const helper_impl = @import("vm_helpers.zig");
+const ownership = @import("ownership.zig");
+const vm_mod = @import("vm.zig");
+
+const Vm = vm_mod.Vm;
+const NativeStateBox = vm_mod.NativeStateBox;
+const ArrayObject = ownership.ArrayObject;
+const ClosureObject = ownership.ClosureObject;
+
+pub fn materializeNativeStruct(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) !usize {
+    runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime type={s} ptr=0x{x}", .{ type_name, native_ptr });
+    return copyStructFromNativeLayout(self, module, type_name, native_ptr);
+}
+
+pub fn materializeNativeClosure(self: *Vm, module: *const bytecode.Module, native_ptr: usize, external_capture_types: ?[]const bytecode.TypeRef) !usize {
+    if (native_ptr == 0) return 0;
+    if (self.heap.getClosure(native_ptr) != null) return native_ptr;
+    const raw_native_ptr = runtime_abi.untagNativeClosurePointer(native_ptr);
+    const function_id_ptr: *const i64 = @ptrFromInt(raw_native_ptr);
+    const capture_count_ptr: *const i64 = @ptrFromInt(raw_native_ptr + 8);
+    const function_id_i64 = function_id_ptr.*;
+    const capture_count_i64 = capture_count_ptr.*;
+    if (function_id_i64 < 0 or function_id_i64 > std.math.maxInt(u32)) {
+        return native_ptr;
+    }
+    if (capture_count_i64 < 0) {
+        self.rememberError("native closure capture count is negative");
+        return error.RuntimeFailure;
+    }
+
+    const capture_count: usize = @intCast(capture_count_i64);
+    const function_id: u32 = @intCast(function_id_i64);
+    const function_decl = module.findFunctionById(function_id);
+    const native_slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(raw_native_ptr + 16);
+    const closure = try self.allocator.create(ClosureObject);
+    errdefer self.allocator.destroy(closure);
+    const captures = try self.allocator.alloc(runtime_abi.Value, capture_count);
+    for (captures) |*capture| capture.* = .{ .void = {} };
+    var initialized: usize = 0;
+    errdefer {
+        self.heap.dropSlots(captures[0..initialized]);
+        self.allocator.free(captures);
+    }
+    for (0..capture_count) |index| {
+        var capture_value = runtime_abi.bridgeValueToValue(native_slots[index]);
+        var capture_is_owned = false;
+        if (function_decl) |decl| {
+            const param_index = decl.param_count - @as(u32, @intCast(capture_count)) + @as(u32, @intCast(index));
+            const capture_ty = decl.local_types[param_index];
+            if (capture_ty.kind == .ffi_struct and capture_value == .raw_ptr and capture_value.raw_ptr != 0) {
+                capture_value = .{ .raw_ptr = try copyStructFromNativeLayout(self, module, capture_ty.name orelse {
+                    self.rememberError("native closure capture type is missing a name");
+                    return error.RuntimeFailure;
+                }, capture_value.raw_ptr) };
+                capture_is_owned = true;
+            } else if (capture_ty.kind == .raw_ptr) {
+                capture_value = try materializeCallbackValueFromNative(self, module, capture_ty, capture_value);
+                capture_is_owned = true;
+            }
+        } else if (external_capture_types) |capture_types| {
+            if (index >= capture_types.len) {
+                self.rememberError("native closure capture metadata is incomplete");
+                return error.RuntimeFailure;
+            }
+            const capture_ty = capture_types[index];
+            if (capture_ty.kind == .ffi_struct and capture_value == .raw_ptr and capture_value.raw_ptr != 0) {
+                capture_value = .{ .raw_ptr = try copyStructFromNativeLayout(self, module, capture_ty.name orelse {
+                    self.rememberError("native closure capture type is missing a name");
+                    return error.RuntimeFailure;
+                }, capture_value.raw_ptr) };
+                capture_is_owned = true;
+            } else if (capture_ty.kind == .raw_ptr) {
+                capture_value = try materializeCallbackValueFromNative(self, module, capture_ty, capture_value);
+                capture_is_owned = true;
+            }
+        }
+        if (capture_is_owned) {
+            self.heap.assignTransferred(&captures[index], capture_value);
+        } else {
+            self.heap.assignBorrowed(&captures[index], capture_value);
+        }
+        initialized += 1;
+    }
+    closure.* = .{
+        .function_id = function_id,
+        .is_native = function_decl == null,
+        .captures = captures,
+    };
+    runtime_abi.emitExecutionTrace("BRIDGE", "MATERIALIZE", "native->runtime closure fn={d} captures={d} ptr=0x{x}", .{ closure.function_id, capture_count, raw_native_ptr });
+    return self.heap.registerClosure(closure);
+}
+
+pub fn lowerStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) !usize {
+    runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "runtime->native type={s} ptr=0x{x}", .{ type_name, runtime_ptr });
+    return copyStructToNativeLayout(self, module, type_name, runtime_ptr);
+}
+
+pub fn writeStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
+    runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "sync runtime->native type={s} src=0x{x} dst=0x{x}", .{ type_name, runtime_ptr, native_ptr });
+    try copyStructToNativeLayoutInto(self, module, type_name, runtime_ptr, native_ptr);
+}
+
+pub fn copyArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize) anyerror!usize {
+    const source: *const ArrayObject = @ptrFromInt(runtime_array_ptr);
+    const object = try self.allocator.create(ArrayObject);
+    const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+    for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+    object.* = .{
+        .len = source.len,
+        .items = items.ptr,
+    };
+    recordNativeArrayAlloc(self);
+    errdefer destroyArrayNativeLayout(self, module, array_ty, @intFromPtr(object));
+
+    const element_ty = try self.arrayElementType(module, array_ty);
+    for (source.items[0..source.len], 0..) |item, index| {
+        const value = runtime_abi.bridgeValueToValue(item);
+        items[index] = runtime_abi.bridgeValueFromValue(try copyValueToNativeLayout(self, module, element_ty, value));
+    }
+    return @intFromPtr(object);
+}
+
+pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) anyerror!usize {
+    const source: *const ArrayObject = @ptrFromInt(native_array_ptr);
+    const object = try self.allocator.create(ArrayObject);
+    errdefer self.allocator.destroy(object);
+    const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+    const element_ty = try self.arrayElementType(module, array_ty);
+    for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+    var initialized: usize = 0;
+    errdefer {
+        for (items[0..initialized]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
+        self.allocator.free(items);
+    }
+    for (source.items[0..source.len], 0..) |item, index| {
+        const value = runtime_abi.bridgeValueToValue(item);
+        items[index] = runtime_abi.bridgeValueFromValue(try copyValueFromNativeLayout(self, module, element_ty, value));
+        initialized += 1;
+    }
+    object.* = .{
+        .len = source.len,
+        .items = items.ptr,
+    };
+    return try self.heap.registerArray(object);
+}
+
+pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
+    const source: *const ArrayObject = @ptrFromInt(native_array_ptr);
+    const destination: *ArrayObject = @ptrFromInt(runtime_array_ptr);
+
+    const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+    const element_ty = try self.arrayElementType(module, array_ty);
+    for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+    var initialized: usize = 0;
+    errdefer {
+        for (items[0..initialized]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
+        self.allocator.free(items);
+    }
+    for (source.items[0..source.len], 0..) |item, index| {
+        const value = runtime_abi.bridgeValueToValue(item);
+        items[index] = runtime_abi.bridgeValueFromValue(try copyValueFromNativeLayout(self, module, element_ty, value));
+        initialized += 1;
+    }
+
+    const old_items = destination.items[0..@max(destination.len, 1)];
+    for (old_items[0..destination.len]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
+    self.allocator.free(old_items);
+    destination.len = source.len;
+    destination.items = items.ptr;
+}
+
+pub fn syncStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
+    runtime_abi.emitExecutionTrace("BRIDGE", "COPY", "sync native->runtime type={s} src=0x{x} dst=0x{x}", .{ type_name, native_ptr, runtime_ptr });
+    try copyStructFromNativeLayoutInto(self, module, type_name, runtime_ptr, native_ptr);
+}
+
+pub fn destroyArrayNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) void {
+    if (native_array_ptr == 0) return;
+    const object: *ArrayObject = @ptrFromInt(native_array_ptr);
+    const items = object.items[0..@max(object.len, 1)];
+    const element_ty = self.arrayElementType(module, array_ty) catch .{ .kind = .raw_ptr };
+    for (items[0..object.len]) |item| {
+        destroyNativeLayoutValue(self, module, element_ty, runtime_abi.bridgeValueToValue(item));
+    }
+    self.allocator.free(items);
+    self.allocator.destroy(object);
+    recordNativeArrayFree(self);
+}
+
+pub fn destroyStructNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    if (native_ptr == 0) return;
+    destroyStructNativeLayoutFields(self, module, type_name, native_ptr);
+    const layout = native_layout.structLayout(module, type_name) catch return;
+    const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
+    const words: [*]u64 = @ptrFromInt(native_ptr);
+    self.allocator.free(words[0..word_count]);
+    recordNativeStructFree(self);
+}
+
+pub fn destroyNativeLayoutValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) void {
+    switch (ty.kind) {
+        .ffi_struct => {
+            if (value == .raw_ptr) {
+                if (ty.name) |name| destroyStructNativeLayout(self, module, name, value.raw_ptr);
+            }
+        },
+        .array => {
+            if (value == .raw_ptr) destroyArrayNativeLayout(self, module, ty, value.raw_ptr);
+        },
+        .enum_instance, .construct_any => self.heap.dropValue(value),
+        else => {},
+    }
+}
+
+pub fn allocateNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, type_id: u64, src_payload: usize) !usize {
+    const type_decl = self.findTypeCached(module, type_name) orelse {
+        self.rememberError("native state type could not be resolved");
+        return error.RuntimeFailure;
+    };
+    const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_payload);
+    const native_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const native_value = try preserveNativeStateValue(self, module, field_decl.ty, src_ptr[index]);
+        native_payload[index] = runtime_abi.bridgeValueFromValue(native_value);
+    }
+
+    const box = try self.allocator.create(NativeStateBox);
+    box.* = .{
+        .type_id = type_id,
+        .payload = @intFromPtr(native_payload.ptr),
+        .runtime_payload = 0,
+    };
+    return @intFromPtr(box);
+}
+
+pub fn recoverNativeState(self: *Vm, module: *const bytecode.Module, type_name: []const u8, state_token: usize, expected_type_id: u64) !usize {
+    self.native_layout_stats.native_state_recovers += 1;
+    const box: *NativeStateBox = @ptrFromInt(state_token);
+    if (box.type_id != expected_type_id) {
+        self.rememberError("nativeRecover used a userdata token for the wrong state type");
+        return error.RuntimeFailure;
+    }
+    if (box.runtime_payload == 0 and box.payload != 0) {
+        self.native_layout_stats.native_state_materializations += 1;
+        const result = try self.native_state_materialized_types.getOrPut(type_name);
+        if (!result.found_existing) result.value_ptr.* = 0;
+        result.value_ptr.* += 1;
+        box.runtime_payload = try materializeNativeStatePayload(self, module, type_name, box.payload);
+        destroyNativeStatePayload(self, module, type_name, box.payload);
+        box.payload = 0;
+    }
+    if (box.runtime_payload == 0) {
+        self.rememberError("nativeRecover used a userdata token with no state payload");
+        return error.RuntimeFailure;
+    }
+    return box.runtime_payload;
+}
+
+pub fn materializeNativeStatePayload(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_payload_ptr: usize) !usize {
+    const type_decl = self.findTypeCached(module, type_name) orelse {
+        self.rememberError("native state type could not be resolved");
+        return error.RuntimeFailure;
+    };
+    const native_payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_payload_ptr);
+    const runtime_payload = try self.allocator.alloc(runtime_abi.BridgeValue, type_decl.fields.len);
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const value = try materializeNativeStateValue(self, module, field_decl.ty, runtime_abi.bridgeValueToValue(native_payload[index]));
+        runtime_payload[index] = runtime_abi.bridgeValueFromValue(value);
+    }
+    return @intFromPtr(runtime_payload.ptr);
+}
+
+pub fn preserveNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) !runtime_abi.Value {
+    return switch (ty.kind) {
+        .ffi_struct, .array, .enum_instance, .construct_any, .raw_ptr => try copyValueToNativeLayout(self, module, ty, value),
+        else => value,
+    };
+}
+
+pub fn materializeNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) !runtime_abi.Value {
+    return switch (ty.kind) {
+        .ffi_struct, .array, .enum_instance, .construct_any => try copyValueFromNativeLayout(self, module, ty, value),
+        .raw_ptr => try materializeCallbackValueFromNative(self, module, ty, value),
+        else => value,
+    };
+}
+
+pub fn destroyNativeStatePayload(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_payload_ptr: usize) void {
+    if (native_payload_ptr == 0) return;
+    const type_decl = self.findTypeCached(module, type_name) orelse return;
+    const native_payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(native_payload_ptr);
+    for (type_decl.fields, 0..) |field_decl, index| {
+        destroyPreservedNativeStateValue(self, module, field_decl.ty, runtime_abi.bridgeValueToValue(native_payload[index]));
+    }
+    self.allocator.free(native_payload[0..type_decl.fields.len]);
+}
+
+pub fn destroyPreservedNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) void {
+    switch (ty.kind) {
+        .ffi_struct => {
+            if (value != .raw_ptr or value.raw_ptr == 0) return;
+            destroyStructNativeLayout(self, module, ty.name orelse return, value.raw_ptr);
+        },
+        .array => {
+            if (value != .raw_ptr or value.raw_ptr == 0) return;
+            destroyArrayNativeLayout(self, module, ty, value.raw_ptr);
+        },
+        .enum_instance => {
+            if (value != .raw_ptr or value.raw_ptr == 0) return;
+            destroyEnumNativeLayout(self, module, ty.name orelse return, value.raw_ptr);
+        },
+        .construct_any => self.heap.dropValue(value),
+        else => {},
+    }
+}
+
+pub fn copyValueToNativeLayout(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+    return switch (ty.kind) {
+        .ffi_struct => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyStructToNativeLayout(self, module, ty.name orelse {
+                self.rememberError("array element struct type is missing a name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr) };
+        },
+        .array => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyArrayToNativeLayout(self, module, ty, value.raw_ptr) };
+        },
+        .enum_instance => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyEnumToNativeLayout(self, module, ty.name orelse {
+                self.rememberError("enum type is missing a name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr) };
+        },
+        .construct_any => blk: {
+            break :blk value;
+        },
+        .raw_ptr => blk: {
+            if (ty.name) |name| {
+                if (Vm.isCallbackTypeName(name) and value == .raw_ptr and value.raw_ptr != 0 and self.heap.getClosure(value.raw_ptr) != null) {
+                    break :blk .{ .raw_ptr = try exportRuntimeClosureToNative(self, module, value.raw_ptr) };
+                }
+            }
+            break :blk value;
+        },
+        else => value,
+    };
+}
+
+pub fn copyValueFromNativeLayout(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+    return switch (ty.kind) {
+        .ffi_struct => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyStructFromNativeLayout(self, module, ty.name orelse {
+                self.rememberError("array element struct type is missing a name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr) };
+        },
+        .array => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyArrayFromNativeLayout(self, module, ty, value.raw_ptr) };
+        },
+        .enum_instance => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            break :blk .{ .raw_ptr = try copyEnumFromNativeLayout(self, module, ty.name orelse {
+                self.rememberError("enum type is missing a name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr) };
+        },
+        .construct_any => blk: {
+            break :blk value;
+        },
+        .raw_ptr => try materializeCallbackValueFromNative(self, module, ty, value),
+        else => value,
+    };
+}
+
+pub fn materializeCallbackValueFromNative(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
+    if (ty.kind != .raw_ptr) return value;
+    const name = ty.name orelse return value;
+    if (!Vm.isCallbackTypeName(name)) return value;
+    if (value != .raw_ptr or value.raw_ptr == 0) return value;
+    if (self.heap.getClosure(value.raw_ptr) != null) return value;
+    if (!runtime_abi.isTaggedNativeClosurePointer(value.raw_ptr)) return value;
+    return .{ .raw_ptr = try materializeNativeClosure(self, module, value.raw_ptr, null) };
+}
+
+pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize) !usize {
+    if (self.exported_native_closures.get(closure_ptr)) |existing| {
+        return runtime_abi.tagNativeClosurePointer(existing.native_ptr);
+    }
+
+    const closure = self.heap.getClosure(closure_ptr) orelse {
+        self.rememberError("callback value is not a valid runtime closure");
+        return error.RuntimeFailure;
+    };
+    const function_decl = module.findFunctionById(closure.function_id) orelse {
+        self.rememberError("runtime closure function could not be resolved");
+        return error.RuntimeFailure;
+    };
+    if (closure.captures.len > function_decl.param_count) {
+        self.rememberError("runtime closure capture metadata is inconsistent");
+        return error.RuntimeFailure;
+    }
+
+    const param_count: usize = function_decl.param_count;
+    const capture_types = function_decl.local_types[param_count - closure.captures.len .. param_count];
+    const byte_len = 16 + closure.captures.len * @sizeOf(runtime_abi.BridgeValue);
+    const word_count = @max(1, std.math.divCeil(usize, byte_len, @sizeOf(u64)) catch unreachable);
+    const words = try self.allocator.alloc(u64, word_count);
+    errdefer self.allocator.free(words);
+    @memset(words, 0);
+
+    const raw_ptr = @intFromPtr(words.ptr);
+    const header: [*]u64 = @ptrFromInt(raw_ptr);
+    header[0] = closure.function_id;
+    header[1] = closure.captures.len;
+
+    const retained_captures = try self.allocator.alloc(runtime_abi.Value, closure.captures.len);
+    errdefer self.allocator.free(retained_captures);
+    const slots: [*]runtime_abi.BridgeValue = @ptrFromInt(raw_ptr + 16);
+    for (closure.captures, 0..) |capture, index| {
+        const lowered = try copyValueToNativeLayout(self, module, capture_types[index], capture);
+        retained_captures[index] = lowered;
+        slots[index] = runtime_abi.bridgeValueFromValue(lowered);
+    }
+
+    try self.exported_native_closures.put(closure_ptr, .{
+        .native_ptr = raw_ptr,
+        .captures = retained_captures,
+    });
+    return runtime_abi.tagNativeClosurePointer(raw_ptr);
+}
+
+pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
+    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    if (src[0] != .integer) {
+        self.rememberError("enum native copy requires an integer tag slot");
+        return error.RuntimeFailure;
+    }
+    const words = try self.allocator.alloc(u64, 2);
+    errdefer self.allocator.free(words);
+    const discriminant: u32 = @intCast(src[0].integer);
+    const payload_ty = enumPayloadType(self, module, type_name, discriminant) orelse {
+        self.rememberFmt(
+            "enum native copy could not resolve discriminant: type={s} tag={d} ptr=0x{x}",
+            .{ type_name, discriminant, runtime_ptr },
+        );
+        return error.RuntimeFailure;
+    };
+    words[0] = @as(u64, @intCast(discriminant));
+    words[1] = try enumPayloadToNativeWord(self, module, payload_ty, src[1]);
+    return @intFromPtr(words.ptr);
+}
+
+/// Lower a VM enum value into a libc-`malloc`'d 16-byte native enum block
+/// `{ i64 tag, i64 payload }` whose ownership transfers to native code.
+///
+/// Unlike `copyEnumToNativeLayout` (which allocates with the VM allocator and is freed
+/// VM-side by `destroyEnumNativeLayout`), the block produced here is freed by the native
+/// C-API backend itself: an enum stored into a native struct field is freed via
+/// `kira_destroy_raw_ptr` (libc `free`) in that struct's `release_contents`, and cloned
+/// via `kira_enum_clone` (libc `malloc`+memcpy) on struct copy. The VM runner uses
+/// `std.heap.smp_allocator`, so handing native a VM-allocator pointer to `free` aborts
+/// with "pointer being freed was not allocated". Allocating on the C heap keeps the
+/// clone/free pair heap-consistent. Payloads are inline (the native enum layout carries
+/// no out-of-line payload — `kira_destroy_raw_ptr` does not recurse), matching
+/// `kira_enum_clone`'s verbatim 16-byte copy.
+pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
+    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    if (src[0] != .integer) {
+        self.rememberError("enum native lowering requires an integer tag slot");
+        return error.RuntimeFailure;
+    }
+    const discriminant: u32 = @intCast(src[0].integer);
+    const payload_ty = enumPayloadType(self, module, type_name, discriminant) orelse {
+        self.rememberFmt(
+            "enum native lowering could not resolve discriminant: type={s} tag={d} ptr=0x{x}",
+            .{ type_name, discriminant, runtime_ptr },
+        );
+        return error.RuntimeFailure;
+    };
+    const words = try std.heap.c_allocator.alloc(u64, 2);
+    errdefer std.heap.c_allocator.free(words);
+    words[0] = @as(u64, @intCast(discriminant));
+    words[1] = try enumPayloadToNativeWord(self, module, payload_ty, src[1]);
+    return @intFromPtr(words.ptr);
+}
+
+pub fn copyEnumFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+    if (self.isManagedStructPointer(native_ptr)) {
+        const cloned = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = native_ptr });
+        return if (cloned == .raw_ptr) cloned.raw_ptr else 0;
+    }
+    const resolved_ptr = try resolveNativeEnumLayoutPointer(self, module, type_name, native_ptr);
+    const words: [*]const u64 = @ptrFromInt(resolved_ptr);
+    const native_variant = enumNativeVariant(self, module, type_name, words[0]) orelse {
+        const runtime_slots: [*]align(1) const runtime_abi.Value = @ptrFromInt(resolved_ptr);
+        if (runtime_slots[0] == .integer) {
+            const discriminant: u32 = @intCast(runtime_slots[0].integer);
+            if (enumPayloadType(self, module, type_name, discriminant)) |payload_ty| {
+                const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+                errdefer self.allocator.free(slots);
+                slots[0] = runtime_slots[0];
+                slots[1] = switch (payload_ty.kind) {
+                    .ffi_struct => blk: {
+                        if (runtime_slots[1] != .raw_ptr or runtime_slots[1].raw_ptr == 0) break :blk runtime_slots[1];
+                        break :blk .{ .raw_ptr = try self.cloneStructValue(module, payload_ty.name orelse type_name, runtime_slots[1].raw_ptr) };
+                    },
+                    .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, payload_ty), runtime_slots[1]),
+                    .enum_instance => try self.cloneEnumValue(module, payload_ty.name orelse type_name, runtime_slots[1]),
+                    else => runtime_slots[1],
+                };
+                return self.heap.registerStruct(type_name, slots);
+            }
+        }
+        self.rememberFmt(
+            "enum native copy found an invalid discriminant: type={s} tag={d} ptr=0x{x}",
+            .{ type_name, words[0], resolved_ptr },
+        );
+        return error.RuntimeFailure;
+    };
+    const slots = try self.allocator.alloc(runtime_abi.Value, 2);
+    errdefer self.allocator.free(slots);
+    slots[0] = .{ .integer = @intCast(native_variant.discriminant) };
+    slots[1] = try enumPayloadFromNativeWord(self, module, native_variant.payload_ty, words[1]);
+    return self.heap.registerStruct(type_name, slots);
+}
+
+pub fn resolveNativeEnumLayoutPointer(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+    var candidate = native_ptr;
+    var depth: usize = 0;
+    while (depth < 4) : (depth += 1) {
+        const words: [*]const u64 = @ptrFromInt(candidate);
+        if (enumNativeVariant(self, module, type_name, words[0]) != null) return candidate;
+        const next_candidate: usize = @intCast(words[0]);
+        if (next_candidate == 0 or next_candidate == candidate or next_candidate % @alignOf(u64) != 0) break;
+        candidate = next_candidate;
+    }
+    return native_ptr;
+}
+
+pub fn destroyEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    if (native_ptr == 0) return;
+    const words: [*]u64 = @ptrFromInt(native_ptr);
+    if (enumNativeVariant(self, module, type_name, words[0])) |native_variant| {
+        destroyEnumNativePayload(self, module, native_variant.payload_ty, words[1]);
+    }
+    const native_words: []u64 = words[0..2];
+    self.allocator.free(native_words);
+}
+
+const EnumNativeVariant = struct {
+    discriminant: u32,
+    payload_ty: bytecode.TypeRef,
+};
+
+pub fn enumNativeVariant(self: *Vm, module: *const bytecode.Module, type_name: []const u8, word: u64) ?EnumNativeVariant {
+    if (word > std.math.maxInt(u32)) return null;
+    const discriminant: u32 = @intCast(word);
+    const payload_ty = enumPayloadType(self, module, type_name, discriminant) orelse return null;
+    return .{
+        .discriminant = discriminant,
+        .payload_ty = payload_ty,
+    };
+}
+
+pub fn enumPayloadType(self: *Vm, module: *const bytecode.Module, type_name: []const u8, discriminant: u32) ?bytecode.TypeRef {
+    const enum_decl = self.findEnumCached(module, type_name) orelse return null;
+    for (enum_decl.variants) |variant| {
+        if (variant.discriminant == discriminant) return variant.payload_ty orelse bytecode.TypeRef{ .kind = .void };
+    }
+    return null;
+}
+
+pub fn enumPayloadToNativeWord(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!u64 {
+    return switch (payload_ty.kind) {
+        .void => 0,
+        .integer => if (value == .integer) @as(u64, @bitCast(value.integer)) else 0,
+        .boolean => if (value == .boolean and value.boolean) 1 else 0,
+        .float => if (value == .float) @as(u64, @bitCast(value.float)) else 0,
+        .string => blk: {
+            if (value != .string) break :blk 0;
+            const boxed = try self.allocator.create(runtime_abi.BridgeString);
+            boxed.* = .{ .ptr = if (value.string.len == 0) null else value.string.ptr, .len = value.string.len };
+            break :blk @intFromPtr(boxed);
+        },
+        .raw_ptr, .construct_any => if (value == .raw_ptr) value.raw_ptr else 0,
+        .ffi_struct, .array, .enum_instance => blk: {
+            const copied = try copyValueToNativeLayout(self, module, payload_ty, value);
+            break :blk if (copied == .raw_ptr) copied.raw_ptr else 0;
+        },
+    };
+}
+
+pub fn enumPayloadFromNativeWord(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) anyerror!runtime_abi.Value {
+    return switch (payload_ty.kind) {
+        .void => .{ .void = {} },
+        .integer => .{ .integer = @as(i64, @bitCast(word)) },
+        .boolean => .{ .boolean = word != 0 },
+        .float => .{ .float = @as(f64, @bitCast(word)) },
+        .string => blk: {
+            if (word == 0) break :blk runtime_abi.Value{ .string = "" };
+            const boxed: *const runtime_abi.BridgeString = @ptrFromInt(@as(usize, @intCast(word)));
+            break :blk runtime_abi.Value{ .string = if (boxed.ptr) |ptr| ptr[0..boxed.len] else "" };
+        },
+        .raw_ptr, .construct_any => .{ .raw_ptr = @intCast(word) },
+        .ffi_struct, .array, .enum_instance => try copyValueFromNativeLayout(self, module, payload_ty, .{ .raw_ptr = @intCast(word) }),
+    };
+}
+
+pub fn destroyEnumNativePayload(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) void {
+    if (word == 0) return;
+    switch (payload_ty.kind) {
+        .ffi_struct => destroyStructNativeLayout(self, module, payload_ty.name orelse return, @intCast(word)),
+        .array => destroyArrayNativeLayout(self, module, payload_ty, @intCast(word)),
+        .enum_instance => destroyEnumNativeLayout(self, module, payload_ty.name orelse return, @intCast(word)),
+        .string => self.allocator.destroy(@as(*runtime_abi.BridgeString, @ptrFromInt(@as(usize, @intCast(word))))),
+        else => {},
+    }
+}
+
+pub fn materializeNativeResult(
+    self: *Vm,
+    module: *const bytecode.Module,
+    return_ty: bytecode.TypeRef,
+    value: runtime_abi.Value,
+) !runtime_abi.Value {
+    if (return_ty.kind != .ffi_struct) return value;
+    if (value != .raw_ptr or value.raw_ptr == 0) {
+        self.rememberError("native struct result requires a valid pointer");
+        return error.RuntimeFailure;
+    }
+    return .{ .raw_ptr = try copyStructFromNativeLayout(self, module, return_ty.name orelse {
+        self.rememberError("native struct result is missing a type name");
+        return error.RuntimeFailure;
+    }, value.raw_ptr) };
+}
+
+pub fn copyStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) anyerror!usize {
+    const type_decl = self.findTypeCached(module, type_name) orelse {
+        self.rememberError("struct type could not be resolved");
+        return error.RuntimeFailure;
+    };
+    const fields = try self.allocator.alloc(runtime_abi.Value, type_decl.fields.len);
+    for (fields) |*field| field.* = .{ .void = {} };
+    var initialized: usize = 0;
+    errdefer {
+        for (fields[0..initialized]) |field| self.heap.dropValue(field);
+        self.allocator.free(fields);
+    }
+    for (type_decl.fields, 0..) |field_decl, index| {
+        fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
+        initialized += 1;
+    }
+    return self.heap.registerStructWithOrigin(type_name, fields, .native_materialize);
+}
+
+pub fn copyStructFromNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
+    const type_decl = self.findTypeCached(module, type_name) orelse {
+        self.rememberError("struct type could not be resolved");
+        return error.RuntimeFailure;
+    };
+    const fields: [*]align(1) runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const offset = try native_layout.fieldOffset(module, type_name, index);
+        const address = native_ptr + offset;
+        switch (field_decl.ty.kind) {
+            .ffi_struct => {
+                const nested_name = field_decl.ty.name orelse {
+                    self.rememberError("nested struct field type is missing a name");
+                    return error.RuntimeFailure;
+                };
+                if (fields[index] != .raw_ptr or fields[index].raw_ptr == 0) {
+                    const old = fields[index];
+                    fields[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
+                    self.heap.dropValue(old);
+                }
+                try copyStructFromNativeLayoutInto(self, module, nested_name, fields[index].raw_ptr, address);
+            },
+            .array => {
+                const native_array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+                if (native_array_ptr == 0) {
+                    const old = fields[index];
+                    fields[index] = .{ .raw_ptr = 0 };
+                    self.heap.dropValue(old);
+                    continue;
+                }
+                if (fields[index] == .raw_ptr and fields[index].raw_ptr != 0) {
+                    try syncArrayFromNativeLayout(self, module, field_decl.ty, fields[index].raw_ptr, native_array_ptr);
+                    continue;
+                }
+                const old = fields[index];
+                fields[index] = .{ .raw_ptr = try copyArrayFromNativeLayout(self, module, field_decl.ty, native_array_ptr) };
+                self.heap.dropValue(old);
+            },
+            else => {
+                const old = fields[index];
+                fields[index] = try helper_impl.readNativeFieldValue(self, module, type_name, field_decl, index, native_ptr);
+                self.heap.dropValue(old);
+            },
+        }
+    }
+}
+
+pub fn copyStructToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
+    const layout = try native_layout.structLayout(module, type_name);
+    const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
+    const words = try self.allocator.alloc(u64, word_count);
+    @memset(std.mem.sliceAsBytes(words), 0);
+    recordNativeStructAlloc(self);
+    errdefer destroyStructNativeLayout(self, module, type_name, @intFromPtr(words.ptr));
+    try copyStructToNativeLayoutInto(self, module, type_name, runtime_ptr, @intFromPtr(words.ptr));
+    return @intFromPtr(words.ptr);
+}
+
+pub fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) anyerror!void {
+    const type_decl = self.findTypeCached(module, type_name) orelse {
+        self.rememberError("struct type could not be resolved");
+        return error.RuntimeFailure;
+    };
+    const fields: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const offset = try native_layout.fieldOffset(module, type_name, index);
+        try helper_impl.writeNativeFieldValue(self, module, field_decl.ty, fields[index], native_ptr + offset);
+    }
+}
+
+pub fn destroyStructNativeLayoutFields(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    const type_decl = self.findTypeCached(module, type_name) orelse return;
+    for (type_decl.fields, 0..) |field_decl, index| {
+        const offset = native_layout.fieldOffset(module, type_name, index) catch continue;
+        const address = native_ptr + offset;
+        switch (field_decl.ty.kind) {
+            .array => {
+                const array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+                destroyArrayNativeLayout(self, module, field_decl.ty, array_ptr);
+            },
+            .ffi_struct => if (field_decl.ty.name) |nested_name| {
+                destroyStructNativeLayoutFields(self, module, nested_name, address);
+            },
+            .enum_instance => {
+                const enum_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+                destroyEnumNativeLayout(self, module, field_decl.ty.name orelse return, enum_ptr);
+            },
+            .construct_any => {},
+            else => {},
+        }
+    }
+}
+
+pub fn recordNativeArrayAlloc(self: *Vm) void {
+    self.native_layout_stats.arrays_current += 1;
+    self.native_layout_stats.arrays_allocated += 1;
+    self.native_layout_stats.arrays_peak = @max(self.native_layout_stats.arrays_peak, self.native_layout_stats.arrays_current);
+}
+
+pub fn recordNativeArrayFree(self: *Vm) void {
+    if (self.native_layout_stats.arrays_current > 0) self.native_layout_stats.arrays_current -= 1;
+    self.native_layout_stats.arrays_freed += 1;
+}
+
+pub fn recordNativeStructAlloc(self: *Vm) void {
+    self.native_layout_stats.structs_current += 1;
+    self.native_layout_stats.structs_allocated += 1;
+    self.native_layout_stats.structs_peak = @max(self.native_layout_stats.structs_peak, self.native_layout_stats.structs_current);
+}
+
+pub fn recordNativeStructFree(self: *Vm) void {
+    if (self.native_layout_stats.structs_current > 0) self.native_layout_stats.structs_current -= 1;
+    self.native_layout_stats.structs_freed += 1;
+}

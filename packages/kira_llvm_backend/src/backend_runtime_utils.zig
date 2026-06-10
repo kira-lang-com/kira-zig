@@ -34,6 +34,25 @@ pub fn writeTextFile(path: []const u8, data: []const u8) !void {
     });
 }
 
+// Optimization level for the Kira-generated native object. Defaults to -O2; a developer
+// can set KIRA_NATIVE_OPT=0/1/2/3/s/z to override (e.g. -O0 for readable disassembly).
+fn nativeOptFlag() [:0]const u8 {
+    const raw = std.c.getenv("KIRA_NATIVE_OPT") orelse return "-O2";
+    const level = std.mem.span(raw);
+    if (level.len == 1) {
+        return switch (level[0]) {
+            '0' => "-O0",
+            '1' => "-O1",
+            '2' => "-O2",
+            '3' => "-O3",
+            's' => "-Os",
+            'z' => "-Oz",
+            else => "-O2",
+        };
+    }
+    return "-O2";
+}
+
 pub fn emitObjectFileViaClang(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
@@ -47,7 +66,10 @@ pub fn emitObjectFileViaClang(
     const ir_text = std.mem.span(ir_text_z);
     const ir_path = try std.fmt.allocPrint(allocator, "{s}.ll", .{object_path});
     defer allocator.free(ir_path);
-    defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, ir_path) catch {};
+    // Retain the emitted .ll for debugging when KIRA_KEEP_IR is set; otherwise it is a
+    // throwaway intermediate deleted after clang consumes it.
+    const keep_ir = std.c.getenv("KIRA_KEEP_IR") != null;
+    defer if (!keep_ir) std.Io.Dir.cwd().deleteFile(std.Options.debug_io, ir_path) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = ir_path,
@@ -68,6 +90,11 @@ pub fn emitObjectFileViaClang(
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(clang_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
+    // Optimize the Kira-generated IR. Without this clang defaults to -O0, so every
+    // native binary (and the on-device app) ran fully unoptimized LLVM codegen — no
+    // mem2reg/SROA/inlining/loop opts. This is the dominant native-perf lever and the
+    // primary path for iPhone. Overridable via KIRA_NATIVE_OPT for debugging.
+    try argv.append(nativeOptFlag());
     try argv.appendSlice(&.{ "-c", "-x", "ir", "-o", object_path, ir_path });
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });

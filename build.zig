@@ -87,11 +87,23 @@ pub fn build(b: *std.Build) void {
     const cli_dep = b.dependency("cli", .{ .target = target, .optimize = optimize });
     modules.put(b.allocator, "cli", cli_dep.module("cli")) catch @panic("failed to register zig-cli module");
 
+    // Interpreter-hot packages are compiled ReleaseFast even in Debug builds:
+    // the Debug dev snapshot is what `kira run` uses for interactive UI work
+    // (live apps, resize/layout frames), and a Debug interpreter is 4-11x
+    // slower than an optimized one (tag/bounds checks alone cost ~7x in the
+    // dispatch loop, so ReleaseSafe is not enough). Unit tests still exercise
+    // these packages with full safety: the test step builds its own
+    // safety-mode variants below. Pass -Dvm-debug to debug the VM runtime
+    // itself with full Debug codegen.
+    const vm_debug = b.option(bool, "vm-debug", "Compile the VM runtime packages with Debug codegen (default: ReleaseFast inside Debug builds for usable `kira run` performance)") orelse false;
+    const runtime_hot_optimize: std.builtin.OptimizeMode = if (optimize == .Debug and !vm_debug) .ReleaseFast else optimize;
+
     for (packages) |pkg| {
+        const pkg_optimize = if (isRuntimeHotPackage(pkg.name)) runtime_hot_optimize else optimize;
         const module = b.createModule(.{
             .root_source_file = b.path(pkg.path),
             .target = target,
-            .optimize = optimize,
+            .optimize = pkg_optimize,
         });
         modules.put(b.allocator, pkg.name, module) catch @panic("failed to register module");
     }
@@ -290,9 +302,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run package tests");
     test_step.dependOn(&real_runtime_verify_cmd.step);
     test_step.dependOn(&platform_matrix_cmd.step);
+    // Unit tests for the interpreter-hot packages run against safety-mode
+    // variants (full optimize-mode checks), independent of the ReleaseFast
+    // modules the `kira` snapshot ships with.
+    var safety_test_modules: std.StringArrayHashMapUnmanaged(*std.Build.Module) = .empty;
+    defer safety_test_modules.deinit(b.allocator);
     for (test_roots) |name| {
+        const root_module = if (isRuntimeHotPackage(name))
+            safetyTestModule(b, name, &modules, &safety_test_modules, target, optimize)
+        else
+            modules.get(name).?;
         const unit_tests = b.addTest(.{
-            .root_module = modules.get(name).?,
+            .root_module = root_module,
         });
         const run_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_tests.step);
@@ -473,6 +494,49 @@ fn hostExecutableName(host: std.Target, base_name: []const u8) []const u8 {
         std.fmt.allocPrint(std.heap.page_allocator, "{s}.exe", .{base_name}) catch @panic("out of memory")
     else
         base_name;
+}
+
+/// Builds (and memoizes) a module for `name` compiled with the requested
+/// optimize mode for unit testing, recursively giving the runtime-hot
+/// dependencies safety-mode variants too; everything else reuses the main
+/// module map.
+fn safetyTestModule(
+    b: *std.Build,
+    name: []const u8,
+    main_modules: *std.StringArrayHashMapUnmanaged(*std.Build.Module),
+    safety_modules: *std.StringArrayHashMapUnmanaged(*std.Build.Module),
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    if (!isRuntimeHotPackage(name)) return main_modules.get(name).?;
+    if (safety_modules.get(name)) |existing| return existing;
+    const pkg = for (packages) |candidate| {
+        if (std.mem.eql(u8, candidate.name, name)) break candidate;
+    } else @panic("unknown runtime-hot package");
+    const module = b.createModule(.{
+        .root_source_file = b.path(pkg.path),
+        .target = target,
+        .optimize = optimize,
+    });
+    safety_modules.put(b.allocator, name, module) catch @panic("failed to register safety test module");
+    for (pkg.imports) |import_name| {
+        module.addImport(import_name, safetyTestModule(b, import_name, main_modules, safety_modules, target, optimize));
+    }
+    return module;
+}
+
+/// Packages on the per-frame interpreter/bridge hot path of `kira run`.
+fn isRuntimeHotPackage(name: []const u8) bool {
+    const hot = [_][]const u8{
+        "kira_vm_runtime",
+        "kira_runtime_abi",
+        "kira_bytecode",
+        "kira_hybrid_runtime",
+    };
+    for (hot) |hot_name| {
+        if (std.mem.eql(u8, name, hot_name)) return true;
+    }
+    return false;
 }
 
 fn channelForOptimize(optimize: std.builtin.OptimizeMode) kira_toolchain.Channel {

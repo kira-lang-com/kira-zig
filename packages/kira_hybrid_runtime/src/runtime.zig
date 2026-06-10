@@ -144,6 +144,16 @@ pub const HybridRuntime = struct {
         });
         for (native_arg_ptrs, 0..) |native_ptr, index| {
             if (native_ptr == 0) continue;
+            // Only a `borrow mut` param can be mutated by the callee, so only it needs to
+            // sync back into the caller's native struct. Writing back a read-only/owned
+            // param is not just wasted work: writeNativeFieldValue *reallocates* pointer
+            // fields (enum/array/nested struct) with the VM allocator and orphans the
+            // originals, leaving the caller's native field pointing at a VM-allocator block
+            // that the caller then frees with libc `free` — the basic-foundation-app event
+            // handler's "pointer being freed was not allocated" double-free (a `borrow`
+            // GraphicsEvent whose enum fields got rewritten under it).
+            const writeback_mode = if (index < function_decl.param_ownership.len) function_decl.param_ownership[index] else .owned;
+            if (writeback_mode != .borrow_mut) continue;
             const local_ty = function_decl.local_types[index];
             try self.vm.writeStructToNativeLayout(
                 &self.module,
@@ -173,6 +183,17 @@ pub const HybridRuntime = struct {
                 .ptr = native_result,
             });
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_result });
+        } else if (function_decl.return_type.kind == .enum_instance and result == .raw_ptr and result.raw_ptr != 0) {
+            // An enum returned to native is moved into a native struct field as a raw pointer
+            // and later freed by that struct's `release_contents` (libc `free`). The VM enum
+            // block is allocated with the runner's `smp_allocator`, so handing it to native
+            // verbatim makes native `free` a non-libc pointer ("pointer being freed was not
+            // allocated") and double-owns it with `pending_callback_return_values`. Lower it
+            // to a libc-`malloc`'d native enum block owned by native, then drop the VM copy
+            // below (`result_owned_by_pending` stays false) — mirroring the ffi_struct path.
+            const type_name = function_decl.return_type.name orelse return error.RuntimeFailure;
+            const native_enum = try self.vm.lowerEnumToNativeOwned(&self.module, type_name, result.raw_ptr);
+            bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_enum });
         } else {
             try self.pending_callback_return_values.append(self.allocator, result);
             result_owned_by_pending = true;

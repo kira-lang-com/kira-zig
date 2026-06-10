@@ -50,15 +50,17 @@ fn runLiveFromManifest(
     try client.sendText(.log_line, try std.fmt.allocPrint(allocator, "live.runner.pid={d}", .{processId()}));
     try client.sendText(.log_line, "live.client.connected");
 
-    var restart_count: u32 = 0;
-    while (true) : (restart_count += 1) {
-        switch (try receiveBundleSet(allocator, &client, local_cache_root, runner_manifest.main_bundle_id, restart_count != 0)) {
-            .bundle_ready => {},
-            .shutdown => return,
-        }
-        const bundle_root = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{runner_manifest.main_bundle_id}) });
-        try runBundle(allocator, &client, bundle_root, runner_manifest.target_path, restart_count);
+    // One bundle set, one run, then exit. Hot reload is supervisor-driven process relaunch:
+    // sokol's macOS/iOS backends never return from the app run loop (`[NSApp run]`;
+    // `sapp_request_quit` terminates the process), so an in-process restart loop here can
+    // never execute a second iteration — the supervisor instead kills this process and
+    // spawns a fresh runner with the rebuilt bundles.
+    switch (try receiveBundleSet(allocator, &client, local_cache_root, runner_manifest.main_bundle_id)) {
+        .bundle_ready => {},
+        .shutdown => return,
     }
+    const bundle_root = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{runner_manifest.main_bundle_id}) });
+    try runBundle(allocator, &client, bundle_root, runner_manifest.target_path);
 }
 
 fn runStandaloneFromManifest(
@@ -182,7 +184,6 @@ fn runBundle(
     client: *RunnerClient,
     bundle_root: []const u8,
     target_root: []const u8,
-    restart_count: u32,
 ) !void {
     first_frame_sent = false;
     const bundle_manifest_path = try std.fs.path.join(allocator, &.{ bundle_root, "KiraBundle.toml" });
@@ -210,11 +211,7 @@ fn runBundle(
     try runtime.bridge.installLogHook(kiraLiveLogHook);
     startNativeQuitTimer(&runtime) catch {};
     try client.sendText(.log_line, "live.bundle.linked");
-    if (restart_count == 0) {
-        try client.sendText(.log_line, "live.entrypoint.started");
-    } else {
-        try client.sendText(.log_line, "live.entrypoint.restarted");
-    }
+    try client.sendText(.log_line, "live.entrypoint.started");
     var target_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, target_root, .{});
     defer target_dir.close(std.Options.debug_io);
     try std.process.setCurrentDir(std.Options.debug_io, target_dir);
@@ -226,11 +223,7 @@ fn runBundle(
         }
         return err;
     };
-    if (restart_count == 0) {
-        try client.sendText(.log_line, "live.entrypoint.finished");
-    } else {
-        try client.sendText(.log_line, "live.hot_restart.finished");
-    }
+    try client.sendText(.log_line, "live.entrypoint.finished");
 }
 
 fn startNativeQuitTimer(runtime: *hybrid_runtime.HybridRuntime) !void {
@@ -256,7 +249,6 @@ fn receiveBundleSet(
     client: *RunnerClient,
     local_cache_root: []const u8,
     main_bundle_id: []const u8,
-    is_reload: bool,
 ) !ReceiveResult {
     while (true) {
         const frame = try client.readFrame(allocator);
@@ -267,15 +259,11 @@ fn receiveBundleSet(
             .replace_bundle => {
                 const payload = try protocol.decodeReplaceBundlePayload(allocator, frame.payload);
                 try client.sendText(.log_line, "live.client.bundle.received");
-                try client.sendText(.log_line, if (is_reload) "live.bundle.update.received" else "live.bundle.received");
+                try client.sendText(.log_line, "live.bundle.received");
                 const bundle_dir = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{payload.bundle_id}) });
                 try storeBundlePayload(bundle_dir, payload);
                 if (std.mem.eql(u8, payload.bundle_id, main_bundle_id)) {
                     try client.sendText(.log_line, "live.bundle.loaded");
-                    if (is_reload) {
-                        try client.sendText(.log_line, "live.client.hot_restart.started");
-                        try client.sendText(.log_line, "live.hot_restart.started");
-                    }
                     return .bundle_ready;
                 }
             },

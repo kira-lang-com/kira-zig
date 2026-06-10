@@ -47,6 +47,20 @@ pub const OpCode = enum(u8) {
     call_virtual,
     call_value,
     ret,
+    // --- VM-internal fused instructions ------------------------------------
+    // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
+    // private per-function code copies. They never appear in compiler output
+    // or serialized modules (serialize/deserialize reject them), and each one
+    // collapses a hot multi-instruction pattern whose intermediate registers
+    // are provably dead outside the pattern. Branch targets are direct pc
+    // offsets (the decode pass resolves labels before fusing).
+    fused_compare_branch,
+    fused_compare_const_branch,
+    fused_cmp_local_const_branch,
+    fused_arith_locals_store,
+    fused_arith_local_const_store,
+    fused_arith_locals_ret,
+    fused_array_bind_local,
 };
 
 pub const Instruction = union(OpCode) {
@@ -96,6 +110,34 @@ pub const Instruction = union(OpCode) {
     call_virtual: struct { receiver: u32, static_type_name: []const u8, method_name: []const u8, args: []const u32, return_ty: TypeRef = .{ .kind = .void }, dst: ?u32 = null },
     call_value: struct { callee: u32, args: []const u32, param_ownership: []const ownership_mode.OwnershipMode = &.{}, dst: ?u32 = null },
     ret: struct { src: ?u32 = null },
+    // VM-internal fused forms; see the OpCode comment above.
+    // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
+    fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },
+    // const_int(c, imm); compare(dst, lhs, c); branch(dst, ...).
+    fused_compare_const_branch: struct { lhs: u32, imm: i64, op: CompareOp, true_target: u32, false_target: u32 },
+    // load_local(a, local); const_int(c, imm); compare(dst, a, c); branch(dst, ...).
+    fused_cmp_local_const_branch: struct { local: u32, imm: i64, op: CompareOp, true_target: u32, false_target: u32 },
+    // load_local(a, lhs); load_local(b, rhs); <arith>(d, a, b); store_local(dst, d).
+    fused_arith_locals_store: struct { kind: ArithKind, lhs_local: u32, rhs_local: u32, dst_local: u32 },
+    // load_local(a, lhs); const_int(c, imm); <arith>(d, a, c); store_local(dst, d).
+    fused_arith_local_const_store: struct { kind: ArithKind, lhs_local: u32, imm: i64, dst_local: u32 },
+    // load_local(a, lhs); load_local(b, rhs); <arith>(d, a, b); ret(d) — the
+    // entire body of a leaf arithmetic function.
+    fused_arith_locals_ret: struct { kind: ArithKind, lhs_local: u32, rhs_local: u32 },
+    // array_get(e, array, index, ffi_struct); load_local(p, dst_local, borrow);
+    // copy_indirect(dst=p, src=e) — the `for x in array` element binding. The
+    // decode pass proves the binding local is read-only and the array outlives
+    // it, so the interpreter aliases the element instead of deep-cloning it
+    // twice (matching the native backend, which never copies borrowed loop
+    // elements). type_name preserves the clone fallback for native-layout
+    // elements.
+    fused_array_bind_local: struct { array: u32, index: u32, dst_local: u32, type_name: []const u8 },
+};
+
+pub const ArithKind = enum(u8) {
+    add,
+    subtract,
+    multiply,
 };
 
 pub const FunctionConstRepresentation = enum(u8) {

@@ -3,46 +3,8 @@ const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 const native_layout = @import("native_layout.zig");
 
-pub fn collectArgs(allocator: std.mem.Allocator, registers: []const runtime_abi.Value, argument_registers: []const u32) ![]runtime_abi.Value {
-    const values = try allocator.alloc(runtime_abi.Value, argument_registers.len);
-    for (argument_registers, 0..) |register_index, index| {
-        values[index] = registers[register_index];
-    }
-    return values;
-}
-
 pub fn resolveFunctionPointer(hooks: anytype, resolve_function: anytype, function_id: u32) !usize {
     return resolve_function(hooks.context, function_id);
-}
-
-pub fn buildLabelOffsets(allocator: std.mem.Allocator, instructions: []const bytecode.Instruction) ![]usize {
-    var max_label: usize = 0;
-    var has_label = false;
-    for (instructions) |inst| {
-        if (inst != .label) continue;
-        has_label = true;
-        max_label = @max(max_label, @as(usize, @intCast(inst.label.id)));
-    }
-
-    if (!has_label) return allocator.alloc(usize, 0);
-
-    const offsets = try allocator.alloc(usize, max_label + 1);
-    @memset(offsets, std.math.maxInt(usize));
-
-    for (instructions, 0..) |inst, index| {
-        if (inst != .label) continue;
-        offsets[@as(usize, @intCast(inst.label.id))] = index;
-    }
-
-    return offsets;
-}
-
-pub fn resolveLabelOffset(label_offsets: []const usize, label: u32) !usize {
-    const label_index = @as(usize, @intCast(label));
-    if (label_index >= label_offsets.len) return error.RuntimeFailure;
-    const offset = label_offsets[label_index];
-    if (offset == std.math.maxInt(usize)) return error.RuntimeFailure;
-    return offset;
 }
 
 pub fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl {

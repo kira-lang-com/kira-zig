@@ -9,10 +9,10 @@ const web_live = @import("web_live.zig");
 const ios_live = @import("ios_live.zig");
 const apple_live = @import("apple_live.zig");
 const android_live = @import("android_live.zig");
+const SourceWatcher = @import("source_watcher.zig").SourceWatcher;
 
 const ParsedArgs = live_args.ParsedArgs;
 const PreparedRunner = apple_runner.PreparedRunner;
-const SourceSnapshot = shared.SourceSnapshot;
 const LiveServer = shared.LiveServer;
 const parseArgs = live_args.parseArgs;
 const renderStandaloneDiagnostic = shared.renderStandaloneDiagnostic;
@@ -82,10 +82,6 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         return auditScaffoldedRunnerOrDiagnose(allocator, parsed.platform, target, stdout, stderr);
     }
 
-    const initial_source_snapshot = if (parsed.run_for_ns != null)
-        try SourceSnapshot.capture(allocator, target.validation_entrypoint_path)
-    else
-        null;
     const runner_kind = live.runnerKind(parsed.platform) orelse return error.CommandFailed;
     const selector = try runnerSelector(allocator, runner_kind);
     const bundles = live.buildBundles(allocator, target, selector, false) catch |err| switch (err) {
@@ -110,7 +106,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         return;
     }
 
-    try runDesktop(allocator, parsed, target, bundles, runner, initial_source_snapshot, stdout, stderr);
+    try runDesktop(allocator, parsed, target, bundles, runner, stdout, stderr);
 }
 
 fn resolveTargetOrDiagnose(
@@ -149,7 +145,6 @@ fn runDesktop(
     target: live.ResolvedLiveTarget,
     bundles: live.BundleBuildArtifacts,
     runner: PreparedRunner,
-    initial_source_snapshot: ?SourceSnapshot,
     stdout: anytype,
     stderr: anytype,
 ) !void {
@@ -179,88 +174,176 @@ fn runDesktop(
     try runner_argv.append(runner.executable_path.?);
     if (runner.subcommand) |subcommand| try runner_argv.append(subcommand);
     try runner_argv.append(runner.manifest_path);
-    var child = try std.process.spawn(io, .{
-        .argv = runner_argv.items,
-        .cwd = .{ .path = target.target_root },
-        .environ_map = &environ_map,
-        .stdin = .ignore,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    try emitEvent(stdout, "live.runner.launched", "pid={any}", .{child.id});
 
-    var connection = (try acceptClientOrDiagnose(allocator, &server, &child, io, target, stdout, stderr)) orelse return;
-    defer connection.close();
-    try emitEvent(stdout, "live.client.connected", "target={s}", .{target.target_root});
-    try emitEvent(stdout, "live.bundle.requested", "client=desktop", .{});
-    try connection.sendGraphAndBundles();
-    try emitEvent(stdout, "live.bundle.graph.sent", "bundles={d}", .{bundles.graph.bundles.len});
-    try emitEvent(stdout, "live.bundle.sent", "mode=initial", .{});
-    try emitEvent(stdout, "live.bundle.served", "mode=initial", .{});
+    var source_watcher = try createSourceWatcher(allocator, target, bundles);
+    defer source_watcher.deinit();
+
     const require_frame = !parsed.headless;
     if (parsed.headless) {
         try emitEvent(stdout, "live.runner.headless", "target={s}", .{target.target_root});
     }
-    const health_ok = try connection.waitForHealthMarkers(stdout, 30 * std.time.ns_per_s, require_frame);
-    if (!health_ok) {
-        killAndWait(&child, io);
-        const diagnostic = if (require_frame)
-            try diag_messages.CliMessages.liveFrameNotPresented(allocator, target.target_root)
-        else
-            try diag_messages.CliMessages.liveEntrypointDidNotStart(allocator, target.target_root);
-        try renderStandaloneDiagnostic(stderr, diagnostic);
-        return error.CommandFailed;
-    }
-    try emitEvent(stdout, "live.session.ready", "target={s}", .{target.target_root});
+    const session_start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
 
-    if (parsed.run_for_ns) |duration_ns| {
-        const start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
-        var source_snapshot = initial_source_snapshot orelse try SourceSnapshot.capture(allocator, target.validation_entrypoint_path);
-        while (elapsedSince(start) < duration_ns) {
+    // Desktop hot reload relaunches the runner process per reload: sokol's macOS backend
+    // enters `[NSApp run]`, which never returns — `sapp_request_quit` terminates the whole
+    // process via `applicationWillTerminate` — so an in-process "quit and re-run the bundle"
+    // restart loop is impossible on macOS. Each reload generation spawns a fresh runner,
+    // re-accepts its connection, resends the rebuilt bundles, and re-verifies the full
+    // health-marker handshake (including `live.frame.presented`, the real first-frame
+    // evidence) before declaring the reload complete.
+    var reload_generation: u32 = 0;
+    session: while (true) : (reload_generation += 1) {
+        var child = try std.process.spawn(io, .{
+            .argv = runner_argv.items,
+            .cwd = .{ .path = target.target_root },
+            .environ_map = &environ_map,
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        });
+        if (reload_generation == 0) {
+            try emitEvent(stdout, "live.runner.launched", "pid={any}", .{child.id});
+        } else {
+            try emitEvent(stdout, "live.runner.relaunched", "pid={any} generation={d}", .{ child.id, reload_generation });
+        }
+
+        var connection = (try acceptClientOrDiagnose(allocator, &server, &child, io, target, stdout, stderr)) orelse return;
+        defer connection.close();
+        try emitEvent(stdout, "live.client.connected", "target={s}", .{target.target_root});
+        try emitEvent(stdout, "live.bundle.requested", "client=desktop", .{});
+        try connection.sendGraphAndBundles();
+        try emitEvent(stdout, "live.bundle.graph.sent", "bundles={d}", .{server.graph.bundles.len});
+        const bundle_mode: []const u8 = if (reload_generation == 0) "mode=initial" else "mode=full-bundle";
+        try emitEvent(stdout, "live.bundle.sent", "{s}", .{bundle_mode});
+        try emitEvent(stdout, "live.bundle.served", "{s}", .{bundle_mode});
+        const health_ok = try connection.waitForHealthMarkers(stdout, 30 * std.time.ns_per_s, require_frame);
+        if (!health_ok) {
+            killAndWait(&child, io);
+            const diagnostic = if (reload_generation != 0)
+                try diag_messages.CliMessages.liveReloadTimedOut(allocator, target.target_root)
+            else if (require_frame)
+                try diag_messages.CliMessages.liveFrameNotPresented(allocator, target.target_root)
+            else
+                try diag_messages.CliMessages.liveEntrypointDidNotStart(allocator, target.target_root);
+            try renderStandaloneDiagnostic(stderr, diagnostic);
+            return error.CommandFailed;
+        }
+        if (reload_generation == 0) {
+            try emitEvent(stdout, "live.session.ready", "target={s}", .{target.target_root});
+        } else {
+            try emitEvent(stdout, "live.reload.completed", "mode=relaunch generation={d}", .{reload_generation});
+        }
+
+        while (true) {
             try std.Options.debug_io.sleep(.fromNanoseconds(250 * std.time.ns_per_ms), .awake);
-            if (try source_snapshot.changed(target.validation_entrypoint_path)) {
-                try emitEvent(stdout, "live.source.changed", "path={s}", .{target.validation_entrypoint_path});
-                try emitEvent(stdout, "live.rebuild.started", "target={s}", .{target.target_root});
-                const rebuilt = live.buildBundles(allocator, target, try runnerSelector(allocator, .desktop_dynamic_host), false) catch {
-                    try renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveBundleBuildFailed(allocator, target.target_root));
-                    killAndWait(&child, io);
-                    return error.CommandFailed;
-                };
-                try emitEvent(stdout, "live.rebuild.finished", "target={s}", .{target.target_root});
-                try emitEvent(stdout, "live.bundle.rebuilt", "mode=full-bundle", .{});
-                connection.graph = rebuilt.graph;
-                try emitEvent(stdout, "live.reload.notified", "mode=full-bundle", .{});
-                try connection.sendGraphAndBundles();
-                try emitEvent(stdout, "live.bundle.sent", "mode=full-bundle", .{});
-                try emitEvent(stdout, "live.bundle.served", "mode=full-bundle", .{});
-                if (!try connection.waitForReloadMarkers(stdout, 20 * std.time.ns_per_s)) {
-                    killAndWait(&child, io);
-                    try renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveReloadTimedOut(allocator, target.target_root));
-                    return error.CommandFailed;
+            if (parsed.run_for_ns) |duration_ns| {
+                if (elapsedSince(session_start) >= duration_ns) {
+                    try finishQuitAfterSession(&child, &connection, io, stdout);
+                    try stderr.print("live runner quit-after elapsed: {s}\n", .{runner.manifest_path});
+                    return;
                 }
-                try source_snapshot.refresh(target.validation_entrypoint_path);
             }
             if (try pollChildExited(&child)) {
-                break;
+                if (parsed.run_for_ns != null) {
+                    // The runner self-quit via its KIRA_LIVE_QUIT_AFTER_NS timer.
+                    try emitEvent(stdout, "live.session.ended", "reason=quit-after", .{});
+                    try emitEvent(stdout, "live.shutdown.finished", "reason=quit-after", .{});
+                    try stderr.print("live runner quit-after elapsed: {s}\n", .{runner.manifest_path});
+                    return;
+                }
+                break :session;
+            }
+            if (try source_watcher.changed()) {
+                const rebuilt = rebuildBundles(allocator, target, stdout, stderr);
+                try source_watcher.refresh();
+                if (rebuilt) |graph| {
+                    server.graph = graph;
+                    try emitEvent(stdout, "live.reload.notified", "mode=relaunch", .{});
+                    killAndWait(&child, io);
+                    continue :session;
+                } else |err| switch (err) {
+                    // A broken edit must not end the live session: keep the running app
+                    // alive and wait for the next save.
+                    error.CommandFailed => try emitEvent(stdout, "live.rebuild.failed", "target={s}", .{target.target_root}),
+                    else => {
+                        killAndWait(&child, io);
+                        return err;
+                    },
+                }
             }
         }
-        if (child.id != null) {
-            try emitEvent(stdout, "live.shutdown.started", "reason=quit-after", .{});
-            try protocol.writeFrame(&connection.writer.interface, .shutdown, "quit-after");
-            try connection.writer.interface.flush();
-            _ = try connection.waitForShutdownAck(stdout, 2 * std.time.ns_per_s);
-        }
-        if (child.id != null and !try waitChildExitBefore(&child, 2 * std.time.ns_per_s)) {
-            killAndWait(&child, io);
-            try emitEvent(stdout, "live.runner.force_killed", "reason=quit-after", .{});
-        }
-        try emitEvent(stdout, "live.session.ended", "reason=quit-after", .{});
-        try emitEvent(stdout, "live.shutdown.finished", "reason=quit-after", .{});
-        try stderr.print("live runner quit-after elapsed: {s}\n", .{runner.manifest_path});
-        return;
     }
-    _ = try child.wait(io);
     try stderr.print("live runner completed: {s}\n", .{runner.manifest_path});
+}
+
+fn finishQuitAfterSession(
+    child: *std.process.Child,
+    connection: *shared.LiveConnection,
+    io: std.Io,
+    stdout: anytype,
+) !void {
+    if (child.id != null) {
+        try emitEvent(stdout, "live.shutdown.started", "reason=quit-after", .{});
+        try protocol.writeFrame(&connection.writer.interface, .shutdown, "quit-after");
+        try connection.writer.interface.flush();
+        _ = try connection.waitForShutdownAck(stdout, 2 * std.time.ns_per_s);
+    }
+    if (child.id != null and !try waitChildExitBefore(child, 2 * std.time.ns_per_s)) {
+        killAndWait(child, io);
+        try emitEvent(stdout, "live.runner.force_killed", "reason=quit-after", .{});
+    }
+    try emitEvent(stdout, "live.session.ended", "reason=quit-after", .{});
+    try emitEvent(stdout, "live.shutdown.finished", "reason=quit-after", .{});
+}
+
+fn createSourceWatcher(
+    allocator: std.mem.Allocator,
+    target: live.ResolvedLiveTarget,
+    bundles: live.BundleBuildArtifacts,
+) !SourceWatcher {
+    var watcher = SourceWatcher.init(allocator);
+    errdefer watcher.deinit();
+
+    // Main app directory
+    const main_app_dir = try std.fs.path.join(allocator, &.{ target.validation_app_root, "app" });
+    defer allocator.free(main_app_dir);
+    if (directoryExists(main_app_dir)) {
+        try watcher.addDirectory(main_app_dir);
+    }
+
+    // Dependency app directories
+    for (bundles.graph.bundles) |bundle| {
+        const app_dir = try std.fs.path.join(allocator, &.{ bundle.package_root, "app" });
+        defer allocator.free(app_dir);
+        if (directoryExists(app_dir)) {
+            try watcher.addDirectory(app_dir);
+        }
+    }
+
+    return watcher;
+}
+
+fn rebuildBundles(
+    allocator: std.mem.Allocator,
+    target: live.ResolvedLiveTarget,
+    stdout: anytype,
+    stderr: anytype,
+) !live.BundleGraph {
+    try emitEvent(stdout, "live.source.changed", "path={s}", .{target.validation_entrypoint_path});
+    try emitEvent(stdout, "live.rebuild.started", "target={s}", .{target.target_root});
+    const rebuilt = live.buildBundles(allocator, target, try runnerSelector(allocator, .desktop_dynamic_host), false) catch {
+        try renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveBundleBuildFailed(allocator, target.target_root));
+        return error.CommandFailed;
+    };
+    try emitEvent(stdout, "live.rebuild.finished", "target={s}", .{target.target_root});
+    try emitEvent(stdout, "live.bundle.rebuilt", "mode=full-bundle", .{});
+    return rebuilt.graph;
+}
+
+fn directoryExists(path: []const u8) bool {
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
+    dir.close(std.Options.debug_io);
+    return true;
 }
 
 fn auditScaffoldedRunnerOrDiagnose(

@@ -19,3 +19,4 @@ pub const apple_runner = @import("apple_runner.zig");
 pub const apple_workspace = @import("apple_workspace.zig");
 pub const apple_live = @import("apple_live.zig");
 pub const live_args = @import("live_args.zig");
+pub const SourceWatcher = @import("source_watcher.zig").SourceWatcher;

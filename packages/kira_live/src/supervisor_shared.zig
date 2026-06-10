@@ -147,30 +147,6 @@ pub const LiveConnection = struct {
         return false;
     }
 
-    pub fn waitForReloadMarkers(self: *LiveConnection, stdout: anytype, timeout_ns: u64) !bool {
-        const markers = [_][]const u8{
-            "live.client.bundle.received",
-            "live.client.hot_restart.started",
-            "live.hot_restart.finished",
-            "live.entrypoint.restarted",
-        };
-        var seen = [_]bool{false} ** markers.len;
-        const start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
-        while (elapsedSince(start) < timeout_ns) {
-            if (self.reader.interface.bufferedLen() == 0 and !try waitReadable(self.stream.socket.handle, 250)) continue;
-            const frame = protocol.readFrame(self.allocator, &self.reader.interface) catch return false;
-            if (frame.kind == .log_line) {
-                try stdout.print("{s}\n", .{frame.payload});
-                for (markers, 0..) |marker, index| {
-                    if (std.mem.eql(u8, frame.payload, marker)) seen[index] = true;
-                }
-                if (seen[2] and seen[3]) return true;
-            }
-            if (frame.kind == .shutdown_ack) return false;
-        }
-        return false;
-    }
-
     pub fn waitForShutdownAck(self: *LiveConnection, stdout: anytype, timeout_ns: u64) !bool {
         const start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
         while (elapsedSince(start) < timeout_ns) {

@@ -5,7 +5,7 @@ pub fn compareValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value
     switch (lhs) {
         .integer => |lhs_value| {
             if (rhs != .integer) {
-                vm.rememberError("vm compare expects matching operand types");
+                vm.rememberFmt("vm compare expects matching operand types (lhs={s}, rhs={s})", .{ @tagName(lhs), @tagName(rhs) });
                 return error.RuntimeFailure;
             }
             return switch (op) {
@@ -19,7 +19,7 @@ pub fn compareValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value
         },
         .float => |lhs_value| {
             if (rhs != .float) {
-                vm.rememberError("vm compare expects matching operand types");
+                vm.rememberFmt("vm compare expects matching operand types (lhs={s}, rhs={s})", .{ @tagName(lhs), @tagName(rhs) });
                 return error.RuntimeFailure;
             }
             return switch (op) {
@@ -33,7 +33,7 @@ pub fn compareValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value
         },
         .boolean => |lhs_value| {
             if (rhs != .boolean) {
-                vm.rememberError("vm compare expects matching operand types");
+                vm.rememberFmt("vm compare expects matching operand types (lhs={s}, rhs={s})", .{ @tagName(lhs), @tagName(rhs) });
                 return error.RuntimeFailure;
             }
             return switch (op) {
@@ -47,7 +47,7 @@ pub fn compareValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value
         },
         .raw_ptr => |lhs_value| {
             if (rhs != .raw_ptr) {
-                vm.rememberError("vm compare expects matching operand types");
+                vm.rememberFmt("vm compare expects matching operand types (lhs={s}, rhs={s})", .{ @tagName(lhs), @tagName(rhs) });
                 return error.RuntimeFailure;
             }
             return switch (op) {
