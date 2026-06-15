@@ -286,6 +286,35 @@ pub fn resolveFieldMember(
     return match.?;
 }
 
+// Lower bare member access (`widget.node`, no parens) to a call when the member is a computed
+// accessor (`is_accessor` header), which is how the Widget->Node bridge runs. Returns null when
+// the member is not an accessor, so ordinary field access proceeds normally.
+pub fn tryLowerComputedAccessor(
+    ctx: *shared.Context,
+    object: *model.Expr,
+    member: []const u8,
+    span: source_pkg.Span,
+) !?*model.Expr {
+    const headers = ctx.function_headers orelse return null;
+    const container_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return null;
+    const type_name = container_type.name orelse return null;
+    const key = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ type_name, member });
+    const header = headers.get(key) orelse return null;
+    if (!header.is_accessor) return null;
+
+    const args = try ctx.allocator.alloc(*model.Expr, 1);
+    args[0] = object;
+    const lowered = try ctx.allocator.create(model.Expr);
+    lowered.* = .{ .call = .{
+        .callee_name = key,
+        .function_id = header.id,
+        .args = args,
+        .ty = header.return_type,
+        .span = span,
+    } };
+    return lowered;
+}
+
 pub fn resolveMethodMemberOrNull(
     ctx: *shared.Context,
     object_type: model.ResolvedType,

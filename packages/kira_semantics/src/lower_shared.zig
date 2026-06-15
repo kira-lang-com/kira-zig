@@ -65,6 +65,10 @@ pub const FunctionHeader = struct {
     return_ownership: model.OwnershipMode = .owned,
     is_extern: bool = false,
     foreign: ?model.ForeignFunction = null,
+    // A computed-property accessor synthesized from a `let name: T { ... }` member. Such a
+    // method may be invoked by bare member access (`widget.node`, no parentheses), which is how
+    // the Widget->Node bridge runs. Ordinary methods require an explicit call.
+    is_accessor: bool = false,
     span: source_pkg.Span,
 };
 

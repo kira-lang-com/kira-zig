@@ -15,6 +15,7 @@ const widget_content = @import("lower_widget_content.zig");
 const content_composition = @import("lower_construct_content.zig");
 const construct_functions = @import("lower_construct_functions.zig");
 const construct_members = @import("lower_construct_members.zig");
+const node_bridge = @import("lower_construct_node_bridge.zig");
 
 pub const lowerImports = type_impl.lowerImports;
 pub const composeAnnotationGeneratedFunctions = type_impl.composeAnnotationGeneratedFunctions;
@@ -349,7 +350,10 @@ pub fn lowerProgramWithOptions(
     for (program.decls) |decl| {
         switch (decl) {
             .type_decl => |type_decl| try registerTypeMethodHeaders(&ctx, type_decl, &function_headers),
-            .construct_form_decl => |form_decl| try construct_functions.registerConstructFormFunctionHeaders(&ctx, form_decl, &function_headers),
+            .construct_form_decl => |form_decl| {
+                try construct_functions.registerConstructFormFunctionHeaders(&ctx, form_decl, &function_headers);
+                try node_bridge.registerFormAccessorHeaders(&ctx, form_decl, &function_headers);
+            },
             .function_decl => {},
             else => {},
         }
@@ -408,6 +412,7 @@ pub fn lowerProgramWithOptions(
             .construct_form_decl => |form_decl| {
                 try forms.append(try lowerConstructForm(&ctx, form_decl, imports, constructs.items, &construct_headers, &form_parent));
                 try functions.appendSlice(try construct_functions.lowerConstructFormFunctions(&ctx, form_decl, imports, &function_headers));
+                try functions.appendSlice(try node_bridge.lowerFormAccessors(&ctx, form_decl, imports, &function_headers));
             },
             .function_decl => |function_decl| {
                 const lowered = try lowerFunction(&ctx, function_decl, imports, &function_headers);

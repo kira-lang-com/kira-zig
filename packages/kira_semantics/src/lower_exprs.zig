@@ -9,6 +9,7 @@ const calls = @import("lower_exprs_calls.zig");
 const members = @import("lower_exprs_members.zig");
 const native_state = @import("lower_exprs_native_state.zig");
 const matches = @import("lower_stmts_match.zig");
+const attempts = @import("lower_stmts_attempt.zig");
 const types = @import("lower_exprs_types.zig");
 
 pub const lowerStructLiteralExpr = calls.lowerStructLiteralExpr;
@@ -120,6 +121,13 @@ pub fn lowerBlockStatements(
 ) anyerror![]model.Statement {
     var statements = std.array_list.Managed(model.Statement).init(ctx.allocator);
     for (block.statements) |statement| {
+        // `attempt` desugars to one or more `match` statements, so it is expanded here where
+        // multiple lowered statements can be appended (HIR has no block statement).
+        if (statement == .attempt_stmt) {
+            const lowered = try attempts.lowerAttempt(ctx, statement.attempt_stmt, imports, scope, locals, next_local_id, function_headers, loop_depth, expected_return_type);
+            try statements.appendSlice(lowered);
+            continue;
+        }
         try statements.append(try lowerStatement(ctx, statement, imports, scope, locals, next_local_id, function_headers, loop_depth, expected_return_type));
     }
     return statements.toOwnedSlice();
@@ -335,6 +343,19 @@ pub fn lowerStatement(
                 null,
             .span = node.span,
         } },
+        // `attempt` is expanded in `lowerBlockStatements` (it may yield multiple statements),
+        // so it should never reach the single-statement lowering path.
+        .attempt_stmt => |node| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM139",
+                .title = "attempt is not valid here",
+                .message = "An `attempt { ... } handle { ... }` block may only appear as a statement in a block body.",
+                .labels = &.{diagnostics.primaryLabel(node.span, "attempt is not valid in this position")},
+                .help = "Move the `attempt` into a function or block body.",
+            });
+            return error.DiagnosticsEmitted;
+        },
     };
 }
 
@@ -844,6 +865,11 @@ pub fn lowerExpr(
                 lowered.* = count_expr;
                 return lowered;
             }
+            // A computed-property accessor (`widget.node`) runs the Widget->Node bridge.
+            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span)) |accessor| {
+                lowered.* = accessor.*;
+                return lowered;
+            }
             const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse {
                 try emitMemberAccessRequiresStructuredType(ctx, node.span);
                 return error.DiagnosticsEmitted;
@@ -953,6 +979,20 @@ pub fn lowerExpr(
             } };
         },
         .call => |node| try lowerCallExpr(ctx, lowered, node, imports, scope, function_headers),
+        // A `try` expression is only meaningful as the initializer of a `let` binding or an
+        // expression statement inside an `attempt` block, where it is desugared before lowering.
+        // Any `try` reaching general expression lowering is in an unsupported position.
+        .try_expr => |node| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM133",
+                .title = "'try' is not valid here",
+                .message = "`try` may only be used as a `let` initializer or expression statement inside an `attempt { ... }` block.",
+                .labels = &.{diagnostics.primaryLabel(node.span, "`try` is not valid in this position")},
+                .help = "Wrap the failing call in an `attempt { ... } handle { ... }` block, and use `try` as `let x = try call()` or as a statement `try call()`.",
+            });
+            return error.DiagnosticsEmitted;
+        },
     }
     return lowered;
 }
