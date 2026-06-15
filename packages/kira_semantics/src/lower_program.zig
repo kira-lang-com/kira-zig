@@ -412,6 +412,12 @@ pub fn lowerProgramWithOptions(
     try buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
     ctx.form_families = &form_families;
 
+    // Record each declaration's `@Content` fields so construction routes trailing blocks into them.
+    var form_content_fields = std.StringHashMapUnmanaged([]const shared.ContentFieldRef){};
+    defer form_content_fields.deinit(allocator);
+    try buildFormContentFields(allocator, program, &form_content_fields);
+    ctx.form_content_fields = &form_content_fields;
+
     for (program.decls, 0..) |decl, decl_index| {
         const previous_package = ctx.current_package;
         ctx.current_package = declOrigin(program, decl_index).package_name;
@@ -550,13 +556,43 @@ fn collectConstructAncestry(
     }
 }
 
+fn buildFormContentFields(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    out: *std.StringHashMapUnmanaged([]const shared.ContentFieldRef),
+) !void {
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        var fields = std.array_list.Managed(shared.ContentFieldRef).init(allocator);
+        for (form_decl.body.members) |member| {
+            if (member != .field_decl) continue;
+            const field = member.field_decl;
+            if (!construct_members.hasContentAnnotation(field.annotations)) continue;
+            try fields.append(.{
+                .name = field.name,
+                .is_list = field.type_expr != null and field.type_expr.?.* == .array,
+            });
+        }
+        if (fields.items.len > 0) try out.put(allocator, form_decl.name, try fields.toOwnedSlice());
+    }
+}
+
 fn synthesizeFormStruct(allocator: std.mem.Allocator, form_decl: syntax.ast.ConstructFormDecl) !syntax.ast.TypeDecl {
     var members = std.array_list.Managed(syntax.ast.BodyMember).init(allocator);
     for (form_decl.body.members) |member| {
         if (member != .field_decl) continue;
         const field = member.field_decl;
+        // A computed `let node: T { ... }` is the bridge accessor, never stored state.
         if (field.body != null) continue;
-        if (construct_members.hasContentAnnotation(field.annotations)) continue;
+        if (construct_members.hasContentAnnotation(field.annotations)) {
+            // Caller-provided children are stored as `any Family` slots so heterogeneous widgets
+            // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `any` form.
+            var content_field = field;
+            content_field.type_expr = if (field.type_expr) |type_expr| try anyifyContentType(allocator, type_expr) else null;
+            try members.append(.{ .field_decl = content_field });
+            continue;
+        }
         try members.append(.{ .field_decl = field });
     }
     return .{
@@ -567,6 +603,27 @@ fn synthesizeFormStruct(allocator: std.mem.Allocator, form_decl: syntax.ast.Cons
         .members = try members.toOwnedSlice(),
         .span = form_decl.span,
     };
+}
+
+// Rewrite an `@Content` field's family type to its `any` form: `[Widget]` -> `[any Widget]`,
+// `Widget` -> `any Widget`. A type already wrapped in `any` is left as-is.
+fn anyifyContentType(allocator: std.mem.Allocator, type_expr: *syntax.ast.TypeExpr) !*syntax.ast.TypeExpr {
+    switch (type_expr.*) {
+        .array => |array| {
+            const element = try anyifyContentType(allocator, array.element_type);
+            const rewritten = try allocator.create(syntax.ast.TypeExpr);
+            rewritten.* = .{ .array = .{ .element_type = element, .span = array.span } };
+            return rewritten;
+        },
+        .named => |named| {
+            const target = try allocator.create(syntax.ast.TypeExpr);
+            target.* = .{ .named = named };
+            const rewritten = try allocator.create(syntax.ast.TypeExpr);
+            rewritten.* = .{ .any = .{ .target = target, .span = named.span } };
+            return rewritten;
+        },
+        else => return type_expr,
+    }
 }
 
 fn lowerConstructForm(

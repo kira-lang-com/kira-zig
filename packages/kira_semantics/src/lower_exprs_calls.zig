@@ -243,6 +243,75 @@ pub fn resolveTypeConstructionFieldIndex(
     return null;
 }
 
+// Build the field arguments for a declaration construction `Foo(...) { ... }` whose `@Content`
+// fields are filled by the trailing block. Returns null when `Foo` has no content fields or no
+// trailing block (ordinary construction). Explicit `(...)` args are preserved, then each content
+// field is filled: a `[Widget]` field from all block items as an array literal, a single `Widget`
+// field from one item, and multiple fields from named fills (`header { ... }`). Arity/type are
+// already validated by the widget-content pass.
+fn buildContentArgs(
+    ctx: *shared.Context,
+    callee_leaf: []const u8,
+    node: syntax.ast.CallExpr,
+) !?[]syntax.ast.CallArg {
+    const content_fields = (ctx.form_content_fields orelse return null).get(callee_leaf) orelse return null;
+    const builder = node.trailing_builder orelse return null;
+
+    var args = std.array_list.Managed(syntax.ast.CallArg).init(ctx.allocator);
+    try args.appendSlice(node.args);
+
+    if (content_fields.len == 1) {
+        if (try contentArg(ctx, content_fields[0], builder.items, node.span)) |arg| try args.append(arg);
+    } else {
+        for (builder.items) |item| {
+            if (item != .expr) continue;
+            const value = item.expr.expr;
+            if (value.* != .call) continue;
+            const fill = value.*.call;
+            const name = calleeIdentifierName(fill.callee) orelse continue;
+            const field = findContentField(content_fields, name) orelse continue;
+            const inner = fill.trailing_builder orelse continue;
+            if (try contentArg(ctx, field, inner.items, fill.span)) |arg| try args.append(arg);
+        }
+    }
+    return try args.toOwnedSlice();
+}
+
+fn contentArg(
+    ctx: *shared.Context,
+    field: shared.ContentFieldRef,
+    items: []const syntax.ast.BuilderItem,
+    span: source_pkg.Span,
+) !?syntax.ast.CallArg {
+    if (field.is_list) {
+        var elements = std.array_list.Managed(*syntax.ast.Expr).init(ctx.allocator);
+        for (items) |item| {
+            if (item == .expr) try elements.append(item.expr.expr);
+        }
+        const array_expr = try ctx.allocator.create(syntax.ast.Expr);
+        array_expr.* = .{ .array = .{ .elements = try elements.toOwnedSlice(), .span = span } };
+        return .{ .label = field.name, .value = array_expr, .span = span };
+    }
+    for (items) |item| {
+        if (item == .expr) return .{ .label = field.name, .value = item.expr.expr, .span = span };
+    }
+    return null;
+}
+
+fn calleeIdentifierName(callee: *const syntax.ast.Expr) ?[]const u8 {
+    return switch (callee.*) {
+        .identifier => |ident| if (ident.name.segments.len == 1) ident.name.segments[0].text else null,
+        else => null,
+    };
+}
+
+fn findContentField(fields: []const shared.ContentFieldRef, name: []const u8) ?shared.ContentFieldRef {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field;
+    }
+    return null;
+}
+
 pub fn lowerCallExpr(
     ctx: *shared.Context,
     lowered: *model.Expr,
@@ -258,7 +327,15 @@ pub fn lowerCallExpr(
             return;
         }
         const flattened_member = try flattenMemberExpr(ctx.allocator, node.callee);
-        if (shared.isImportedRoot(ctx, flattened_member.root, imports) and scope.get(flattened_member.root) == null) {
+        const is_static_callable = scope.get(flattened_member.root) == null and
+            function_headers != null and
+            shared.findFunctionHeader(ctx, function_headers.?, flattened_member.path) != null;
+        if (is_static_callable) {
+            // A construct-backed declaration's static function such as `Sprite.draw()`. The
+            // flattened callee name resolves to a registered `Form.member` header in the generic
+            // call-resolution path below, so fall through instead of lowering the declaration
+            // name as a value (it is not a runtime value).
+        } else if (shared.isImportedRoot(ctx, flattened_member.root, imports) and scope.get(flattened_member.root) == null) {
             // Imported namespace calls such as `Support.value()` are not instance methods.
         } else {
             const object = try lowerExpr(ctx, member.object, imports, scope, function_headers);
@@ -415,7 +492,10 @@ pub fn lowerCallExpr(
 
     if (ctx.type_headers) |headers| {
         if (headers.get(callee_name) != null or headers.get(callee_leaf) != null) {
-            lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, node.args, &.{}, node.span, imports, scope, function_headers);
+            // A declaration with `@Content` fields routes its trailing `{ ... }` block into those
+            // fields (single `Widget`, `[Widget]` list, or named fills) as ordinary field args.
+            const content_args = try buildContentArgs(ctx, callee_leaf, node);
+            lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, content_args orelse node.args, &.{}, node.span, imports, scope, function_headers);
             return;
         }
     }

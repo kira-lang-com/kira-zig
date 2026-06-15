@@ -1,0 +1,40 @@
+// Caller-provided content executes: a trailing `{ ... }` block at a construction site fills the
+// declaration's `@Content` fields — a `[Widget]` list, a single `Widget`, and named fills for
+// multiple content fields — and the children are stored as `any Widget` values. vm/llvm/hybrid.
+
+construct Widget {
+}
+
+Widget Text {
+    let text: String = ""
+}
+
+Widget VStack {
+    @Content let children: [Widget]
+}
+
+Widget Padding {
+    let amount: Float = 0
+    @Content let child: Widget
+}
+
+Widget Dialog {
+    @Content let header: Widget
+    @Content let content: Widget
+}
+
+@Main
+function main() {
+    let tree = VStack {
+        Text(text: "title")
+        Padding(amount: 8) {
+            Text(text: "inner")
+        }
+        Dialog {
+            header { Text(text: "H") }
+            content { Text(text: "C") }
+        }
+    }
+    print(tree.children.count)
+    return
+}

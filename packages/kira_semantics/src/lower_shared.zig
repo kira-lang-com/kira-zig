@@ -35,6 +35,9 @@ pub const Context = struct {
     // satisfies (its family plus that family's `extends` ancestors), so a concrete widget value
     // coerces to `any Widget`. Populated before function bodies are lowered.
     form_families: ?*const std.StringHashMapUnmanaged([]const []const u8) = null,
+    // Maps a declaration's type name to its `@Content` fields, so a trailing `{ ... }` block at a
+    // construction site is routed into them (single `Widget` vs `[Widget]` arity, named fills).
+    form_content_fields: ?*const std.StringHashMapUnmanaged([]const ContentFieldRef) = null,
     concrete_enums: ?*std.StringHashMapUnmanaged(model.EnumDecl) = null,
     callback_capture_frame: ?*CallbackCaptureFrame = null,
     current_package: ?[]const u8 = null,
@@ -58,6 +61,13 @@ pub const AnnotationHeader = struct {
     decl: model.AnnotationDecl,
     allows_block: bool = false,
     compiler_builtin: bool = false,
+};
+
+// A caller-provided `@Content` field of a declaration. `is_list` distinguishes `[Widget]`
+// (ordered many) from a single `Widget`.
+pub const ContentFieldRef = struct {
+    name: []const u8,
+    is_list: bool,
 };
 
 pub const FunctionHeader = struct {
