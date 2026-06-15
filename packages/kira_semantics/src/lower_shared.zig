@@ -31,6 +31,10 @@ pub const Context = struct {
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
     enum_headers: ?*const std.StringHashMapUnmanaged(model.EnumDecl) = null,
+    // Maps a concrete construct-backed declaration's type name to the construct families it
+    // satisfies (its family plus that family's `extends` ancestors), so a concrete widget value
+    // coerces to `any Widget`. Populated before function bodies are lowered.
+    form_families: ?*const std.StringHashMapUnmanaged([]const []const u8) = null,
     concrete_enums: ?*std.StringHashMapUnmanaged(model.EnumDecl) = null,
     callback_capture_frame: ?*CallbackCaptureFrame = null,
     current_package: ?[]const u8 = null,
@@ -282,7 +286,27 @@ pub fn canAssignExactly(target: model.ResolvedType, actual: model.ResolvedType) 
 pub fn canAssignInContext(ctx: *const Context, target: model.ResolvedType, actual: model.ResolvedType) bool {
     if (canAssign(target, actual)) return true;
     if (sameEnumIdentity(ctx, target, actual)) return true;
+    if (isConstructFamilyCoercion(ctx, target, actual)) return true;
     return isAssignableClassValue(ctx, target, actual);
+}
+
+// A concrete construct-backed declaration value (`Text`) coerces to `any Family` when its family
+// (or one of that family's `extends` ancestors) is the constraint. `any Family` also coerces to
+// the same `any Family`.
+pub fn isConstructFamilyCoercion(ctx: *const Context, target: model.ResolvedType, actual: model.ResolvedType) bool {
+    if (target.kind != .construct_any) return false;
+    const constraint = (target.construct_constraint orelse return false).construct_name;
+    if (actual.kind == .construct_any) {
+        const actual_constraint = (actual.construct_constraint orelse return false).construct_name;
+        return std.mem.eql(u8, constraint, actual_constraint);
+    }
+    const actual_name = actual.name orelse return false;
+    const families = ctx.form_families orelse return false;
+    const list = families.get(actual_name) orelse return false;
+    for (list) |family| {
+        if (std.mem.eql(u8, family, constraint)) return true;
+    }
+    return false;
 }
 
 fn sameEnumIdentity(ctx: *const Context, target: model.ResolvedType, actual: model.ResolvedType) bool {
@@ -504,6 +528,47 @@ pub fn isAssignableClassValue(ctx: *const Context, target: model.ResolvedType, a
     const target_name = target.name orelse return false;
     const actual_name = actual.name orelse return false;
     return classNameMatchesOrInherits(ctx, actual_name, target_name);
+}
+
+// The least common `any Family` of two construct-backed declaration values (or of an `any Family`
+// and a declaration), so a heterogeneous widget array literal (`[Text(...), Spacer()]`) unifies to
+// `[any Widget]`. Returns null when the values share no construct family.
+pub fn commonConstructAnyType(
+    allocator: std.mem.Allocator,
+    ctx: *const Context,
+    lhs: model.ResolvedType,
+    rhs: model.ResolvedType,
+) ?model.ResolvedType {
+    const lhs_families = familyList(allocator, ctx, lhs) orelse return null;
+    const rhs_families = familyList(allocator, ctx, rhs) orelse return null;
+    for (lhs_families) |candidate| {
+        for (rhs_families) |other| {
+            if (std.mem.eql(u8, candidate, other)) return constructAnyType(allocator, candidate) catch null;
+        }
+    }
+    return null;
+}
+
+// The construct families a value satisfies: a concrete declaration's recorded families, or the
+// single constraint of an `any Family` value.
+fn familyList(allocator: std.mem.Allocator, ctx: *const Context, ty: model.ResolvedType) ?[]const []const u8 {
+    if (ty.kind == .construct_any) {
+        const constraint = (ty.construct_constraint orelse return null).construct_name;
+        const single = allocator.alloc([]const u8, 1) catch return null;
+        single[0] = constraint;
+        return single;
+    }
+    const name = ty.name orelse return null;
+    const families = ctx.form_families orelse return null;
+    return families.get(name);
+}
+
+fn constructAnyType(allocator: std.mem.Allocator, family: []const u8) !model.ResolvedType {
+    return .{
+        .kind = .construct_any,
+        .name = try std.fmt.allocPrint(allocator, "any {s}", .{family}),
+        .construct_constraint = .{ .construct_name = family },
+    };
 }
 
 pub fn commonClassType(

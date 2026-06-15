@@ -1,0 +1,21 @@
+// A concrete construct-backed declaration value coerces to `any Family`, and a heterogeneous
+// array of different declarations of the same family unifies to `[any Family]` — the basis for
+// caller-provided widget children. Executes identically on vm, llvm, and hybrid.
+
+construct Widget {
+}
+
+Widget Text {
+    let text: String = ""
+}
+
+Widget Spacer {
+}
+
+@Main
+function main() {
+    let single: any Widget = Text(text: "one")
+    let items: [any Widget] = [Text(text: "a"), Spacer(), Text(text: "b")]
+    print(items.count)
+    return
+}

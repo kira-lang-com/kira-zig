@@ -405,6 +405,13 @@ pub fn lowerProgramWithOptions(
     // rather than as unresolvable parents during form lowering.
     try requirements.validateFormParentCycles(&ctx, program, &form_parent);
 
+    // Map each declaration's type name to the construct families it satisfies, so concrete widget
+    // values coerce to `any Widget` during body lowering.
+    var form_families = std.StringHashMapUnmanaged([]const []const u8){};
+    defer form_families.deinit(allocator);
+    try buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
+    ctx.form_families = &form_families;
+
     for (program.decls, 0..) |decl, decl_index| {
         const previous_package = ctx.current_package;
         ctx.current_package = declOrigin(program, decl_index).package_name;
@@ -503,6 +510,46 @@ pub fn lowerProgramWithOptions(
 // Build the struct type backing a concrete declaration: its stored scalar fields only. Computed
 // composition members (`let node: Node { ... }`) and caller-provided `@Content` children are not
 // stored state, so they are excluded from the runtime layout.
+// For each construct-backed declaration, record the construct families it satisfies: its family
+// construct plus that construct's transitive `extends` ancestors. Used to coerce a concrete widget
+// value to `any Widget`.
+fn buildFormFamilies(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    constructs: []const model.Construct,
+    construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
+    form_parent: *const std.StringHashMapUnmanaged([]const u8),
+    out: *std.StringHashMapUnmanaged([]const []const u8),
+) !void {
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        const parent_leaf = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
+        const family = requirements.resolveFamilyConstructModel(constructs, construct_headers, form_parent, parent_leaf) orelse continue;
+        var names = std.array_list.Managed([]const u8).init(allocator);
+        try collectConstructAncestry(allocator, family, constructs, construct_headers, &names);
+        try out.put(allocator, form_decl.name, try names.toOwnedSlice());
+    }
+}
+
+fn collectConstructAncestry(
+    allocator: std.mem.Allocator,
+    construct_model: model.Construct,
+    constructs: []const model.Construct,
+    construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
+    out: *std.array_list.Managed([]const u8),
+) !void {
+    for (out.items) |existing| {
+        if (std.mem.eql(u8, existing, construct_model.name)) return;
+    }
+    try out.append(construct_model.name);
+    for (construct_model.parents) |parent_link| {
+        if (construct_headers.get(parent_link.name)) |header| {
+            try collectConstructAncestry(allocator, constructs[header.index], constructs, construct_headers, out);
+        }
+    }
+}
+
 fn synthesizeFormStruct(allocator: std.mem.Allocator, form_decl: syntax.ast.ConstructFormDecl) !syntax.ast.TypeDecl {
     var members = std.array_list.Managed(syntax.ast.BodyMember).init(allocator);
     for (form_decl.body.members) |member| {

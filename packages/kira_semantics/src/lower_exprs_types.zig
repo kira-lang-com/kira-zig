@@ -272,6 +272,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .member => |node| node.span,
         .index => |node| node.span,
         .call => |node| node.span,
+        .try_expr => |node| node.span,
     };
 }
 
@@ -395,6 +396,10 @@ fn typesCompatibleForContext(
         return true;
     }
 
+    // A concrete widget value coerces to `any Widget` in any typed context (declared `let`,
+    // return position, array element), not only at argument-passing sites.
+    if (shared.isConstructFamilyCoercion(ctx, expected, actual)) return true;
+
     if (expected.kind == .array and actual.kind == .array) {
         if (actual.name == null) return true;
         if (expected.name == null) return actual.name == null;
@@ -472,6 +477,10 @@ pub fn resolveArrayLiteralType(ctx: *shared.Context, elements: []const *model.Ex
         const next_ty = model.hir.exprType(element.*);
         if (element_ty.eql(next_ty)) continue;
         if (shared.commonClassType(ctx, element_ty, next_ty)) |common_ty| {
+            element_ty = common_ty;
+            continue;
+        }
+        if (shared.commonConstructAnyType(ctx.allocator, ctx, element_ty, next_ty)) |common_ty| {
             element_ty = common_ty;
             continue;
         }
