@@ -1,0 +1,22 @@
+// The `body` channel accepts `Title` elements. A raw string literal is never an element, so
+// placing one in the channel is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+WebElement Page {
+    body {
+        "not an element"
+    }
+}
+
+@Main
+function main() {
+    return
+}

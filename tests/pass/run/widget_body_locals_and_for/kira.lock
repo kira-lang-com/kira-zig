@@ -1,0 +1,7 @@
+version = 1
+
+[root]
+name = "widget_body_locals_and_for"
+version = "0.1.0"
+kind = "app"
+kira = "0.1.0"

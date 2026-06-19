@@ -101,7 +101,7 @@ const rows = [_]MatrixRow{
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    try validate(arena.allocator(), true);
+    try validate(arena.allocator(), false);
 }
 
 test "platform validation matrix evidence is wired" {

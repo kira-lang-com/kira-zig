@@ -43,6 +43,14 @@ Internal memory for corpus and verification workflow.
 - Put user-visible compiler/runtime behavior in corpus cases.
 - For shader work, keep the dedicated shader corpus authoritative.
 
+## Corpus reporting
+
+- Passing corpus runs print only `<n> passed` and `0 failed`.
+- Runs with five or fewer failures print every failure with its full trace.
+- Runs with more than five failures group failures by stable diagnostic/runtime signatures, show occurrence counts and representative cases, and print one full trace per group.
+- The corpus runner writes `.kira/test-report.json` on every run so agents can inspect totals, grouped failures, representative cases, diagnostic metadata, and full group traces without re-running tests just to recover output.
+- `zig build test` runs the VM run corpus. `zig build test-backends` runs the run corpus across VM, LLVM, and hybrid. `zig build test-full` runs check, build, and run corpus coverage across all backends.
+
 ## Verification commands
 
 - `zig build test` for repo-wide package tests and corpus harness.

@@ -21,27 +21,9 @@ test "KIC001 is only used in approved fallback locations" {
     defer arena.deinit();
 
     var offending = std.array_list.Managed([]const u8).init(arena.allocator());
-    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", arena.allocator());
-    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, cwd_path, .{ .iterate = true });
-    defer dir.close(std.Options.debug_io);
-    var walker = try dir.walk(arena.allocator());
-    defer walker.deinit();
-
-    while (try walker.next(std.Options.debug_io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
-        if (isApproved(entry.path, &approved)) continue;
-
-        const text = try dir.readFileAlloc(
-            std.Options.debug_io,
-            entry.path,
-            arena.allocator(),
-            .limited(1024 * 1024),
-        );
-        if (std.mem.indexOf(u8, text, "KIC001") != null or std.mem.indexOf(u8, text, "KICE001") != null) {
-            try offending.append(try arena.allocator().dupe(u8, entry.path));
-        }
-    }
+    try scanDirForFallbackUses(arena.allocator(), &offending, &approved, "packages");
+    try scanFlatDirForFallbackUses(arena.allocator(), &offending, &approved, "tests");
+    try scanFileForFallbackUses(arena.allocator(), &offending, &approved, "build.zig");
 
     if (offending.items.len != 0) {
         std.debug.print(
@@ -51,6 +33,83 @@ test "KIC001 is only used in approved fallback locations" {
         for (offending.items) |path| std.debug.print("  {s}\\n", .{path});
         return error.TestUnexpectedResult;
     }
+}
+
+fn scanDirForFallbackUses(
+    allocator: std.mem.Allocator,
+    offending: *std.array_list.Managed([]const u8),
+    approved: []const []const u8,
+    dir_path: []const u8,
+) !void {
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+
+        switch (entry.kind) {
+            .directory => {
+                if (shouldSkipDir(path)) continue;
+                try scanDirForFallbackUses(allocator, offending, approved, path);
+            },
+            .file => {
+                if (!std.mem.endsWith(u8, path, ".zig")) continue;
+                try scanFileForFallbackUses(allocator, offending, approved, path);
+            },
+            else => {},
+        }
+    }
+}
+
+fn scanFlatDirForFallbackUses(
+    allocator: std.mem.Allocator,
+    offending: *std.array_list.Managed([]const u8),
+    approved: []const []const u8,
+    dir_path: []const u8,
+) !void {
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+        try scanFileForFallbackUses(allocator, offending, approved, path);
+    }
+}
+
+fn scanFileForFallbackUses(
+    allocator: std.mem.Allocator,
+    offending: *std.array_list.Managed([]const u8),
+    approved: []const []const u8,
+    path: []const u8,
+) !void {
+    if (isApproved(path, approved)) return;
+
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        std.Options.debug_io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+    if (std.mem.indexOf(u8, text, "KIC001") != null or std.mem.indexOf(u8, text, "KICE001") != null) {
+        try offending.append(try allocator.dupe(u8, path));
+    }
+}
+
+fn shouldSkipDir(path: []const u8) bool {
+    return pathsEqual(path, ".git") or
+        pathsEqual(path, ".zig-cache") or
+        pathsEqual(path, "zig-out") or
+        pathsEqual(path, "generated") or
+        pathsEqual(path, "third_party") or
+        pathsEqual(path, "zig-pkg") or
+        pathsEqual(path, ".codex") or
+        pathsEqual(path, ".github") or
+        pathsEqual(path, ".opencode");
 }
 
 fn isApproved(path: []const u8, approved: []const []const u8) bool {

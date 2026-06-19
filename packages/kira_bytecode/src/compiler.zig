@@ -26,6 +26,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
         try construct_implementations.append(.{
             .type_name = implementation.type_name,
             .construct_constraint = .{ .construct_name = implementation.construct_constraint.construct_name },
+            .families = implementation.families,
             .fields = try fields.toOwnedSlice(),
             .has_content = implementation.has_content,
             .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
@@ -78,6 +79,15 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
 
     for (program.functions, 0..) |function_decl, index| {
         const resolved_execution = resolveExecution(function_decl.execution, mode);
+        // Foreign FFI declarations carry no Kira body. In VM mode the
+        // interpreter dispatches them through LibFFI (see kira_vm_runtime), so
+        // emit a metadata-only stub instead of rejecting the program. The
+        // hybrid/native paths resolve them through the native bridge and do not
+        // need a bytecode entry.
+        if (function_decl.is_extern and resolved_execution == .native) {
+            if (mode == .vm) try functions.append(try externStub(allocator, function_decl));
+            continue;
+        }
         if (mode == .vm and resolved_execution == .native) return error.NativeFunctionInVmBuild;
         if (resolved_execution == .native and mode == .hybrid_runtime) continue;
 
@@ -130,7 +140,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
                     .src = value.src,
                     .op = @enumFromInt(@intFromEnum(value.op)),
                 } }),
-                .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src } }),
+                .store_local => |value| try instructions.append(.{ .store_local = .{ .local = value.local, .src = value.src, .borrow = value.borrow } }),
                 .load_local => |value| try instructions.append(.{ .load_local = .{ .dst = value.dst, .local = value.local, .ownership = lowerOwnershipMode(value.ownership) } }),
                 .local_ptr => |value| try instructions.append(.{ .local_ptr = .{ .dst = value.dst, .local = value.local } }),
                 .subobject_ptr => |value| try instructions.append(.{ .subobject_ptr = .{
@@ -250,6 +260,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
             .name = function_decl.name,
             .param_count = @as(u32, @intCast(function_decl.param_types.len)),
             .param_ownership = try lowerOwnershipModes(allocator, function_decl.param_ownership),
+            .param_types = try lowerLocalTypes(allocator, function_decl.param_types),
             .return_type = lowerTypeRef(function_decl.return_type),
             .return_ownership = lowerOwnershipMode(function_decl.return_ownership),
             .register_count = function_decl.register_count,
@@ -270,6 +281,31 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
         .enums = try enums.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = entry_function_id,
+    };
+}
+
+/// Builds a metadata-only bytecode function for a foreign (`@FFI.Extern`)
+/// declaration. The function carries no instructions; the VM looks up its
+/// `foreign`/`param_types`/`return_type` to drive a LibFFI dispatch.
+fn externStub(allocator: std.mem.Allocator, function_decl: ir_pkg.Function) !bytecode.Function {
+    return .{
+        .id = function_decl.id,
+        .name = function_decl.name,
+        .param_count = @as(u32, @intCast(function_decl.param_types.len)),
+        .param_ownership = try lowerOwnershipModes(allocator, function_decl.param_ownership),
+        .param_types = try lowerLocalTypes(allocator, function_decl.param_types),
+        .return_type = lowerTypeRef(function_decl.return_type),
+        .return_ownership = lowerOwnershipMode(function_decl.return_ownership),
+        .is_extern = true,
+        .foreign = if (function_decl.foreign) |foreign| .{
+            .library_name = foreign.library_name,
+            .symbol_name = foreign.symbol_name,
+            .calling_convention = foreign.calling_convention,
+        } else null,
+        .register_count = 0,
+        .local_count = 0,
+        .local_types = &.{},
+        .instructions = &.{},
     };
 }
 
@@ -467,6 +503,7 @@ test "preserves construct metadata in bytecode" {
         .construct_implementations = &.{.{
             .type_name = "Button",
             .construct_constraint = .{ .construct_name = "Widget" },
+            .families = &.{ "Widget", "Renderable" },
             .fields = &.{.{ .name = "title", .ty = .{ .kind = .string } }},
             .has_content = true,
             .lifecycle_hooks = &.{.{ .name = "onAppear" }},
@@ -491,6 +528,8 @@ test "preserves construct metadata in bytecode" {
     try std.testing.expectEqualStrings("Widget", module.constructs[0].name);
     try std.testing.expectEqual(@as(usize, 1), module.construct_implementations.len);
     try std.testing.expectEqualStrings("Widget", module.construct_implementations[0].construct_constraint.construct_name);
+    try std.testing.expectEqual(@as(usize, 2), module.construct_implementations[0].families.len);
+    try std.testing.expectEqualStrings("Renderable", module.construct_implementations[0].families[1]);
     try std.testing.expectEqual(@as(usize, 1), module.construct_implementations[0].fields.len);
     try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, lowerTypeRef(program.functions[0].param_types[0]).kind);
 }

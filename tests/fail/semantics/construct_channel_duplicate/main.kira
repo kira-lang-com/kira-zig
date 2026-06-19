@@ -1,0 +1,20 @@
+// A construct's `content { ... }` block may declare each channel at most once. `body` is
+// declared twice here, which is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}

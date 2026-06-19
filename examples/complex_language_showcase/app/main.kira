@@ -14,8 +14,10 @@ construct Widget {
         @Env;
     }
 
-    requires {
-        content;
+    content {
+        content {
+            count 1..
+        }
     }
 
     lifecycle {

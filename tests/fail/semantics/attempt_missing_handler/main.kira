@@ -1,0 +1,29 @@
+// Every reachable failure variant must be handled. `AppError` has `NotFound` and `Denied`,
+// but the `attempt` only handles `NotFound`.
+
+enum AppError {
+    NotFound: String = "nf"
+    Denied: String = "denied"
+}
+
+enum Outcome {
+    Ok: Int
+    Error: AppError
+}
+
+function load() -> Outcome {
+    return Outcome.Error(AppError.Denied("no"))
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try load()
+        print(value)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+    }
+    return
+}

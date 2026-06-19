@@ -81,7 +81,22 @@ pub fn buildProgramGraph(
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
     var function_origins = std.array_list.Managed(syntax.ast.DeclOrigin).init(allocator);
 
-    try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, source_path, root_program, module_map, diags, true, null);
+    if (try imports.ownerForSourcePath(allocator, source_path, module_map)) |owner| {
+        const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
+        defer freeModuleFiles(allocator, module_files);
+        const canonical_source = try paths.canonicalizeExistingPath(allocator, source_path);
+        defer allocator.free(canonical_source);
+        for (module_files) |module_path| {
+            if (std.mem.eql(u8, module_path, canonical_source)) {
+                try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, module_path, root_program, module_map, diags, true, null);
+                continue;
+            }
+            const program = try parseModuleProgramTimed(allocator, &stats, module_path, diags, null);
+            try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, module_path, program, module_map, diags, true, null);
+        }
+    } else {
+        try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, source_path, root_program, module_map, diags, true, null);
+    }
     printGraphStats("buildProgramGraph", &stats, import_list.items.len, decls.items.len, functions.items.len);
 
     return .{
@@ -307,8 +322,12 @@ pub fn collectPackageModuleFiles(allocator: std.mem.Allocator, source_root: []co
     defer allocator.free(canonical_root);
 
     var files = std.array_list.Managed([]u8).init(allocator);
-    if (!paths.dirExists(canonical_root)) return files.toOwnedSlice();
-    try appendPackageModuleFiles(allocator, &files, canonical_root);
+    if (paths.dirExists(canonical_root)) try appendPackageModuleFiles(allocator, &files, canonical_root);
+
+    const bindings_root = try paths.bindingsRootForSourceRoot(allocator, canonical_root);
+    defer allocator.free(bindings_root);
+    if (paths.dirExists(bindings_root)) try appendPackageModuleFiles(allocator, &files, bindings_root);
+
     sortPaths(files.items);
     return files.toOwnedSlice();
 }
@@ -350,11 +369,11 @@ fn validateSourcePathAllowed(
         .title = "source file outside canonical source root",
         .message = try std.fmt.allocPrint(
             allocator,
-            "Kira source file `{s}` is outside the allowed `app/` source roots for this package graph.",
+            "Kira source file `{s}` is outside the allowed `app/` and `bindings/` source roots for this package graph.",
             .{source_path},
         ),
         .notes = try allowedRootNotes(allocator, module_map),
-        .help = "Move the Kira source file under the package `app/` directory or import a declared dependency through its `app/` source root.",
+        .help = "Move the Kira source file under the package `app/` directory (or `bindings/` for generated FFI bindings), or import a declared dependency through its `app/` source root.",
     });
     return error.DiagnosticsEmitted;
 }

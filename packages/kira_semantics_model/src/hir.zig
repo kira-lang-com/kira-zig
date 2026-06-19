@@ -15,6 +15,7 @@ pub const Program = struct {
     constructs: []Construct,
     types: []TypeDecl,
     forms: []ConstructForm,
+    tests: []TestCase = &.{},
     functions: []Function,
     entry_index: usize,
 };
@@ -23,6 +24,7 @@ pub const Import = struct {
     module_name: []const u8,
     alias: ?[]const u8,
     package_name: ?[]const u8 = null,
+    source_path: []const u8 = "",
     span: source_pkg.Span,
 };
 
@@ -108,19 +110,108 @@ pub const AnnotationValue = union(enum) {
 
 pub const Construct = struct {
     name: []const u8,
+    parents: []ConstructParent = &.{},
+    properties: []PropertySchema = &.{},
+    content_channels: []ContentChannel = &.{},
+    content_refine: []ContentChannel = &.{},
+    content_projections: []ContentProjection = &.{},
+    content_sealed: bool = false,
+    content_passthrough: bool = false,
+    required_functions: []RequiredFunction = &.{},
+    section_functions: []SectionFunction = &.{},
+    // Fields a construct requires its concrete declarations to provide, declared as direct
+    // `@Required let name: T` members (the SwiftUI-style surface).
+    required_fields: []RequiredField = &.{},
+    // Non-required direct members the construct supplies a default body for (e.g. the default
+    // `let node: Node { body.node }`). A concrete declaration may override them, and overriding
+    // every default member that consumes a required field discharges that requirement
+    // (the terminal-`node` rule).
+    default_members: []ConstructDefaultMember = &.{},
     allowed_annotations: []AnnotationRule,
-    required_content: bool,
     // Element type of a typed `content: Content<T>;` section, e.g. "Widget".
-    // Null when the construct declares content via the legacy `requires { content; }`
-    // form (which carries no element type). When set, construct-backed declarations
-    // are validated so their content block only holds element-typed values.
+    // Null when the construct does not pin a content element type. When set,
+    // construct-backed declarations are validated so their content block only
+    // holds element-typed values. Content-requiredness is expressed through
+    // content channels (`content { name { count 1.. } }`), not here.
     content_element_type: ?[]const u8 = null,
     allowed_lifecycle_hooks: [][]const u8,
     span: source_pkg.Span,
 };
 
+pub const SectionFunction = struct {
+    name: []const u8,
+    required: bool,
+    param_types: []const []const u8,
+    return_type: []const u8,
+    span: source_pkg.Span,
+};
+
 pub const AnnotationRule = struct {
     name: []const u8,
+    span: source_pkg.Span,
+};
+
+pub const ConstructParent = struct {
+    name: []const u8,
+    span: source_pkg.Span,
+};
+
+// A typed slot declared in a construct's `properties { ... }` schema. `type_text` is the
+// canonical type text (e.g. "String", "Int", "UUID") used to validate the values supplied
+// by construct-backed declarations.
+pub const PropertySchema = struct {
+    required: bool,
+    name: []const u8,
+    type_text: []const u8,
+    span: source_pkg.Span,
+};
+
+// A function a construct requires its first concrete declaration to implement. `param_types`
+// and `return_type` are canonical type texts (with `Self` left as the literal "Self", resolved
+// against the implementing declaration during satisfaction checking).
+pub const RequiredFunction = struct {
+    name: []const u8,
+    param_types: []const []const u8,
+    return_type: []const u8,
+    span: source_pkg.Span,
+};
+
+// A field a construct requires its concrete declarations to provide, declared as a direct
+// `@Required let name: T` member. `type_text` is the canonical type text (with `Self` left
+// literal). A required field whose `type_text` equals the construct's own name is recursive
+// (e.g. `body: Widget` in `construct Widget`); such fields participate in the terminal rule.
+pub const RequiredField = struct {
+    name: []const u8,
+    type_text: []const u8,
+    span: source_pkg.Span,
+};
+
+// A non-required direct member with a default body. `references` lists the names of the
+// construct's required fields read by the default body, so the satisfaction checker knows
+// which requirements an override of this member discharges.
+pub const ConstructDefaultMember = struct {
+    name: []const u8,
+    is_field: bool,
+    references: []const []const u8,
+    span: source_pkg.Span,
+};
+
+// A named content channel on a construct. `accepts` is the canonical element type text a
+// channel accepts (null = unconstrained); `min`/`max` bound how many elements a declaration
+// may place in the channel (max null = unbounded).
+pub const ContentChannel = struct {
+    name: []const u8,
+    accepts: ?[]const u8,
+    min: u32,
+    max: ?u32,
+    span: source_pkg.Span,
+};
+
+// A `content project { local as Parent.channel }` mapping resolved on a construct.
+pub const ContentProjection = struct {
+    local: []const u8,
+    target_construct: []const u8,
+    target_channel: []const u8,
     span: source_pkg.Span,
 };
 
@@ -149,9 +240,18 @@ pub const MethodMember = struct {
 pub const ConstructForm = struct {
     construct: ConstructConstraint,
     name: []const u8,
+    families: []const []const u8 = &.{},
     fields: []const Field,
     content: ?BuilderBlock,
     lifecycle_hooks: []LifecycleHook,
+    span: source_pkg.Span,
+};
+
+pub const TestCase = struct {
+    name: []const u8,
+    test_function: []const u8,
+    expect_function: []const u8,
+    result_type: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -215,6 +315,10 @@ pub const LetStatement = struct {
     ty: ResolvedType,
     explicit_type: bool,
     value: ?*Expr,
+    // Rust reborrow: the initializer is a read of a borrow binding, so the new
+    // local aliases the same storage rather than copying it. Backends bind it as
+    // a non-owning alias instead of cloning the value.
+    is_reborrow: bool = false,
     span: source_pkg.Span,
 };
 
@@ -339,6 +443,8 @@ pub const BuilderIfItem = struct {
 
 pub const BuilderForItem = struct {
     binding_name: []const u8,
+    binding_local_id: u32,
+    binding_ty: ResolvedType,
     iterator: *Expr,
     body: BuilderBlock,
     span: source_pkg.Span,
@@ -384,6 +490,7 @@ pub const Expr = union(enum) {
     virtual_call: VirtualCallExpr,
     call_value: CallValueExpr,
     array: ArrayExpr,
+    builder_array: BuilderArrayExpr,
     index: IndexExpr,
 };
 
@@ -606,6 +713,12 @@ pub const ArrayExpr = struct {
     span: source_pkg.Span,
 };
 
+pub const BuilderArrayExpr = struct {
+    builder: BuilderBlock,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
 pub const IndexExpr = struct {
     object: *Expr,
     index: *Expr,
@@ -667,6 +780,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .virtual_call => |node| node.ty,
         .call_value => |node| node.ty,
         .array => |node| node.ty,
+        .builder_array => |node| node.ty,
         .index => |node| node.ty,
     };
 }

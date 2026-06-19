@@ -1,0 +1,25 @@
+// `content refine` may only tighten an inherited channel. The inherited `head` channel is
+// `count 0..1`; refining it to `0..5` widens the range and is rejected.
+
+construct WebElement {
+    content {
+        head {
+            accepts Title
+            count 0..1
+        }
+    }
+}
+
+construct Article extends WebElement {
+    content refine {
+        head {
+            accepts Title
+            count 0..5
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}

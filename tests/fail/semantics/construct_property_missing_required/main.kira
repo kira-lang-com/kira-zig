@@ -1,0 +1,18 @@
+// `path` is a required property of `Route`, so a `Route` declaration that omits it from
+// its `properties { ... }` section is rejected.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+    }
+}
+
+@Main
+function main() {
+    return
+}

@@ -1,0 +1,18 @@
+// An implementation of a required function must match the required signature. `Widget`
+// requires `render() -> Int`, but `Panel` implements `render() -> Bool`.
+
+construct Widget {
+    requires {
+        function render() -> Int
+    }
+}
+
+Widget Panel {
+    function render() -> Bool {
+    }
+}
+
+@Main
+function main() {
+    return
+}

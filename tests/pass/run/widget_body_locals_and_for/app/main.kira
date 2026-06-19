@@ -1,0 +1,60 @@
+construct Widget {
+    @Required let body: Widget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+function joinChildren(children: [any Widget]) -> [String] {
+    var labels: [String] = []
+    var childIndex = 0
+    while childIndex < children.count {
+        let rendered = children[childIndex].render()
+        var labelIndex = 0
+        while labelIndex < rendered.count {
+            labels.append(rendered[labelIndex])
+            labelIndex = labelIndex + 1
+        }
+        childIndex = childIndex + 1
+    }
+    return labels
+}
+
+Widget Text(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget VStack(spacing: Float) {
+    @Content let children: [Widget]
+
+    function render() -> [String] {
+        let ignored = spacing + 0.0
+        return joinChildren(children)
+    }
+}
+
+Widget Screen() {
+    let items: [String] = ["one", "two", "three"]
+
+    body {
+        VStack(spacing = 8.0) {
+            For(item in items) {
+                Text(item)
+            }
+        }
+    }
+}
+
+@Main
+function main() {
+    let rendered = Screen().render()
+    var index = 0
+    while index < rendered.count {
+        print(rendered[index])
+        index = index + 1
+    }
+    return
+}

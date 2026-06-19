@@ -80,6 +80,7 @@ pub fn lowerTypeConstruction(
                 resolveTypeConstructionFieldIndex(ctx, callee_name, callee_leaf, type_header, imported_type, label, arg.span) orelse return error.DiagnosticsEmitted
             else blk: {
                 if (next_index >= field_count) {
+                    std.debug.print("DEBUG constructor overflow callee={s} source={s} start={d}\n", .{ callee_leaf, arg.span.source_path orelse "<unknown>", arg.span.start });
                     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                         .severity = .@"error",
                         .code = "KSEM079",
@@ -92,6 +93,7 @@ pub fn lowerTypeConstruction(
                 }
                 while (next_index < field_count and filled[next_index]) next_index += 1;
                 if (next_index >= field_count) {
+                    std.debug.print("DEBUG constructor overflow callee={s} source={s} start={d}\n", .{ callee_leaf, arg.span.source_path orelse "<unknown>", arg.span.start });
                     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                         .severity = .@"error",
                         .code = "KSEM079",
@@ -243,6 +245,112 @@ pub fn resolveTypeConstructionFieldIndex(
     return null;
 }
 
+// Build the field arguments for a declaration construction `Foo(...) { ... }` whose `@Content`
+// fields are filled by the trailing block. Returns null when `Foo` has no content fields or no
+// trailing block (ordinary construction). Explicit `(...)` args are preserved, then each content
+// field is filled: a `[Widget]` field from all block items as an array literal, a single `Widget`
+// field from one item, and multiple fields from named fills (`header { ... }`). Arity/type are
+// already validated by the widget-content pass.
+fn buildContentArgs(
+    ctx: *shared.Context,
+    callee_leaf: []const u8,
+    node: syntax.ast.CallExpr,
+) !?[]syntax.ast.CallArg {
+    const content_fields = (ctx.form_content_fields orelse return null).get(callee_leaf) orelse return null;
+    const builder = node.trailing_builder orelse return null;
+
+    var args = std.array_list.Managed(syntax.ast.CallArg).init(ctx.allocator);
+    try args.appendSlice(node.args);
+
+    if (content_fields.len == 1) {
+        if (try contentArg(ctx, content_fields[0], builder.items, node.span)) |arg| try args.append(arg);
+    } else {
+        for (builder.items) |item| {
+            if (item != .expr) continue;
+            const value = item.expr.expr;
+            if (value.* != .call) continue;
+            const fill = value.*.call;
+            const name = calleeIdentifierName(fill.callee) orelse continue;
+            const field = findContentField(content_fields, name) orelse continue;
+            const inner = fill.trailing_builder orelse continue;
+            if (try contentArg(ctx, field, inner.items, fill.span)) |arg| try args.append(arg);
+        }
+    }
+    return try args.toOwnedSlice();
+}
+
+fn contentArg(
+    ctx: *shared.Context,
+    field: shared.ContentFieldRef,
+    items: []const syntax.ast.BuilderItem,
+    span: source_pkg.Span,
+) !?syntax.ast.CallArg {
+    if (field.is_list) {
+        var all_expr_items = true;
+        var elements = std.array_list.Managed(*syntax.ast.Expr).init(ctx.allocator);
+        for (items) |item| {
+            if (item == .expr) {
+                // Strip check-only modifier chains down to the base widget so list content
+                // lowers uniformly (the builder_array path strips the same way). Modifiers are
+                // `extend` declarations that do not yet lower to runtime.
+                try elements.append(parent.stripContentModifiers(item.expr.expr));
+                continue;
+            }
+            all_expr_items = false;
+        }
+        const array_expr = try ctx.allocator.create(syntax.ast.Expr);
+        if (all_expr_items) {
+            array_expr.* = .{ .array = .{ .elements = try elements.toOwnedSlice(), .span = span } };
+        } else {
+            array_expr.* = .{ .builder_array = .{ .builder = .{ .items = try ctx.allocator.dupe(syntax.ast.BuilderItem, items), .span = span }, .span = span } };
+        }
+        return .{ .label = field.name, .value = array_expr, .span = span };
+    }
+    for (items) |item| {
+        if (item == .expr) return .{ .label = field.name, .value = parent.stripContentModifiers(item.expr.expr), .span = span };
+    }
+    return null;
+}
+
+fn calleeIdentifierName(callee: *const syntax.ast.Expr) ?[]const u8 {
+    return switch (callee.*) {
+        .identifier => |ident| if (ident.name.segments.len == 1) ident.name.segments[0].text else null,
+        else => null,
+    };
+}
+
+fn findContentField(fields: []const shared.ContentFieldRef, name: []const u8) ?shared.ContentFieldRef {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field;
+    }
+    return null;
+}
+
+fn localOrImportedTypeFieldCount(
+    ctx: *shared.Context,
+    callee_name: []const u8,
+    callee_leaf: []const u8,
+) ?usize {
+    if (ctx.type_headers) |headers| {
+        if (headers.get(callee_name)) |header| return header.fields.len;
+        if (headers.get(callee_leaf)) |header| return header.fields.len;
+    }
+    if (ctx.imported_globals.findType(callee_name)) |type_decl| return type_decl.fields.len;
+    if (ctx.imported_globals.findType(callee_leaf)) |type_decl| return type_decl.fields.len;
+    return null;
+}
+
+fn requiredExplicitArgCount(param_defaults: []const ?*syntax.ast.Expr, explicit_param_count: usize) usize {
+    var required = explicit_param_count;
+    while (required > 0) {
+        const default_index = required - 1;
+        if (default_index >= param_defaults.len) break;
+        if (param_defaults[default_index] == null) break;
+        required -= 1;
+    }
+    return required;
+}
+
 pub fn lowerCallExpr(
     ctx: *shared.Context,
     lowered: *model.Expr,
@@ -258,8 +366,24 @@ pub fn lowerCallExpr(
             return;
         }
         const flattened_member = try flattenMemberExpr(ctx.allocator, node.callee);
-        if (shared.isImportedRoot(ctx, flattened_member.root, imports) and scope.get(flattened_member.root) == null) {
-            // Imported namespace calls such as `Support.value()` are not instance methods.
+        const is_static_callable = scope.get(flattened_member.root) == null and
+            function_headers != null and
+            shared.findFunctionHeader(ctx, function_headers.?, flattened_member.path) != null;
+        if (is_static_callable) {
+            if (ctx.form_families != null and ctx.form_families.?.get(flattened_member.root) != null) {
+                const receiver = try ctx.allocator.create(model.Expr);
+                receiver.* = try lowerTypeConstruction(ctx, flattened_member.root, flattened_member.root, &.{}, &.{}, node.span, imports, scope, function_headers);
+                const receiver_type = model.hir.exprType(receiver.*);
+                if (try resolveMethodMemberOrNull(ctx, receiver_type, member.member, node.span)) |resolved_method| {
+                    const dispatched = try buildDispatchedMethodCallExpr(ctx, resolved_method, receiver, receiver_type, node, imports, scope, function_headers);
+                    lowered.* = dispatched.*;
+                    return;
+                }
+            }
+        } else if (shared.isImportedRoot(ctx, flattened_member.root, imports) and scope.get(flattened_member.root) == null) {
+            // Imported namespace calls such as `Foundation.Text(...)` are not instance methods.
+            // Fall through so ordinary function resolution has a chance before constructor
+            // fallback examines the leaf type name.
         } else {
             const object = try lowerExpr(ctx, member.object, imports, scope, function_headers);
             const object_type = model.hir.exprType(object.*);
@@ -360,8 +484,39 @@ pub fn lowerCallExpr(
         return;
     }
 
+    const imported_qualified = if (function_headers != null)
+        shared.importedQualifiedName(ctx, imports, callee_name)
+    else
+        null;
+    const exact_function_header = if (function_headers) |headers| shared.findFunctionHeader(ctx, headers, callee_name) else null;
+    const exact_qualified_function_header = if (function_headers) |headers|
+        if (imported_qualified) |qualified| shared.findFunctionHeader(ctx, headers, qualified) else null
+    else
+        null;
+    const is_qualified_callee = std.mem.indexOfScalar(u8, callee_name, '.') != null;
+    const has_local_type = if (ctx.type_headers) |headers|
+        headers.get(callee_name) != null or headers.get(callee_leaf) != null
+    else
+        false;
+    const has_imported_type = ctx.imported_globals.findType(callee_name) != null or ctx.imported_globals.findType(callee_leaf) != null;
+    const qualified_type_fits = if (is_qualified_callee)
+        if (localOrImportedTypeFieldCount(ctx, callee_name, callee_leaf)) |field_count| node.args.len <= field_count else false
+    else
+        false;
+    const should_prefer_type = if (has_local_type or has_imported_type)
+        if (is_qualified_callee)
+            exact_function_header == null and exact_qualified_function_header == null and qualified_type_fits
+        else
+            ctx.current_package == null or exact_function_header == null
+    else
+        false;
+    if (should_prefer_type) {
+        const content_args = try buildContentArgs(ctx, callee_leaf, node);
+        lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, content_args orelse node.args, &.{}, node.span, imports, scope, function_headers);
+        return;
+    }
+
     if (function_headers) |headers| {
-        const imported_qualified = shared.importedQualifiedName(ctx, imports, callee_name);
         const header = (if (imported_qualified) |qualified| shared.findFunctionHeader(ctx, headers, qualified) else null) orelse
             shared.findFunctionHeader(ctx, headers, callee_name) orelse
             shared.findFunctionHeader(ctx, headers, callee_leaf) orelse blk: {
@@ -379,14 +534,30 @@ pub fn lowerCallExpr(
             break :blk null;
         };
         if (header) |resolved_header| {
+            if (resolved_header.is_comptime) {
+                if (try lowerComptimeCall(ctx, node, resolved_header)) |folded| {
+                    lowered.* = folded;
+                    return;
+                }
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM147",
+                    .title = "comptime function was not evaluated",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The comptime function '{s}' must be evaluated during compilation and cannot be emitted as a runtime call.", .{callee_name}),
+                    .labels = &.{diagnostics.primaryLabel(node.span, "runtime call to comptime function")},
+                    .help = "Use a comptime function form the compiler can fold or generate before backend lowering.",
+                });
+                return error.DiagnosticsEmitted;
+            }
             const trailing_callback_type = try trailingCallbackType(ctx, node, resolved_header.params);
             const explicit_param_count = resolved_header.params.len - (if (trailing_callback_type != null) @as(usize, 1) else 0);
-            if (node.args.len != explicit_param_count) {
+            const required_arg_count = requiredExplicitArgCount(resolved_header.param_defaults, explicit_param_count);
+            if (node.args.len < required_arg_count or node.args.len > explicit_param_count) {
                 try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                     .severity = .@"error",
                     .code = "KSEM042",
                     .title = "wrong number of arguments",
-                    .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected {d} explicit argument(s) but received {d}.", .{ callee_name, explicit_param_count, node.args.len }),
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected between {d} and {d} explicit argument(s) but received {d}.", .{ callee_name, required_arg_count, explicit_param_count, node.args.len }),
                     .labels = &.{
                         diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments"),
                     },
@@ -395,8 +566,15 @@ pub fn lowerCallExpr(
                 return error.DiagnosticsEmitted;
             }
             var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.args, 0..) |arg, index| {
-                try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index], shared.paramOwnership(resolved_header, index), callee_name, imports, scope, headers, node.span));
+            var index: usize = 0;
+            while (index < explicit_param_count) : (index += 1) {
+                if (index < node.args.len) {
+                    const arg = node.args[index];
+                    try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index], shared.paramOwnership(resolved_header, index), callee_name, imports, scope, headers, node.span));
+                    continue;
+                }
+                const default_expr = resolved_header.param_defaults[index] orelse return error.DiagnosticsEmitted;
+                try args.append(try lowerCallArgument(ctx, default_expr, resolved_header.params[index], shared.paramOwnership(resolved_header, index), callee_name, imports, scope, headers, node.span));
             }
             if (trailing_callback_type) |callback_type| {
                 try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
@@ -413,14 +591,19 @@ pub fn lowerCallExpr(
         }
     }
 
+    const can_fallback_to_leaf_type = !is_qualified_callee or qualified_type_fits;
+
     if (ctx.type_headers) |headers| {
-        if (headers.get(callee_name) != null or headers.get(callee_leaf) != null) {
-            lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, node.args, &.{}, node.span, imports, scope, function_headers);
+        if (headers.get(callee_name) != null or (can_fallback_to_leaf_type and headers.get(callee_leaf) != null)) {
+            // A declaration with `@Content` fields routes its trailing `{ ... }` block into those
+            // fields (single `Widget`, `[Widget]` list, or named fills) as ordinary field args.
+            const content_args = try buildContentArgs(ctx, callee_leaf, node);
+            lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, content_args orelse node.args, &.{}, node.span, imports, scope, function_headers);
             return;
         }
     }
 
-    if (ctx.imported_globals.findType(callee_name) != null or ctx.imported_globals.findType(callee_leaf) != null) {
+    if (ctx.imported_globals.findType(callee_name) != null or (can_fallback_to_leaf_type and ctx.imported_globals.findType(callee_leaf) != null)) {
         lowered.* = try lowerTypeConstruction(ctx, callee_name, callee_leaf, node.args, &.{}, node.span, imports, scope, function_headers);
         return;
     }
@@ -448,6 +631,61 @@ pub fn lowerCallExpr(
             .span = node.span,
         } };
         return;
+    }
+
+    if (std.mem.indexOfScalar(u8, callee_name, '.')) |root_end| {
+        if (shared.isImportedRoot(ctx, callee_name[0..root_end], imports)) {
+            if (function_headers) |headers| {
+                const type_field_count = localOrImportedTypeFieldCount(ctx, callee_name, callee_leaf);
+                const namespaced_type_fits = if (type_field_count) |field_count|
+                    node.args.len <= field_count
+                else
+                    false;
+                const namespaced_qualified = shared.importedQualifiedName(ctx, imports, callee_name);
+                const namespaced_header = (if (namespaced_qualified) |qualified| shared.findFunctionHeader(ctx, headers, qualified) else null) orelse
+                    shared.findFunctionHeader(ctx, headers, callee_name) orelse
+                    (if (!namespaced_type_fits) shared.findFunctionHeader(ctx, headers, callee_leaf) else null);
+                if (namespaced_header) |resolved_header| {
+                    const trailing_callback_type = try trailingCallbackType(ctx, node, resolved_header.params);
+                    const explicit_param_count = resolved_header.params.len - (if (trailing_callback_type != null) @as(usize, 1) else 0);
+                    const required_arg_count = requiredExplicitArgCount(resolved_header.param_defaults, explicit_param_count);
+                    if (node.args.len < required_arg_count or node.args.len > explicit_param_count) {
+                        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                            .severity = .@"error",
+                            .code = "KSEM042",
+                            .title = "wrong number of arguments",
+                            .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected between {d} and {d} explicit argument(s) but received {d}.", .{ callee_name, required_arg_count, explicit_param_count, node.args.len }),
+                            .labels = &.{diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments")},
+                            .help = "Update the call so it matches the function signature exactly.",
+                        });
+                        return error.DiagnosticsEmitted;
+                    }
+                    var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+                    var index: usize = 0;
+                    while (index < explicit_param_count) : (index += 1) {
+                        if (index < node.args.len) {
+                            const arg = node.args[index];
+                            try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index], shared.paramOwnership(resolved_header, index), callee_name, imports, scope, headers, node.span));
+                            continue;
+                        }
+                        const default_expr = resolved_header.param_defaults[index] orelse return error.DiagnosticsEmitted;
+                        try args.append(try lowerCallArgument(ctx, default_expr, resolved_header.params[index], shared.paramOwnership(resolved_header, index), callee_name, imports, scope, headers, node.span));
+                    }
+                    if (trailing_callback_type) |callback_type| {
+                        try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
+                    }
+                    lowered.* = .{ .call = .{
+                        .callee_name = callee_name,
+                        .function_id = resolved_header.id,
+                        .args = try args.toOwnedSlice(),
+                        .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope) else null,
+                        .ty = resolved_header.return_type,
+                        .span = node.span,
+                    } };
+                    return;
+                }
+            }
+        }
     }
 
     if (function_headers) |headers| {
@@ -570,4 +808,201 @@ pub fn lowerCallExpr(
         .help = "Declare the function before calling it, or import the module that provides the symbol.",
     });
     return error.DiagnosticsEmitted;
+}
+
+const ComptimeValue = union(enum) {
+    integer: i64,
+    float: f64,
+    boolean: bool,
+    string: []const u8,
+};
+
+const ComptimeBinding = struct {
+    name: []const u8,
+    value: ComptimeValue,
+};
+
+fn lowerComptimeCall(ctx: *shared.Context, node: syntax.ast.CallExpr, header: shared.FunctionHeader) !?model.Expr {
+    const decl = header.comptime_decl orelse return null;
+    if (node.trailing_builder != null or node.trailing_callback != null) return null;
+    if (node.args.len != decl.params.len) return null;
+    const body = decl.body orelse return null;
+    if (body.statements.len != 1 or body.statements[0] != .return_stmt) return null;
+    const return_expr = body.statements[0].return_stmt.value orelse return null;
+
+    const bindings = try ctx.allocator.alloc(ComptimeBinding, decl.params.len);
+    for (decl.params, 0..) |param, index| {
+        bindings[index] = .{
+            .name = param.name,
+            .value = try evalComptimeExpr(ctx, node.args[index].value, bindings[0..index]) orelse return null,
+        };
+    }
+    const value = try evalComptimeExpr(ctx, return_expr, bindings) orelse return null;
+    return try comptimeValueToExpr(ctx, value, header.return_type, node.span);
+}
+
+fn evalComptimeExpr(ctx: *shared.Context, expr: *const syntax.ast.Expr, bindings: []const ComptimeBinding) !?ComptimeValue {
+    return switch (expr.*) {
+        .integer => |value| .{ .integer = value.value },
+        .float => |value| .{ .float = value.value },
+        .string => |value| .{ .string = try ctx.allocator.dupe(u8, value.value) },
+        .bool => |value| .{ .boolean = value.value },
+        .identifier => |value| blk: {
+            if (value.name.segments.len != 1) break :blk null;
+            const name = value.name.segments[0].text;
+            for (bindings) |binding| {
+                if (std.mem.eql(u8, binding.name, name)) break :blk binding.value;
+            }
+            break :blk null;
+        },
+        .unary => |value| blk: {
+            const operand = try evalComptimeExpr(ctx, value.operand, bindings) orelse break :blk null;
+            break :blk switch (value.op) {
+                .negate => switch (operand) {
+                    .integer => |int| ComptimeValue{ .integer = -int },
+                    .float => |float| ComptimeValue{ .float = -float },
+                    else => null,
+                },
+                .not => switch (operand) {
+                    .boolean => |boolean| ComptimeValue{ .boolean = !boolean },
+                    else => null,
+                },
+            };
+        },
+        .binary => |value| blk: {
+            const lhs = try evalComptimeExpr(ctx, value.lhs, bindings) orelse break :blk null;
+            const rhs = try evalComptimeExpr(ctx, value.rhs, bindings) orelse break :blk null;
+            break :blk evalComptimeBinary(lhs, value.op, rhs);
+        },
+        else => null,
+    };
+}
+
+fn evalComptimeBinary(lhs: ComptimeValue, op: syntax.ast.BinaryOp, rhs: ComptimeValue) ?ComptimeValue {
+    return switch (op) {
+        .add => switch (lhs) {
+            .integer => |l| switch (rhs) {
+                .integer => |r| .{ .integer = l + r },
+                else => null,
+            },
+            .float => |l| switch (rhs) {
+                .float => |r| .{ .float = l + r },
+                else => null,
+            },
+            else => null,
+        },
+        .subtract => switch (lhs) {
+            .integer => |l| switch (rhs) {
+                .integer => |r| .{ .integer = l - r },
+                else => null,
+            },
+            .float => |l| switch (rhs) {
+                .float => |r| .{ .float = l - r },
+                else => null,
+            },
+            else => null,
+        },
+        .multiply => switch (lhs) {
+            .integer => |l| switch (rhs) {
+                .integer => |r| .{ .integer = l * r },
+                else => null,
+            },
+            .float => |l| switch (rhs) {
+                .float => |r| .{ .float = l * r },
+                else => null,
+            },
+            else => null,
+        },
+        .divide => switch (lhs) {
+            .integer => |l| switch (rhs) {
+                .integer => |r| if (r == 0) null else .{ .integer = @divTrunc(l, r) },
+                else => null,
+            },
+            .float => |l| switch (rhs) {
+                .float => |r| .{ .float = l / r },
+                else => null,
+            },
+            else => null,
+        },
+        .modulo => switch (lhs) {
+            .integer => |l| switch (rhs) {
+                .integer => |r| if (r == 0) null else .{ .integer = @mod(l, r) },
+                else => null,
+            },
+            else => null,
+        },
+        .equal => .{ .boolean = comptimeValuesEqual(lhs, rhs) },
+        .not_equal => .{ .boolean = !comptimeValuesEqual(lhs, rhs) },
+        .less, .less_equal, .greater, .greater_equal => evalComptimeOrdering(lhs, op, rhs),
+        .logical_and => switch (lhs) {
+            .boolean => |l| switch (rhs) {
+                .boolean => |r| .{ .boolean = l and r },
+                else => null,
+            },
+            else => null,
+        },
+        .logical_or => switch (lhs) {
+            .boolean => |l| switch (rhs) {
+                .boolean => |r| .{ .boolean = l or r },
+                else => null,
+            },
+            else => null,
+        },
+    };
+}
+
+fn evalComptimeOrdering(lhs: ComptimeValue, op: syntax.ast.BinaryOp, rhs: ComptimeValue) ?ComptimeValue {
+    return switch (lhs) {
+        .integer => |l| switch (rhs) {
+            .integer => |r| .{ .boolean = switch (op) {
+                .less => l < r,
+                .less_equal => l <= r,
+                .greater => l > r,
+                .greater_equal => l >= r,
+                else => unreachable,
+            } },
+            else => null,
+        },
+        .float => |l| switch (rhs) {
+            .float => |r| .{ .boolean = switch (op) {
+                .less => l < r,
+                .less_equal => l <= r,
+                .greater => l > r,
+                .greater_equal => l >= r,
+                else => unreachable,
+            } },
+            else => null,
+        },
+        else => null,
+    };
+}
+
+fn comptimeValuesEqual(lhs: ComptimeValue, rhs: ComptimeValue) bool {
+    return switch (lhs) {
+        .integer => |l| switch (rhs) {
+            .integer => |r| l == r,
+            else => false,
+        },
+        .float => |l| switch (rhs) {
+            .float => |r| l == r,
+            else => false,
+        },
+        .boolean => |l| switch (rhs) {
+            .boolean => |r| l == r,
+            else => false,
+        },
+        .string => |l| switch (rhs) {
+            .string => |r| std.mem.eql(u8, l, r),
+            else => false,
+        },
+    };
+}
+
+fn comptimeValueToExpr(ctx: *shared.Context, value: ComptimeValue, declared_type: model.ResolvedType, span: source_pkg.Span) !model.Expr {
+    return switch (value) {
+        .integer => |int| .{ .integer = .{ .value = int, .ty = if (declared_type.kind == .unknown) .{ .kind = .integer } else declared_type, .span = span } },
+        .float => |float| .{ .float = .{ .value = float, .ty = if (declared_type.kind == .unknown) .{ .kind = .float } else declared_type, .span = span } },
+        .boolean => |boolean| .{ .boolean = .{ .value = boolean, .ty = if (declared_type.kind == .unknown) .{ .kind = .boolean } else declared_type, .span = span } },
+        .string => |string| .{ .string = .{ .value = try ctx.allocator.dupe(u8, string), .ty = if (declared_type.kind == .unknown) .{ .kind = .string } else declared_type, .span = span } },
+    };
 }

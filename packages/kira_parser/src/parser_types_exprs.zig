@@ -329,6 +329,17 @@ pub fn parseFactor(self: *Parser) anyerror!*syntax.ast.Expr {
 }
 
 pub fn parseUnary(self: *Parser) anyerror!*syntax.ast.Expr {
+    if (self.match(.kw_try)) {
+        const try_token = self.previous();
+        const operand = try self.parseUnary();
+        const node = try self.allocator.create(syntax.ast.Expr);
+        node.* = .{ .try_expr = .{
+            .operand = operand,
+            .span = source_pkg.Span.init(try_token.span.start, exprSpan(operand.*).end),
+        } };
+        return node;
+    }
+
     if (looksLikeOwnershipUnary(self)) {
         const token = self.advance();
         const operand = try self.parseUnary();
@@ -391,7 +402,7 @@ pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
             while (!self.at(.r_paren) and !self.at(.eof)) {
                 const start_token = self.peek();
                 var label: ?[]const u8 = null;
-                if (self.at(.identifier) and self.peekNext().kind == .colon) {
+                if (self.at(.identifier) and (self.peekNext().kind == .colon or self.peekNext().kind == .equal)) {
                     label = self.advance().lexeme;
                     _ = self.advance();
                 }
@@ -473,7 +484,7 @@ pub fn parsePrimary(self: *Parser) anyerror!*syntax.ast.Expr {
     }
     if (self.match(.integer)) {
         const token = self.previous();
-        const value = std.fmt.parseInt(i64, token.lexeme, 10) catch {
+        const value = parseIntegerLiteral(token.lexeme) catch {
             try diagnostics.appendOwned(self.allocator, self.diagnostics, .{
                 .severity = .@"error",
                 .code = "KPAR003",
@@ -583,4 +594,11 @@ pub fn parsePrimary(self: *Parser) anyerror!*syntax.ast.Expr {
         .help = "Insert a literal, name, call, collection literal, or parenthesized expression.",
     });
     return error.DiagnosticsEmitted;
+}
+
+fn parseIntegerLiteral(lexeme: []const u8) !i64 {
+    if (lexeme.len > 2 and lexeme[0] == '0' and (lexeme[1] == 'x' or lexeme[1] == 'X')) {
+        return std.fmt.parseInt(i64, lexeme[2..], 16);
+    }
+    return std.fmt.parseInt(i64, lexeme, 10);
 }

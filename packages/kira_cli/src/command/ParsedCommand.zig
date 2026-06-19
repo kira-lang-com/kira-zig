@@ -21,6 +21,16 @@ pub const ProjectOptions = struct {
     input_path: []const u8 = ".",
 };
 
+pub const FfiMode = enum { autobind };
+pub const FfiOptions = struct {
+    mode: FfiMode = .autobind,
+    backend: ?build_def.ExecutionTarget = null,
+    offline: bool = false,
+    locked: bool = false,
+    timings: bool = false,
+    input_path: []const u8 = ".",
+};
+
 pub const RunOptions = struct {
     runner: ?manifest.RunnerId = null,
     backend: ?build_def.ExecutionTarget = null,
@@ -167,7 +177,9 @@ pub const ParsedCommand = union(CommandKind) {
     tokens: UpdateOptions,
     ast: UpdateOptions,
     check: ProjectOptions,
+    test_cmd: ProjectOptions,
     build: ProjectOptions,
+    ffi: FfiOptions,
     instruments: InstrumentsOptions,
     instrument_artifact: InstrumentArtifactOptions,
     run_hybrid_artifact: RunHybridArtifactOptions,

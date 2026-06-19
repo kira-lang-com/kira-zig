@@ -49,7 +49,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !ParseResul
 fn parseCommandByKind(allocator: std.mem.Allocator, kind: Kind, args: []const []const u8) !ParsedCommand {
     return switch (kind) {
         .check => .{ .check = try parseProjectCommand(allocator, args) },
+        .test_cmd => .{ .test_cmd = try parseProjectCommand(allocator, args) },
         .build => .{ .build = try parseProjectCommand(allocator, args) },
+        .ffi => .{ .ffi = try parseFfiCommand(allocator, args) },
         .run => .{ .run = try parseRun(allocator, args) },
         .live => .{ .live = try parseLive(allocator, args) },
         .export_cmd => .{ .export_cmd = try parseExport(allocator, args) },
@@ -165,6 +167,46 @@ fn parseProjectCommand(allocator: std.mem.Allocator, args: []const []const u8) !
         if (input_path != null) return failInvalid("target", arg, "a single target path");
         input_path = arg;
     }
+    parsed.input_path = input_path orelse ".";
+    return parsed;
+}
+
+fn parseFfiCommand(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.FfiOptions {
+    _ = allocator;
+    if (args.len == 0) return failInvalid("ffi", "", "the autobind subcommand");
+    if (!std.mem.eql(u8, args[0], "autobind")) return failInvalid("ffi", args[0], "the autobind subcommand");
+
+    var parsed = Parsed.FfiOptions{};
+    var input_path: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--backend")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--backend", "vm, llvm, hybrid, or wasm32-emscripten");
+            parsed.backend = values.parseBackend(args[index]) orelse {
+                last_value_for_error = args[index];
+                return error.InvalidBackend;
+            };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--offline")) {
+            parsed.offline = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--locked")) {
+            parsed.locked = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--timings")) {
+            parsed.timings = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported flag");
+        if (input_path != null) return failInvalid("target", arg, "a single target path");
+        input_path = arg;
+    }
+
     parsed.input_path = input_path orelse ".";
     return parsed;
 }

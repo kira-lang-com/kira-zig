@@ -1,6 +1,3 @@
-/* TEMP (dev): exercise ownership-free during validation. */
-#define KIRA_ARRAY_OWNERSHIP_FREE 1
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -498,6 +495,25 @@ KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, in
         return NULL;
     }
     return state;
+}
+
+KIRA_BRIDGE_EXPORT void *kira_struct_alloc(uint64_t type_id, size_t size) {
+    unsigned char *base = (unsigned char *)malloc(sizeof(uint64_t) + size);
+    if (base == NULL) return NULL;
+    *((uint64_t *)base) = type_id;
+    void *payload = (void *)(base + sizeof(uint64_t));
+    memset(payload, 0, size);
+    return payload;
+}
+
+KIRA_BRIDGE_EXPORT uint64_t kira_struct_type_id(void *ptr) {
+    if (ptr == NULL) return 0;
+    return *(((uint64_t *)ptr) - 1);
+}
+
+KIRA_BRIDGE_EXPORT void kira_struct_free(void *ptr) {
+    if (ptr == NULL) return;
+    free(((unsigned char *)ptr) - sizeof(uint64_t));
 }
 
 KIRA_BRIDGE_EXPORT void *kira_native_state_payload(KiraNativeState *state) {

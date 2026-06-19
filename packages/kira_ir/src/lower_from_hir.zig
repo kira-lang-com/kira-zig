@@ -37,14 +37,21 @@ pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program) !ir.Pr
     return lowerProgramWithOptions(allocator, program, .{});
 }
 
-const LowerProgramOptions = struct {
+pub const LowerProgramOptions = struct {
     worker_count_override: ?usize = null,
+    include_tests: bool = false,
 };
 
-fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Program, options: LowerProgramOptions) !ir.Program {
+pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Program, options: LowerProgramOptions) !ir.Program {
     var reachable = std.AutoHashMapUnmanaged(u32, void){};
     defer reachable.deinit(allocator);
     try markReachableFunction(allocator, program, &reachable, program.functions[program.entry_index].id);
+    if (options.include_tests) {
+        for (program.tests) |test_case| {
+            try markReachableFunctionByName(allocator, program, &reachable, test_case.test_function);
+            try markReachableFunctionByName(allocator, program, &reachable, test_case.expect_function);
+        }
+    }
 
     const constructs = try lowerConstructs(allocator, program);
     const construct_implementations = try lowerConstructImplementations(allocator, program);
@@ -86,6 +93,20 @@ fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Program,
         .functions = functions,
         .entry_index = entry_index orelse return error.UnsupportedExecutableFeature,
     };
+}
+
+fn markReachableFunctionByName(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    name: []const u8,
+) !void {
+    for (program.functions) |function_decl| {
+        if (std.mem.eql(u8, function_decl.name, name)) {
+            try markReachableFunction(allocator, program, reachable, function_decl.id);
+            return;
+        }
+    }
 }
 
 const FunctionPlan = struct {
@@ -516,9 +537,31 @@ fn countCallbacksInExpr(expr: *model.Expr) u32 {
             for (node.elements) |element| count += countCallbacksInExpr(element);
             break :blk count;
         },
+        .builder_array => |node| countCallbacksInBuilderBlock(node.builder),
         .index => |node| countCallbacksInExpr(node.object) + countCallbacksInExpr(node.index),
         else => 0,
     };
+}
+
+fn countCallbacksInBuilderBlock(builder: model.BuilderBlock) u32 {
+    var count: u32 = 0;
+    for (builder.items) |item| {
+        count += switch (item) {
+            .expr => |value| countCallbacksInExpr(value.expr),
+            .if_item => |value| countCallbacksInExpr(value.condition) + countCallbacksInBuilderBlock(value.then_block) + (if (value.else_block) |else_block| countCallbacksInBuilderBlock(else_block) else 0),
+            .for_item => |value| countCallbacksInExpr(value.iterator) + countCallbacksInBuilderBlock(value.body),
+            .switch_item => |value| blk: {
+                var inner = countCallbacksInExpr(value.subject);
+                for (value.cases) |case_node| {
+                    inner += countCallbacksInExpr(case_node.pattern);
+                    inner += countCallbacksInBuilderBlock(case_node.body);
+                }
+                if (value.default_block) |default_block| inner += countCallbacksInBuilderBlock(default_block);
+                break :blk inner;
+            },
+        };
+    }
+    return count;
 }
 
 fn lowerAllLocalTypes(
@@ -719,6 +762,9 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
                 .dst = null,
             } });
         },
+        .builder_array => |node| {
+            _ = try lowerBuilderArrayExpr(lowerer, instructions, node);
+        },
         .call_value => |call| {
             const callee = try lowerer.lowerExpr(instructions, call.callee);
             var args = std.array_list.Managed(u32).init(lowerer.allocator);
@@ -749,6 +795,125 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
         },
         .callback => return error.UnsupportedExecutableFeature,
         else => return error.UnsupportedExecutableFeature,
+    }
+}
+
+fn lowerBuilderArrayExpr(
+    lowerer: *Lowerer,
+    instructions: *std.array_list.Managed(ir.Instruction),
+    node: model.hir.BuilderArrayExpr,
+) !u32 {
+    const len_reg = lowerer.freshRegister();
+    try instructions.append(.{ .const_int = .{ .dst = len_reg, .value = 0 } });
+    const dst = lowerer.freshRegister();
+    try instructions.append(.{ .alloc_array = .{
+        .dst = dst,
+        .len = len_reg,
+        .ty = try lowerResolvedType(lowerer.program, node.ty),
+    } });
+    try emitBuilderArrayItems(lowerer, instructions, dst, node.builder);
+    return dst;
+}
+
+fn emitBuilderArrayItems(
+    lowerer: *Lowerer,
+    instructions: *std.array_list.Managed(ir.Instruction),
+    array_reg: u32,
+    builder: model.BuilderBlock,
+) !void {
+    for (builder.items) |item| {
+        switch (item) {
+            .expr => |expr_item| {
+                const value_reg = try lowerer.lowerExpr(instructions, expr_item.expr);
+                try instructions.append(.{ .array_append = .{ .array = array_reg, .src = value_reg } });
+            },
+            .if_item => |if_item| {
+                const condition_reg = try lowerer.lowerExpr(instructions, if_item.condition);
+                const then_label = lowerer.freshLabel();
+                const else_label = lowerer.freshLabel();
+                const end_label = lowerer.freshLabel();
+                try instructions.append(.{ .branch = .{
+                    .condition = condition_reg,
+                    .true_label = then_label,
+                    .false_label = else_label,
+                } });
+                try instructions.append(.{ .label = .{ .id = then_label } });
+                try emitBuilderArrayItems(lowerer, instructions, array_reg, if_item.then_block);
+                try instructions.append(.{ .jump = .{ .label = end_label } });
+                try instructions.append(.{ .label = .{ .id = else_label } });
+                if (if_item.else_block) |else_block| try emitBuilderArrayItems(lowerer, instructions, array_reg, else_block);
+                try instructions.append(.{ .label = .{ .id = end_label } });
+            },
+            .for_item => |for_item| {
+                switch (for_item.iterator.*) {
+                    .array => |iterator| {
+                        const binding_ty = try type_impl.lowerResolvedType(lowerer.program, for_item.binding_ty);
+                        for (iterator.elements) |element| {
+                            const element_reg = try lowerer.lowerExpr(instructions, element);
+                            try lowerer.storeValueToLocal(instructions, for_item.binding_local_id, binding_ty, element_reg);
+                            try emitBuilderArrayItems(lowerer, instructions, array_reg, for_item.body);
+                        }
+                    },
+                    else => {
+                        const binding_ty = try type_impl.lowerResolvedType(lowerer.program, for_item.binding_ty);
+                        const iterator_reg = try lowerer.lowerExpr(instructions, for_item.iterator);
+                        const len_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .array_len = .{ .dst = len_reg, .array = iterator_reg } });
+                        const index_local = try lowerer.freshHiddenLocal(.{ .kind = .integer, .name = "I64" });
+                        const zero_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .const_int = .{ .dst = zero_reg, .value = 0 } });
+                        try instructions.append(.{ .store_local = .{ .local = index_local, .src = zero_reg } });
+
+                        const loop_label = lowerer.freshLabel();
+                        const body_label = lowerer.freshLabel();
+                        const end_label = lowerer.freshLabel();
+                        try instructions.append(.{ .label = .{ .id = loop_label } });
+                        const index_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .load_local = .{ .dst = index_reg, .local = index_local } });
+                        const cmp_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .compare = .{ .dst = cmp_reg, .lhs = index_reg, .rhs = len_reg, .op = .less } });
+                        try instructions.append(.{ .branch = .{ .condition = cmp_reg, .true_label = body_label, .false_label = end_label } });
+                        try instructions.append(.{ .label = .{ .id = body_label } });
+                        const item_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .array_get = .{ .dst = item_reg, .array = iterator_reg, .index = index_reg, .ty = binding_ty } });
+                        try lowerer.storeValueToLocal(instructions, for_item.binding_local_id, binding_ty, item_reg);
+                        try instructions.append(.{ .scope_enter = .{} });
+                        try emitBuilderArrayItems(lowerer, instructions, array_reg, for_item.body);
+                        try instructions.append(.{ .scope_exit = .{ .locals = &.{for_item.binding_local_id} } });
+                        const one_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .const_int = .{ .dst = one_reg, .value = 1 } });
+                        const next_reg = lowerer.freshRegister();
+                        try instructions.append(.{ .add = .{ .dst = next_reg, .lhs = index_reg, .rhs = one_reg } });
+                        try instructions.append(.{ .store_local = .{ .local = index_local, .src = next_reg } });
+                        try instructions.append(.{ .jump = .{ .label = loop_label } });
+                        try instructions.append(.{ .label = .{ .id = end_label } });
+                    },
+                }
+            },
+            .switch_item => |switch_item| {
+                const subject_reg = try lowerer.lowerExpr(instructions, switch_item.subject);
+                const subject_ty = try type_impl.lowerExecutableCompareOperandType(lowerer.program, model.hir.exprType(switch_item.subject.*), .equal);
+                const end_label = lowerer.freshLabel();
+                var used_end_label = false;
+                for (switch_item.cases) |case_node| {
+                    const pattern_reg = try lowerer.lowerExpr(instructions, case_node.pattern);
+                    const pattern_ty = try type_impl.lowerExecutableCompareOperandType(lowerer.program, model.hir.exprType(case_node.pattern.*), .equal);
+                    if (!type_impl.valueTypesEqual(subject_ty, pattern_ty)) return error.UnsupportedExecutableFeature;
+                    const compare_reg = lowerer.freshRegister();
+                    const case_label = lowerer.freshLabel();
+                    const next_label = lowerer.freshLabel();
+                    try instructions.append(.{ .compare = .{ .dst = compare_reg, .lhs = subject_reg, .rhs = pattern_reg, .op = .equal } });
+                    try instructions.append(.{ .branch = .{ .condition = compare_reg, .true_label = case_label, .false_label = next_label } });
+                    try instructions.append(.{ .label = .{ .id = case_label } });
+                    try emitBuilderArrayItems(lowerer, instructions, array_reg, case_node.body);
+                    try instructions.append(.{ .jump = .{ .label = end_label } });
+                    used_end_label = true;
+                    try instructions.append(.{ .label = .{ .id = next_label } });
+                }
+                if (switch_item.default_block) |default_block| try emitBuilderArrayItems(lowerer, instructions, array_reg, default_block);
+                if (used_end_label) try instructions.append(.{ .label = .{ .id = end_label } });
+            },
+        }
     }
 }
 
@@ -831,6 +996,17 @@ pub const Lowerer = struct {
         switch (statement) {
             .let_stmt => |node| {
                 const local_id = self.mapLocal(node.local_id);
+                if (node.is_reborrow) {
+                    // Reborrow (`var r = t` over a borrow): bind the local as a
+                    // non-owning alias of the source pointer. No box, no clone — both
+                    // bindings reference the same storage, mutations are shared, and
+                    // the alias is not freed at scope exit (the borrow's owner frees).
+                    if (node.value) |value| {
+                        const reg = try self.lowerExpr(instructions, value);
+                        try instructions.append(.{ .store_local = .{ .local = local_id, .src = reg, .borrow = true } });
+                    }
+                    return false;
+                }
                 if (self.isBoxedLocal(node.local_id)) {
                     try self.initializeBoxedLocal(instructions, local_id, try lowerResolvedType(self.program, node.ty), null);
                 }
@@ -1050,6 +1226,7 @@ pub const Lowerer = struct {
                 }
                 break :blk dst;
             },
+            .builder_array => |node| try lowerBuilderArrayExpr(self, instructions, node),
             .native_state => |node| blk: {
                 const type_name = node.ty.name orelse return error.UnsupportedExecutableFeature;
                 const src = try self.lowerExpr(instructions, node.value);

@@ -1,0 +1,20 @@
+// A declaration may only assign properties declared in its construct's schema. `subtitle`
+// is not part of `Route`, so the assignment is rejected.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+        path: "/"
+        subtitle: "Welcome"
+    }
+}
+
+@Main
+function main() {
+    return
+}

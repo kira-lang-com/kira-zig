@@ -1,0 +1,13 @@
+// Construct inheritance must form a directed acyclic graph. `A extends B` and
+// `B extends A` close a cycle, which the compiler rejects.
+
+construct A extends B {
+}
+
+construct B extends A {
+}
+
+@Main
+function main() {
+    return
+}

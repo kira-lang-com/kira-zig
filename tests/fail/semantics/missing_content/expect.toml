@@ -2,8 +2,8 @@ backends = ["hybrid", "vm"]
 
 [phases.check]
 result = "fail"
-diagnostic_code = "KSEM022"
-diagnostic_title = "missing required content block"
+diagnostic_code = "KSEM129"
+diagnostic_title = "content count violation"
 stage = "semantics"
 
 [phases.build]

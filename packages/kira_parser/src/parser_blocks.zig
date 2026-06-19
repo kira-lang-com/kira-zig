@@ -90,6 +90,21 @@ pub fn parseCallbackBlock(self: *Parser) anyerror!syntax.ast.CallbackBlock {
 }
 
 pub fn parseBuilderItem(self: *Parser) anyerror!syntax.ast.BuilderItem {
+    if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "For") and self.peekNext().kind == .l_paren) {
+        const start = self.advance().span.start;
+        _ = try self.expect(.l_paren, "expected '(' after For", "open the app-surface For clause here");
+        const name_token = try self.expect(.identifier, "expected loop binding name", "write the loop variable name here");
+        _ = try self.expect(.kw_in, "expected 'in' after loop binding", "use 'in' to introduce the iterable");
+        const iterator = try self.parseExpressionWithoutTrailingBlockCall();
+        _ = try self.expect(.r_paren, "expected ')' after For clause", "close the app-surface For clause here");
+        const body = try self.parseBuilderBlock();
+        return .{ .for_item = .{
+            .binding_name = name_token.lexeme,
+            .iterator = iterator,
+            .body = body,
+            .span = source_pkg.Span.init(start, body.span.end),
+        } };
+    }
     if (self.match(.kw_if)) {
         const start = self.previous().span.start;
         const condition = try self.parseExpressionWithoutTrailingBlockCall();

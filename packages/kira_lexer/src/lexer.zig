@@ -79,8 +79,13 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                 index += 1;
             },
             '.' => {
-                try tokens.append(makeToken(.dot, source.text[index .. index + 1], index, index + 1));
-                index += 1;
+                if (peekByte(source.text, index + 1) == '.') {
+                    try tokens.append(makeToken(.dot_dot, source.text[index .. index + 2], index, index + 2));
+                    index += 2;
+                } else {
+                    try tokens.append(makeToken(.dot, source.text[index .. index + 1], index, index + 1));
+                    index += 1;
+                }
             },
             '+' => {
                 try tokens.append(makeToken(.plus, source.text[index .. index + 1], index, index + 1));
@@ -206,6 +211,26 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
             },
             '0'...'9' => {
                 const start = index;
+                if (source.text[index] == '0' and (peekByte(source.text, index + 1) == 'x' or peekByte(source.text, index + 1) == 'X')) {
+                    index += 2;
+                    const digits_start = index;
+                    while (index < source.text.len and isHexDigit(source.text[index])) : (index += 1) {}
+                    if (index == digits_start) {
+                        try diagnostics.appendOwned(allocator, out_diagnostics, .{
+                            .severity = .@"error",
+                            .code = "KLEX003",
+                            .title = "hex integer literal requires digits",
+                            .message = "Kira expected at least one hexadecimal digit after the `0x` prefix.",
+                            .labels = &.{
+                                diagnostics.primaryLabel(source_pkg.Span.init(start, index), "hex literal has no digits"),
+                            },
+                            .help = "Use a literal such as `0x1f`.",
+                        });
+                        return error.DiagnosticsEmitted;
+                    }
+                    try tokens.append(makeToken(.integer, source.text[start..index], start, index));
+                    continue;
+                }
                 while (index < source.text.len and std.ascii.isDigit(source.text[index])) : (index += 1) {}
                 if (index + 1 <= source.text.len and peekByte(source.text, index) == '.' and std.ascii.isDigit(peekByte(source.text, index + 1))) {
                     index += 1;
@@ -251,15 +276,24 @@ fn isIdentifierContinue(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '_';
 }
 
+fn isHexDigit(byte: u8) bool {
+    return std.ascii.isDigit(byte) or (byte >= 'a' and byte <= 'f') or (byte >= 'A' and byte <= 'F');
+}
+
 fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "annotation")) return .kw_annotation;
     if (std.mem.eql(u8, lexeme, "capability")) return .kw_capability;
     if (std.mem.eql(u8, lexeme, "class")) return .kw_class;
+    if (std.mem.eql(u8, lexeme, "comptime")) return .kw_comptime;
     if (std.mem.eql(u8, lexeme, "construct")) return .kw_construct;
     if (std.mem.eql(u8, lexeme, "enum")) return .kw_enum;
     if (std.mem.eql(u8, lexeme, "struct")) return .kw_struct;
     if (std.mem.eql(u8, lexeme, "type")) return .kw_type;
     if (std.mem.eql(u8, lexeme, "extends")) return .kw_extends;
+    if (std.mem.eql(u8, lexeme, "extend")) return .kw_extend;
+    if (std.mem.eql(u8, lexeme, "attempt")) return .kw_attempt;
+    if (std.mem.eql(u8, lexeme, "try")) return .kw_try;
+    if (std.mem.eql(u8, lexeme, "Self")) return .kw_self_type;
     if (std.mem.eql(u8, lexeme, "function")) return .kw_function;
     if (std.mem.eql(u8, lexeme, "generated")) return .kw_generated;
     if (std.mem.eql(u8, lexeme, "override")) return .kw_override;
@@ -368,6 +402,36 @@ test "tokenizes modern expression and member syntax" {
     try std.testing.expectEqual(syntax.TokenKind.colon, tokens[41].kind);
 }
 
+test "tokenizes hex integer literals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(allocator, "hex.kira", "let a: Int = 0x1f; let b: Int = 0XCAFE;");
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = try tokenize(allocator, &source, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(syntax.TokenKind.integer, tokens[5].kind);
+    try std.testing.expectEqualStrings("0x1f", tokens[5].lexeme);
+    try std.testing.expectEqual(syntax.TokenKind.integer, tokens[12].kind);
+    try std.testing.expectEqualStrings("0XCAFE", tokens[12].lexeme);
+}
+
+test "reports empty hex integer literals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(allocator, "hex-empty.kira", "let a: Int = 0x;");
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const result = tokenize(allocator, &source, &diags);
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try std.testing.expectEqual(@as(usize, 1), diags.items.len);
+    try std.testing.expectEqualStrings("hex integer literal requires digits", diags.items[0].title);
+}
+
 test "tokenizes inheritance keywords" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -384,6 +448,41 @@ test "tokenizes inheritance keywords" {
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
     try std.testing.expectEqual(syntax.TokenKind.kw_extends, tokens[2].kind);
     try std.testing.expectEqual(syntax.TokenKind.kw_override, tokens[7].kind);
+}
+
+test "tokenizes construct-family tokens: dot_dot range, attempt/try/Self, contextual handle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const source = try source_pkg.SourceFile.initOwned(
+        allocator,
+        "construct-family.kira",
+        "count 0..1 0.. attempt try Self handle",
+    );
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const tokens = try tokenize(allocator, &source, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    // `count` is a contextual word, lexed as an identifier (not reserved).
+    try std.testing.expectEqual(syntax.TokenKind.identifier, tokens[0].kind);
+    try std.testing.expectEqualStrings("count", tokens[0].lexeme);
+    // `0..1` -> integer, dot_dot, integer (no `..` consumed by the float lexer).
+    try std.testing.expectEqual(syntax.TokenKind.integer, tokens[1].kind);
+    try std.testing.expectEqualStrings("0", tokens[1].lexeme);
+    try std.testing.expectEqual(syntax.TokenKind.dot_dot, tokens[2].kind);
+    try std.testing.expectEqualStrings("..", tokens[2].lexeme);
+    try std.testing.expectEqual(syntax.TokenKind.integer, tokens[3].kind);
+    // `0..` -> integer, dot_dot (unbounded upper).
+    try std.testing.expectEqual(syntax.TokenKind.integer, tokens[4].kind);
+    try std.testing.expectEqual(syntax.TokenKind.dot_dot, tokens[5].kind);
+    // Reserved construct-family keywords.
+    try std.testing.expectEqual(syntax.TokenKind.kw_attempt, tokens[6].kind);
+    try std.testing.expectEqual(syntax.TokenKind.kw_try, tokens[7].kind);
+    try std.testing.expectEqual(syntax.TokenKind.kw_self_type, tokens[8].kind);
+    // `handle` must remain an identifier (it collides with real corpus identifiers).
+    try std.testing.expectEqual(syntax.TokenKind.identifier, tokens[9].kind);
+    try std.testing.expectEqualStrings("handle", tokens[9].lexeme);
 }
 
 test "tokenizes the checked-in Kira corpus" {

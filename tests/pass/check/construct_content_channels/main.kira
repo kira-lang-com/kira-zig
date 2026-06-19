@@ -1,0 +1,34 @@
+// A construct declares named content channels with `accepts` (element type) and `count`
+// (how many elements) rules. Channels are inherited through `extends`. A construct-backed
+// declaration fills channels with named sections (`head { ... }`, `body { ... }`).
+
+construct WebElement {
+    content {
+        head {
+            accepts Title
+            count 0..1
+        }
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+construct Document extends WebElement {
+}
+
+Document Page {
+    head {
+        Title("Home")
+    }
+    body {
+        Title("Welcome")
+        Title("More")
+    }
+}
+
+@Main
+function main() {
+    return
+}

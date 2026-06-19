@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const discovery = @import("discovery.zig");
 const execute = @import("execute.zig");
+const reporting = @import("reporting.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -16,7 +17,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const cases = try discovery.discoverCases(allocator);
     if (cases.len == 0) return error.NoCorpusCases;
 
-    const jobs = try buildJobs(allocator, cases);
+    // Optional single-case filter: KIRA_CORPUS_FILTER=substring runs only cases
+    // whose path contains the substring. Handy for iterating on one corpus case.
+    const case_filter = init.environ.getAlloc(allocator, "KIRA_CORPUS_FILTER") catch null;
+    const backends = try resolveBackends(allocator, init.environ);
+    const phases = try resolvePhases(allocator, init.environ);
+    const jobs = try buildJobs(allocator, cases, case_filter, backends, phases);
     const profile_enabled = try envFlag(allocator, init.environ, "KIRA_CORPUS_PROFILE");
     // Stability mode: native (llvm) cases build and link real binaries, which contend
     // on the toolchain when many run at once and can fail transiently under load. Stable
@@ -30,6 +36,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const options: execute.Options = .{
         .hybrid_runner_path = args[1],
         .profile = profile_enabled,
+        .phases = phases,
     };
 
     const start = nowTimestamp();
@@ -55,13 +62,23 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var passed: usize = 0;
     var failed: usize = 0;
+    var failures = std.array_list.Managed(reporting.FailureRecord).init(allocator);
     for (results) |result| {
-        std.debug.print("{s}", .{result.report.output});
         passed += result.report.passed;
         failed += result.report.failed;
+        for (result.report.failures) |failure| try failures.append(failure);
     }
 
-    std.debug.print("Corpus summary: {d} passed, {d} failed\n", .{ passed, failed });
+    const suite_report: reporting.SuiteReport = .{
+        .total = passed + failed,
+        .passed = passed,
+        .failed = failed,
+        .failures = failures.items,
+    };
+    try reporting.writeJsonReportFile(allocator, suite_report);
+    var human_report: std.Io.Writer.Allocating = .init(allocator);
+    try reporting.writeHumanReport(allocator, &human_report.writer, suite_report);
+    std.debug.print("{s}", .{try human_report.toOwnedSlice()});
     if (profile_enabled) {
         std.debug.print(
             "Corpus timing: wall={s}, workers={d}, jobs={d}\n",
@@ -81,9 +98,9 @@ const Job = struct {
 const JobResult = struct {
     arena: ?*std.heap.ArenaAllocator = null,
     report: execute.JobReport = .{
-        .output = "",
         .passed = 0,
         .failed = 0,
+        .failures = &.{},
     },
 
     fn deinit(self: JobResult) void {
@@ -119,11 +136,7 @@ const Shared = struct {
             attempt += 1;
             const arena_ptr = std.heap.smp_allocator.create(std.heap.ArenaAllocator) catch {
                 self.results[index] = .{
-                    .report = .{
-                        .output = "FAIL <internal>: OutOfMemory\n",
-                        .passed = 0,
-                        .failed = 1,
-                    },
+                    .report = outOfMemoryReport(),
                 };
                 return;
             };
@@ -136,12 +149,7 @@ const Shared = struct {
                     "{s} [{s}]",
                     .{ job.case.name, backendName(job.backend) },
                 ) catch "internal";
-                const output = std.fmt.allocPrint(allocator, "FAIL {s}: {s}\n", .{ label, @errorName(err) }) catch "FAIL <internal>: execution failed\n";
-                break :blk execute.JobReport{
-                    .output = output,
-                    .passed = 0,
-                    .failed = 1,
-                };
+                break :blk internalFailureReport(allocator, label, err);
             };
 
             // Retry a failing llvm job (transient build/link flake) until it passes or the
@@ -161,21 +169,146 @@ const Shared = struct {
     }
 };
 
+fn internalFailureReport(allocator: std.mem.Allocator, label: []const u8, err: anyerror) execute.JobReport {
+    const trace = std.fmt.allocPrint(allocator, "FAIL {s}: {s}\n", .{ label, @errorName(err) }) catch "FAIL <internal>: execution failed\n";
+    const signature = std.fmt.allocPrint(allocator, "internal:{s}", .{@errorName(err)}) catch "internal";
+    const failures = allocator.alloc(reporting.FailureRecord, 1) catch return outOfMemoryReport();
+    failures[0] = .{
+        .label = label,
+        .error_name = @errorName(err),
+        .signature = signature,
+        .trace = trace,
+    };
+    return .{
+        .passed = 0,
+        .failed = 1,
+        .failures = failures,
+    };
+}
+
+fn outOfMemoryReport() execute.JobReport {
+    const static_failures = struct {
+        const items = [_]reporting.FailureRecord{.{
+            .label = "<internal>",
+            .error_name = "OutOfMemory",
+            .signature = "internal:OutOfMemory",
+            .trace = "FAIL <internal>: OutOfMemory\n",
+        }};
+    }.items;
+    return .{
+        .passed = 0,
+        .failed = 1,
+        .failures = &static_failures,
+    };
+}
+
 fn workerMain(shared: *Shared) void {
     shared.runUntilDone();
 }
 
-fn buildJobs(allocator: std.mem.Allocator, cases: []const discovery.Case) ![]Job {
+fn buildJobs(
+    allocator: std.mem.Allocator,
+    cases: []const discovery.Case,
+    case_filter: ?[]const u8,
+    backends: []const discovery.Backend,
+    phases: execute.PhaseSet,
+) ![]Job {
     var jobs = std.array_list.Managed(Job).init(allocator);
     for (cases) |case| {
+        if (case_filter) |filter| {
+            if (filter.len != 0 and std.mem.indexOf(u8, case.name, filter) == null) continue;
+        }
+        if (!caseHasRunnableSelectedPhase(case, phases)) continue;
         for (case.expectation.backends) |backend| {
+            if (!backendSelected(backends, backend)) continue;
             try jobs.append(.{
                 .case = case,
                 .backend = backend,
             });
         }
     }
-    return jobs.toOwnedSlice();
+    const owned = try jobs.toOwnedSlice();
+    std.mem.sort(Job, owned, {}, lessJob);
+    return owned;
+}
+
+fn lessJob(_: void, lhs: Job, rhs: Job) bool {
+    const lhs_priority = backendPriority(lhs.backend);
+    const rhs_priority = backendPriority(rhs.backend);
+    if (lhs_priority != rhs_priority) return lhs_priority < rhs_priority;
+    return std.mem.lessThan(u8, lhs.case.name, rhs.case.name);
+}
+
+fn backendPriority(backend: discovery.Backend) u8 {
+    return switch (backend) {
+        .llvm => 0,
+        .hybrid => 1,
+        .vm => 2,
+    };
+}
+
+fn caseHasRunnableSelectedPhase(case: discovery.Case, phases: execute.PhaseSet) bool {
+    if (phases.check and case.expectation.check.result != .blocked) return true;
+    if (phases.build and case.expectation.build.result != .blocked) return true;
+    if (phases.run and case.expectation.run.result != .blocked) return true;
+    return false;
+}
+
+fn backendSelected(backends: []const discovery.Backend, backend: discovery.Backend) bool {
+    for (backends) |selected| {
+        if (selected == backend) return true;
+    }
+    return false;
+}
+
+fn resolveBackends(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const discovery.Backend {
+    const raw = environ.getAlloc(allocator, "KIRA_CORPUS_BACKENDS") catch return allocator.dupe(discovery.Backend, &.{ .vm, .llvm, .hybrid });
+    defer allocator.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "all")) return allocator.dupe(discovery.Backend, &.{ .vm, .llvm, .hybrid });
+
+    var parsed = std.array_list.Managed(discovery.Backend).init(allocator);
+    var parts = std.mem.splitScalar(u8, trimmed, ',');
+    while (parts.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t\r\n");
+        if (part.len == 0) continue;
+        const backend: discovery.Backend = if (std.mem.eql(u8, part, "vm"))
+            .vm
+        else if (std.mem.eql(u8, part, "llvm"))
+            .llvm
+        else if (std.mem.eql(u8, part, "hybrid"))
+            .hybrid
+        else
+            return error.InvalidBackendFilter;
+        if (!backendSelected(parsed.items, backend)) try parsed.append(backend);
+    }
+    if (parsed.items.len == 0) return error.InvalidBackendFilter;
+    return parsed.toOwnedSlice();
+}
+
+fn resolvePhases(allocator: std.mem.Allocator, environ: std.process.Environ) !execute.PhaseSet {
+    const raw = environ.getAlloc(allocator, "KIRA_CORPUS_PHASES") catch return .all;
+    defer allocator.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "all")) return .all;
+
+    var phases = execute.PhaseSet{ .check = false, .build = false, .run = false };
+    var parts = std.mem.splitAny(u8, trimmed, ", ");
+    while (parts.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t\r\n");
+        if (part.len == 0) continue;
+        if (std.mem.eql(u8, part, "check")) {
+            phases.check = true;
+        } else if (std.mem.eql(u8, part, "build")) {
+            phases.build = true;
+        } else if (std.mem.eql(u8, part, "run")) {
+            phases.run = true;
+        } else {
+            return error.InvalidPhaseFilter;
+        }
+    }
+    if (!phases.check and !phases.build and !phases.run) return error.InvalidPhaseFilter;
+    return phases;
 }
 
 fn resolveWorkerCount(allocator: std.mem.Allocator, environ: std.process.Environ, job_count: usize) usize {

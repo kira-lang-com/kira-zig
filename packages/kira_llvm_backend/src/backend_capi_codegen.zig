@@ -251,8 +251,11 @@ pub const FunctionCodegen = struct {
             .alloc_struct => |v| {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
                 const size = api.LLVMSizeOf(struct_ty);
-                var args = [_]llvm.c.LLVMValueRef{size};
-                const ptr = api.LLVMBuildCall2(b, self.runtime_decls.malloc.ty, self.runtime_decls.malloc.fn_value, &args, args.len, "struct.alloc");
+                var args = [_]llvm.c.LLVMValueRef{
+                    api.LLVMConstInt(self.types.i64, ir.nativeStateTypeId(v.type_name), 0),
+                    size,
+                };
+                const ptr = api.LLVMBuildCall2(b, self.runtime_decls.struct_alloc.ty, self.runtime_decls.struct_alloc.fn_value, &args, args.len, "struct.alloc");
                 _ = api.LLVMBuildStore(b, api.LLVMConstNull(struct_ty), ptr);
                 self.registers[v.dst] = api.LLVMBuildPtrToInt(b, ptr, self.types.i64, "struct.ptr");
                 drop.onAlloc(self, v.dst);
@@ -368,7 +371,7 @@ pub const FunctionCodegen = struct {
         const api = self.api;
         const operand_kind = if (v.lhs < self.register_types.len) self.register_types[v.lhs].kind else ir.ValueType.Kind.integer;
         if (operand_kind == .float) {
-            const pred: c_uint = switch (v.op) {
+            const pred: c_int = switch (v.op) {
                 .equal => llvm.c.LLVMRealOEQ,
                 .not_equal => llvm.c.LLVMRealONE,
                 .less => llvm.c.LLVMRealOLT,
@@ -380,7 +383,7 @@ pub const FunctionCodegen = struct {
         }
         // Integer / boolean / pointer comparison. Equality is valid for all;
         // ordering uses signed predicates (Kira Int is signed).
-        const pred: c_uint = switch (v.op) {
+        const pred: c_int = switch (v.op) {
             .equal => llvm.c.LLVMIntEQ,
             .not_equal => llvm.c.LLVMIntNE,
             .less => llvm.c.LLVMIntSLT,
@@ -458,8 +461,12 @@ pub const FunctionCodegen = struct {
                     const struct_ty = self.struct_types.get(value_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
                     const src = api.LLVMBuildIntToPtr(b, value, self.types.ptr_ty, "bv.struct.src");
                     const loaded = api.LLVMBuildLoad2(b, struct_ty, src, "bv.struct.val");
-                    var margs = [_]llvm.c.LLVMValueRef{api.LLVMSizeOf(struct_ty)};
-                    const copy = api.LLVMBuildCall2(b, self.runtime_decls.malloc.ty, self.runtime_decls.malloc.fn_value, &margs, margs.len, "bv.struct.copy");
+                    const type_name = value_type.name orelse return error.UnsupportedExecutableFeature;
+                    var margs = [_]llvm.c.LLVMValueRef{
+                        api.LLVMConstInt(self.types.i64, ir.nativeStateTypeId(type_name), 0),
+                        api.LLVMSizeOf(struct_ty),
+                    };
+                    const copy = api.LLVMBuildCall2(b, self.runtime_decls.struct_alloc.ty, self.runtime_decls.struct_alloc.fn_value, &margs, margs.len, "bv.struct.copy");
                     _ = api.LLVMBuildStore(b, loaded, copy);
                     bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildPtrToInt(b, copy, self.types.i64, "bv.struct.int"), 2, "bv.payload");
                 }

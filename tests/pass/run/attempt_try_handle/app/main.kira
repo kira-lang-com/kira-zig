@@ -1,0 +1,46 @@
+import Foundation
+
+// `attempt`/`try`/`handle` executes by unwrapping `Result<Value, Failure>`: on `Ok` the bound
+// value flows to the rest of the block, on `Error` control transfers to the `handle` case
+// selected by the failure's variant. A handler may bind and read the failure's payload.
+
+enum RenderFailure {
+    MissingNode: String = "missing"
+    InvalidState: String = "invalid"
+}
+
+function renderOk() -> Result<Int, RenderFailure> {
+    return Result.Ok(42)
+}
+
+function renderFail() -> Result<Int, RenderFailure> {
+    return Result.Error(RenderFailure.MissingNode("boom"))
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try renderOk()
+        print(value)
+    } handle {
+        MissingNode(reason) {
+            print(reason)
+        }
+        InvalidState(reason) {
+            print(reason)
+        }
+    }
+
+    attempt {
+        let value = try renderFail()
+        print(value)
+    } handle {
+        MissingNode(reason) {
+            print(reason)
+        }
+        InvalidState(reason) {
+            print(reason)
+        }
+    }
+    return
+}

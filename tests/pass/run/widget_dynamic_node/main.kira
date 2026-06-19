@@ -1,0 +1,68 @@
+construct Node {
+    @Required let label: String
+}
+
+Node TextNode {
+    let text: String = ""
+
+    let label: String {
+        text
+    }
+}
+
+Node SpacerNode {
+    let label: String {
+        "spacer"
+    }
+}
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+Widget Text {
+    let text: String = ""
+
+    let node: Node {
+        TextNode(text: text)
+    }
+}
+
+Widget Spacer {
+    let node: Node {
+        SpacerNode()
+    }
+}
+
+Widget Badge {
+    let body: Widget {
+        Text(text: "badge")
+    }
+}
+
+extend Widget {
+    function describe() -> String {
+        return self.node.label
+    }
+}
+
+function show(widget: any Widget) {
+    let node: any Node = widget.node
+    print(node.label)
+}
+
+function showMethod(widget: any Widget) {
+    print(widget.describe())
+}
+
+@Main
+function main() {
+    show(Text(text: "text"))
+    show(Spacer())
+    show(Badge())
+    showMethod(Text(text: "text"))
+    showMethod(Spacer())
+    showMethod(Badge())
+    return
+}

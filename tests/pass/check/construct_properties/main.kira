@@ -1,0 +1,29 @@
+// A construct declares a typed property schema. `required` properties must be provided by
+// every construct-backed declaration; non-required properties are optional. Properties are
+// inherited through `extends`, and a declaration supplies them through a `properties { ... }`
+// section (never through a constructor-style `Route Home(path: "/")` form).
+
+construct WebElement {
+    properties {
+        id: String
+    }
+}
+
+construct Route extends WebElement {
+    properties {
+        required path: String
+        title: String
+    }
+}
+
+Route Home {
+    properties {
+        path: "/"
+        id: "home"
+    }
+}
+
+@Main
+function main() {
+    return
+}

@@ -1,0 +1,36 @@
+// The Widget->Node bridge executes: a computed `let node: T { ... }` member runs as an accessor
+// invoked by bare member access (`widget.node`, no parens), and accessor chains compose
+// (`button.body.node`), identically on vm, llvm, and hybrid.
+
+struct TextNode {
+    let text: String = ""
+}
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+Widget Text {
+    let text: String = ""
+    let node: TextNode {
+        TextNode(text: text)
+    }
+}
+
+Widget Button {
+    let title: String = ""
+    let body: Text {
+        Text(text: title)
+    }
+}
+
+@Main
+function main() {
+    let label = Text(text: "terminal")
+    print(label.node.text)
+
+    let button = Button(title: "composite")
+    print(button.body.node.text)
+    return
+}

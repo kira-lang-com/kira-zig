@@ -4,7 +4,9 @@ pub const CommandKind = enum {
     tokens,
     ast,
     check,
+    test_cmd,
     build,
+    ffi,
     instruments,
     instrument_artifact,
     run_hybrid_artifact,
@@ -28,7 +30,9 @@ pub const CommandKind = enum {
             .tokens => "tokens",
             .ast => "ast",
             .check => "check",
+            .test_cmd => "test",
             .build => "build",
+            .ffi => "ffi",
             .instruments => "instruments",
             .instrument_artifact => "__instrument-artifact",
             .run_hybrid_artifact => "__run-hybrid-artifact",
@@ -59,6 +63,8 @@ pub fn parse(command: []const u8) ?CommandKind {
             if (std.mem.eql(u8, command, "__run-hybrid-artifact")) return kind;
         } else if (kind == .live_runner) {
             if (std.mem.eql(u8, command, "__live-runner")) return kind;
+        } else if (kind == .test_cmd) {
+            if (std.mem.eql(u8, command, "test")) return kind;
         } else if (kind == .export_cmd) {
             if (std.mem.eql(u8, command, "export")) return kind;
         } else if (std.mem.eql(u8, command, field.name)) {

@@ -26,8 +26,6 @@ test "check and build stop points share imported graph diagnostics" {
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/app/main.kira",
         .data =
-        \\import support as Support
-        \\
         \\@Main
         \\function main() {
         \\    return;
@@ -213,7 +211,7 @@ test "path dependency rooted at repo root resolves module file from app director
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
-test "current library root import exposes declarations from every library file" {
+test "current package app files share one namespace without importing sibling files" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -235,8 +233,6 @@ test "current library root import exposes declarations from every library file" 
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/UILibrary/app/main.kira",
         .data =
-        \\import UI
-        \\
         \\@Main
         \\function main() {
         \\    header()
@@ -267,7 +263,7 @@ test "current library root import exposes declarations from every library file" 
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
-test "compile frontend deduplicates mixed-separator paths while walking current package imports" {
+test "compile frontend deduplicates mixed-separator paths while walking current package namespace" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -290,11 +286,9 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "Workspace/callbacks/app/main.kira",
         .data =
-        \\import callbacks as cb
-        \\
         \\@Main
         \\function main() {
-        \\    cb.hello()
+        \\    hello()
         \\    return
         \\}
         ,

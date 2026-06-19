@@ -9,6 +9,19 @@ const ImportedGlobals = @import("imported_globals.zig").ImportedGlobals;
 const type_impl = @import("lower_program_types.zig");
 const enum_impl = @import("lower_program_enums.zig");
 const ffi_boundary = @import("lower_program_ffi_boundary.zig");
+const requirements = @import("lower_construct_requirements.zig");
+const field_requirements = @import("lower_construct_field_requirements.zig");
+const widget_content = @import("lower_widget_content.zig");
+const content_composition = @import("lower_construct_content.zig");
+const content_validation = @import("lower_construct_content_validation.zig");
+const construct_functions = @import("lower_construct_functions.zig");
+const construct_extensions = @import("lower_construct_extensions.zig");
+const construct_defaults = @import("lower_construct_default_accessors.zig");
+const construct_members = @import("lower_construct_members.zig");
+const construct_tests = @import("lower_construct_tests.zig");
+const node_bridge = @import("lower_construct_node_bridge.zig");
+const type_accessors = @import("lower_type_constant_accessors.zig");
+const form_surface = @import("construct_form_surface.zig");
 
 pub const lowerImports = type_impl.lowerImports;
 pub const composeAnnotationGeneratedFunctions = type_impl.composeAnnotationGeneratedFunctions;
@@ -38,6 +51,10 @@ pub const makeDeclaredMethodMember = type_impl.makeDeclaredMethodMember;
 pub const registerTypeMethodHeaders = type_impl.registerTypeMethodHeaders;
 pub const lowerTypeMethods = type_impl.lowerTypeMethods;
 pub const lowerMethodFunction = type_impl.lowerMethodFunction;
+const field_defaults = @import("lower_program_field_defaults.zig");
+pub const lowerField = field_defaults.lowerField;
+pub const lowerFieldDefaultExpr = field_defaults.lowerFieldDefaultExpr;
+pub const lowerFieldDefaultExprExpected = field_defaults.lowerFieldDefaultExprExpected;
 
 pub const ResolvedFieldOverride = struct {
     field: model.Field,
@@ -48,6 +65,10 @@ pub const ResolvedMethodMember = shared.MethodMember;
 
 pub const AnalysisOptions = struct {
     require_main: bool = true,
+    /// Set for the VM target: ordinary runtime functions may call FFI-bound
+    /// symbols directly because the VM dispatches them through LibFFI. Other
+    /// backends keep the KSEM093 "@Native" requirement.
+    allow_runtime_direct_ffi: bool = false,
 };
 
 pub const TypeSource = union(enum) {
@@ -101,6 +122,8 @@ fn collectRootTopLevelNames(
             .construct_decl => |item| try names.put(allocator, item.name, {}),
             .construct_form_decl => |item| try names.put(allocator, item.name, {}),
             .function_decl => |item| try names.put(allocator, item.name, {}),
+            // Extension declarations add no new top-level name; they extend an existing construct.
+            .extend_decl => {},
         }
     }
 }
@@ -141,6 +164,7 @@ pub fn lowerProgramWithOptions(
         .allocator = allocator,
         .diagnostics = out_diagnostics,
         .imported_globals = imported_globals,
+        .allow_runtime_direct_ffi = options.allow_runtime_direct_ffi,
     };
 
     const imports = try lowerImports(&ctx, program);
@@ -176,6 +200,7 @@ pub fn lowerProgramWithOptions(
     var constructs = std.array_list.Managed(model.Construct).init(allocator);
     var types = std.array_list.Managed(model.TypeDecl).init(allocator);
     var forms = std.array_list.Managed(model.ConstructForm).init(allocator);
+    var tests = std.array_list.Managed(model.TestCase).init(allocator);
     var functions = std.array_list.Managed(model.Function).init(allocator);
     var local_types = LocalTypeMap{};
     defer local_types.deinit(allocator);
@@ -245,7 +270,7 @@ pub fn lowerProgramWithOptions(
     for (program.decls, 0..) |decl, decl_index| {
         const origin = declOrigin(program, decl_index);
         switch (decl) {
-            .annotation_decl, .capability_decl => {},
+            .annotation_decl, .capability_decl, .extend_decl => {},
             .construct_decl => |construct_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, construct_decl.name, construct_decl.span);
                 const lowered = try lowerConstructDecl(&ctx, construct_decl);
@@ -269,6 +294,11 @@ pub fn lowerProgramWithOptions(
             },
             .construct_form_decl => |form_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, form_decl.name, form_decl.span);
+                // Gap #1 (runtime): a concrete declaration is also a struct type of its stored
+                // scalar fields, so `Text(text: "hi")` lowers through the ordinary struct
+                // construction path into an `alloc_struct`. Composition members (`@Content`
+                // children, computed `let node { ... }`) are excluded — they are not stored state.
+                try local_types.put(allocator, form_decl.name, try synthesizeFormStruct(&ctx, form_decl));
             },
             .function_decl => |function_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, function_decl.name, function_decl.span);
@@ -276,8 +306,10 @@ pub fn lowerProgramWithOptions(
                 const foreign = try shared.resolveForeignFunction(&ctx, function_decl.annotations, function_decl.span);
                 var param_types = std.array_list.Managed(model.ResolvedType).init(allocator);
                 var param_ownership = std.array_list.Managed(model.OwnershipMode).init(allocator);
+                var param_defaults = std.array_list.Managed(?*syntax.ast.Expr).init(allocator);
                 for (function_decl.params) |param| {
                     try param_ownership.append(shared.ownershipModeFromSyntax(param.type_expr));
+                    try param_defaults.append(param.default_value);
                     if (param.type_expr) |type_expr| {
                         try param_types.append(try shared.typeFromSyntax(&ctx, type_expr.*));
                     } else {
@@ -289,10 +321,13 @@ pub fn lowerProgramWithOptions(
                     .id = @as(u32, @intCast(function_headers.count())),
                     .params = try param_types.toOwnedSlice(),
                     .param_ownership = try param_ownership.toOwnedSlice(),
+                    .param_defaults = try param_defaults.toOwnedSlice(),
                     .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
                     .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(&ctx, return_type.*) else .{ .kind = .unknown },
                     .return_ownership = return_ownership,
                     .is_extern = foreign != null,
+                    .is_comptime = function_decl.is_comptime,
+                    .comptime_decl = if (function_decl.is_comptime) function_decl else null,
                     .foreign = foreign,
                     .span = function_decl.span,
                 });
@@ -310,6 +345,59 @@ pub fn lowerProgramWithOptions(
         _ = try resolveTypeHeader(&ctx, &local_types, &resolver_states, &type_headers, .{ .local = entry.value_ptr.* }, entry.key_ptr.*);
     }
 
+    // All constructs are registered above; validate `extends` (unknown parent + cycles)
+    // before registering construct-family methods that depend on the family graph.
+    try type_impl.validateConstructInheritance(&ctx, constructs.items, &construct_headers);
+    try content_composition.validateConstructContentComposition(&ctx, constructs.items, &construct_headers);
+
+    // Map each construct-backed declaration to its declared parent (a construct or another
+    // declaration), so a declaration's construct family can be resolved through a chain such as
+    // `Drawable Sprite { ... }` then `Sprite Player { ... }`.
+    var form_parent = std.StringHashMapUnmanaged([]const u8){};
+    defer form_parent.deinit(allocator);
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        const parent_leaf = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
+        try form_parent.put(allocator, form_decl.name, parent_leaf);
+    }
+    // Reject declaration-parent cycles before lowering, so they surface as cycles (KSEM119)
+    // rather than as unresolvable parents during form lowering.
+    try requirements.validateFormParentCycles(&ctx, program, &form_parent);
+
+    // Map each declaration's type name to the construct families it satisfies, so concrete widget
+    // values coerce to `any Widget` during body lowering and method registration.
+    var form_families = std.StringHashMapUnmanaged([]const []const u8){};
+    defer form_families.deinit(allocator);
+    try buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
+    ctx.form_families = &form_families;
+
+    try registerImportedFunctionHeaders(&ctx, &function_headers);
+    for (program.decls) |decl| {
+        switch (decl) {
+            .type_decl => |type_decl| {
+                try registerTypeMethodHeaders(&ctx, type_decl, &function_headers);
+                try type_accessors.registerTypeAccessorHeaders(&ctx, type_decl, &function_headers);
+            },
+            .construct_form_decl => |form_decl| {
+                try construct_tests.registerTestSectionHeaders(&ctx, form_decl, &function_headers);
+                try construct_functions.registerConstructFormFunctionHeaders(&ctx, form_decl, &function_headers);
+                try construct_functions.registerConstructFormMethods(&ctx, form_decl, &type_headers, &function_headers);
+                try node_bridge.registerFormAccessorHeaders(&ctx, form_decl, &function_headers);
+                try node_bridge.registerFormAccessorMethods(&ctx, form_decl, &type_headers, &function_headers);
+                try construct_defaults.registerDefaultFunctionHeaders(&ctx, program, form_decl, &function_headers);
+                try construct_defaults.registerDefaultMethods(&ctx, program, form_decl, &type_headers, &function_headers);
+            },
+            .extend_decl => |extend_decl| {
+                try construct_extensions.registerExtendFunctionHeaders(&ctx, extend_decl, &function_headers);
+                try construct_extensions.registerExtendMethods(&ctx, extend_decl, &type_headers, &function_headers);
+            },
+            .function_decl => {},
+            else => {},
+        }
+    }
+    try validatePrintableTypes(&ctx, &type_headers, &function_headers);
+
     var type_header_iterator = type_headers.iterator();
     while (type_header_iterator.next()) |entry| {
         try types.append(.{
@@ -322,16 +410,6 @@ pub fn lowerProgramWithOptions(
             .span = entry.value_ptr.span,
         });
     }
-
-    try registerImportedFunctionHeaders(&ctx, &function_headers);
-    for (program.decls) |decl| {
-        switch (decl) {
-            .type_decl => |type_decl| try registerTypeMethodHeaders(&ctx, type_decl, &function_headers),
-            .function_decl => {},
-            else => {},
-        }
-    }
-    try validatePrintableTypes(&ctx, &type_headers, &function_headers);
 
     var main_index: ?usize = null;
     var first_main_span: ?source_pkg.Span = null;
@@ -358,12 +436,33 @@ pub fn lowerProgramWithOptions(
         });
     }
 
+    // Record each declaration's `@Content` fields so construction routes trailing blocks into them.
+    var form_content_fields = std.StringHashMapUnmanaged([]const shared.ContentFieldRef){};
+    defer form_content_fields.deinit(allocator);
+    try buildFormContentFields(&ctx, program, &form_content_fields);
+    ctx.form_content_fields = &form_content_fields;
+
+    // Validate caller-provided `@Content` at construction sites before lowering the forms. The
+    // content diagnostics (KSEM142-145) are more specific than the struct-construction errors
+    // (e.g. KSEM081 missing field) that `@Content`-as-real-fields lowering would otherwise raise
+    // first for the same mistake.
+    try widget_content.validateWidgetContent(&ctx, program);
+
     for (program.decls, 0..) |decl, decl_index| {
         const previous_package = ctx.current_package;
+        const previous_source_path = ctx.current_source_path;
         ctx.current_package = declOrigin(program, decl_index).package_name;
+        ctx.current_source_path = declOrigin(program, decl_index).source_path;
         switch (decl) {
-            .construct_form_decl => |form_decl| try forms.append(try lowerConstructForm(&ctx, form_decl, imports, constructs.items, &construct_headers)),
+            .construct_form_decl => |form_decl| {
+                try forms.append(try lowerConstructForm(&ctx, form_decl, imports, constructs.items, &construct_headers, &form_parent));
+                try functions.appendSlice(try construct_functions.lowerConstructFormFunctions(&ctx, form_decl, imports, &function_headers));
+                try functions.appendSlice(try construct_tests.lowerTestSections(&ctx, form_decl, imports, &function_headers, &tests));
+                try functions.appendSlice(try node_bridge.lowerFormAccessors(&ctx, form_decl, imports, &function_headers));
+                try functions.appendSlice(try construct_defaults.lowerDefaultFunctions(&ctx, program, form_decl, imports, &function_headers));
+            },
             .function_decl => |function_decl| {
+                if (function_decl.is_comptime) continue;
                 const lowered = try lowerFunction(&ctx, function_decl, imports, &function_headers);
                 if (lowered.is_main) {
                     if (first_main_span) |previous_span| {
@@ -388,10 +487,42 @@ pub fn lowerProgramWithOptions(
             .type_decl => |type_decl| {
                 const lowered_methods = try lowerTypeMethods(&ctx, type_decl, imports, &function_headers);
                 try functions.appendSlice(lowered_methods);
+                try functions.appendSlice(try type_accessors.lowerTypeAccessors(&ctx, type_decl, imports, &function_headers));
+            },
+            .extend_decl => |extend_decl| {
+                try functions.appendSlice(try construct_extensions.lowerExtendFunctions(&ctx, extend_decl, imports, &function_headers));
             },
             else => {},
         }
         ctx.current_package = previous_package;
+        ctx.current_source_path = previous_source_path;
+    }
+
+    // Validate required-function satisfaction across the mixed construct/declaration graph.
+    try requirements.validateConstructFormRequirements(&ctx, program, constructs.items, &construct_headers, &form_parent);
+    // Validate `@Required` field satisfaction with the terminal-`node` rule.
+    try field_requirements.validateConstructFormFieldRequirements(&ctx, program, constructs.items, &construct_headers, &form_parent);
+    // `extend C { ... }` must target a known construct family.
+    for (program.decls) |decl| {
+        if (decl != .extend_decl) continue;
+        const extend_decl = decl.extend_decl;
+        const name = try shared.qualifiedNameText(allocator, extend_decl.construct_name);
+        const leaf = extend_decl.construct_name.segments[extend_decl.construct_name.segments.len - 1].text;
+        const root = extend_decl.construct_name.segments[0].text;
+        const known = construct_headers.get(leaf) != null or
+            ctx.imported_globals.hasConstruct(name) or
+            shared.isImportedRoot(&ctx, root, imports);
+        if (!known) {
+            try diagnostics.appendOwned(allocator, out_diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM146",
+                .title = "unknown extend target",
+                .message = try std.fmt.allocPrint(allocator, "Kira could not find a construct named '{s}' to extend.", .{name}),
+                .labels = &.{diagnostics.primaryLabel(extend_decl.construct_name.span, "unknown construct")},
+                .help = "Declare the construct before extending it, or import the module that provides it.",
+            });
+            return error.DiagnosticsEmitted;
+        }
     }
 
     if (main_index == null and options.require_main) {
@@ -415,9 +546,125 @@ pub fn lowerProgramWithOptions(
         .constructs = try constructs.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .forms = try forms.toOwnedSlice(),
+        .tests = try tests.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_index = main_index orelse 0,
     };
+}
+
+// Build the struct type backing a concrete declaration: its stored scalar fields only. Computed
+// composition members (`let node: Node { ... }`) and caller-provided `@Content` children are not
+// stored state, so they are excluded from the runtime layout.
+// For each construct-backed declaration, record the construct families it satisfies: its family
+// construct plus that construct's transitive `extends` ancestors. Used to coerce a concrete widget
+// value to `any Widget`.
+fn buildFormFamilies(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    constructs: []const model.Construct,
+    construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
+    form_parent: *const std.StringHashMapUnmanaged([]const u8),
+    out: *std.StringHashMapUnmanaged([]const []const u8),
+) !void {
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        const parent_leaf = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
+        const family = requirements.resolveFamilyConstructModel(constructs, construct_headers, form_parent, parent_leaf) orelse continue;
+        var names = std.array_list.Managed([]const u8).init(allocator);
+        try collectConstructAncestry(allocator, family, constructs, construct_headers, &names);
+        try out.put(allocator, form_decl.name, try names.toOwnedSlice());
+    }
+}
+
+fn collectConstructAncestry(
+    allocator: std.mem.Allocator,
+    construct_model: model.Construct,
+    constructs: []const model.Construct,
+    construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
+    out: *std.array_list.Managed([]const u8),
+) !void {
+    for (out.items) |existing| {
+        if (std.mem.eql(u8, existing, construct_model.name)) return;
+    }
+    try out.append(construct_model.name);
+    for (construct_model.parents) |parent_link| {
+        if (construct_headers.get(parent_link.name)) |header| {
+            try collectConstructAncestry(allocator, constructs[header.index], constructs, construct_headers, out);
+        }
+    }
+}
+
+fn buildFormContentFields(
+    ctx: *shared.Context,
+    program: syntax.ast.Program,
+    out: *std.StringHashMapUnmanaged([]const shared.ContentFieldRef),
+) !void {
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+        var fields = std.array_list.Managed(shared.ContentFieldRef).init(ctx.allocator);
+        for (body_members) |member| {
+            if (member != .field_decl) continue;
+            const field = member.field_decl;
+            if (!construct_members.hasContentAnnotation(field.annotations)) continue;
+            try fields.append(.{
+                .name = field.name,
+                .is_list = field.type_expr != null and field.type_expr.?.* == .array,
+            });
+        }
+        if (fields.items.len > 0) try out.put(ctx.allocator, form_decl.name, try fields.toOwnedSlice());
+    }
+}
+
+fn synthesizeFormStruct(ctx: *shared.Context, form_decl: syntax.ast.ConstructFormDecl) !syntax.ast.TypeDecl {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    var members = std.array_list.Managed(syntax.ast.BodyMember).init(ctx.allocator);
+    for (body_members) |member| {
+        if (member != .field_decl) continue;
+        const field = member.field_decl;
+        // A computed `let node: T { ... }` is the bridge accessor, never stored state.
+        if (field.body != null) continue;
+        if (construct_members.hasContentAnnotation(field.annotations)) {
+            // Caller-provided children are stored as `any Family` slots so heterogeneous widgets
+            // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `any` form.
+            var content_field = field;
+            content_field.type_expr = if (field.type_expr) |type_expr| try anyifyContentType(ctx.allocator, type_expr) else null;
+            try members.append(.{ .field_decl = content_field });
+            continue;
+        }
+        try members.append(.{ .field_decl = field });
+    }
+    return .{
+        .kind = .struct_decl,
+        .annotations = &.{},
+        .name = form_decl.name,
+        .parents = &.{},
+        .members = try members.toOwnedSlice(),
+        .span = form_decl.span,
+    };
+}
+
+// Rewrite an `@Content` field's family type to its `any` form: `[Widget]` -> `[any Widget]`,
+// `Widget` -> `any Widget`. A type already wrapped in `any` is left as-is.
+fn anyifyContentType(allocator: std.mem.Allocator, type_expr: *syntax.ast.TypeExpr) !*syntax.ast.TypeExpr {
+    switch (type_expr.*) {
+        .array => |array| {
+            const element = try anyifyContentType(allocator, array.element_type);
+            const rewritten = try allocator.create(syntax.ast.TypeExpr);
+            rewritten.* = .{ .array = .{ .element_type = element, .span = array.span } };
+            return rewritten;
+        },
+        .named => |named| {
+            const target = try allocator.create(syntax.ast.TypeExpr);
+            target.* = .{ .named = named };
+            const rewritten = try allocator.create(syntax.ast.TypeExpr);
+            rewritten.* = .{ .any = .{ .target = target, .span = named.span } };
+            return rewritten;
+        },
+        else => return type_expr,
+    }
 }
 
 fn lowerConstructForm(
@@ -426,15 +673,18 @@ fn lowerConstructForm(
     imports: []const model.Import,
     constructs: []const model.Construct,
     construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
+    form_parent: *const std.StringHashMapUnmanaged([]const u8),
 ) !model.ConstructForm {
     try shared.validateAnnotationPlacement(ctx, form_decl.annotations, .construct_form_decl, null);
     const construct_name = try shared.qualifiedNameText(ctx.allocator, form_decl.construct_name);
     const construct_root = form_decl.construct_name.segments[0].text;
     const imported_construct_visible = form_decl.construct_name.segments.len == 1 and ctx.imported_globals.hasConstruct(construct_name);
 
+    // The parent may be a construct or another construct-backed declaration; resolve the
+    // construct family that ultimately governs this declaration's content/properties/lifecycle.
     var construct_model: ?model.Construct = null;
-    if (construct_headers.get(construct_name)) |header| {
-        construct_model = constructs[header.index];
+    if (requirements.resolveFamilyConstructModel(constructs, construct_headers, form_parent, construct_name)) |family| {
+        construct_model = family;
     } else if (!imported_construct_visible and !shared.isImportedRoot(ctx, construct_root, imports)) {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
@@ -453,15 +703,24 @@ fn lowerConstructForm(
     var lifecycle_hooks = std.array_list.Managed(model.LifecycleHook).init(ctx.allocator);
     var content: ?model.BuilderBlock = null;
 
-    for (form_decl.body.members) |member| {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    for (body_members) |member| {
         switch (member) {
-            .field_decl => |field_decl| try fields.append(try lowerField(ctx, field_decl, construct_model)),
+            // A computed/composition member (`let node: Node { ... }`) is the typed Widget->Node
+            // bridge, and an `@Content` field is caller-provided children — both are part of the
+            // composition contract, not stored runtime state, so neither becomes a runtime field.
+            // Their roles are validated separately (terminal-`node` rule, content routing).
+            .field_decl => |field_decl| {
+                if (field_decl.body != null) continue;
+                if (construct_members.hasContentAnnotation(field_decl.annotations)) continue;
+                try fields.append(try lowerField(ctx, field_decl, construct_model));
+            },
             .content_section => |content_section| {
                 try shared.validateAnnotationPlacement(ctx, content_section.annotations, .content_section, construct_model);
                 const lowered_content = try exprs.lowerBuilderBlock(ctx, content_section.builder, imports, null);
                 if (construct_model) |construct_info| {
                     if (construct_info.content_element_type) |element_type| {
-                        try validateContentBlock(ctx, lowered_content, element_type);
+                        try content_validation.validateBlock(ctx, lowered_content, element_type);
                     }
                 }
                 content = lowered_content;
@@ -492,24 +751,14 @@ fn lowerConstructForm(
     }
 
     if (construct_model) |construct_info| {
-        if (construct_info.required_content and content == null) {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM022",
-                .title = "missing required content block",
-                .message = try std.fmt.allocPrint(ctx.allocator, "The construct '{s}' requires a `content {{ ... }}` block.", .{construct_info.name}),
-                .labels = &.{
-                    diagnostics.primaryLabel(form_decl.span, "required content block is missing"),
-                },
-                .help = "Add a `content { ... }` section to this declaration.",
-            });
-            return error.DiagnosticsEmitted;
-        }
+        try type_impl.validateFormProperties(ctx, form_decl, construct_info, constructs, construct_headers);
+        try type_impl.validateFormContentChannels(ctx, form_decl, construct_info, constructs, construct_headers);
     }
 
     return .{
         .construct = .{ .construct_name = construct_name },
         .name = try ctx.allocator.dupe(u8, form_decl.name),
+        .families = try formFamiliesFor(ctx, form_decl.name),
         .fields = try fields.toOwnedSlice(),
         .content = content,
         .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
@@ -517,53 +766,12 @@ fn lowerConstructForm(
     };
 }
 
-// A construct that declares `content: Content<T>;` accepts only element-typed
-// (widget-producing) values in a declaration's content block. Raw primitive
-// literals are never widgets, so reject them with a precise diagnostic instead of
-// silently lowering a String where a Widget was expected.
-fn validateContentBlock(ctx: *shared.Context, block: model.BuilderBlock, element_type: []const u8) anyerror!void {
-    for (block.items) |item| {
-        switch (item) {
-            .expr => |expr_item| try validateContentValue(ctx, expr_item.expr, expr_item.span, element_type),
-            .if_item => |if_item| {
-                try validateContentBlock(ctx, if_item.then_block, element_type);
-                if (if_item.else_block) |else_block| try validateContentBlock(ctx, else_block, element_type);
-            },
-            .for_item => |for_item| try validateContentBlock(ctx, for_item.body, element_type),
-            .switch_item => |switch_item| {
-                for (switch_item.cases) |case_node| try validateContentBlock(ctx, case_node.body, element_type);
-                if (switch_item.default_block) |default_block| try validateContentBlock(ctx, default_block, element_type);
-            },
-        }
-    }
-}
-
-fn validateContentValue(ctx: *shared.Context, expr: *model.Expr, span: source_pkg.Span, element_type: []const u8) anyerror!void {
-    const found = model.exprType(expr.*);
-    const found_label: ?[]const u8 = switch (found.kind) {
-        .string, .c_string => "String",
-        .integer => "Int",
-        .float => "Float",
-        .boolean => "Bool",
-        else => null,
-    };
-    if (found_label) |label| {
-        const text_hint = if (found.kind == .string or found.kind == .c_string)
-            "; use Text(...) if visible text was intended"
-        else
-            "";
-        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM098",
-            .title = "content value is not a widget",
-            .message = try std.fmt.allocPrint(ctx.allocator, "Kira expected {s} content, found {s}{s}.", .{ element_type, label, text_hint }),
-            .labels = &.{
-                diagnostics.primaryLabel(span, "this value is not a widget"),
-            },
-            .help = "Content blocks accept widget-producing expressions, not raw values.",
-        });
-        return error.DiagnosticsEmitted;
-    }
+fn formFamiliesFor(ctx: *shared.Context, form_name: []const u8) ![]const []const u8 {
+    const families = ctx.form_families orelse return &.{};
+    const list = families.get(form_name) orelse return &.{};
+    const owned = try ctx.allocator.alloc([]const u8, list.len);
+    for (list, 0..) |family, index| owned[index] = try ctx.allocator.dupe(u8, family);
+    return owned;
 }
 
 pub fn lowerFunction(
@@ -670,9 +878,17 @@ pub fn lowerFunction(
         return error.DiagnosticsEmitted;
     }
     const explicit_return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else model.ResolvedType{ .kind = .unknown };
-    const body = if (function_decl.body) |syntax_body|
-        try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type)
-    else if (foreign != null)
+    const body = if (function_decl.body) |syntax_body| blk: {
+        const previous_locals = ctx.active_locals;
+        const previous_next_local_id = ctx.active_next_local_id;
+        ctx.active_locals = &locals;
+        ctx.active_next_local_id = &next_local_id;
+        defer {
+            ctx.active_locals = previous_locals;
+            ctx.active_next_local_id = previous_next_local_id;
+        }
+        break :blk try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type);
+    } else if (foreign != null)
         try ctx.allocator.alloc(model.Statement, 0)
     else {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
@@ -708,346 +924,6 @@ pub fn lowerFunction(
         .return_ownership = explicit_return_ownership,
         .body = body,
         .span = function_decl.span,
-    };
-}
-
-pub fn lowerField(
-    ctx: *shared.Context,
-    field_decl: syntax.ast.FieldDecl,
-    construct_model: ?model.Construct,
-) !model.Field {
-    try shared.validateAnnotationPlacement(ctx, field_decl.annotations, .field_decl, construct_model);
-    const field_type = try exprs.resolveValueType(ctx, field_decl.type_expr, field_decl.value, field_decl.span);
-    return .{
-        .name = try ctx.allocator.dupe(u8, field_decl.name),
-        .owner_type_name = "",
-        .storage = @enumFromInt(@intFromEnum(field_decl.storage)),
-        .slot_index = 0,
-        .ty = field_type,
-        .explicit_type = field_decl.type_expr != null,
-        .default_value = if (field_decl.value) |value| try lowerFieldDefaultExprExpected(ctx, value, field_type, ctx.function_headers) else null,
-        .annotations = try shared.lowerAnnotations(ctx, field_decl.annotations),
-        .span = field_decl.span,
-    };
-}
-
-pub fn lowerFieldDefaultExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) !*model.Expr {
-    return lowerFieldDefaultExprExpected(ctx, expr, .{ .kind = .unknown }, null);
-}
-
-pub fn lowerFieldDefaultExprExpected(
-    ctx: *shared.Context,
-    expr: *syntax.ast.Expr,
-    expected_type: model.ResolvedType,
-    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
-) !*model.Expr {
-    if (expected_type.kind == .enum_instance) {
-        if (try lowerFieldDefaultEnumVariantExpr(ctx, expr, expected_type, function_headers)) |enum_expr| {
-            return enum_expr;
-        }
-    }
-
-    const lowered = try ctx.allocator.create(model.Expr);
-    lowered.* = switch (expr.*) {
-        .integer => |node| .{ .integer = .{
-            .value = node.value,
-            .ty = .{ .kind = .integer },
-            .span = node.span,
-        } },
-        .float => |node| .{ .float = .{
-            .value = node.value,
-            .ty = .{ .kind = .float },
-            .span = node.span,
-        } },
-        .string => |node| .{ .string = .{
-            .value = try ctx.allocator.dupe(u8, node.value),
-            .ty = .{ .kind = .string },
-            .span = node.span,
-        } },
-        .bool => |node| .{ .boolean = .{
-            .value = node.value,
-            .ty = .{ .kind = .boolean },
-            .span = node.span,
-        } },
-        .array => |node| blk: {
-            var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            const element_type = try fieldDefaultArrayElementType(ctx, expected_type);
-            for (node.elements) |element| try elements.append(try lowerFieldDefaultExprExpected(ctx, element, element_type, function_headers));
-            break :blk .{ .array = .{
-                .elements = try elements.toOwnedSlice(),
-                .ty = if (expected_type.kind == .array) expected_type else .{ .kind = .array },
-                .span = node.span,
-            } };
-        },
-        .struct_literal => |node| blk: {
-            var fields = std.array_list.Managed(model.ConstructFieldInit).init(ctx.allocator);
-            for (node.fields) |field| {
-                try fields.append(.{
-                    .field_name = try ctx.allocator.dupe(u8, field.name),
-                    .field_index = null,
-                    .value = try lowerFieldDefaultExprExpected(ctx, field.value, .{ .kind = .unknown }, function_headers),
-                    .span = field.span,
-                });
-            }
-            break :blk .{ .construct = .{
-                .type_name = try shared.qualifiedNameLeaf(ctx.allocator, node.type_name),
-                .fields = try fields.toOwnedSlice(),
-                .fill_mode = .defaults,
-                .ty = .{ .kind = .named, .name = try shared.qualifiedNameLeaf(ctx.allocator, node.type_name) },
-                .span = node.span,
-            } };
-        },
-        .call => |node| blk: {
-            const callee_name = switch (node.callee.*) {
-                .identifier => |value| try shared.qualifiedNameText(ctx.allocator, value.name),
-                .member => try flattenDefaultCalleeName(ctx.allocator, node.callee),
-                else => {
-                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                        .severity = .@"error",
-                        .code = "KSEM049",
-                        .title = "unsupported field default value",
-                        .message = "Field default constructor calls currently require a named type call target.",
-                        .labels = &.{diagnostics.primaryLabel(defaultExprSpan(expr.*), "unsupported field default call target")},
-                        .help = "Use a named type constructor such as `Point(x: 0.0, y: 0.0)`.",
-                    });
-                    return error.DiagnosticsEmitted;
-                },
-            };
-            var fields = std.array_list.Managed(model.ConstructFieldInit).init(ctx.allocator);
-            for (node.args) |arg| {
-                try fields.append(.{
-                    .field_name = if (arg.label) |label| try ctx.allocator.dupe(u8, label) else null,
-                    .field_index = null,
-                    .value = try lowerFieldDefaultExprExpected(ctx, arg.value, .{ .kind = .unknown }, function_headers),
-                    .span = arg.span,
-                });
-            }
-            break :blk .{ .construct = .{
-                .type_name = try ctx.allocator.dupe(u8, qualifiedLeafText(callee_name)),
-                .fields = try fields.toOwnedSlice(),
-                .fill_mode = .defaults,
-                .ty = .{ .kind = .named, .name = try ctx.allocator.dupe(u8, qualifiedLeafText(callee_name)) },
-                .span = node.span,
-            } };
-        },
-        .member => |node| .{ .namespace_ref = .{
-            .root = switch (node.object.*) {
-                .identifier => |value| try shared.qualifiedNameLeaf(ctx.allocator, value.name),
-                else => "",
-            },
-            .path = switch (node.object.*) {
-                .identifier => |value| try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ value.name.segments[value.name.segments.len - 1].text, node.member }),
-                else => try ctx.allocator.dupe(u8, node.member),
-            },
-            .ty = .{ .kind = .unknown },
-            .span = node.span,
-        } },
-        .identifier => |node| blk: {
-            if (expected_type.kind == .callback) {
-                if (function_headers) |headers| {
-                    const name = try shared.qualifiedNameText(ctx.allocator, node.name);
-                    if (headers.get(name)) |header| {
-                        break :blk .{ .function_ref = .{
-                            .representation = .callable_value,
-                            .function_id = header.id,
-                            .name = name,
-                            .ty = expected_type,
-                            .span = node.span,
-                        } };
-                    }
-                }
-            }
-            try diagnostics.Emitter.init(ctx.allocator, ctx.diagnostics).err(.{
-                .code = "KSEM049",
-                .title = "unsupported field default value",
-                .message = "Field defaults can only use a bare function name when the field has an explicit function type.",
-                .span = defaultExprSpan(expr.*),
-                .label = "unsupported field default value",
-                .help = "Add an explicit function type to the field or use a literal/constructor default.",
-            });
-            return error.DiagnosticsEmitted;
-        },
-        .callback => {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM049",
-                .title = "unsupported field default value",
-                .message = "Field defaults do not support callback literals.",
-                .labels = &.{diagnostics.primaryLabel(defaultExprSpan(expr.*), "unsupported field default value")},
-                .help = "Use a literal, constructor, or named constant for the field default.",
-            });
-            return error.DiagnosticsEmitted;
-        },
-        .unary => |node| blk: {
-            const operand = try lowerFieldDefaultExprExpected(ctx, node.operand, .{ .kind = .unknown }, function_headers);
-            break :blk .{ .unary = .{
-                .operand = operand,
-                .op = @enumFromInt(@intFromEnum(node.op)),
-                .ty = model.hir.exprType(operand.*),
-                .span = node.span,
-            } };
-        },
-        else => {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM049",
-                .title = "unsupported field default value",
-                .message = "Field default values in the executable pipeline currently require a literal or simple unary literal.",
-                .labels = &.{diagnostics.primaryLabel(defaultExprSpan(expr.*), "unsupported field default value")},
-                .help = "Use a literal default such as `7`, `true`, `1.5`, or `-1`.",
-            });
-            return error.DiagnosticsEmitted;
-        },
-    };
-    return lowered;
-}
-
-fn lowerFieldDefaultEnumVariantExpr(
-    ctx: *shared.Context,
-    expr: *syntax.ast.Expr,
-    expected_type: model.ResolvedType,
-    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
-) anyerror!?*model.Expr {
-    const enum_name = expected_type.name orelse return null;
-    const enum_decl = findEnumDeclForDefault(ctx, enum_name) orelse return null;
-    const VariantTarget = struct {
-        name: []const u8,
-        payload: ?*syntax.ast.Expr,
-        span: source_pkg.Span,
-    };
-    const target: VariantTarget = switch (expr.*) {
-        .identifier => |node| blk: {
-            if (node.name.segments.len < 2 or !std.mem.eql(u8, node.name.segments[0].text, enum_name)) return null;
-            break :blk .{
-                .name = node.name.segments[node.name.segments.len - 1].text,
-                .payload = null,
-                .span = node.span,
-            };
-        },
-        .member => |node| .{
-            .name = node.member,
-            .payload = null,
-            .span = node.span,
-        },
-        .call => |node| blk: {
-            const variant_name = switch (node.callee.*) {
-                .member => |member| member.member,
-                .identifier => |callee| name_blk: {
-                    if (callee.name.segments.len < 2 or !std.mem.eql(u8, callee.name.segments[0].text, enum_name)) return null;
-                    break :name_blk callee.name.segments[callee.name.segments.len - 1].text;
-                },
-                else => return null,
-            };
-            break :blk .{
-                .name = variant_name,
-                .payload = if (node.args.len == 1) node.args[0].value else null,
-                .span = node.span,
-            };
-        },
-        else => return null,
-    };
-    const variant = findEnumVariantForDefault(enum_decl, target.name) orelse return null;
-    const payload = if (target.payload) |payload_expr|
-        if (variant.payload_ty) |payload_ty|
-            try lowerFieldDefaultExprExpected(ctx, payload_expr, payload_ty, function_headers)
-        else {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM105",
-                .title = "match pattern payload is invalid",
-                .message = "This enum variant does not accept a payload value.",
-                .labels = &.{diagnostics.primaryLabel(target.span, "payload value is not valid for this enum variant")},
-                .help = "Remove the argument from this enum constructor call.",
-            });
-            return error.DiagnosticsEmitted;
-        }
-    else if (variant.payload_ty != null)
-        variant.default_value
-    else
-        null;
-    if (variant.payload_ty != null and payload == null) {
-        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM105",
-            .title = "match pattern payload is invalid",
-            .message = "This enum variant requires an associated payload value.",
-            .labels = &.{diagnostics.primaryLabel(target.span, "missing enum payload value")},
-            .help = "Pass the payload argument or add a default value on the enum variant declaration.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-    const lowered = try ctx.allocator.create(model.Expr);
-    lowered.* = .{ .construct_enum_variant = .{
-        .enum_name = try ctx.allocator.dupe(u8, enum_decl.name),
-        .variant_name = try ctx.allocator.dupe(u8, variant.name),
-        .discriminant = variant.discriminant,
-        .payload = payload,
-        .ty = .{ .kind = .enum_instance, .name = try ctx.allocator.dupe(u8, enum_decl.name) },
-        .span = target.span,
-    } };
-    return lowered;
-}
-
-fn findEnumDeclForDefault(ctx: *shared.Context, enum_name: []const u8) ?model.EnumDecl {
-    if (ctx.concrete_enums) |concrete_enums| {
-        if (concrete_enums.get(enum_name)) |enum_decl| return enum_decl;
-    }
-    if (ctx.enum_headers) |enum_headers| {
-        if (enum_headers.get(enum_name)) |enum_decl| return enum_decl;
-    }
-    return null;
-}
-
-fn findEnumVariantForDefault(enum_decl: model.EnumDecl, variant_name: []const u8) ?model.EnumVariantHir {
-    for (enum_decl.variants) |variant| {
-        if (std.mem.eql(u8, variant.name, variant_name)) return variant;
-    }
-    return null;
-}
-
-fn fieldDefaultArrayElementType(ctx: *shared.Context, expected_type: model.ResolvedType) !model.ResolvedType {
-    if (expected_type.kind != .array or expected_type.name == null) return .{ .kind = .unknown };
-    const element_name = expected_type.name.?;
-    if (ctx.enum_headers) |enum_headers| {
-        if (enum_headers.get(element_name) != null) return .{ .kind = .enum_instance, .name = element_name };
-    }
-    if (ctx.concrete_enums) |concrete_enums| {
-        if (concrete_enums.get(element_name) != null) return .{ .kind = .enum_instance, .name = element_name };
-    }
-    return try shared.resolvedTypeFromText(element_name);
-}
-
-fn defaultExprSpan(expr: syntax.ast.Expr) source_pkg.Span {
-    return switch (expr) {
-        .integer => |node| node.span,
-        .float => |node| node.span,
-        .string => |node| node.span,
-        .bool => |node| node.span,
-        .identifier => |node| node.span,
-        .array => |node| node.span,
-        .callback => |node| node.span,
-        .struct_literal => |node| node.span,
-        .native_state => |node| node.span,
-        .native_user_data => |node| node.span,
-        .native_recover => |node| node.span,
-        .ownership => |node| node.span,
-        .unary => |node| node.span,
-        .binary => |node| node.span,
-        .conditional => |node| node.span,
-        .member => |node| node.span,
-        .index => |node| node.span,
-        .call => |node| node.span,
-    };
-}
-
-fn flattenDefaultCalleeName(allocator: std.mem.Allocator, expr: *syntax.ast.Expr) ![]const u8 {
-    return switch (expr.*) {
-        .identifier => |value| shared.qualifiedNameText(allocator, value.name),
-        .member => |value| blk: {
-            const left = try flattenDefaultCalleeName(allocator, value.object);
-            break :blk try std.fmt.allocPrint(allocator, "{s}.{s}", .{ left, value.member });
-        },
-        else => allocator.dupe(u8, "<expr>"),
     };
 }
 
@@ -1113,11 +989,6 @@ fn validatePrintableTypes(
             return error.DiagnosticsEmitted;
         }
     }
-}
-
-fn qualifiedLeafText(name: []const u8) []const u8 {
-    const index = std.mem.lastIndexOfScalar(u8, name, '.') orelse return name;
-    return name[index + 1 ..];
 }
 
 fn lowerImportedParams(allocator: std.mem.Allocator, param_types: []const model.ResolvedType, param_ownership: []const model.OwnershipMode) ![]model.Parameter {

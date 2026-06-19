@@ -1,0 +1,18 @@
+enum ShaderTarget {
+    Glsl
+    Wgsl
+    Hlsl
+    Msl
+    Spirv
+}
+
+struct ShaderRequest {
+    let sourcePath: String
+    let target: ShaderTarget
+}
+
+struct ShaderReport {
+    let success: Bool
+    let artifacts: [Artifact]
+    let diagnostics: [KiraDiagnostic]
+}

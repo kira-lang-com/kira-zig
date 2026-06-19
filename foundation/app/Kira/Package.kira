@@ -1,0 +1,28 @@
+enum PackageKind {
+    App
+    Library
+}
+
+struct PackageDependency {
+    let name: String
+    let path: String
+}
+
+struct PackageManifest {
+    let name: String
+    let version: String
+    let kind: PackageKind
+    let moduleRoot: String
+    let dependencies: [PackageDependency]
+}
+
+struct PackageGraph {
+    let root: PackageManifest
+    let packages: [PackageManifest]
+}
+
+struct SourceTarget {
+    let name: String
+    let path: String
+    let kind: PackageKind
+}

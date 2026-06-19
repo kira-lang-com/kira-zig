@@ -9,6 +9,7 @@ const calls = @import("lower_exprs_calls.zig");
 const members = @import("lower_exprs_members.zig");
 const native_state = @import("lower_exprs_native_state.zig");
 const matches = @import("lower_stmts_match.zig");
+const attempts = @import("lower_stmts_attempt.zig");
 const types = @import("lower_exprs_types.zig");
 
 pub const lowerStructLiteralExpr = calls.lowerStructLiteralExpr;
@@ -120,6 +121,13 @@ pub fn lowerBlockStatements(
 ) anyerror![]model.Statement {
     var statements = std.array_list.Managed(model.Statement).init(ctx.allocator);
     for (block.statements) |statement| {
+        // `attempt` desugars to one or more `match` statements, so it is expanded here where
+        // multiple lowered statements can be appended (HIR has no block statement).
+        if (statement == .attempt_stmt) {
+            const lowered = try attempts.lowerAttempt(ctx, statement.attempt_stmt, imports, scope, locals, next_local_id, function_headers, loop_depth, expected_return_type);
+            try statements.appendSlice(lowered);
+            continue;
+        }
         try statements.append(try lowerStatement(ctx, statement, imports, scope, locals, next_local_id, function_headers, loop_depth, expected_return_type));
     }
     return statements.toOwnedSlice();
@@ -142,10 +150,24 @@ pub fn lowerStatement(
             const declaration = try types.lowerLocalDeclaration(ctx, node, imports, scope, function_headers);
             const local_id = next_local_id.*;
             next_local_id.* += 1;
+            // Rust reborrow: `var r = t` where `t` is a `borrow mut` (`&mut`) rebinds
+            // `r` as a mutable alias of the same storage rather than copying it — the
+            // engine's `var result = tree` pattern. Restricted to `borrow mut`: a shared
+            // `borrow` (`&`) keeps value-copy semantics (you cannot mutate through `&`),
+            // which existing code relies on to get an independent, mutable, owned copy.
+            const is_reborrow = if (declaration.value) |value| switch (value.*) {
+                .local => |local_read| if (scope.get(local_read.name)) |source|
+                    source.ownership == .borrow_mut
+                else
+                    false,
+                else => false,
+            } else false;
+            const local_ownership: model.OwnershipMode = if (is_reborrow) .borrow_mut else .owned;
             try scope.put(ctx.allocator, node.name, .{
                 .id = local_id,
                 .ty = declaration.ty,
                 .storage = @enumFromInt(@intFromEnum(node.storage)),
+                .ownership = local_ownership,
                 .initialized = declaration.initialized,
                 .decl_span = node.span,
             });
@@ -153,7 +175,7 @@ pub fn lowerStatement(
                 .id = local_id,
                 .name = try ctx.allocator.dupe(u8, node.name),
                 .ty = declaration.ty,
-                .ownership = .owned,
+                .ownership = local_ownership,
                 .span = node.span,
             });
             break :blk .{ .let_stmt = .{
@@ -161,6 +183,7 @@ pub fn lowerStatement(
                 .ty = declaration.ty,
                 .explicit_type = node.type_expr != null,
                 .value = declaration.value,
+                .is_reborrow = is_reborrow,
                 .span = node.span,
             } };
         },
@@ -335,6 +358,19 @@ pub fn lowerStatement(
                 null,
             .span = node.span,
         } },
+        // `attempt` is expanded in `lowerBlockStatements` (it may yield multiple statements),
+        // so it should never reach the single-statement lowering path.
+        .attempt_stmt => |node| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM139",
+                .title = "attempt is not valid here",
+                .message = "An `attempt { ... } handle { ... }` block may only appear as a statement in a block body.",
+                .labels = &.{diagnostics.primaryLabel(node.span, "attempt is not valid in this position")},
+                .help = "Move the `attempt` into a function or block body.",
+            });
+            return error.DiagnosticsEmitted;
+        },
     };
 }
 
@@ -442,6 +478,17 @@ fn emitUninitializedLocalUse(
     });
 }
 
+// Unwrap a content expression's trailing modifier chain down to the base widget construction.
+// A modifier call is a `.call` whose callee is a `.member` access (`Base(..).modifier(..)`);
+// the base widget is reached once the callee is no longer a member access (e.g. `Text(..)`).
+pub fn stripContentModifiers(expr: *syntax.ast.Expr) *syntax.ast.Expr {
+    var current = expr;
+    while (current.* == .call and current.call.callee.* == .member) {
+        current = current.call.callee.member.object;
+    }
+    return current;
+}
+
 pub fn lowerBuilderBlock(
     ctx: *shared.Context,
     builder: syntax.ast.BuilderBlock,
@@ -456,7 +503,11 @@ pub fn lowerBuilderBlock(
     for (builder.items) |item| {
         switch (item) {
             .expr => |value| try items.append(.{ .expr = .{
-                .expr = try lowerExpr(ctx, value.expr, imports, active_scope, null),
+                // Content items may be modifier chains (`Text(..).font(..)`). Modifiers are
+                // `extend` declarations that are validated but not yet lowered to runtime, so the
+                // runtime content array carries the base widget — matching how non-control-flow
+                // content (which stays check-only) already ignores modifiers at runtime.
+                .expr = try lowerExpr(ctx, stripContentModifiers(value.expr), imports, active_scope, null),
                 .span = value.span,
             } }),
             .if_item => |value| try items.append(.{ .if_item = .{
@@ -465,12 +516,48 @@ pub fn lowerBuilderBlock(
                 .else_block = if (value.else_block) |else_block| try lowerBuilderBlock(ctx, else_block, imports, active_scope) else null,
                 .span = value.span,
             } }),
-            .for_item => |value| try items.append(.{ .for_item = .{
-                .binding_name = try ctx.allocator.dupe(u8, value.binding_name),
-                .iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, null),
-                .body = try lowerBuilderBlock(ctx, value.body, imports, active_scope),
-                .span = value.span,
-            } }),
+            .for_item => |value| blk: {
+                const iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, null);
+                var binding_local_id: u32 = 0;
+                var binding_ty: model.ResolvedType = .{ .kind = .unknown };
+                var loop_scope_ptr = active_scope;
+                var loop_scope_storage = model.Scope{};
+                var has_loop_scope = false;
+                defer if (has_loop_scope) loop_scope_storage.deinit(ctx.allocator);
+
+                if (ctx.active_locals != null and ctx.active_next_local_id != null) {
+                    binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), value.span);
+                    binding_local_id = ctx.active_next_local_id.?.*;
+                    ctx.active_next_local_id.?.* += 1;
+                    try ctx.active_locals.?.append(.{
+                        .id = binding_local_id,
+                        .name = try ctx.allocator.dupe(u8, value.binding_name),
+                        .ty = binding_ty,
+                        .ownership = .owned,
+                        .span = value.span,
+                    });
+                    loop_scope_storage = try cloneScope(ctx.allocator, active_scope.*);
+                    has_loop_scope = true;
+                    try loop_scope_storage.put(ctx.allocator, value.binding_name, .{
+                        .id = binding_local_id,
+                        .ty = binding_ty,
+                        .storage = .immutable,
+                        .initialized = true,
+                        .decl_span = value.span,
+                    });
+                    loop_scope_ptr = &loop_scope_storage;
+                }
+
+                try items.append(.{ .for_item = .{
+                    .binding_name = try ctx.allocator.dupe(u8, value.binding_name),
+                    .binding_local_id = binding_local_id,
+                    .binding_ty = binding_ty,
+                    .iterator = iterator,
+                    .body = try lowerBuilderBlock(ctx, value.body, imports, loop_scope_ptr),
+                    .span = value.span,
+                } });
+                break :blk;
+            },
             .switch_item => |value| blk: {
                 var cases = std.array_list.Managed(model.BuilderSwitchCase).init(ctx.allocator);
                 for (value.cases) |case_node| {
@@ -657,6 +744,13 @@ pub fn lowerExpr(
                 .span = node.span,
             } };
         },
+        .builder_array => |node| {
+            lowered.* = .{ .builder_array = .{
+                .builder = try lowerBuilderBlock(ctx, node.builder, imports, scope),
+                .ty = .{ .kind = .array },
+                .span = node.span,
+            } };
+        },
         .callback => |node| {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
@@ -709,7 +803,7 @@ pub fn lowerExpr(
                     .span = node.span,
                 } };
             } else if (function_headers) |headers| {
-                    if (shared.findFunctionHeader(ctx, headers, name)) |header| {
+                if (shared.findFunctionHeader(ctx, headers, name)) |header| {
                     lowered.* = .{ .function_ref = .{
                         .representation = .callable_value,
                         .function_id = header.id,
@@ -771,6 +865,16 @@ pub fn lowerExpr(
             if ((shared.isImportedRoot(ctx, flattened.root, imports) or root_is_type) and scope.get(flattened.root) == null) {
                 if (function_headers) |headers| {
                     if (headers.get(flattened.path)) |header| {
+                        if (header.is_accessor) {
+                            lowered.* = .{ .call = .{
+                                .callee_name = try ctx.allocator.dupe(u8, flattened.path),
+                                .function_id = header.id,
+                                .args = &.{},
+                                .ty = header.return_type,
+                                .span = node.span,
+                            } };
+                            return lowered;
+                        }
                         lowered.* = .{ .function_ref = .{
                             .representation = .callable_value,
                             .function_id = header.id,
@@ -842,6 +946,11 @@ pub fn lowerExpr(
             const object = try lowerExpr(ctx, node.object, imports, scope, function_headers);
             if (tryLowerCountMemberExpr(object, node.member, node.span)) |count_expr| {
                 lowered.* = count_expr;
+                return lowered;
+            }
+            // A computed-property accessor (`widget.node`) runs the Widget->Node bridge.
+            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span)) |accessor| {
+                lowered.* = accessor.*;
                 return lowered;
             }
             const object_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse {
@@ -953,6 +1062,20 @@ pub fn lowerExpr(
             } };
         },
         .call => |node| try lowerCallExpr(ctx, lowered, node, imports, scope, function_headers),
+        // A `try` expression is only meaningful as the initializer of a `let` binding or an
+        // expression statement inside an `attempt` block, where it is desugared before lowering.
+        // Any `try` reaching general expression lowering is in an unsupported position.
+        .try_expr => |node| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM133",
+                .title = "'try' is not valid here",
+                .message = "`try` may only be used as a `let` initializer or expression statement inside an `attempt { ... }` block.",
+                .labels = &.{diagnostics.primaryLabel(node.span, "`try` is not valid in this position")},
+                .help = "Wrap the failing call in an `attempt { ... } handle { ... }` block, and use `try` as `let x = try call()` or as a statement `try call()`.",
+            });
+            return error.DiagnosticsEmitted;
+        },
     }
     return lowered;
 }

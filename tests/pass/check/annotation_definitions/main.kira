@@ -20,10 +20,6 @@ construct Widget {
         @Attribute;
         @InputMapping;
     }
-
-    requires {
-        content;
-    }
 }
 
 Widget Button() {

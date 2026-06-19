@@ -33,12 +33,14 @@ pub fn lowerCStringToString(fc: *FunctionCodegen, v: ir.CStringToString) !llvm.c
     return s;
 }
 
-// Resolve a virtual method call statically against the receiver's declared type and lower
-// it as an ordinary direct call with the receiver prepended as the first argument. Mirrors
-// backend_text_ir_core's call_virtual: Kira methods are not yet dynamically dispatched, so
-// the static type name names the method table.
 pub fn lowerCallVirtual(fc: *FunctionCodegen, v: ir.VirtualCall) !void {
-    const type_decl = utils.findTypeDecl(fc.request.program, v.static_type_name) orelse return error.UnknownType;
+    if (utils.findTypeDecl(fc.request.program, v.static_type_name)) |type_decl| {
+        return lowerStaticVirtualCall(fc, v, type_decl);
+    }
+    return lowerConstructFamilyVirtualCall(fc, v);
+}
+
+fn lowerStaticVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall, type_decl: ir.TypeDecl) !void {
     var resolved: ?u32 = null;
     for (type_decl.methods) |method_decl| {
         if (std.mem.eql(u8, method_decl.name, v.method_name)) {
@@ -52,6 +54,79 @@ pub fn lowerCallVirtual(fc: *FunctionCodegen, v: ir.VirtualCall) !void {
     args[0] = v.receiver;
     @memcpy(args[1..], v.args);
     try lowerCall(fc, .{ .callee = callee, .args = args, .dst = v.dst });
+}
+
+fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !void {
+    const api = fc.api;
+    const b = fc.builder;
+    const ctx = fc.types.context;
+    const receiver_ptr = api.LLVMBuildIntToPtr(b, fc.registers[v.receiver], fc.types.ptr_ty, "vcall.recv");
+    var tag_args = [_]llvm.c.LLVMValueRef{receiver_ptr};
+    const tag = api.LLVMBuildCall2(b, fc.runtime_decls.struct_type_id.ty, fc.runtime_decls.struct_type_id.fn_value, &tag_args, tag_args.len, "vcall.tag");
+
+    const return_slot = if (v.dst != null and v.return_ty.kind != .void)
+        fc.entryAlloca(fc.types.llvmType(v.return_ty), "vcall.result")
+    else
+        null;
+    const merge_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.merge");
+    const trap_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.trap");
+
+    var current_test = api.LLVMGetInsertBlock(b);
+    var matched: usize = 0;
+    for (fc.request.program.construct_implementations) |implementation| {
+        if (!implementationSatisfiesFamily(implementation, v.static_type_name)) continue;
+        const method_id = constructMethodId(fc.request.program.*, implementation.type_name, v.method_name) orelse continue;
+        matched += 1;
+
+        api.LLVMPositionBuilderAtEnd(b, current_test);
+        const case_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.case");
+        const next_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.next");
+        const expected = api.LLVMConstInt(fc.types.i64, ir.nativeStateTypeId(implementation.type_name), 0);
+        const is_match = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, tag, expected, "vcall.match");
+        _ = api.LLVMBuildCondBr(b, is_match, case_block, next_block);
+
+        api.LLVMPositionBuilderAtEnd(b, case_block);
+        const args = try fc.allocator.alloc(u32, v.args.len + 1);
+        defer fc.allocator.free(args);
+        args[0] = v.receiver;
+        @memcpy(args[1..], v.args);
+        try lowerCall(fc, .{ .callee = method_id, .args = args, .dst = v.dst });
+        if (v.dst) |dst| switch (v.return_ty.kind) {
+            .construct_any, .enum_instance => drop.onAlloc(fc, dst),
+            else => {},
+        };
+        if (return_slot) |slot| {
+            _ = api.LLVMBuildStore(b, fc.registers[v.dst.?], slot);
+        }
+        _ = api.LLVMBuildBr(b, merge_block);
+        current_test = next_block;
+    }
+
+    if (matched == 0) return error.UnknownFunction;
+    api.LLVMPositionBuilderAtEnd(b, current_test);
+    _ = api.LLVMBuildBr(b, trap_block);
+    api.LLVMPositionBuilderAtEnd(b, trap_block);
+    _ = api.LLVMBuildUnreachable(b);
+
+    api.LLVMPositionBuilderAtEnd(b, merge_block);
+    if (return_slot) |slot| {
+        fc.registers[v.dst.?] = api.LLVMBuildLoad2(b, fc.types.llvmType(v.return_ty), slot, "vcall.result.load");
+    }
+}
+
+fn implementationSatisfiesFamily(implementation: ir.ConstructImplementation, family: []const u8) bool {
+    for (implementation.families) |candidate| {
+        if (std.mem.eql(u8, candidate, family)) return true;
+    }
+    return std.mem.eql(u8, implementation.construct_constraint.construct_name, family);
+}
+
+fn constructMethodId(program: ir.Program, type_name: []const u8, method_name: []const u8) ?u32 {
+    const type_decl = utils.findTypeDecl(&program, type_name) orelse return null;
+    for (type_decl.methods) |method_decl| {
+        if (std.mem.eql(u8, method_decl.name, method_name)) return method_decl.function_id;
+    }
+    return null;
 }
 
 pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {

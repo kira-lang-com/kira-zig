@@ -1,0 +1,27 @@
+// Constructs form declaration families that can inherit from other constructs with
+// `extends` (not `:` and not `extend`). The local inheritance graph may reference
+// constructs declared later in the file and may list multiple direct parents, as long
+// as it stays acyclic.
+
+construct WebElement {
+}
+
+construct Drawable {
+}
+
+// Multiple direct parents.
+construct Surface extends WebElement, Drawable {
+}
+
+// Forward reference: `Route` extends `Surface` which is declared above, and `Page`
+// (declared below) extends `Route` — registration is order-independent.
+construct Route extends Surface {
+}
+
+construct Page extends Route {
+}
+
+@Main
+function main() {
+    return
+}

@@ -1,0 +1,84 @@
+import Foundation
+
+comptime function compileAnswer(seed: Int) -> Int {
+    return seed + 2
+}
+
+@Main
+function main() {
+    return
+}
+
+enum Direction {
+    Left
+    Up
+    Right
+    Down
+}
+
+function rotate(value: borrow Direction) -> Direction {
+    match value {
+        Left -> { return Direction.Up }
+        Up -> { return Direction.Right }
+        Right -> { return Direction.Down }
+        Down -> { return Direction.Left }
+    }
+}
+
+function directionScore(value: borrow Direction) -> Int {
+    if value == Direction.Up {
+        return 1
+    }
+    if value == Direction.Right {
+        return 2
+    }
+    if value == Direction.Down {
+        return 3
+    }
+    return 0
+}
+
+Test EnumCalculation {
+    test {
+        let value = Direction.Left
+        return rotate(value)
+    }
+
+    expect {
+        let expected: Result<Direction, TestFailure> = Result.Ok(Direction.Up)
+        return expected
+    }
+}
+
+Test IntegerCalculation {
+    test {
+        return 20 + 22
+    }
+
+    expect {
+        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        return expected
+    }
+}
+
+Test ProductCalculation {
+    test {
+        return 6 * 7
+    }
+
+    expect {
+        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        return expected
+    }
+}
+
+Test ComptimeFunctionResult {
+    test {
+        return compileAnswer(40)
+    }
+
+    expect {
+        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        return expected
+    }
+}

@@ -1,87 +1,26 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const build_pkg = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const manifest = @import("kira_manifest");
-const diag_messages = @import("kira_diagnostic_messages");
-const diagnostics = @import("kira_diagnostics");
-const package_manager = @import("kira_package_manager");
+const kira_main = @import("kira_main");
 const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
-    build_pkg.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
-    const input = support.resolveCliInput(allocator, parsed.input_path) catch |err| switch (err) {
-        error.InvalidProjectPath => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, parsed.input_path));
-            return error.CommandFailed;
-        },
-        error.ProjectManifestNotFound => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.PackageMessages.missingProjectManifest(allocator, parsed.input_path));
-            return error.CommandFailed;
-        },
-        else => return err,
-    };
-    try support.validateTargetSelection(allocator, stderr, .build, input);
-    const backend = parsed.backend orelse profileBackend(parsed.profile) orelse input.default_backend orelse .vm;
-
-    if (input.target.root_path) |project_root| {
-        var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        _ = package_manager.syncProject(allocator, project_root, support.versionString(), .{
-            .offline = parsed.offline,
-            .locked = parsed.locked,
-        }, &package_diagnostics) catch |err| {
-            if (err == error.DiagnosticsEmitted) {
-                try support.renderStandaloneDiagnostics(stderr, package_diagnostics.items);
-                return error.CommandFailed;
-            }
-            return err;
-        };
-    }
-
-    if (input.target.target_kind == .library) {
-        const source_root = input.target.source_root.?;
-        try support.logFrontendStarted(stderr, "build", source_root);
-        var system = build_pkg.BuildSystem.init(allocator);
-        const result = try system.checkPackageRoot(source_root);
-        if (diagnostics.hasErrors(result.diagnostics)) {
-            try support.logFrontendFailed(stderr, result.failure_stage, source_root, result.diagnostics.len);
-            try support.renderDiagnostics(stderr, &result.source, result.diagnostics);
-            return error.CommandFailed;
-        }
-        try stdout.print("built library {s}\n", .{source_root});
+    _ = parsed.offline;
+    _ = parsed.locked;
+    _ = parsed.timings;
+    const path = try allocator.dupeZ(u8, parsed.input_path);
+    defer allocator.free(path);
+    const developer = kira_main.kira_developer_create() orelse return error.OutOfMemory;
+    defer kira_main.kira_developer_destroy(developer);
+    const status = kira_main.kira_developer_build(developer, path.ptr, backendArg(selectedBackend(parsed)));
+    const report = std.mem.span(kira_main.kira_developer_report(developer) orelse "");
+    if (status == .ok) {
+        try stdout.writeAll(report);
         return;
     }
-
-    const source_path = input.target.source_path.?;
-    try support.logFrontendStarted(stderr, "build", source_path);
-    const output_root = try support.outputRoot(allocator, input.target.root_path);
-    defer allocator.free(output_root);
-    try support.ensurePath(output_root);
-    const output_path = try defaultOutputPath(
-        allocator,
-        output_root,
-        input.target.project_name orelse std.fs.path.stem(source_path),
-        backend,
-    );
-
-    var system = build_pkg.BuildSystem.init(allocator);
-    const result = try system.build(.{
-        .source_path = source_path,
-        .output_path = output_path,
-        .target = .{ .execution = backend },
-    });
-    if (result.failed()) {
-        try support.logBuildAborted(stderr, "build", result.failure_kind.?, source_path);
-        if (result.source) |source| {
-            try support.renderDiagnostics(stderr, &source, result.diagnostics);
-        }
-        return error.CommandFailed;
-    }
-
-    for (result.artifacts) |artifact| {
-        try stdout.print("wrote {s}\n", .{artifact.path});
-    }
+    if (report.len != 0) try stderr.writeAll(report) else try stderr.writeAll(std.mem.span(kira_main.kira_developer_last_error(developer) orelse ""));
+    return error.CommandFailed;
 }
 
 const ParsedArgs = struct {
@@ -157,10 +96,7 @@ fn profileBackend(profile: ?manifest.BuildProfile) ?build_def.ExecutionTarget {
 }
 
 fn timingsEnvEnabled() bool {
-    if (!builtin.link_libc) return false;
-    const raw = std.c.getenv("KIRA_TIMINGS") orelse return false;
-    const value = std.mem.span(raw);
-    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+    return false;
 }
 
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
@@ -171,11 +107,16 @@ fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     return null;
 }
 
-fn defaultOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: []const u8, backend: build_def.ExecutionTarget) ![]const u8 {
-    return switch (backend) {
-        .vm => std.fmt.allocPrint(allocator, "{s}/{s}.kbc", .{ output_root, stem }),
-        .llvm_native => std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ output_root, stem, build_pkg.executableExtension() }),
-        .wasm32_emscripten => std.fmt.allocPrint(allocator, "{s}/{s}.js", .{ output_root, stem }),
-        .hybrid => std.fmt.allocPrint(allocator, "{s}/{s}.khm", .{ output_root, stem }),
+fn selectedBackend(parsed: ParsedArgs) ?build_def.ExecutionTarget {
+    if (parsed.backend) |backend| return backend;
+    return profileBackend(parsed.profile);
+}
+
+fn backendArg(backend: ?build_def.ExecutionTarget) kira_main.KiraDeveloperBackend {
+    return switch (backend orelse return .default) {
+        .vm => .vm,
+        .llvm_native => .llvm,
+        .wasm32_emscripten => .wasm32_emscripten,
+        .hybrid => .hybrid,
     };
 }

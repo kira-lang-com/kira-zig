@@ -1,0 +1,37 @@
+// A construct-backed declaration's functions and lifecycle hook bodies lower to flat
+// `Form.member` functions and execute on every backend. They are static (called as
+// `Sprite.draw()`, no receiver) and may read the declaration's fields through their default
+// values. Sibling calls are written qualified (`Sprite.offset()`).
+
+construct Drawable {
+    requires {
+        function draw() -> Int
+    }
+
+    lifecycle {
+        onAppear() {}
+    }
+}
+
+Drawable Sprite {
+    let base: Int = 7
+
+    function draw() -> Int {
+        return base + Sprite.offset()
+    }
+
+    function offset() -> Int {
+        return 3
+    }
+
+    onAppear() {
+        print(99)
+    }
+}
+
+@Main
+function main() {
+    print(Sprite.draw())
+    Sprite.onAppear()
+    return
+}

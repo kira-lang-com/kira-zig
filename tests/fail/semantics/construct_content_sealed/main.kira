@@ -1,0 +1,29 @@
+// `content sealed` closes a construct's content surface. A descendant that adds content is
+// rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+construct Sealed extends WebElement {
+    content sealed
+}
+
+construct Child extends Sealed {
+    content {
+        extra {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}

@@ -1,0 +1,10 @@
+Test UnknownCallExpectedDiagnostic {
+    test {
+        return missing_symbol()
+    }
+
+    expect {
+        let expected: Result<Int, TestFailure> = Result.Error(TestFailure.Diagnostic(KiraError.KSEM010))
+        return expected
+    }
+}

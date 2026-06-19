@@ -1,6 +1,8 @@
 const std = @import("std");
 const LineMap = @import("line_map.zig").LineMap;
 
+pub const max_source_file_bytes = 16 * 1024 * 1024;
+
 pub const SourceFile = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -17,7 +19,7 @@ pub const SourceFile = struct {
     }
 
     pub fn fromPath(allocator: std.mem.Allocator, path: []const u8) !SourceFile {
-        const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(max_source_file_bytes));
         return .{
             .allocator = allocator,
             .path = try allocator.dupe(u8, path),

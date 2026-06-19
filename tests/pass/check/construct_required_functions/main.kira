@@ -1,0 +1,31 @@
+// A construct's `requires { function ... }` block lists functions that its first concrete
+// declaration must implement. Declarations inherit implementations from a parent declaration
+// and may override them. The inheritance graph spans construct->construct, declaration->construct,
+// and declaration->declaration.
+
+construct Drawable {
+    requires {
+        function draw()
+    }
+}
+
+// First concrete child of `Drawable`: must implement draw().
+Drawable Sprite {
+    function draw() {
+    }
+}
+
+// Inherits draw() from the `Sprite` declaration — valid without re-implementing.
+Sprite Player {
+}
+
+// Overrides draw() — valid.
+Sprite AnimatedPlayer {
+    function draw() {
+    }
+}
+
+@Main
+function main() {
+    return
+}
