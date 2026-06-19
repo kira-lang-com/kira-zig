@@ -381,6 +381,7 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .bool => |node| node.span,
         .identifier => |node| node.span,
         .array => |node| node.span,
+        .builder_array => |node| node.span,
         .callback => |node| node.span,
         .struct_literal => |node| node.span,
         .native_state => |node| node.span,
@@ -393,5 +394,6 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .member => |node| node.span,
         .index => |node| node.span,
         .call => |node| node.span,
+        .try_expr => |node| node.span,
     };
 }

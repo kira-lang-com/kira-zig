@@ -1,0 +1,16 @@
+// Declaration inheritance must be acyclic. `Alpha` is declared as a child of `Beta` and
+// `Beta` as a child of `Alpha`, forming a cycle.
+
+construct Shape {
+}
+
+Beta Alpha {
+}
+
+Alpha Beta {
+}
+
+@Main
+function main() {
+    return
+}

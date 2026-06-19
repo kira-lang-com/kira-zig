@@ -1,0 +1,43 @@
+// A nested enum payload that is matched, `move`d into a fresh enum, returned, and
+// re-matched. Exercises ownership transfer of an enum payload across a function
+// boundary and through alloc_enum on every backend (the move must not free the
+// inner payload early, nor double-free it).
+
+enum Inner {
+    A: String = "a"
+    B: String = "b"
+}
+
+enum Wrap {
+    One(Inner)
+    Two(Inner)
+}
+
+function rewrap(w: Wrap) -> Wrap {
+    match w {
+        One(failure) -> { return Wrap.Two(move failure) }
+        Two(failure) -> { return Wrap.One(move failure) }
+    }
+    return w
+}
+
+@Main
+function main() {
+    let original = Wrap.One(Inner.A("payload"))
+    let swapped = rewrap(move original)
+    match swapped {
+        One(failure) -> {
+            match failure {
+                A(reason) -> { print(reason) }
+                B(reason) -> { print(reason) }
+            }
+        }
+        Two(failure) -> {
+            match failure {
+                A(reason) -> { print(reason) }
+                B(reason) -> { print(reason) }
+            }
+        }
+    }
+    return
+}

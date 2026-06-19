@@ -156,6 +156,7 @@ fn findDirectFfiUseInExpr(
                 if (findDirectFfiUseInExpr(element.*, function_headers)) |use| return use;
             }
         },
+        .builder_array => |node| return findDirectFfiUseInBuilder(node.builder, function_headers),
         .index => |node| {
             if (findDirectFfiUseInExpr(node.object.*, function_headers)) |use| return use;
             if (findDirectFfiUseInExpr(node.index.*, function_headers)) |use| return use;

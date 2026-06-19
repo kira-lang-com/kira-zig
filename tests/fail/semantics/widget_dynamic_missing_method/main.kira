@@ -1,0 +1,29 @@
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+construct Node {
+}
+
+Widget Text {
+    let node: Node {
+        TextNode()
+    }
+}
+
+Widget Spacer {
+}
+
+Node TextNode {
+}
+
+function show(widget: any Widget) {
+    widget.node
+}
+
+@Main
+function main() {
+    show(Text())
+    return
+}

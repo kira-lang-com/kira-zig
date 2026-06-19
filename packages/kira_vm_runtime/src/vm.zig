@@ -551,11 +551,22 @@ pub const Vm = struct {
         return .{ .kind = .raw_ptr, .name = text };
     }
 
-    pub fn allocateEnum(self: *Vm, enum_type_name: []const u8, registers: []const runtime_abi.Value, discriminant: u32, payload_src: ?u32) !usize {
+    /// Build a managed enum value `[tag, payload]`. The caller resolves `payload`
+    /// with the correct ownership (a moved-in owned value, a clone of a borrowed
+    /// value, or `.void` for a payload-less variant); ownership of `payload`
+    /// transfers into the enum's slot so the payload outlives the constructing
+    /// frame when the enum escapes (e.g. via `return`).
+    pub fn allocateEnum(self: *Vm, enum_type_name: []const u8, discriminant: u32, payload: runtime_abi.Value) !usize {
         const slots = try self.heap.allocValueSlice(2);
         slots[0] = .{ .integer = @as(i64, @intCast(discriminant)) };
-        slots[1] = if (payload_src) |src| registers[src] else .{ .void = {} };
+        slots[1] = payload;
         return self.heap.registerStruct(enum_type_name, slots);
+    }
+
+    /// Resolve the payload type of `enum_type_name`'s variant `discriminant`, or
+    /// `void` when the variant carries no payload / the enum is unknown.
+    pub fn enumPayloadTypeOf(self: *Vm, module: *const bytecode.Module, enum_type_name: []const u8, discriminant: u32) bytecode.TypeRef {
+        return native_bridge.enumPayloadType(self, module, enum_type_name, discriminant) orelse bytecode.TypeRef{ .kind = .void };
     }
 
     pub fn typeFieldCount(self: *Vm, module: *const bytecode.Module, type_name: []const u8) ?usize {

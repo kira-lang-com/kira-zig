@@ -234,6 +234,11 @@ fn dumpExpr(writer: anytype, expr: ast.Expr, depth: usize) anyerror!void {
             try indent(writer, depth);
             try writer.print("String \"{s}\"\n", .{value.value});
         },
+        .builder_array => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("BuilderArray\n");
+            try dumpBuilderBlock(writer, value.builder, depth + 1);
+        },
         .bool => |value| {
             try indent(writer, depth);
             try writer.print("Bool {}\n", .{value.value});

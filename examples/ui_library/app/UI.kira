@@ -11,8 +11,10 @@ construct Widget {
         @Binding;
     }
 
-    requires {
-        content;
+    content {
+        content {
+            count 1..
+        }
     }
 
     lifecycle {

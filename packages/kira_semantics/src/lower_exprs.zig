@@ -478,6 +478,17 @@ fn emitUninitializedLocalUse(
     });
 }
 
+// Unwrap a content expression's trailing modifier chain down to the base widget construction.
+// A modifier call is a `.call` whose callee is a `.member` access (`Base(..).modifier(..)`);
+// the base widget is reached once the callee is no longer a member access (e.g. `Text(..)`).
+pub fn stripContentModifiers(expr: *syntax.ast.Expr) *syntax.ast.Expr {
+    var current = expr;
+    while (current.* == .call and current.call.callee.* == .member) {
+        current = current.call.callee.member.object;
+    }
+    return current;
+}
+
 pub fn lowerBuilderBlock(
     ctx: *shared.Context,
     builder: syntax.ast.BuilderBlock,
@@ -492,7 +503,11 @@ pub fn lowerBuilderBlock(
     for (builder.items) |item| {
         switch (item) {
             .expr => |value| try items.append(.{ .expr = .{
-                .expr = try lowerExpr(ctx, value.expr, imports, active_scope, null),
+                // Content items may be modifier chains (`Text(..).font(..)`). Modifiers are
+                // `extend` declarations that are validated but not yet lowered to runtime, so the
+                // runtime content array carries the base widget — matching how non-control-flow
+                // content (which stays check-only) already ignores modifiers at runtime.
+                .expr = try lowerExpr(ctx, stripContentModifiers(value.expr), imports, active_scope, null),
                 .span = value.span,
             } }),
             .if_item => |value| try items.append(.{ .if_item = .{
@@ -501,12 +516,48 @@ pub fn lowerBuilderBlock(
                 .else_block = if (value.else_block) |else_block| try lowerBuilderBlock(ctx, else_block, imports, active_scope) else null,
                 .span = value.span,
             } }),
-            .for_item => |value| try items.append(.{ .for_item = .{
-                .binding_name = try ctx.allocator.dupe(u8, value.binding_name),
-                .iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, null),
-                .body = try lowerBuilderBlock(ctx, value.body, imports, active_scope),
-                .span = value.span,
-            } }),
+            .for_item => |value| blk: {
+                const iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, null);
+                var binding_local_id: u32 = 0;
+                var binding_ty: model.ResolvedType = .{ .kind = .unknown };
+                var loop_scope_ptr = active_scope;
+                var loop_scope_storage = model.Scope{};
+                var has_loop_scope = false;
+                defer if (has_loop_scope) loop_scope_storage.deinit(ctx.allocator);
+
+                if (ctx.active_locals != null and ctx.active_next_local_id != null) {
+                    binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), value.span);
+                    binding_local_id = ctx.active_next_local_id.?.*;
+                    ctx.active_next_local_id.?.* += 1;
+                    try ctx.active_locals.?.append(.{
+                        .id = binding_local_id,
+                        .name = try ctx.allocator.dupe(u8, value.binding_name),
+                        .ty = binding_ty,
+                        .ownership = .owned,
+                        .span = value.span,
+                    });
+                    loop_scope_storage = try cloneScope(ctx.allocator, active_scope.*);
+                    has_loop_scope = true;
+                    try loop_scope_storage.put(ctx.allocator, value.binding_name, .{
+                        .id = binding_local_id,
+                        .ty = binding_ty,
+                        .storage = .immutable,
+                        .initialized = true,
+                        .decl_span = value.span,
+                    });
+                    loop_scope_ptr = &loop_scope_storage;
+                }
+
+                try items.append(.{ .for_item = .{
+                    .binding_name = try ctx.allocator.dupe(u8, value.binding_name),
+                    .binding_local_id = binding_local_id,
+                    .binding_ty = binding_ty,
+                    .iterator = iterator,
+                    .body = try lowerBuilderBlock(ctx, value.body, imports, loop_scope_ptr),
+                    .span = value.span,
+                } });
+                break :blk;
+            },
             .switch_item => |value| blk: {
                 var cases = std.array_list.Managed(model.BuilderSwitchCase).init(ctx.allocator);
                 for (value.cases) |case_node| {
@@ -693,6 +744,13 @@ pub fn lowerExpr(
                 .span = node.span,
             } };
         },
+        .builder_array => |node| {
+            lowered.* = .{ .builder_array = .{
+                .builder = try lowerBuilderBlock(ctx, node.builder, imports, scope),
+                .ty = .{ .kind = .array },
+                .span = node.span,
+            } };
+        },
         .callback => |node| {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
@@ -745,7 +803,7 @@ pub fn lowerExpr(
                     .span = node.span,
                 } };
             } else if (function_headers) |headers| {
-                    if (shared.findFunctionHeader(ctx, headers, name)) |header| {
+                if (shared.findFunctionHeader(ctx, headers, name)) |header| {
                     lowered.* = .{ .function_ref = .{
                         .representation = .callable_value,
                         .function_id = header.id,
@@ -807,6 +865,16 @@ pub fn lowerExpr(
             if ((shared.isImportedRoot(ctx, flattened.root, imports) or root_is_type) and scope.get(flattened.root) == null) {
                 if (function_headers) |headers| {
                     if (headers.get(flattened.path)) |header| {
+                        if (header.is_accessor) {
+                            lowered.* = .{ .call = .{
+                                .callee_name = try ctx.allocator.dupe(u8, flattened.path),
+                                .function_id = header.id,
+                                .args = &.{},
+                                .ty = header.return_type,
+                                .span = node.span,
+                            } };
+                            return lowered;
+                        }
                         lowered.* = .{ .function_ref = .{
                             .representation = .callable_value,
                             .function_id = header.id,

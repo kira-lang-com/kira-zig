@@ -1,0 +1,13 @@
+backends = ["hybrid", "vm"]
+
+[phases.check]
+result = "fail"
+diagnostic_code = "KSEM130"
+diagnostic_title = "content type mismatch"
+stage = "semantics"
+
+[phases.build]
+result = "blocked"
+
+[phases.run]
+result = "blocked"

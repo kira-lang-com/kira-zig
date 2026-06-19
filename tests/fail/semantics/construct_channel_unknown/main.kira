@@ -1,0 +1,25 @@
+// A declaration may only fill content channels declared by its construct. `footer` is not a
+// channel of `WebElement`, so filling it is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+WebElement Page {
+    body {
+        Title("ok")
+    }
+    footer {
+        Title("nope")
+    }
+}
+
+@Main
+function main() {
+    return
+}

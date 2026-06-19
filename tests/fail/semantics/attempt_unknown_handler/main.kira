@@ -1,0 +1,35 @@
+// A handle case must name a variant of the failure enum. `Bogus` is not a variant of
+// `AppError`.
+
+enum AppError {
+    NotFound: String = "nf"
+    Denied: String = "denied"
+}
+
+enum Outcome {
+    Ok: Int
+    Error: AppError
+}
+
+function load() -> Outcome {
+    return Outcome.Ok(1)
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try load()
+        print(value)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+        Denied {
+            print("denied")
+        }
+        Bogus {
+            print("bogus")
+        }
+    }
+    return
+}

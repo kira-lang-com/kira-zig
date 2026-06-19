@@ -281,14 +281,14 @@ test "validates construct-driven requirements" {
     const result = analyzeSource(
         allocator,
         "annotation State { }\n" ++
-            "construct Widget { annotations { @State; } requires { content; } lifecycle { onAppear() {} } }\n" ++
+            "construct Widget { annotations { @State; } content { content { count 1.. } } lifecycle { onAppear() {} } }\n" ++
             "Widget Button() { @State let count: Int = 0; }\n" ++
             "@Main function entry() { return; }",
         &diags,
     );
 
     try std.testing.expectError(error.DiagnosticsEmitted, result);
-    try std.testing.expectEqualStrings("missing required content block", diags.items[0].title);
+    try std.testing.expectEqualStrings("content count violation", diags.items[0].title);
 }
 
 test "allows struct methods and constant members" {
@@ -387,7 +387,7 @@ test "validates annotation declarations and fills defaults" {
         "annotation State { }\n" ++
             "annotation Attribute { parameters { index: Int } }\n" ++
             "annotation InputMapping { parameters { priority: Int = 0 blocksLowerPriorityMappings: Bool = false } }\n" ++
-            "construct Widget { annotations { @State; @Attribute; @InputMapping; } requires { content; } }\n" ++
+            "construct Widget { annotations { @State; @Attribute; @InputMapping; } }\n" ++
             "Widget Button() {\n" ++
             "    @State let isPressed: Bool = false;\n" ++
             "    @Attribute(0) let position: Float = 0.0;\n" ++
@@ -421,7 +421,7 @@ test "reports annotation schema errors" {
         const result = analyzeSource(
             allocator,
             "annotation Attribute { parameters { index: Int } }\n" ++
-                "construct Widget { annotations { @Attribute; } requires { content; } }\n" ++
+                "construct Widget { annotations { @Attribute; } }\n" ++
                 "Widget Button() { @Attribute let position: Float = 0.0; content { } }\n" ++
                 "@Main function entry() { return; }",
             &diags,
@@ -435,7 +435,7 @@ test "reports annotation schema errors" {
         const result = analyzeSource(
             allocator,
             "annotation Attribute { parameters { index: Int } }\n" ++
-                "construct Widget { annotations { @Attribute; } requires { content; } }\n" ++
+                "construct Widget { annotations { @Attribute; } }\n" ++
                 "Widget Button() { @Attribute(\"zero\") let position: Float = 0.0; content { } }\n" ++
                 "@Main function entry() { return; }",
             &diags,
@@ -449,7 +449,7 @@ test "reports annotation schema errors" {
         const result = analyzeSource(
             allocator,
             "annotation State { }\n" ++
-                "construct Widget { annotations { @State; } requires { content; } }\n" ++
+                "construct Widget { annotations { @State; } }\n" ++
                 "Widget Button() { @State(1) let isPressed: Bool = false; content { } }\n" ++
                 "@Main function entry() { return; }",
             &diags,

@@ -172,7 +172,25 @@ pub fn runPrepared(
             continue :dispatch code[pc];
         },
         .alloc_enum => |value| {
-            setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.allocateEnum(value.enum_type_name, registers, value.discriminant, value.payload_src) });
+            // The payload's ownership moves into the enum slot so it outlives the
+            // constructing frame when the enum escapes (return/store). An owned
+            // payload register is moved (and voided so frame cleanup won't free it
+            // a second time); a borrowed payload is deep-cloned, mirroring
+            // store_indirect. Missing this transfer leaves the payload register
+            // still owning the value, which frees it at frame exit and dangles the
+            // escaped enum (use-after-free on re-match of a returned enum).
+            var payload: runtime_abi.Value = .{ .void = {} };
+            if (value.payload_src) |src| {
+                if (register_owned[src]) {
+                    payload = registers[src];
+                    register_owned[src] = false;
+                    registers[src] = .{ .void = {} };
+                } else {
+                    const payload_ty = vm.enumPayloadTypeOf(module, value.enum_type_name, value.discriminant);
+                    payload = try vm.cloneBorrowedValueForStore(module, payload_ty, registers[src]);
+                }
+            }
+            setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.allocateEnum(value.enum_type_name, value.discriminant, payload) });
             pc += 1;
             continue :dispatch code[pc];
         },

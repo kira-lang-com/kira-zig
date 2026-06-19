@@ -24,8 +24,8 @@ const Reporter = struct {
     failed: usize = 0,
 
     pub fn pass(self: *Reporter, label: []const u8) void {
+        _ = label;
         self.passed += 1;
-        std.debug.print("PASS {s}\n", .{label});
     }
 
     pub fn fail(self: *Reporter, label: []const u8, err: anyerror) void {
@@ -34,6 +34,6 @@ const Reporter = struct {
     }
 
     pub fn summary(self: *Reporter) void {
-        std.debug.print("Corpus summary: {d} passed, {d} failed\n", .{ self.passed, self.failed });
+        _ = self;
     }
 };

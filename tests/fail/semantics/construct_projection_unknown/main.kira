@@ -1,0 +1,22 @@
+// A projection must target a real channel of an ancestor construct. `WebElement` has no
+// channel named `footer`.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+construct Route extends WebElement {
+    content project {
+        view as WebElement.footer
+    }
+}
+
+@Main
+function main() {
+    return
+}

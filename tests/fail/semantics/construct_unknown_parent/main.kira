@@ -1,0 +1,10 @@
+// A construct may only `extends` a construct that is declared locally or imported.
+// `WebElement` is never declared, so the parent cannot be resolved.
+
+construct Route extends WebElement {
+}
+
+@Main
+function main() {
+    return
+}

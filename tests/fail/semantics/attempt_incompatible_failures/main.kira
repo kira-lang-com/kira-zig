@@ -1,0 +1,42 @@
+// All `try` expressions in one `attempt` must share a single failure enum. Here the two
+// `try` expressions produce different failure types (`AppError` and `NetError`).
+
+enum AppError {
+    NotFound: String = "nf"
+}
+
+enum NetError {
+    Timeout: String = "to"
+}
+
+enum AppOutcome {
+    Ok: Int
+    Error: AppError
+}
+
+enum NetOutcome {
+    Ok: Int
+    Error: NetError
+}
+
+function loadApp() -> AppOutcome {
+    return AppOutcome.Ok(1)
+}
+
+function loadNet() -> NetOutcome {
+    return NetOutcome.Ok(2)
+}
+
+@Main
+function main() {
+    attempt {
+        let a = try loadApp()
+        let b = try loadNet()
+        print(a)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+    }
+    return
+}

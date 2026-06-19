@@ -1,0 +1,14 @@
+// A construct's property schema may declare each property at most once. `path` is declared
+// twice here, which is rejected.
+
+construct Route {
+    properties {
+        required path: String
+        path: String
+    }
+}
+
+@Main
+function main() {
+    return
+}

@@ -30,7 +30,7 @@ pub const build = destructors.build;
 // problem; moves/escapes null the slot so each value is freed at most once.
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
-pub const OwnedKind = enum { array, struct_heap, raw, struct_contents, closure };
+pub const OwnedKind = enum { array, struct_heap, struct_ptr, raw, struct_contents, closure };
 pub const OwnedSlot = struct {
     alloca: llvm.c.LLVMValueRef,
     kind: OwnedKind,
@@ -41,8 +41,9 @@ fn ownedKindFor(value_type: ir.ValueType) ?OwnedKind {
     return switch (value_type.kind) {
         .array => .array,
         .ffi_struct => .struct_heap,
+        .construct_any => .struct_ptr,
         // closures/enums are raw heap blocks freed with plain free().
-        .raw_ptr, .construct_any, .enum_instance => .raw,
+        .raw_ptr, .enum_instance => .raw,
         else => null,
     };
 }
@@ -140,6 +141,22 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.return_type });
                 fc.register_slot[dst] = index;
             },
+            .call_virtual => |v| {
+                const dst = v.dst orelse continue;
+                const kind: OwnedKind = switch (v.return_ty.kind) {
+                    .ffi_struct => .struct_heap,
+                    .construct_any => .struct_ptr,
+                    .array => .array,
+                    .enum_instance => if (fc.request.mode == .llvm_native) .raw else continue,
+                    else => continue,
+                };
+                if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
+                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.vret.slot");
+                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
+                const index: u32 = @intCast(fc.drop_slots.items.len);
+                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.return_ty });
+                fc.register_slot[dst] = index;
+            },
             else => {},
         }
         const producer = ownedProducer(instruction) orelse continue;
@@ -183,7 +200,8 @@ pub fn setup(fc: *FunctionCodegen) !void {
             // VM-OWNED value the VM passed across the bridge (a VM closure is tagged for ABI
             // compat but its block is VM-managed). Freeing it here corrupts the VM heap, so
             // do not take ownership of closure/raw_ptr params in hybrid mode.
-            .construct_any, .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
+            .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
+            .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
             else => continue,
         };
         const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.param.slot");
@@ -266,8 +284,11 @@ fn moveStructToHeap(fc: *FunctionCodegen, src_val: llvm.c.LLVMValueRef, name: ?[
     const api = fc.api;
     const b = fc.builder;
     const struct_ty = if (name) |n| fc.struct_types.get(n) orelse return src_val else return src_val;
-    var margs = [_]llvm.c.LLVMValueRef{api.LLVMSizeOf(struct_ty)};
-    const heap = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "ret.heap");
+    var margs = [_]llvm.c.LLVMValueRef{
+        api.LLVMConstInt(fc.types.i64, ir.nativeStateTypeId(name.?), 0),
+        api.LLVMSizeOf(struct_ty),
+    };
+    const heap = api.LLVMBuildCall2(b, fc.runtime_decls.struct_alloc.ty, fc.runtime_decls.struct_alloc.fn_value, &margs, margs.len, "ret.heap");
     const src_ptr = api.LLVMBuildIntToPtr(b, src_val, fc.types.ptr_ty, "ret.src");
     const val = api.LLVMBuildLoad2(b, struct_ty, src_ptr, "ret.val");
     _ = api.LLVMBuildStore(b, val, heap);
@@ -357,9 +378,13 @@ fn freeSlot(fc: *FunctionCodegen, index: u32) void {
             _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_release.ty, fc.runtime_decls.array_release.fn_value, &args, args.len, "");
         },
         .struct_heap => {
-            const destroy = if (owned.ty.name) |n| (if (fc.dtors.map.get(n)) |h| h.destroy else fc.dtors.destroy_raw_ptr) else fc.dtors.destroy_raw_ptr;
+            const destroy = if (owned.ty.name) |n| (if (fc.dtors.map.get(n)) |h| h.destroy else fc.dtors.destroy_struct_ptr) else fc.dtors.destroy_struct_ptr;
             var args = [_]llvm.c.LLVMValueRef{ptr};
             _ = api.LLVMBuildCall2(b, destroy.ty, destroy.fn_value, &args, args.len, "");
+        },
+        .struct_ptr => {
+            var args = [_]llvm.c.LLVMValueRef{ptr};
+            _ = api.LLVMBuildCall2(b, fc.dtors.destroy_struct_ptr.ty, fc.dtors.destroy_struct_ptr.fn_value, &args, args.len, "");
         },
         .raw => {
             var args = [_]llvm.c.LLVMValueRef{ptr};

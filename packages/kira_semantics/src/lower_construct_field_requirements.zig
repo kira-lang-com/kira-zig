@@ -5,6 +5,7 @@ const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
 const requirements = @import("lower_construct_requirements.zig");
+const form_surface = @import("construct_form_surface.zig");
 
 // Validate that every construct-backed declaration satisfies the `@Required` *fields* of its
 // construct family, applying the terminal-`node` rule: a required field need not be provided
@@ -42,9 +43,10 @@ pub fn validateConstructFormFieldRequirements(
     for (program.decls) |decl| {
         if (decl != .construct_form_decl) continue;
         const form_decl = decl.construct_form_decl;
+        const body_members = try form_surface.effectiveMembers(ctx, form_decl);
         var provided = std.StringHashMapUnmanaged(void){};
         var fields = std.array_list.Managed(syntax.ast.FieldDecl).init(ctx.allocator);
-        for (form_decl.body.members) |member| {
+        for (body_members) |member| {
             switch (member) {
                 .field_decl => |field| {
                     try provided.put(ctx.allocator, field.name, {});

@@ -125,6 +125,7 @@ pub const GeneratedMember = struct {
 pub const FunctionDecl = struct {
     annotations: []const Annotation,
     is_override: bool = false,
+    is_comptime: bool = false,
     name: []const u8,
     params: []ParamDecl,
     return_type: ?*TypeExpr,
@@ -133,6 +134,7 @@ pub const FunctionDecl = struct {
 };
 
 pub const FunctionSignature = struct {
+    annotations: []const Annotation = &.{},
     name: []const u8,
     params: []ParamDecl,
     return_type: ?*TypeExpr,
@@ -143,6 +145,7 @@ pub const ParamDecl = struct {
     annotations: []const Annotation,
     name: []const u8,
     type_expr: ?*TypeExpr,
+    default_value: ?*Expr = null,
     span: Span,
 };
 
@@ -176,6 +179,7 @@ pub const TypeKind = enum {
 
 pub const ConstructDecl = struct {
     annotations: []const Annotation,
+    is_comptime: bool = false,
     name: []const u8,
     parents: []QualifiedName,
     sections: []ConstructSection,
@@ -526,6 +530,7 @@ pub const Expr = union(enum) {
     bool: BoolLiteral,
     identifier: IdentifierExpr,
     array: ArrayExpr,
+    builder_array: BuilderArrayExpr,
     callback: CallbackBlock,
     struct_literal: StructLiteralExpr,
     native_state: NativeStateExpr,
@@ -574,6 +579,11 @@ pub const IdentifierExpr = struct {
 
 pub const ArrayExpr = struct {
     elements: []*Expr,
+    span: Span,
+};
+
+pub const BuilderArrayExpr = struct {
+    builder: BuilderBlock,
     span: Span,
 };
 

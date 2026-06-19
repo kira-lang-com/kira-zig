@@ -40,7 +40,10 @@ pub const Context = struct {
     form_content_fields: ?*const std.StringHashMapUnmanaged([]const ContentFieldRef) = null,
     concrete_enums: ?*std.StringHashMapUnmanaged(model.EnumDecl) = null,
     callback_capture_frame: ?*CallbackCaptureFrame = null,
+    active_locals: ?*std.array_list.Managed(model.LocalSymbol) = null,
+    active_next_local_id: ?*u32 = null,
     current_package: ?[]const u8 = null,
+    current_source_path: ?[]const u8 = null,
     /// When true, the active backend (the VM) can execute direct FFI calls from
     /// ordinary runtime functions through LibFFI, so the KSEM093 "@Native"
     /// requirement is lifted. Set per-target by the build pipeline.
@@ -74,10 +77,13 @@ pub const FunctionHeader = struct {
     id: u32,
     params: []const model.ResolvedType = &.{},
     param_ownership: []const model.OwnershipMode = &.{},
+    param_defaults: []const ?*syntax.ast.Expr = &.{},
     execution: runtime_abi.FunctionExecution,
     return_type: model.ResolvedType,
     return_ownership: model.OwnershipMode = .owned,
     is_extern: bool = false,
+    is_comptime: bool = false,
+    comptime_decl: ?syntax.ast.FunctionDecl = null,
     foreign: ?model.ForeignFunction = null,
     // A computed-property accessor synthesized from a `let name: T { ... }` member. Such a
     // method may be invoked by bare member access (`widget.node`, no parentheses), which is how
@@ -237,6 +243,15 @@ pub fn typeFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror!mod
             if (ctx.enum_headers) |headers| {
                 if (headers.get(leaf)) |enum_decl| {
                     if (enum_decl.type_params.len == 0) break :blk .{ .kind = .enum_instance, .name = leaf };
+                }
+            }
+            if (ctx.construct_headers) |headers| {
+                if (headers.get(leaf) != null) {
+                    break :blk .{
+                        .kind = .construct_any,
+                        .name = try std.fmt.allocPrint(ctx.allocator, "any {s}", .{leaf}),
+                        .construct_constraint = .{ .construct_name = try ctx.allocator.dupe(u8, leaf) },
+                    };
                 }
             }
             break :blk .{ .kind = .named, .name = leaf };
@@ -822,6 +837,10 @@ pub fn importedQualifiedName(ctx: *const Context, imports: []const model.Import,
 }
 
 fn importVisibleToContext(ctx: *const Context, import_decl: model.Import) bool {
+    if (import_decl.source_path.len != 0) {
+        if (ctx.current_source_path == null) return false;
+        if (!std.mem.eql(u8, import_decl.source_path, ctx.current_source_path.?)) return false;
+    }
     if (import_decl.package_name) |package_name| {
         if (ctx.current_package == null) return false;
         return std.mem.eql(u8, package_name, ctx.current_package.?);

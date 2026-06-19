@@ -1,0 +1,22 @@
+// `try` is only valid inside an `attempt { ... }` block. Here it is used directly in a
+// function body.
+
+enum AppError {
+    NotFound: String = "nf"
+    Denied: String = "denied"
+}
+
+enum Outcome {
+    Ok: Int
+    Error: AppError
+}
+
+function load() -> Outcome {
+    return Outcome.Ok(1)
+}
+
+@Main
+function main() {
+    let value = try load()
+    return
+}

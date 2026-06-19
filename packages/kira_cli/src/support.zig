@@ -235,6 +235,67 @@ pub fn validateTargetSelection(
     }
 }
 
+pub fn warnNativePreparationState(
+    allocator: std.mem.Allocator,
+    stderr: anytype,
+    command: []const u8,
+    input: ResolvedCliInput,
+    backend: ?build_def.ExecutionTarget,
+) !void {
+    _ = backend;
+    const warnings = switch (input.target.target_kind) {
+        .library => blk: {
+            const source_root = input.target.source_root orelse return;
+            break :blk try build.collectDeclaredNativeWarningsForSourceRoot(allocator, source_root, null);
+        },
+        .executable, .example, .source_file => blk: {
+            const source_path = input.target.source_path orelse return;
+            break :blk try build.collectDeclaredNativeWarningsForSource(allocator, source_path, null);
+        },
+    };
+
+    for (warnings) |warning| {
+        try renderStandaloneDiagnostic(stderr, try nativeWarningDiagnostic(allocator, command, input, warning));
+    }
+}
+
+fn nativeWarningDiagnostic(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    input: ResolvedCliInput,
+    warning: build.NativeWarning,
+) !diagnostics.Diagnostic {
+    const target_path = input.displayPath();
+    const notes = try allocator.dupe([]const u8, &.{
+        warning.manifest_path orelse "<unknown manifest>",
+        warning.artifact_path orelse warning.bindings_path orelse "<unknown path>",
+    });
+    return switch (warning.kind) {
+        .artifact_out_of_date => .{
+            .severity = .warning,
+            .title = "native artifact is out of date",
+            .message = try std.fmt.allocPrint(
+                allocator,
+                "Native library `{s}` changed since its cached artifact was produced while running `{s}` for `{s}`.",
+                .{ warning.library_name, command, target_path },
+            ),
+            .notes = notes,
+            .help = "Run `kira ffi autobind <target>` to refresh bindings after header changes. `build` and `run` may still rebuild native artifacts as needed.",
+        },
+        .bindings_out_of_date => .{
+            .severity = .warning,
+            .title = "native autobind output is out of date",
+            .message = try std.fmt.allocPrint(
+                allocator,
+                "Native library `{s}` has stale generated bindings while running `{s}` for `{s}`.",
+                .{ warning.library_name, command, target_path },
+            ),
+            .notes = notes,
+            .help = "Run `kira ffi autobind <target>` to regenerate native bindings.",
+        },
+    };
+}
+
 pub fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
     if (std.mem.eql(u8, text, "vm")) return .vm;
     if (std.mem.eql(u8, text, "llvm") or std.mem.eql(u8, text, "llvm_native")) return .llvm_native;

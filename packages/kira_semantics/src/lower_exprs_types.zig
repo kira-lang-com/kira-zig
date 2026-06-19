@@ -138,6 +138,20 @@ pub fn lowerExpectedValue(
         return lowered;
     }
 
+    if (syntax_arg.* == .builder_array) {
+        if (expected_type.kind != .array) {
+            try shared.emitTypeMismatch(ctx.allocator, ctx.diagnostics, span, expected_type, .{ .kind = .array });
+            return error.DiagnosticsEmitted;
+        }
+        const lowered = try ctx.allocator.create(model.Expr);
+        lowered.* = .{ .builder_array = .{
+            .builder = try parent.lowerBuilderBlock(ctx, syntax_arg.builder_array.builder, imports, scope),
+            .ty = expected_type,
+            .span = syntax_arg.builder_array.span,
+        } };
+        return lowered;
+    }
+
     const lowered = try lowerExpr(ctx, syntax_arg, imports, scope, function_headers);
     const actual_type = model.hir.exprType(lowered.*);
     if (!canPassArgument(ctx, expected_type, actual_type)) {
@@ -260,6 +274,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .bool => |node| node.span,
         .identifier => |node| node.span,
         .array => |node| node.span,
+        .builder_array => |node| node.span,
         .callback => |node| node.span,
         .struct_literal => |node| node.span,
         .native_state => |node| node.span,
@@ -502,4 +517,3 @@ pub fn resolveArrayLiteralType(ctx: *shared.Context, elements: []const *model.Ex
         .name = try shared.typeTextFromResolved(ctx.allocator, element_ty),
     };
 }
-

@@ -1,6 +1,6 @@
 //! Binary serialization of bytecode modules (the KBC container format):
-//! `serialize`/`deserialize` plus their field-level helpers and the
-//! round-trip tests. The data model itself lives in bytecode.zig.
+//! `serialize`/`deserialize` plus their field-level helpers. The data model
+//! itself lives in bytecode.zig; round-trip tests live in serialization_tests.zig.
 
 const std = @import("std");
 const instruction = @import("instruction.zig");
@@ -21,7 +21,7 @@ const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBC5");
+    try writer.writeAll("KBC6");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -36,6 +36,8 @@ pub fn serialize(writer: anytype, module: Module) !void {
     for (module.construct_implementations) |implementation| {
         try writeString(writer, implementation.type_name);
         try writeString(writer, implementation.construct_constraint.construct_name);
+        try writer.writeInt(u32, @as(u32, @intCast(implementation.families.len)), .little);
+        for (implementation.families) |family| try writeString(writer, family);
         try writer.writeInt(u32, @as(u32, @intCast(implementation.fields.len)), .little);
         for (implementation.fields) |field_decl| {
             try writeString(writer, field_decl.name);
@@ -334,11 +336,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     var magic: [4]u8 = undefined;
     try reader.readSliceAll(&magic);
     const is_kbc5 = std.mem.eql(u8, &magic, "KBC5");
-    const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5;
-    const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5;
-    const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5;
-    const has_indirect_call_ownership = std.mem.eql(u8, &magic, "KBC4") or is_kbc5;
-    const has_ffi_metadata = is_kbc5;
+    const is_kbc6 = std.mem.eql(u8, &magic, "KBC6");
+    const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6;
+    const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6;
+    const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6;
+    const has_indirect_call_ownership = std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6;
+    const has_ffi_metadata = is_kbc5 or is_kbc6;
+    const has_construct_families = is_kbc6;
     if (!has_function_ownership and
         !std.mem.eql(u8, &magic, "KBC0") and
         !std.mem.eql(u8, &magic, "KBC2"))
@@ -363,6 +367,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     for (0..construct_implementation_count) |_| {
         const type_name = try readString(allocator, reader);
         const construct_name = try readString(allocator, reader);
+        const families = if (has_construct_families)
+            try readStringList(allocator, reader)
+        else blk: {
+            const fallback = try allocator.alloc([]const u8, 1);
+            fallback[0] = construct_name;
+            break :blk fallback;
+        };
         const field_count = try reader.takeInt(u32, .little);
         var fields = std.array_list.Managed(Field).init(allocator);
         for (0..field_count) |_| {
@@ -380,6 +391,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         try construct_implementations.append(.{
             .type_name = type_name,
             .construct_constraint = .{ .construct_name = construct_name },
+            .families = families,
             .fields = try fields.toOwnedSlice(),
             .has_content = has_content,
             .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
@@ -778,6 +790,13 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
     return buffer;
 }
 
+fn readStringList(allocator: std.mem.Allocator, reader: anytype) ![]const []const u8 {
+    const count = try reader.takeInt(u32, .little);
+    const values = try allocator.alloc([]const u8, count);
+    for (0..count) |index| values[index] = try readString(allocator, reader);
+    return values;
+}
+
 fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !void {
     try writer.writeInt(u32, function_id, .little);
     try writeCallPayload(writer, args, dst);
@@ -880,176 +899,4 @@ fn readCallPayload(allocator: std.mem.Allocator, reader: anytype) !struct { args
         .args = args,
         .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
     };
-}
-
-test "round-trips struct metadata and print instructions" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    const module: Module = .{
-        .types = &.{
-            .{
-                .name = "Color",
-                .fields = &.{
-                    .{ .name = "r", .ty = .{ .kind = .integer, .name = "I64" } },
-                    .{ .name = "g", .ty = .{ .kind = .integer, .name = "I64" } },
-                    .{ .name = "b", .ty = .{ .kind = .integer, .name = "I64" } },
-                },
-            },
-        },
-        .functions = &.{
-            .{
-                .id = 0,
-                .name = "main",
-                .param_count = 0,
-                .register_count = 1,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{
-                    .{ .alloc_struct = .{ .dst = 0, .type_name = "Color" } },
-                    .{ .print = .{ .src = 0, .ty = .{ .kind = .ffi_struct, .name = "Color" } } },
-                    .{ .ret = .{ .src = null } },
-                },
-            },
-        },
-        .entry_function_id = 0,
-    };
-
-    var buffer: [2048]u8 = undefined;
-    var stream = std.Io.Writer.fixed(&buffer);
-    try serialize(&stream, module);
-
-    const round_tripped = try deserialize(allocator, stream.buffered());
-    try std.testing.expectEqual(@as(usize, 1), round_tripped.types.len);
-    try std.testing.expectEqualStrings("Color", round_tripped.types[0].name);
-    try std.testing.expectEqual(@as(usize, 3), round_tripped.types[0].fields.len);
-    try std.testing.expectEqual(@as(?u32, 0), round_tripped.entry_function_id);
-    try std.testing.expect(round_tripped.functions[0].instructions[0] == .alloc_struct);
-    try std.testing.expect(round_tripped.functions[0].instructions[1] == .print);
-    try std.testing.expectEqualStrings("Color", round_tripped.functions[0].instructions[1].print.ty.name.?);
-}
-
-test "round-trips function constants" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    const module: Module = .{
-        .types = &.{},
-        .functions = &.{
-            .{
-                .id = 0,
-                .name = "main",
-                .param_count = 0,
-                .register_count = 1,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{
-                    .{ .const_function = .{ .dst = 0, .function_id = 42 } },
-                    .{ .ret = .{ .src = null } },
-                },
-            },
-        },
-        .entry_function_id = 0,
-    };
-
-    var bytes: std.Io.Writer.Allocating = .init(allocator);
-    defer bytes.deinit();
-    try serialize(&bytes.writer, module);
-
-    const round_tripped = try deserialize(allocator, bytes.written());
-    try std.testing.expect(round_tripped.functions[0].instructions[0] == .const_function);
-    try std.testing.expectEqual(@as(u32, 42), round_tripped.functions[0].instructions[0].const_function.function_id);
-}
-
-test "round-trips foreign FFI metadata for VM direct dispatch" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    const module: Module = .{
-        .types = &.{},
-        .functions = &.{
-            .{
-                .id = 7,
-                .name = "kira_ffi_add",
-                .param_count = 2,
-                .param_types = &.{
-                    .{ .kind = .integer, .name = "I32" },
-                    .{ .kind = .integer, .name = "I32" },
-                },
-                .return_type = .{ .kind = .integer, .name = "I32" },
-                .is_extern = true,
-                .foreign = .{
-                    .library_name = "ffimath",
-                    .symbol_name = "kira_ffi_add",
-                    .calling_convention = .c,
-                },
-                .register_count = 0,
-                .local_count = 0,
-                .local_types = &.{},
-                .instructions = &.{},
-            },
-        },
-        .entry_function_id = null,
-    };
-
-    var bytes: std.Io.Writer.Allocating = .init(allocator);
-    defer bytes.deinit();
-    try serialize(&bytes.writer, module);
-
-    const round_tripped = try deserialize(allocator, bytes.written());
-    const func = round_tripped.functions[0];
-    try std.testing.expect(func.is_extern);
-    try std.testing.expect(func.foreign != null);
-    try std.testing.expectEqualStrings("ffimath", func.foreign.?.library_name);
-    try std.testing.expectEqualStrings("kira_ffi_add", func.foreign.?.symbol_name);
-    try std.testing.expectEqual(runtime_abi.CallingConvention.c, func.foreign.?.calling_convention);
-    try std.testing.expectEqual(@as(usize, 2), func.param_types.len);
-    try std.testing.expectEqualStrings("I32", func.param_types[0].name.?);
-    try std.testing.expectEqualStrings("I32", func.return_type.name.?);
-}
-
-test "round-trips construct metadata and constrained types" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    const module: Module = .{
-        .constructs = &.{.{ .name = "Widget" }},
-        .construct_implementations = &.{.{
-            .type_name = "Button",
-            .construct_constraint = .{ .construct_name = "Widget" },
-            .fields = &.{.{ .name = "title", .ty = .{ .kind = .string } }},
-            .has_content = true,
-            .lifecycle_hooks = &.{.{ .name = "onAppear" }},
-        }},
-        .types = &.{},
-        .functions = &.{.{
-            .id = 0,
-            .name = "main",
-            .param_count = 1,
-            .return_type = .{ .kind = .construct_any, .name = "any Widget", .construct_constraint = .{ .construct_name = "Widget" } },
-            .register_count = 0,
-            .local_count = 0,
-            .local_types = &.{},
-            .instructions = &.{.{ .ret = .{ .src = null } }},
-        }},
-        .entry_function_id = 0,
-    };
-
-    var bytes: std.Io.Writer.Allocating = .init(allocator);
-    defer bytes.deinit();
-    try serialize(&bytes.writer, module);
-
-    const round_tripped = try deserialize(allocator, bytes.written());
-    try std.testing.expectEqual(@as(usize, 1), round_tripped.constructs.len);
-    try std.testing.expectEqualStrings("Widget", round_tripped.constructs[0].name);
-    try std.testing.expectEqual(@as(usize, 1), round_tripped.construct_implementations.len);
-    try std.testing.expectEqualStrings("Button", round_tripped.construct_implementations[0].type_name);
-    try std.testing.expectEqualStrings("Widget", round_tripped.construct_implementations[0].construct_constraint.construct_name);
-    try std.testing.expect(round_tripped.construct_implementations[0].has_content);
-    try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, round_tripped.functions[0].return_type.kind);
-    try std.testing.expectEqualStrings("Widget", round_tripped.functions[0].return_type.construct_constraint.?.construct_name);
 }

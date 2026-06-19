@@ -24,6 +24,7 @@ pub const Parser = struct {
     const decl_impl = @import("parser_decls.zig");
     const statement_impl = @import("parser_statements.zig");
     const block_impl = @import("parser_blocks.zig");
+    const param_impl = @import("parser_params.zig");
     const type_expr_impl = @import("parser_types_exprs.zig");
 
     pub const parseTopLevelDecl = decl_impl.parseTopLevelDecl;
@@ -40,7 +41,7 @@ pub const Parser = struct {
     pub const parseFunctionDeclWithAnnotations = decl_impl.parseFunctionDeclWithAnnotations;
     pub const parseFunctionSignature = decl_impl.parseFunctionSignature;
     pub const parseOptionalReturnType = decl_impl.parseOptionalReturnType;
-    pub const parseParamList = decl_impl.parseParamList;
+    pub const parseParamList = param_impl.parseParamList;
     pub const parseTypeDeclWithAnnotations = decl_impl.parseTypeDeclWithAnnotations;
     pub const parseConstructDeclWithAnnotations = decl_impl.parseConstructDeclWithAnnotations;
     pub const parseConstructSection = decl_impl.parseConstructSection;
@@ -232,6 +233,7 @@ pub const Parser = struct {
             return fallback_end;
         }
         if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "content") and self.peekNext().kind == .l_brace) return fallback_end;
+        if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "body") and self.peekNext().kind == .l_brace) return fallback_end;
         return (try self.expect(.semicolon, "expected ';' after field declaration", "terminate the field declaration with ';'")).span.end;
     }
 
@@ -316,7 +318,7 @@ pub const Parser = struct {
 
     pub fn recoverToTopLevel(self: *Parser) void {
         if (!self.at(.eof)) _ = self.advance();
-        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_enum) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
+        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_comptime) and !self.at(.kw_enum) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
             _ = self.advance();
         }
     }
@@ -369,6 +371,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .bool => |node| node.span,
         .identifier => |node| node.span,
         .array => |node| node.span,
+        .builder_array => |node| node.span,
         .callback => |node| node.span,
         .struct_literal => |node| node.span,
         .native_state => |node| node.span,
@@ -424,6 +427,7 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .kw_annotation => "'annotation'",
         .kw_capability => "'capability'",
         .kw_class => "'class'",
+        .kw_comptime => "'comptime'",
         .kw_construct => "'construct'",
         .kw_enum => "'enum'",
         .kw_struct => "'struct'",
@@ -633,4 +637,5 @@ test "parses annotation declarations" {
 
 test {
     _ = @import("parser_tests.zig");
+    _ = @import("parser_app_surface_tests.zig");
 }

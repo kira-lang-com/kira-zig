@@ -284,6 +284,7 @@ fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "annotation")) return .kw_annotation;
     if (std.mem.eql(u8, lexeme, "capability")) return .kw_capability;
     if (std.mem.eql(u8, lexeme, "class")) return .kw_class;
+    if (std.mem.eql(u8, lexeme, "comptime")) return .kw_comptime;
     if (std.mem.eql(u8, lexeme, "construct")) return .kw_construct;
     if (std.mem.eql(u8, lexeme, "enum")) return .kw_enum;
     if (std.mem.eql(u8, lexeme, "struct")) return .kw_struct;

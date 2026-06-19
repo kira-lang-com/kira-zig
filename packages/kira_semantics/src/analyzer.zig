@@ -39,7 +39,7 @@ pub fn analyzeLibrary(
     return lowering.lowerProgramWithOptions(allocator, program, imported_globals, .{ .require_main = false }, out_diagnostics);
 }
 
-
 test {
     _ = @import("analyzer_tests.zig");
+    _ = @import("analyzer_widget_surface_tests.zig");
 }

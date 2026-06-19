@@ -1,0 +1,32 @@
+enum Backend {
+    Vm
+    Llvm
+    Hybrid
+    Wasm
+}
+
+struct BuildOptions {
+    let backend: Backend
+    let target: String
+    let profile: String
+}
+
+struct BuildReport {
+    let success: Bool
+    let artifacts: [Artifact]
+    let diagnostics: [KiraDiagnostic]
+}
+
+function checkPackage(path: borrow String, backend: Backend) -> DeveloperCommandReport {
+    let developer = createDeveloperSession()
+    let report = developer.check(path, backend)
+    developer.close()
+    return report
+}
+
+function buildPackage(path: borrow String, backend: Backend) -> DeveloperCommandReport {
+    let developer = createDeveloperSession()
+    let report = developer.build(path, backend)
+    developer.close()
+    return report
+}

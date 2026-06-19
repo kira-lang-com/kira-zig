@@ -8,10 +8,6 @@ construct Widget {
     annotations {
         @Attribute;
     }
-
-    requires {
-        content;
-    }
 }
 
 Widget Button() {

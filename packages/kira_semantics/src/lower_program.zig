@@ -13,9 +13,15 @@ const requirements = @import("lower_construct_requirements.zig");
 const field_requirements = @import("lower_construct_field_requirements.zig");
 const widget_content = @import("lower_widget_content.zig");
 const content_composition = @import("lower_construct_content.zig");
+const content_validation = @import("lower_construct_content_validation.zig");
 const construct_functions = @import("lower_construct_functions.zig");
+const construct_extensions = @import("lower_construct_extensions.zig");
+const construct_defaults = @import("lower_construct_default_accessors.zig");
 const construct_members = @import("lower_construct_members.zig");
+const construct_tests = @import("lower_construct_tests.zig");
 const node_bridge = @import("lower_construct_node_bridge.zig");
+const type_accessors = @import("lower_type_constant_accessors.zig");
+const form_surface = @import("construct_form_surface.zig");
 
 pub const lowerImports = type_impl.lowerImports;
 pub const composeAnnotationGeneratedFunctions = type_impl.composeAnnotationGeneratedFunctions;
@@ -194,6 +200,7 @@ pub fn lowerProgramWithOptions(
     var constructs = std.array_list.Managed(model.Construct).init(allocator);
     var types = std.array_list.Managed(model.TypeDecl).init(allocator);
     var forms = std.array_list.Managed(model.ConstructForm).init(allocator);
+    var tests = std.array_list.Managed(model.TestCase).init(allocator);
     var functions = std.array_list.Managed(model.Function).init(allocator);
     var local_types = LocalTypeMap{};
     defer local_types.deinit(allocator);
@@ -291,7 +298,7 @@ pub fn lowerProgramWithOptions(
                 // scalar fields, so `Text(text: "hi")` lowers through the ordinary struct
                 // construction path into an `alloc_struct`. Composition members (`@Content`
                 // children, computed `let node { ... }`) are excluded — they are not stored state.
-                try local_types.put(allocator, form_decl.name, try synthesizeFormStruct(allocator, form_decl));
+                try local_types.put(allocator, form_decl.name, try synthesizeFormStruct(&ctx, form_decl));
             },
             .function_decl => |function_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, function_decl.name, function_decl.span);
@@ -299,8 +306,10 @@ pub fn lowerProgramWithOptions(
                 const foreign = try shared.resolveForeignFunction(&ctx, function_decl.annotations, function_decl.span);
                 var param_types = std.array_list.Managed(model.ResolvedType).init(allocator);
                 var param_ownership = std.array_list.Managed(model.OwnershipMode).init(allocator);
+                var param_defaults = std.array_list.Managed(?*syntax.ast.Expr).init(allocator);
                 for (function_decl.params) |param| {
                     try param_ownership.append(shared.ownershipModeFromSyntax(param.type_expr));
+                    try param_defaults.append(param.default_value);
                     if (param.type_expr) |type_expr| {
                         try param_types.append(try shared.typeFromSyntax(&ctx, type_expr.*));
                     } else {
@@ -312,10 +321,13 @@ pub fn lowerProgramWithOptions(
                     .id = @as(u32, @intCast(function_headers.count())),
                     .params = try param_types.toOwnedSlice(),
                     .param_ownership = try param_ownership.toOwnedSlice(),
+                    .param_defaults = try param_defaults.toOwnedSlice(),
                     .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
                     .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntax(&ctx, return_type.*) else .{ .kind = .unknown },
                     .return_ownership = return_ownership,
                     .is_extern = foreign != null,
+                    .is_comptime = function_decl.is_comptime,
+                    .comptime_decl = if (function_decl.is_comptime) function_decl else null,
                     .foreign = foreign,
                     .span = function_decl.span,
                 });
@@ -333,6 +345,59 @@ pub fn lowerProgramWithOptions(
         _ = try resolveTypeHeader(&ctx, &local_types, &resolver_states, &type_headers, .{ .local = entry.value_ptr.* }, entry.key_ptr.*);
     }
 
+    // All constructs are registered above; validate `extends` (unknown parent + cycles)
+    // before registering construct-family methods that depend on the family graph.
+    try type_impl.validateConstructInheritance(&ctx, constructs.items, &construct_headers);
+    try content_composition.validateConstructContentComposition(&ctx, constructs.items, &construct_headers);
+
+    // Map each construct-backed declaration to its declared parent (a construct or another
+    // declaration), so a declaration's construct family can be resolved through a chain such as
+    // `Drawable Sprite { ... }` then `Sprite Player { ... }`.
+    var form_parent = std.StringHashMapUnmanaged([]const u8){};
+    defer form_parent.deinit(allocator);
+    for (program.decls) |decl| {
+        if (decl != .construct_form_decl) continue;
+        const form_decl = decl.construct_form_decl;
+        const parent_leaf = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
+        try form_parent.put(allocator, form_decl.name, parent_leaf);
+    }
+    // Reject declaration-parent cycles before lowering, so they surface as cycles (KSEM119)
+    // rather than as unresolvable parents during form lowering.
+    try requirements.validateFormParentCycles(&ctx, program, &form_parent);
+
+    // Map each declaration's type name to the construct families it satisfies, so concrete widget
+    // values coerce to `any Widget` during body lowering and method registration.
+    var form_families = std.StringHashMapUnmanaged([]const []const u8){};
+    defer form_families.deinit(allocator);
+    try buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
+    ctx.form_families = &form_families;
+
+    try registerImportedFunctionHeaders(&ctx, &function_headers);
+    for (program.decls) |decl| {
+        switch (decl) {
+            .type_decl => |type_decl| {
+                try registerTypeMethodHeaders(&ctx, type_decl, &function_headers);
+                try type_accessors.registerTypeAccessorHeaders(&ctx, type_decl, &function_headers);
+            },
+            .construct_form_decl => |form_decl| {
+                try construct_tests.registerTestSectionHeaders(&ctx, form_decl, &function_headers);
+                try construct_functions.registerConstructFormFunctionHeaders(&ctx, form_decl, &function_headers);
+                try construct_functions.registerConstructFormMethods(&ctx, form_decl, &type_headers, &function_headers);
+                try node_bridge.registerFormAccessorHeaders(&ctx, form_decl, &function_headers);
+                try node_bridge.registerFormAccessorMethods(&ctx, form_decl, &type_headers, &function_headers);
+                try construct_defaults.registerDefaultFunctionHeaders(&ctx, program, form_decl, &function_headers);
+                try construct_defaults.registerDefaultMethods(&ctx, program, form_decl, &type_headers, &function_headers);
+            },
+            .extend_decl => |extend_decl| {
+                try construct_extensions.registerExtendFunctionHeaders(&ctx, extend_decl, &function_headers);
+                try construct_extensions.registerExtendMethods(&ctx, extend_decl, &type_headers, &function_headers);
+            },
+            .function_decl => {},
+            else => {},
+        }
+    }
+    try validatePrintableTypes(&ctx, &type_headers, &function_headers);
+
     var type_header_iterator = type_headers.iterator();
     while (type_header_iterator.next()) |entry| {
         try types.append(.{
@@ -345,20 +410,6 @@ pub fn lowerProgramWithOptions(
             .span = entry.value_ptr.span,
         });
     }
-
-    try registerImportedFunctionHeaders(&ctx, &function_headers);
-    for (program.decls) |decl| {
-        switch (decl) {
-            .type_decl => |type_decl| try registerTypeMethodHeaders(&ctx, type_decl, &function_headers),
-            .construct_form_decl => |form_decl| {
-                try construct_functions.registerConstructFormFunctionHeaders(&ctx, form_decl, &function_headers);
-                try node_bridge.registerFormAccessorHeaders(&ctx, form_decl, &function_headers);
-            },
-            .function_decl => {},
-            else => {},
-        }
-    }
-    try validatePrintableTypes(&ctx, &type_headers, &function_headers);
 
     var main_index: ?usize = null;
     var first_main_span: ?source_pkg.Span = null;
@@ -385,49 +436,33 @@ pub fn lowerProgramWithOptions(
         });
     }
 
-    // All constructs are registered above; validate `extends` (unknown parent + cycles)
-    // before lowering construct-form declarations that depend on the family graph.
-    try type_impl.validateConstructInheritance(&ctx, constructs.items, &construct_headers);
-    try content_composition.validateConstructContentComposition(&ctx, constructs.items, &construct_headers);
-
-    // Map each construct-backed declaration to its declared parent (a construct or another
-    // declaration), so a declaration's construct family can be resolved through a chain such as
-    // `Drawable Sprite { ... }` then `Sprite Player { ... }`.
-    var form_parent = std.StringHashMapUnmanaged([]const u8){};
-    defer form_parent.deinit(allocator);
-    for (program.decls) |decl| {
-        if (decl != .construct_form_decl) continue;
-        const form_decl = decl.construct_form_decl;
-        const parent_leaf = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
-        try form_parent.put(allocator, form_decl.name, parent_leaf);
-    }
-    // Reject declaration-parent cycles before lowering, so they surface as cycles (KSEM119)
-    // rather than as unresolvable parents during form lowering.
-    try requirements.validateFormParentCycles(&ctx, program, &form_parent);
-
-    // Map each declaration's type name to the construct families it satisfies, so concrete widget
-    // values coerce to `any Widget` during body lowering.
-    var form_families = std.StringHashMapUnmanaged([]const []const u8){};
-    defer form_families.deinit(allocator);
-    try buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
-    ctx.form_families = &form_families;
-
     // Record each declaration's `@Content` fields so construction routes trailing blocks into them.
     var form_content_fields = std.StringHashMapUnmanaged([]const shared.ContentFieldRef){};
     defer form_content_fields.deinit(allocator);
-    try buildFormContentFields(allocator, program, &form_content_fields);
+    try buildFormContentFields(&ctx, program, &form_content_fields);
     ctx.form_content_fields = &form_content_fields;
+
+    // Validate caller-provided `@Content` at construction sites before lowering the forms. The
+    // content diagnostics (KSEM142-145) are more specific than the struct-construction errors
+    // (e.g. KSEM081 missing field) that `@Content`-as-real-fields lowering would otherwise raise
+    // first for the same mistake.
+    try widget_content.validateWidgetContent(&ctx, program);
 
     for (program.decls, 0..) |decl, decl_index| {
         const previous_package = ctx.current_package;
+        const previous_source_path = ctx.current_source_path;
         ctx.current_package = declOrigin(program, decl_index).package_name;
+        ctx.current_source_path = declOrigin(program, decl_index).source_path;
         switch (decl) {
             .construct_form_decl => |form_decl| {
                 try forms.append(try lowerConstructForm(&ctx, form_decl, imports, constructs.items, &construct_headers, &form_parent));
                 try functions.appendSlice(try construct_functions.lowerConstructFormFunctions(&ctx, form_decl, imports, &function_headers));
+                try functions.appendSlice(try construct_tests.lowerTestSections(&ctx, form_decl, imports, &function_headers, &tests));
                 try functions.appendSlice(try node_bridge.lowerFormAccessors(&ctx, form_decl, imports, &function_headers));
+                try functions.appendSlice(try construct_defaults.lowerDefaultFunctions(&ctx, program, form_decl, imports, &function_headers));
             },
             .function_decl => |function_decl| {
+                if (function_decl.is_comptime) continue;
                 const lowered = try lowerFunction(&ctx, function_decl, imports, &function_headers);
                 if (lowered.is_main) {
                     if (first_main_span) |previous_span| {
@@ -452,18 +487,21 @@ pub fn lowerProgramWithOptions(
             .type_decl => |type_decl| {
                 const lowered_methods = try lowerTypeMethods(&ctx, type_decl, imports, &function_headers);
                 try functions.appendSlice(lowered_methods);
+                try functions.appendSlice(try type_accessors.lowerTypeAccessors(&ctx, type_decl, imports, &function_headers));
+            },
+            .extend_decl => |extend_decl| {
+                try functions.appendSlice(try construct_extensions.lowerExtendFunctions(&ctx, extend_decl, imports, &function_headers));
             },
             else => {},
         }
         ctx.current_package = previous_package;
+        ctx.current_source_path = previous_source_path;
     }
 
     // Validate required-function satisfaction across the mixed construct/declaration graph.
     try requirements.validateConstructFormRequirements(&ctx, program, constructs.items, &construct_headers, &form_parent);
     // Validate `@Required` field satisfaction with the terminal-`node` rule.
     try field_requirements.validateConstructFormFieldRequirements(&ctx, program, constructs.items, &construct_headers, &form_parent);
-    // Validate caller-provided `@Content` at construction sites in composition bodies.
-    try widget_content.validateWidgetContent(&ctx, program);
     // `extend C { ... }` must target a known construct family.
     for (program.decls) |decl| {
         if (decl != .extend_decl) continue;
@@ -508,6 +546,7 @@ pub fn lowerProgramWithOptions(
         .constructs = try constructs.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .forms = try forms.toOwnedSlice(),
+        .tests = try tests.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_index = main_index orelse 0,
     };
@@ -557,15 +596,16 @@ fn collectConstructAncestry(
 }
 
 fn buildFormContentFields(
-    allocator: std.mem.Allocator,
+    ctx: *shared.Context,
     program: syntax.ast.Program,
     out: *std.StringHashMapUnmanaged([]const shared.ContentFieldRef),
 ) !void {
     for (program.decls) |decl| {
         if (decl != .construct_form_decl) continue;
         const form_decl = decl.construct_form_decl;
-        var fields = std.array_list.Managed(shared.ContentFieldRef).init(allocator);
-        for (form_decl.body.members) |member| {
+        const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+        var fields = std.array_list.Managed(shared.ContentFieldRef).init(ctx.allocator);
+        for (body_members) |member| {
             if (member != .field_decl) continue;
             const field = member.field_decl;
             if (!construct_members.hasContentAnnotation(field.annotations)) continue;
@@ -574,13 +614,14 @@ fn buildFormContentFields(
                 .is_list = field.type_expr != null and field.type_expr.?.* == .array,
             });
         }
-        if (fields.items.len > 0) try out.put(allocator, form_decl.name, try fields.toOwnedSlice());
+        if (fields.items.len > 0) try out.put(ctx.allocator, form_decl.name, try fields.toOwnedSlice());
     }
 }
 
-fn synthesizeFormStruct(allocator: std.mem.Allocator, form_decl: syntax.ast.ConstructFormDecl) !syntax.ast.TypeDecl {
-    var members = std.array_list.Managed(syntax.ast.BodyMember).init(allocator);
-    for (form_decl.body.members) |member| {
+fn synthesizeFormStruct(ctx: *shared.Context, form_decl: syntax.ast.ConstructFormDecl) !syntax.ast.TypeDecl {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    var members = std.array_list.Managed(syntax.ast.BodyMember).init(ctx.allocator);
+    for (body_members) |member| {
         if (member != .field_decl) continue;
         const field = member.field_decl;
         // A computed `let node: T { ... }` is the bridge accessor, never stored state.
@@ -589,7 +630,7 @@ fn synthesizeFormStruct(allocator: std.mem.Allocator, form_decl: syntax.ast.Cons
             // Caller-provided children are stored as `any Family` slots so heterogeneous widgets
             // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `any` form.
             var content_field = field;
-            content_field.type_expr = if (field.type_expr) |type_expr| try anyifyContentType(allocator, type_expr) else null;
+            content_field.type_expr = if (field.type_expr) |type_expr| try anyifyContentType(ctx.allocator, type_expr) else null;
             try members.append(.{ .field_decl = content_field });
             continue;
         }
@@ -662,7 +703,8 @@ fn lowerConstructForm(
     var lifecycle_hooks = std.array_list.Managed(model.LifecycleHook).init(ctx.allocator);
     var content: ?model.BuilderBlock = null;
 
-    for (form_decl.body.members) |member| {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    for (body_members) |member| {
         switch (member) {
             // A computed/composition member (`let node: Node { ... }`) is the typed Widget->Node
             // bridge, and an `@Content` field is caller-provided children — both are part of the
@@ -678,7 +720,7 @@ fn lowerConstructForm(
                 const lowered_content = try exprs.lowerBuilderBlock(ctx, content_section.builder, imports, null);
                 if (construct_model) |construct_info| {
                     if (construct_info.content_element_type) |element_type| {
-                        try validateContentBlock(ctx, lowered_content, element_type);
+                        try content_validation.validateBlock(ctx, lowered_content, element_type);
                     }
                 }
                 content = lowered_content;
@@ -716,6 +758,7 @@ fn lowerConstructForm(
     return .{
         .construct = .{ .construct_name = construct_name },
         .name = try ctx.allocator.dupe(u8, form_decl.name),
+        .families = try formFamiliesFor(ctx, form_decl.name),
         .fields = try fields.toOwnedSlice(),
         .content = content,
         .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
@@ -723,53 +766,12 @@ fn lowerConstructForm(
     };
 }
 
-// A construct that declares `content: Content<T>;` accepts only element-typed
-// (widget-producing) values in a declaration's content block. Raw primitive
-// literals are never widgets, so reject them with a precise diagnostic instead of
-// silently lowering a String where a Widget was expected.
-fn validateContentBlock(ctx: *shared.Context, block: model.BuilderBlock, element_type: []const u8) anyerror!void {
-    for (block.items) |item| {
-        switch (item) {
-            .expr => |expr_item| try validateContentValue(ctx, expr_item.expr, expr_item.span, element_type),
-            .if_item => |if_item| {
-                try validateContentBlock(ctx, if_item.then_block, element_type);
-                if (if_item.else_block) |else_block| try validateContentBlock(ctx, else_block, element_type);
-            },
-            .for_item => |for_item| try validateContentBlock(ctx, for_item.body, element_type),
-            .switch_item => |switch_item| {
-                for (switch_item.cases) |case_node| try validateContentBlock(ctx, case_node.body, element_type);
-                if (switch_item.default_block) |default_block| try validateContentBlock(ctx, default_block, element_type);
-            },
-        }
-    }
-}
-
-fn validateContentValue(ctx: *shared.Context, expr: *model.Expr, span: source_pkg.Span, element_type: []const u8) anyerror!void {
-    const found = model.exprType(expr.*);
-    const found_label: ?[]const u8 = switch (found.kind) {
-        .string, .c_string => "String",
-        .integer => "Int",
-        .float => "Float",
-        .boolean => "Bool",
-        else => null,
-    };
-    if (found_label) |label| {
-        const text_hint = if (found.kind == .string or found.kind == .c_string)
-            "; use Text(...) if visible text was intended"
-        else
-            "";
-        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM098",
-            .title = "content value is not a widget",
-            .message = try std.fmt.allocPrint(ctx.allocator, "Kira expected {s} content, found {s}{s}.", .{ element_type, label, text_hint }),
-            .labels = &.{
-                diagnostics.primaryLabel(span, "this value is not a widget"),
-            },
-            .help = "Content blocks accept widget-producing expressions, not raw values.",
-        });
-        return error.DiagnosticsEmitted;
-    }
+fn formFamiliesFor(ctx: *shared.Context, form_name: []const u8) ![]const []const u8 {
+    const families = ctx.form_families orelse return &.{};
+    const list = families.get(form_name) orelse return &.{};
+    const owned = try ctx.allocator.alloc([]const u8, list.len);
+    for (list, 0..) |family, index| owned[index] = try ctx.allocator.dupe(u8, family);
+    return owned;
 }
 
 pub fn lowerFunction(
@@ -876,9 +878,17 @@ pub fn lowerFunction(
         return error.DiagnosticsEmitted;
     }
     const explicit_return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else model.ResolvedType{ .kind = .unknown };
-    const body = if (function_decl.body) |syntax_body|
-        try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type)
-    else if (foreign != null)
+    const body = if (function_decl.body) |syntax_body| blk: {
+        const previous_locals = ctx.active_locals;
+        const previous_next_local_id = ctx.active_next_local_id;
+        ctx.active_locals = &locals;
+        ctx.active_next_local_id = &next_local_id;
+        defer {
+            ctx.active_locals = previous_locals;
+            ctx.active_next_local_id = previous_next_local_id;
+        }
+        break :blk try exprs.lowerBlockStatements(ctx, syntax_body, imports, &scope, &locals, &next_local_id, function_headers, 0, explicit_return_type);
+    } else if (foreign != null)
         try ctx.allocator.alloc(model.Statement, 0)
     else {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{

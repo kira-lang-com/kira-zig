@@ -152,6 +152,9 @@ pub const RuntimeDecls = struct {
     state_alloc: Decl,
     state_payload: Decl,
     state_recover: Decl,
+    struct_alloc: Decl,
+    struct_type_id: Decl,
+    struct_free: Decl,
     // No-newline writers for composing aggregate (struct/enum/array) output.
     write_i64: Decl,
     write_f64: Decl,
@@ -203,6 +206,11 @@ pub const RuntimeDecls = struct {
         const state_payload_ty = api.LLVMFunctionType(types.ptr_ty, &state_payload_args, state_payload_args.len, 0);
         var state_recover_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64 };
         const state_recover_ty = api.LLVMFunctionType(types.ptr_ty, &state_recover_args, state_recover_args.len, 0);
+        var struct_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.i64 };
+        const struct_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &struct_alloc_args, struct_alloc_args.len, 0);
+        var struct_type_id_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
+        const struct_type_id_ty = api.LLVMFunctionType(types.i64, &struct_type_id_args, struct_type_id_args.len, 0);
+        const struct_free_ty = api.LLVMFunctionType(types.void_ty, &struct_type_id_args, struct_type_id_args.len, 0);
         const write_newline_ty = api.LLVMFunctionType(types.void_ty, null, 0, 0);
 
         return .{
@@ -225,6 +233,9 @@ pub const RuntimeDecls = struct {
             .state_alloc = .{ .ty = state_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_alloc, state_alloc_ty) },
             .state_payload = .{ .ty = state_payload_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_payload, state_payload_ty) },
             .state_recover = .{ .ty = state_recover_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_recover, state_recover_ty) },
+            .struct_alloc = .{ .ty = struct_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_alloc, struct_alloc_ty) },
+            .struct_type_id = .{ .ty = struct_type_id_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_type_id, struct_type_id_ty) },
+            .struct_free = .{ .ty = struct_free_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_free, struct_free_ty) },
             .write_i64 = .{ .ty = print_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_i64", print_i64_ty) },
             .write_f64 = .{ .ty = print_f64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_f64", print_f64_ty) },
             .write_string = .{ .ty = print_string_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_string", print_string_ty) },
@@ -463,7 +474,6 @@ fn intStorageType(types: Types, name: ?[]const u8) llvm.c.LLVMTypeRef {
     if (std.mem.eql(u8, n, "I32") or std.mem.eql(u8, n, "U32")) return types.i32;
     return types.i64;
 }
-
 
 fn buildHostMain(
     allocator: std.mem.Allocator,

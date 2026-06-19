@@ -4,6 +4,7 @@ const source_pkg = @import("kira_source");
 const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
+const construct_any = @import("lower_exprs_construct_any.zig");
 const function_types = @import("function_types.zig");
 const parent = @import("lower_exprs.zig");
 const resolveFieldContainerType = parent.resolveFieldContainerType;
@@ -94,6 +95,21 @@ pub fn lowerParentQualifiedFieldExpr(
 
     const self_binding = scope.get("self") orelse return null;
     const self_type = resolveFieldContainerType(ctx, self_binding.ty) orelse return null;
+    if (self_type.name) |self_type_name| {
+        if (std.mem.eql(u8, qualifier, self_type_name)) {
+            const receiver = try makeSelfLocalExpr(ctx, self_binding, node.span);
+            const resolved_field = try resolveFieldMember(ctx, self_type, node.member, node.span);
+            return .{ .field = .{
+                .object = receiver,
+                .container_type_name = try ctx.allocator.dupe(u8, self_type_name),
+                .field_name = try ctx.allocator.dupe(u8, node.member),
+                .field_index = resolved_field.slot_index,
+                .ty = resolved_field.ty,
+                .storage = resolved_field.storage,
+                .span = node.span,
+            } };
+        }
+    }
     const parent_view = resolveParentViewOrNullNoDiag(ctx, self_type, qualifier) orelse {
         if ((ctx.type_headers != null and (ctx.type_headers.?.get(qualifier) != null)) or ctx.imported_globals.findType(qualifier) != null) return null;
         return null;
@@ -124,6 +140,13 @@ pub fn lowerParentQualifiedMethodCall(
 
     const self_binding = scope.get("self") orelse return null;
     const self_type = resolveFieldContainerType(ctx, self_binding.ty) orelse return null;
+    if (self_type.name) |self_type_name| {
+        if (std.mem.eql(u8, qualifier, self_type_name)) {
+            const receiver = try makeSelfLocalExpr(ctx, self_binding, node.span);
+            const resolved_method = try resolveMethodMember(ctx, self_type, member.member, node.span);
+            return (try buildDispatchedMethodCallExpr(ctx, resolved_method, receiver, self_type, node, imports, scope, function_headers)).*;
+        }
+    }
     const parent_view = resolveParentViewOrNullNoDiag(ctx, self_type, qualifier) orelse {
         if ((ctx.type_headers != null and (ctx.type_headers.?.get(qualifier) != null)) or ctx.imported_globals.findType(qualifier) != null) {
             _ = try resolveParentView(ctx, self_type, qualifier, node.span);
@@ -296,7 +319,24 @@ pub fn tryLowerComputedAccessor(
     span: source_pkg.Span,
 ) !?*model.Expr {
     const headers = ctx.function_headers orelse return null;
-    const container_type = resolveFieldContainerType(ctx, model.hir.exprType(object.*)) orelse return null;
+    const object_type = model.hir.exprType(object.*);
+    if (object_type.kind == .construct_any) {
+        const method_decl = try construct_any.resolveMethod(ctx, object_type, member, span, true) orelse return null;
+        const function_header = headers.get(method_decl.full_name) orelse return null;
+        if (!function_header.is_accessor) return null;
+        const lowered = try ctx.allocator.create(model.Expr);
+        lowered.* = .{ .virtual_call = .{
+            .receiver = object,
+            .static_type_name = try ctx.allocator.dupe(u8, (object_type.construct_constraint orelse return null).construct_name),
+            .method_name = try ctx.allocator.dupe(u8, method_decl.name),
+            .args = &.{},
+            .ty = method_decl.return_type,
+            .span = span,
+        } };
+        return lowered;
+    }
+
+    const container_type = resolveFieldContainerType(ctx, object_type) orelse return null;
     const type_name = container_type.name orelse return null;
     const key = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ type_name, member });
     const header = headers.get(key) orelse return null;
@@ -321,6 +361,7 @@ pub fn resolveMethodMemberOrNull(
     method_name: []const u8,
     span: source_pkg.Span,
 ) !?shared.MethodMember {
+    if (object_type.kind == .construct_any) return try construct_any.resolveMethod(ctx, object_type, method_name, span, false);
     const container_type = resolveFieldContainerType(ctx, object_type) orelse return null;
     const header = shared.namedTypeHeader(ctx, container_type) orelse return null;
 
@@ -349,6 +390,10 @@ pub fn resolveMethodMember(
     method_name: []const u8,
     span: source_pkg.Span,
 ) !shared.MethodMember {
+    if (object_type.kind == .construct_any) {
+        if (try construct_any.resolveMethod(ctx, object_type, method_name, span, true)) |method_decl| return method_decl;
+        unreachable;
+    }
     const container_type = resolveFieldContainerType(ctx, object_type) orelse {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
@@ -441,6 +486,11 @@ pub fn buildDispatchedMethodCallExpr(
     function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
     const lowered = try ctx.allocator.create(model.Expr);
+    if (receiver_type.kind == .construct_any) {
+        const family = (receiver_type.construct_constraint orelse return error.DiagnosticsEmitted).construct_name;
+        try lowerVirtualMethodCall(ctx, lowered, method_decl, receiver, family, node, imports, scope, function_headers);
+        return lowered;
+    }
     if (shared.isClassType(ctx, receiver_type) and receiver_type.kind == .named and receiver_type.name != null and shared.hasKnownSubclass(ctx, receiver_type.name.?)) {
         try lowerVirtualMethodCall(ctx, lowered, method_decl, receiver, receiver_type.name.?, node, imports, scope, function_headers);
         return lowered;
@@ -464,12 +514,14 @@ pub fn lowerResolvedMethodCall(
         if (headers.get(method_decl.full_name)) |resolved_header| {
             const trailing_callback_type = try trailingCallbackType(ctx, node, resolved_header.params[1..]);
             const explicit_param_count = resolved_header.params.len - 1 - (if (trailing_callback_type != null) @as(usize, 1) else 0);
-            if (node.args.len != explicit_param_count) {
+            const default_slice = if (resolved_header.param_defaults.len > 0) resolved_header.param_defaults[1 .. 1 + explicit_param_count] else &.{};
+            const required_arg_count = requiredExplicitArgCount(default_slice, explicit_param_count);
+            if (node.args.len < required_arg_count or node.args.len > explicit_param_count) {
                 try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                     .severity = .@"error",
                     .code = "KSEM042",
                     .title = "wrong number of arguments",
-                    .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected {d} explicit argument(s) but received {d}.", .{ method_decl.full_name, explicit_param_count, node.args.len }),
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected between {d} and {d} explicit argument(s) but received {d}.", .{ method_decl.full_name, required_arg_count, explicit_param_count, node.args.len }),
                     .labels = &.{diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments")},
                     .help = "Update the call so it matches the method signature exactly.",
                 });
@@ -478,8 +530,15 @@ pub fn lowerResolvedMethodCall(
 
             var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
             try args.append(receiver);
-            for (node.args, 0..) |arg, index| {
-                try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index + 1], shared.paramOwnership(resolved_header, index + 1), method_decl.full_name, imports, scope, headers, node.span));
+            var index: usize = 0;
+            while (index < explicit_param_count) : (index += 1) {
+                if (index < node.args.len) {
+                    const arg = node.args[index];
+                    try args.append(try lowerCallArgument(ctx, arg.value, resolved_header.params[index + 1], shared.paramOwnership(resolved_header, index + 1), method_decl.full_name, imports, scope, headers, node.span));
+                    continue;
+                }
+                const default_expr = default_slice[index] orelse return error.DiagnosticsEmitted;
+                try args.append(try lowerCallArgument(ctx, default_expr, resolved_header.params[index + 1], shared.paramOwnership(resolved_header, index + 1), method_decl.full_name, imports, scope, headers, node.span));
             }
             if (trailing_callback_type) |callback_type| {
                 try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
@@ -553,12 +612,18 @@ pub fn lowerVirtualMethodCall(
         method_decl.return_type;
     const trailing_callback_type = try trailingCallbackType(ctx, node, method_decl.params);
     const explicit_param_count = method_decl.params.len - (if (trailing_callback_type != null) @as(usize, 1) else 0);
-    if (node.args.len != explicit_param_count) {
+    const resolved_header = if (function_headers) |headers| headers.get(method_decl.full_name) else null;
+    const default_slice = if (resolved_header != null and resolved_header.?.param_defaults.len > 0)
+        resolved_header.?.param_defaults[1 .. 1 + explicit_param_count]
+    else
+        &.{};
+    const required_arg_count = requiredExplicitArgCount(default_slice, explicit_param_count);
+    if (node.args.len < required_arg_count or node.args.len > explicit_param_count) {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
             .code = "KSEM042",
             .title = "wrong number of arguments",
-            .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected {d} explicit argument(s) but received {d}.", .{ method_decl.full_name, explicit_param_count, node.args.len }),
+            .message = try std.fmt.allocPrint(ctx.allocator, "The call to '{s}' expected between {d} and {d} explicit argument(s) but received {d}.", .{ method_decl.full_name, required_arg_count, explicit_param_count, node.args.len }),
             .labels = &.{diagnostics.primaryLabel(node.span, "call uses the wrong number of arguments")},
             .help = "Update the call so it matches the method signature exactly.",
         });
@@ -566,9 +631,16 @@ pub fn lowerVirtualMethodCall(
     }
 
     var args = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-    for (node.args, 0..) |arg, index| {
+    var index: usize = 0;
+    while (index < explicit_param_count) : (index += 1) {
         const ownership = if (index < method_decl.param_ownership.len) method_decl.param_ownership[index] else model.OwnershipMode.owned;
-        try args.append(try lowerCallArgument(ctx, arg.value, method_decl.params[index], ownership, method_decl.full_name, imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span));
+        if (index < node.args.len) {
+            const arg = node.args[index];
+            try args.append(try lowerCallArgument(ctx, arg.value, method_decl.params[index], ownership, method_decl.full_name, imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span));
+            continue;
+        }
+        const default_expr = default_slice[index] orelse return error.DiagnosticsEmitted;
+        try args.append(try lowerCallArgument(ctx, default_expr, method_decl.params[index], ownership, method_decl.full_name, imports, scope, function_headers orelse return error.DiagnosticsEmitted, node.span));
     }
     if (trailing_callback_type) |callback_type| {
         try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, function_headers orelse return error.DiagnosticsEmitted));
@@ -582,6 +654,17 @@ pub fn lowerVirtualMethodCall(
         .ty = resolved_return_type,
         .span = node.span,
     } };
+}
+
+fn requiredExplicitArgCount(param_defaults: []const ?*syntax.ast.Expr, explicit_param_count: usize) usize {
+    var required = explicit_param_count;
+    while (required > 0) {
+        const default_index = required - 1;
+        if (default_index >= param_defaults.len) break;
+        if (param_defaults[default_index] == null) break;
+        required -= 1;
+    }
+    return required;
 }
 
 pub fn trailingCallbackType(ctx: *shared.Context, node: syntax.ast.CallExpr, params: []const model.ResolvedType) !?model.ResolvedType {
@@ -697,7 +780,17 @@ pub fn lowerCallbackBlockValue(
     ctx.callback_capture_frame = &capture_frame;
     defer ctx.callback_capture_frame = previous_capture_frame;
 
-    const lowered_body = try lowerBlockStatements(ctx, body, imports, &callback_scope, &locals, &next_local_id, function_headers, 0, signature.result);
+    const lowered_body = blk: {
+        const previous_locals = ctx.active_locals;
+        const previous_next_local_id = ctx.active_next_local_id;
+        ctx.active_locals = &locals;
+        ctx.active_next_local_id = &next_local_id;
+        defer {
+            ctx.active_locals = previous_locals;
+            ctx.active_next_local_id = previous_next_local_id;
+        }
+        break :blk try lowerBlockStatements(ctx, body, imports, &callback_scope, &locals, &next_local_id, function_headers, 0, signature.result);
+    };
     const return_type = try resolveFunctionReturnType(ctx, signature.result, lowered_body);
     const lowered = try ctx.allocator.create(model.Expr);
     lowered.* = .{ .callback = .{

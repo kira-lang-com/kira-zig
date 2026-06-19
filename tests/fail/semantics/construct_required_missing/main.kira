@@ -1,0 +1,16 @@
+// The first concrete declaration of `Drawable` must implement the required `draw()` function.
+// `Ghost` is declared directly under `Drawable` and does not implement it.
+
+construct Drawable {
+    requires {
+        function draw()
+    }
+}
+
+Drawable Ghost {
+}
+
+@Main
+function main() {
+    return
+}

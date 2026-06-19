@@ -15,6 +15,7 @@ pub fn resolveImportPath(
     module_name: syntax.ast.QualifiedName,
     module_map: package_manager.ModuleMap,
 ) !ImportResolution {
+    _ = source_path;
     const display_name = try qualifiedNameDisplay(allocator, module_name);
     var candidates_list = std.array_list.Managed([]u8).init(allocator);
 
@@ -25,15 +26,6 @@ pub fn resolveImportPath(
         defer allocator.free(relative_backslash);
         try appendRootedModuleCandidates(allocator, &candidates_list, owner.source_root, relative_slash, '/');
         try appendRootedModuleCandidates(allocator, &candidates_list, owner.source_root, relative_backslash, '\\');
-    } else {
-        const source_root = try localSourceRootForImport(allocator, source_path, module_map);
-        defer allocator.free(source_root);
-        const relative_slash = try qualifiedNameRelativePath(allocator, module_name, '/');
-        defer allocator.free(relative_slash);
-        const relative_backslash = try qualifiedNameRelativePath(allocator, module_name, '\\');
-        defer allocator.free(relative_backslash);
-        try appendRootedModuleCandidates(allocator, &candidates_list, source_root, relative_slash, '/');
-        try appendRootedModuleCandidates(allocator, &candidates_list, source_root, relative_backslash, '\\');
     }
 
     const candidates = try candidates_list.toOwnedSlice();
@@ -123,20 +115,6 @@ fn bestOwnerForImport(
     return best_owner;
 }
 
-fn localSourceRootForImport(
-    allocator: std.mem.Allocator,
-    source_path: []const u8,
-    module_map: package_manager.ModuleMap,
-) ![]u8 {
-    if (try ownerForSourcePath(allocator, source_path, module_map)) |owner| {
-        return paths.canonicalizeSourceRoot(allocator, owner.source_root);
-    }
-    if (module_map.owners.len != 0) {
-        return paths.canonicalizeSourceRoot(allocator, module_map.owners[0].source_root);
-    }
-    return paths.canonicalizeSourceRoot(allocator, std.fs.path.dirname(source_path) orelse ".");
-}
-
 fn appendRootedModuleCandidates(
     allocator: std.mem.Allocator,
     candidates: *std.array_list.Managed([]u8),
@@ -207,7 +185,7 @@ fn joinQualifiedName(allocator: std.mem.Allocator, name: syntax.ast.QualifiedNam
     return builder.toOwnedSlice();
 }
 
-test "local import candidates stay inside the app source root" {
+test "same-package import no longer resolves sibling app files" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -235,14 +213,11 @@ test "local import candidates stay inside the app source root" {
         allocator.free(resolved.candidates);
     }
 
-    for (resolved.candidates) |candidate| {
-        try std.testing.expect(std.mem.indexOf(u8, candidate, "Project") != null);
-        try std.testing.expect(std.mem.indexOf(u8, candidate, "app") != null);
-        try std.testing.expect(std.mem.indexOf(u8, candidate, "Project\\support") == null);
-    }
+    try std.testing.expect(!resolved.exists);
+    try std.testing.expectEqual(@as(usize, 0), resolved.candidates.len);
 }
 
-test "local import resolves inside canonical app root" {
+test "same-package import does not resolve inside canonical app root" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -271,7 +246,8 @@ test "local import resolves inside canonical app root" {
         allocator.free(resolved.candidates);
     }
 
-    try std.testing.expect(resolved.exists);
+    try std.testing.expect(!resolved.exists);
+    try std.testing.expectEqual(@as(usize, 0), resolved.candidates.len);
 }
 
 test "local import ignores package root outside app" {

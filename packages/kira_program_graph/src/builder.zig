@@ -81,7 +81,22 @@ pub fn buildProgramGraph(
     var functions = std.array_list.Managed(syntax.ast.FunctionDecl).init(allocator);
     var function_origins = std.array_list.Managed(syntax.ast.DeclOrigin).init(allocator);
 
-    try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, source_path, root_program, module_map, diags, true, null);
+    if (try imports.ownerForSourcePath(allocator, source_path, module_map)) |owner| {
+        const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
+        defer freeModuleFiles(allocator, module_files);
+        const canonical_source = try paths.canonicalizeExistingPath(allocator, source_path);
+        defer allocator.free(canonical_source);
+        for (module_files) |module_path| {
+            if (std.mem.eql(u8, module_path, canonical_source)) {
+                try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, module_path, root_program, module_map, diags, true, null);
+                continue;
+            }
+            const program = try parseModuleProgramTimed(allocator, &stats, module_path, diags, null);
+            try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, module_path, program, module_map, diags, true, null);
+        }
+    } else {
+        try appendProgramGraph(allocator, &stats, &visited, &import_list, &import_origins, &decls, &decl_origins, &functions, &function_origins, source_path, root_program, module_map, diags, true, null);
+    }
     printGraphStats("buildProgramGraph", &stats, import_list.items.len, decls.items.len, functions.items.len);
 
     return .{

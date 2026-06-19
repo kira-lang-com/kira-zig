@@ -1,0 +1,68 @@
+struct DeveloperCommandReport {
+    let success: Bool
+    let text: String
+    let error: String
+}
+
+struct DeveloperSession {
+    var handle: KiraDeveloper_ptr
+
+    @Native
+    function close(): Void {
+        kira_developer_destroy(handle)
+        return
+    }
+
+    @Native
+    function check(path: borrow String, backend: borrow Backend) -> DeveloperCommandReport {
+        let status = kira_developer_check(handle, path, backendCode(backend))
+        return DeveloperCommandReport {
+            success: status == 0
+            text: kira_developer_report(handle)
+            error: kira_developer_last_error(handle)
+        }
+    }
+
+    @Native
+    function build(path: borrow String, backend: borrow Backend) -> DeveloperCommandReport {
+        let status = kira_developer_build(handle, path, backendCode(backend))
+        return DeveloperCommandReport {
+            success: status == 0
+            text: kira_developer_report(handle)
+            error: kira_developer_last_error(handle)
+        }
+    }
+
+    @Native
+    function test(path: borrow String, backend: borrow Backend) -> DeveloperCommandReport {
+        let status = kira_developer_test(handle, path, backendCode(backend))
+        return DeveloperCommandReport {
+            success: status == 0
+            text: kira_developer_report(handle)
+            error: kira_developer_last_error(handle)
+        }
+    }
+}
+
+@Native
+function createDeveloperSession() -> DeveloperSession {
+    return DeveloperSession {
+        handle: kira_developer_create()
+    }
+}
+
+function backendCode(backend: borrow Backend) -> U32 {
+    if backend == Backend.Vm {
+        return 1
+    }
+    if backend == Backend.Llvm {
+        return 2
+    }
+    if backend == Backend.Hybrid {
+        return 3
+    }
+    if backend == Backend.Wasm {
+        return 4
+    }
+    return 0
+}

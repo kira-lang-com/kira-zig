@@ -1,0 +1,47 @@
+enum ArgumentTokenKind {
+    Positional
+    LongOption
+    ShortOption
+    CommandTerminator
+    Empty
+}
+
+@Native
+function classifyArgumentToken(token: borrow String) -> ArgumentTokenKind {
+    let kind = kap_classify_token(token)
+    if kind == 1 {
+        return ArgumentTokenKind.LongOption
+    }
+    if kind == 2 {
+        return ArgumentTokenKind.ShortOption
+    }
+    if kind == 3 {
+        return ArgumentTokenKind.CommandTerminator
+    }
+    if kind == 4 {
+        return ArgumentTokenKind.Empty
+    }
+    return ArgumentTokenKind.Positional
+}
+
+@Native
+function isHelpArgument(token: borrow String) -> Bool {
+    return kap_is_help_token(token)
+}
+
+@Native
+function argumentHasInlineValue(token: borrow String) -> Bool {
+    return kap_has_inline_value(token)
+}
+
+@Native
+function argumentOptionName(token: borrow String) -> String {
+    let value = kap_option_name(token)
+    return value
+}
+
+@Native
+function argumentInlineValue(token: borrow String) -> String {
+    let value = kap_inline_value(token)
+    return value
+}

@@ -1,0 +1,19 @@
+// `try` may only unwrap a `Result`-shaped value (an enum with `Ok` and `Error` variants).
+// Here it is applied to an integer.
+
+enum AppError {
+    NotFound: String = "nf"
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try 42
+        print(value)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+    }
+    return
+}

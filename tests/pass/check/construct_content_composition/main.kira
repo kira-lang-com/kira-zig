@@ -1,0 +1,49 @@
+// Content composition directives: `refine` narrows an inherited channel, `project` maps local
+// declaration sections to an ancestor's channels, `passthrough` forwards inherited content, and
+// `sealed` closes a construct's content surface to its descendants.
+
+construct WebElement {
+    content {
+        content {
+            accepts Title
+            count 0..
+        }
+        head {
+            accepts Title
+            count 0..1
+        }
+    }
+}
+
+// Narrow the inherited `head` channel from `0..1` to `0..0`.
+construct Article extends WebElement {
+    content refine {
+        head {
+            accepts Title
+            count 0..0
+        }
+    }
+}
+
+// Map local declaration sections to inherited channels.
+construct Route extends WebElement {
+    content project {
+        view as WebElement.content
+        header as WebElement.head
+    }
+}
+
+// Forward the inherited channels without owning any.
+construct Wrapper extends WebElement {
+    content passthrough
+}
+
+// Close the content surface for descendants.
+construct Document extends WebElement {
+    content sealed
+}
+
+@Main
+function main() {
+    return
+}

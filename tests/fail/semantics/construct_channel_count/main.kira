@@ -1,0 +1,19 @@
+// The `body` channel requires at least one element (`count 1..`). A declaration that leaves
+// it empty violates the count rule.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+WebElement Page {
+}
+
+@Main
+function main() {
+    return
+}

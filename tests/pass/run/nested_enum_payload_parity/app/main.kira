@@ -1,0 +1,39 @@
+import Foundation
+
+// Regression: an enum whose payload is itself an enum, returned across a
+// function boundary, used to free the inner payload at the callee's frame exit
+// (use-after-free). Re-matching the returned value then read freed memory:
+// the inner tag/payload came back zeroed. This exercises the move-on-construct
+// ownership transfer in `alloc_enum` across vm/llvm/hybrid.
+
+enum RenderFailure {
+    MissingNode: String = "missing"
+    InvalidState: String = "invalid"
+}
+
+function failWith(useMissing: Bool) -> Result<Int, RenderFailure> {
+    if useMissing {
+        return Result.Error(RenderFailure.MissingNode("boom"))
+    }
+    return Result.Error(RenderFailure.InvalidState("halt"))
+}
+
+function report(r: Result<Int, RenderFailure>) {
+    match r {
+        Ok(value) -> { print(value) }
+        Error(failure) -> {
+            match failure {
+                MissingNode(reason) -> { print(reason) }
+                InvalidState(reason) -> { print(reason) }
+            }
+        }
+    }
+    return
+}
+
+@Main
+function main() {
+    report(failWith(true))
+    report(failWith(false))
+    return
+}

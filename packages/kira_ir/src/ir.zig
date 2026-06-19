@@ -47,6 +47,7 @@ pub const Construct = struct {
 pub const ConstructImplementation = struct {
     type_name: []const u8,
     construct_constraint: ConstructConstraint,
+    families: []const []const u8 = &.{},
     fields: []Field,
     has_content: bool,
     lifecycle_hooks: []LifecycleHook,

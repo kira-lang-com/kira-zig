@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    try verify(arena.allocator(), true);
+    try verify(arena.allocator(), false);
 }
 
 test "memory validation coverage is wired" {

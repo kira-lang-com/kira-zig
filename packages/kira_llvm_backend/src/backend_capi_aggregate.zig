@@ -236,10 +236,31 @@ pub fn lowerAllocEnum(fc: *FunctionCodegen, v: ir.AllocEnum) !void {
     _ = api.LLVMBuildStore(b, api.LLVMConstInt(fc.types.i64, v.discriminant, 0), tag_slot);
     var payload_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 1, 0)};
     const payload_slot = api.LLVMBuildInBoundsGEP2(b, fc.types.i64, ptr, &payload_idx, payload_idx.len, "enum.payload.slot");
-    const payload: llvm.c.LLVMValueRef = if (v.payload_src) |src|
-        try enumPayloadAsI64(fc, fc.register_types[src], fc.registers[src])
-    else
-        api.LLVMConstInt(fc.types.i64, 0, 0);
+    const payload: llvm.c.LLVMValueRef = if (v.payload_src) |src| blk: {
+        const src_ty = fc.register_types[src];
+        // A payload that is itself an owned heap value (an enum/array/struct/closure)
+        // moves into this enum block: escape the source so scope-exit teardown does
+        // not free it a second time once the enum escapes (return/store). Without
+        // this transfer the payload is freed at the constructing frame's exit and a
+        // returned enum dangles (use-after-free on re-match). A *borrowed* enum
+        // payload is deep-cloned instead, so the new enum owns independent storage
+        // and the borrowed original is left intact — mirrors the struct-field store
+        // rule in lowerStoreAggregate.
+        if (src_ty.kind == .enum_instance and fc.drop_enabled and fc.request.mode == .llvm_native and !drop.isOwned(fc, src)) {
+            const sptr = api.LLVMBuildIntToPtr(b, fc.registers[src], fc.types.ptr_ty, "enum.payload.clonesrc");
+            var cargs = [_]llvm.c.LLVMValueRef{sptr};
+            const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "enum.payload.clone");
+            break :blk api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "enum.payload.cloneint");
+        }
+        const widened = try enumPayloadAsI64(fc, src_ty, fc.registers[src]);
+        switch (src_ty.kind) {
+            // Owned heap payloads transfer ownership into the enum (escape nulls the
+            // source's cleanup slot); a borrowed source has no slot, so this is a no-op.
+            .enum_instance, .array, .ffi_struct, .raw_ptr, .construct_any => drop.onEscape(fc, src),
+            else => {},
+        }
+        break :blk widened;
+    } else api.LLVMConstInt(fc.types.i64, 0, 0);
     _ = api.LLVMBuildStore(b, payload, payload_slot);
     fc.registers[v.dst] = api.LLVMBuildPtrToInt(b, ptr, fc.types.i64, "enum.ptr");
 }

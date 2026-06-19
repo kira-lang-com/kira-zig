@@ -24,6 +24,7 @@ pub fn lowerImports(ctx: *shared.Context, program: syntax.ast.Program) ![]model.
             .module_name = try shared.qualifiedNameText(ctx.allocator, import_decl.module_name),
             .alias = if (import_decl.alias) |alias| try ctx.allocator.dupe(u8, alias) else null,
             .package_name = if (origin.package_name) |package_name| try ctx.allocator.dupe(u8, package_name) else null,
+            .source_path = if (origin.source_path.len != 0) try ctx.allocator.dupe(u8, origin.source_path) else "",
             .span = import_decl.span,
         };
     }
@@ -110,6 +111,7 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
     var channel_names = std.StringHashMapUnmanaged(source_pkg.Span){};
     defer channel_names.deinit(ctx.allocator);
     var required_functions = std.array_list.Managed(model.RequiredFunction).init(ctx.allocator);
+    var section_functions = std.array_list.Managed(model.SectionFunction).init(ctx.allocator);
     var content_element_type: ?[]const u8 = null;
 
     for (construct_decl.parents) |parent_name| {
@@ -242,6 +244,33 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
                     }
                 }
             },
+            .custom => {
+                if (std.mem.eql(u8, section.name, "sections")) {
+                    for (section.entries) |entry| {
+                        if (entry != .function_signature) continue;
+                        const signature = entry.function_signature;
+                        var param_types = std.array_list.Managed([]const u8).init(ctx.allocator);
+                        for (signature.params) |param| {
+                            const text = if (param.type_expr) |type_expr|
+                                try shared.typeTextFromSyntax(ctx, type_expr.*)
+                            else
+                                "";
+                            try param_types.append(text);
+                        }
+                        const return_type = if (signature.return_type) |type_expr|
+                            try shared.typeTextFromSyntax(ctx, type_expr.*)
+                        else
+                            "Void";
+                        try section_functions.append(.{
+                            .name = try ctx.allocator.dupe(u8, signature.name),
+                            .required = hasAnnotation(signature.annotations, "Required"),
+                            .param_types = try param_types.toOwnedSlice(),
+                            .return_type = return_type,
+                            .span = signature.span,
+                        });
+                    }
+                }
+            },
             .properties => {
                 for (section.entries) |entry| {
                     if (entry != .property_schema) continue;
@@ -292,6 +321,7 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
         .content_sealed = content_sealed,
         .content_passthrough = content_passthrough,
         .required_functions = try required_functions.toOwnedSlice(),
+        .section_functions = try section_functions.toOwnedSlice(),
         .required_fields = direct.required_fields,
         .default_members = direct.default_members,
         .allowed_annotations = try allowed_annotations.toOwnedSlice(),
@@ -299,6 +329,13 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
         .allowed_lifecycle_hooks = try allowed_lifecycle_hooks.toOwnedSlice(),
         .span = construct_decl.span,
     };
+}
+
+fn hasAnnotation(annotations: []const syntax.ast.Annotation, name: []const u8) bool {
+    for (annotations) |annotation| {
+        if (construct_members.isAnnotation(annotation, name)) return true;
+    }
+    return false;
 }
 
 const ConstructCycleState = enum(u8) { unvisited, in_stack, done };
@@ -1148,6 +1185,8 @@ pub fn applyLocalTypeMembers(
             return error.DiagnosticsEmitted;
         }
 
+        if (field_decl.body != null) continue;
+
         var lowered = try lowerField(ctx, field_decl, null);
         lowered.owner_type_name = try ctx.allocator.dupe(u8, type_decl.name);
         lowered.slot_index = @as(u32, @intCast(fields.items.len));
@@ -1388,10 +1427,13 @@ pub fn registerTypeMethodHeaders(
         const foreign = try shared.resolveForeignFunction(ctx, function_decl.annotations, function_decl.span);
         var param_types = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
         var param_ownership = std.array_list.Managed(model.OwnershipMode).init(ctx.allocator);
+        var param_defaults = std.array_list.Managed(?*syntax.ast.Expr).init(ctx.allocator);
         try param_types.append(.{ .kind = .named, .name = type_decl.name });
         try param_ownership.append(.borrow_read);
+        try param_defaults.append(null);
         for (function_decl.params) |param| {
             try param_ownership.append(shared.ownershipModeFromSyntax(param.type_expr));
+            try param_defaults.append(param.default_value);
             if (param.type_expr) |type_expr| {
                 try param_types.append(try shared.typeFromSyntaxChecked(ctx, type_expr.*));
             } else {
@@ -1403,6 +1445,7 @@ pub fn registerTypeMethodHeaders(
             .id = @as(u32, @intCast(function_headers.count())),
             .params = try param_types.toOwnedSlice(),
             .param_ownership = try param_ownership.toOwnedSlice(),
+            .param_defaults = try param_defaults.toOwnedSlice(),
             .execution = if (foreign != null and annotation_info.execution == .inherited) .native else annotation_info.execution,
             .return_type = if (function_decl.return_type) |return_type| try shared.typeFromSyntaxChecked(ctx, return_type.*) else .{ .kind = .unknown },
             .return_ownership = shared.ownershipModeFromSyntax(function_decl.return_type),

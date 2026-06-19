@@ -35,3 +35,6 @@ pub const ArrayGet = ir.ArrayGet;
 pub const ArraySet = ir.ArraySet;
 pub const ArrayAppend = ir.ArrayAppend;
 pub const lowerProgram = @import("lower_from_hir.zig").lowerProgram;
+pub const lowerProgramWithOptions = @import("lower_from_hir.zig").lowerProgramWithOptions;
+pub const LowerProgramOptions = @import("lower_from_hir.zig").LowerProgramOptions;
+pub const nativeStateTypeId = @import("lower_from_hir.zig").nativeStateTypeId;

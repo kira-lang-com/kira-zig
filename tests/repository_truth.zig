@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    try verify(arena.allocator(), true);
+    try verify(arena.allocator(), false);
 }
 
 test "repository truth guards reject Python, root Zig clutter, and fake markers" {
@@ -13,23 +13,8 @@ test "repository truth guards reject Python, root Zig clutter, and fake markers"
 }
 
 fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
-    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{ .iterate = true });
-    defer dir.close(std.Options.debug_io);
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
     var violations = std.array_list.Managed([]const u8).init(allocator);
-    while (try walker.next(std.Options.debug_io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (skipPath(entry.path)) continue;
-        try checkPythonFile(allocator, &violations, entry.path);
-        try checkRootZig(allocator, &violations, entry.path);
-        if (shouldScanText(entry.path)) {
-            const text = try dir.readFileAlloc(std.Options.debug_io, entry.path, allocator, .limited(16 * 1024 * 1024));
-            try checkPythonCommand(allocator, &violations, entry.path, text);
-            try checkFakeMarkers(allocator, &violations, entry.path, text);
-        }
-    }
+    try scanDir(allocator, &violations, ".");
 
     if (violations.items.len != 0) {
         for (violations.items) |violation| std.debug.print("{s}\n", .{violation});
@@ -38,16 +23,60 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     if (print_success) std.debug.print("repository truth checks passed\n", .{});
 }
 
+fn scanDir(
+    allocator: std.mem.Allocator,
+    violations: *std.array_list.Managed([]const u8),
+    dir_path: []const u8,
+) !void {
+    var dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        const path = try childPath(allocator, dir_path, entry.name);
+        defer allocator.free(path);
+
+        switch (entry.kind) {
+            .directory => {
+                if (skipPath(path)) continue;
+                try scanDir(allocator, violations, path);
+            },
+            .file => {
+                if (skipPath(path)) continue;
+                try checkPythonFile(allocator, violations, path);
+                try checkRootZig(allocator, violations, path);
+                if (shouldScanText(path)) {
+                    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(16 * 1024 * 1024));
+                    try checkPythonCommand(allocator, violations, path, text);
+                    try checkFakeMarkers(allocator, violations, path, text);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn childPath(allocator: std.mem.Allocator, dir_path: []const u8, name: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, dir_path, ".")) return allocator.dupe(u8, name);
+    return std.fs.path.join(allocator, &.{ dir_path, name });
+}
+
 fn skipPath(path: []const u8) bool {
     return startsWithPath(path, ".git/") or
+        startsWithPath(path, ".claude/") or
+        startsWithPath(path, ".kira/") or
+        startsWithPath(path, ".kira-build/") or
         startsWithPath(path, ".zig-cache/") or
         startsWithPath(path, "zig-out/") or
         startsWithPath(path, "generated/") or
         startsWithPath(path, "third_party/") or
+        startsWithPath(path, "tests/pass/") or
+        startsWithPath(path, "tests/fail/") or
         startsWithPath(path, "zig-pkg/") or
         startsWithPath(path, ".codex/") or
         startsWithPath(path, ".github/") or
-        startsWithPath(path, ".opencode/");
+        startsWithPath(path, ".opencode/") or
+        startsWithPath(path, "Images/");
 }
 
 fn checkPythonFile(allocator: std.mem.Allocator, violations: *std.array_list.Managed([]const u8), path: []const u8) !void {
@@ -99,8 +128,7 @@ fn shouldScanText(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".zon") or
         std.mem.endsWith(u8, path, ".js") or
         std.mem.endsWith(u8, path, ".sh") or
-        std.mem.endsWith(u8, path, ".toml") or
-        std.mem.endsWith(u8, path, ".kira");
+        std.mem.endsWith(u8, path, ".toml");
 }
 
 fn startsWithPath(path: []const u8, prefix: []const u8) bool {

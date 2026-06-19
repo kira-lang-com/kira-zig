@@ -7,7 +7,16 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
     var list = std.array_list.Managed([]const u8).init(allocator);
     switch (command) {
         .check => |options| try appendProjectOptions(allocator, &list, options),
+        .test_cmd => |options| try appendProjectOptions(allocator, &list, options),
         .build => |options| try appendProjectOptions(allocator, &list, options),
+        .ffi => |options| {
+            try list.append("autobind");
+            if (options.backend) |backend| try list.appendSlice(&.{ "--backend", backendLabel(backend) });
+            if (options.offline) try list.append("--offline");
+            if (options.locked) try list.append("--locked");
+            if (options.timings) try list.append("--timings");
+            try list.append(options.input_path);
+        },
         .run => |options| try appendRunOptions(allocator, &list, options),
         .live => |options| try appendLiveOptions(allocator, &list, options),
         .export_cmd => |options| try appendExportOptions(allocator, &list, options),

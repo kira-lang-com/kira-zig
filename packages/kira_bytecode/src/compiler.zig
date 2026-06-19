@@ -26,6 +26,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, program: ir_pkg.Program, mod
         try construct_implementations.append(.{
             .type_name = implementation.type_name,
             .construct_constraint = .{ .construct_name = implementation.construct_constraint.construct_name },
+            .families = implementation.families,
             .fields = try fields.toOwnedSlice(),
             .has_content = implementation.has_content,
             .lifecycle_hooks = try lifecycle_hooks.toOwnedSlice(),
@@ -502,6 +503,7 @@ test "preserves construct metadata in bytecode" {
         .construct_implementations = &.{.{
             .type_name = "Button",
             .construct_constraint = .{ .construct_name = "Widget" },
+            .families = &.{ "Widget", "Renderable" },
             .fields = &.{.{ .name = "title", .ty = .{ .kind = .string } }},
             .has_content = true,
             .lifecycle_hooks = &.{.{ .name = "onAppear" }},
@@ -526,6 +528,8 @@ test "preserves construct metadata in bytecode" {
     try std.testing.expectEqualStrings("Widget", module.constructs[0].name);
     try std.testing.expectEqual(@as(usize, 1), module.construct_implementations.len);
     try std.testing.expectEqualStrings("Widget", module.construct_implementations[0].construct_constraint.construct_name);
+    try std.testing.expectEqual(@as(usize, 2), module.construct_implementations[0].families.len);
+    try std.testing.expectEqualStrings("Renderable", module.construct_implementations[0].families[1]);
     try std.testing.expectEqual(@as(usize, 1), module.construct_implementations[0].fields.len);
     try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, lowerTypeRef(program.functions[0].param_types[0]).kind);
 }

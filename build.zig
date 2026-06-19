@@ -9,11 +9,9 @@ const kira_primary_executable = "kirac";
 const kira_bootstrapper_name = "kira-bootstrapper";
 const kira_repository = "kira-lang-com/kira";
 
-const CorpusBackend = enum { vm, llvm, hybrid };
-
 const Package = struct {
     name: []const u8,
-    
+
     path: []const u8,
     imports: []const []const u8,
 };
@@ -63,9 +61,9 @@ const packages = [_]Package{
     .{ .name = "kira_linter", .path = "packages/kira_linter/src/root.zig", .imports = &.{ "kira_core", "kira_diagnostics", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_doc", .path = "packages/kira_doc/src/root.zig", .imports = &.{ "kira_core", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_app_generation", .path = "packages/kira_app_generation/src/root.zig", .imports = &.{"kira_core"} },
-    .{ .name = "kira_main", .path = "packages/kira_main/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_bytecode", "kira_vm_runtime", "kira_native_bridge", "kira_hybrid_runtime" } },
+    .{ .name = "kira_main", .path = "packages/kira_main/src/root.zig", .imports = &.{ "kira_core", "kira_runtime_abi", "kira_hybrid_definition", "kira_bytecode", "kira_vm_runtime", "kira_native_bridge", "kira_hybrid_runtime", "kira_build", "kira_build_definition", "kira_diagnostics", "kira_project" } },
     .{ .name = "kira_live", .path = "packages/kira_live/src/root.zig", .imports = &.{ "kira_build", "kira_build_definition", "kira_diagnostics", "kira_diagnostic_messages", "kira_hybrid_definition", "kira_hybrid_runtime", "kira_ir", "kira_llvm_backend", "kira_manifest", "kira_native_lib_definition", "kira_package_manager", "kira_project", "kira_wasm_runtime" } },
-    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "cli", "kira_core", "kira_source", "kira_diagnostics", "kira_diagnostic_messages", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_runtime_abi", "kira_app_generation", "kira_live", "kira_log", "kira_toolchain", "kira_project", "kira_package_manager", "kira_manifest", "kira_ksl_syntax_model", "kira_shader_model", "kira_instruments", "kira_wasm_runtime" } },
+    .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "cli", "kira_core", "kira_source", "kira_diagnostics", "kira_diagnostic_messages", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_runtime_abi", "kira_app_generation", "kira_live", "kira_log", "kira_toolchain", "kira_project", "kira_package_manager", "kira_manifest", "kira_ksl_syntax_model", "kira_shader_model", "kira_instruments", "kira_wasm_runtime", "kira_main" } },
 };
 
 fn applyImports(module: *std.Build.Module, modules: *std.StringArrayHashMapUnmanaged(*std.Build.Module), names: []const []const u8) void {
@@ -191,6 +189,7 @@ pub fn build(b: *std.Build) void {
         b.path("llvm-metadata.toml"),
         b.path("templates"),
         b.path("foundation"),
+        b.path("packages/kira_main/include"),
         bootstrapper_install_dir,
     );
 
@@ -349,9 +348,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_bootstrapper_tests = b.addRunArtifact(bootstrapper_tests);
 
-    // `zig build test` - Fast default: package/unit tests only (corpus disabled by default)
-
-    // `zig build test-backends` - Backend validation: VM + LLVM + Hybrid corpus execution
+    // `zig build test` - default validation: unit/policy tests plus VM run corpus.
+    // `zig build test-backends` - run corpus across VM + LLVM + Hybrid.
+    // `zig build test-full` - check, build, and run corpus across all backends.
     const run_corpus_module = b.createModule(.{
         .root_source_file = b.path("tests/corpus_main.zig"),
         .target = target,
@@ -361,6 +360,7 @@ pub fn build(b: *std.Build) void {
     run_corpus_module.addImport("kira_build_definition", modules.get("kira_build_definition").?);
     run_corpus_module.addImport("kira_diagnostics", modules.get("kira_diagnostics").?);
     run_corpus_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
+    run_corpus_module.addImport("kira_source", modules.get("kira_source").?);
     run_corpus_module.addImport("kira_vm_runtime", modules.get("kira_vm_runtime").?);
     run_corpus_module.link_libc = true;
 
@@ -382,33 +382,11 @@ pub fn build(b: *std.Build) void {
         .root_module = hybrid_runner_module,
     });
 
-    // Corpus runner with backend filtering via env var KIRA_CORPUS_BACKENDS (comma-separated).
-    // Default: all backends (vm, llvm, hybrid). Override with -Dcorpus-backends=vm,
-    // -Dcorpus-backends=llvm,hybrid, or -Dcorpus-backends=all.
-    const corpus_backends_raw = b.option([]const u8, "corpus-backends", "Corpus backends to run: all, vm, llvm, hybrid, or a comma-separated subset") orelse "all";
-    const corpus_backends = parseCorpusBackends(b, corpus_backends_raw);
-    const corpus_backend_env = if (isDefaultCorpusBackendSet(corpus_backends))
-        null
-    else
-        formatCorpusBackends(b, corpus_backends);
+    const run_vm_corpus = addCorpusRun(b, corpus_runner_exec, hybrid_runner_exec, "vm", "run", true);
+    test_step.dependOn(&run_vm_corpus.step);
 
-    // Build command artifact for build phase testing
-    const build_cmd = b.addRunArtifact(cli);
-    if (b.args) |args| build_cmd.addArgs(args);
-
-    const run_check_corpus = b.addRunArtifact(corpus_runner_exec);
-    run_check_corpus.addArtifactArg(hybrid_runner_exec);
-    // Filter by backends: only VM for fast mode, all three for backend validation
-    run_check_corpus.setEnvironmentVariable("KIRA_CORPUS_PHASES", "run check");
-    if (corpus_backend_env) |value| {
-        run_check_corpus.setEnvironmentVariable("KIRA_CORPUS_BACKENDS", value);
-        if (corpus_backends.len == 1) {
-            run_check_corpus.setEnvironmentVariable("KIRA_CORPUS_STABLE", "1");
-        }
-    }
-    run_check_corpus.stdio = .inherit;
-
-    const backend_test_step = b.step("test-backends", "Run corpus execution across all backends (vm+llvm+hybrid) with check+build phases");
+    const run_backend_corpus = addCorpusRun(b, corpus_runner_exec, hybrid_runner_exec, "all", "run", false);
+    const backend_test_step = b.step("test-backends", "Run corpus execution across all backends (vm+llvm+hybrid)");
     backend_test_step.dependOn(&cli.step);
     backend_test_step.dependOn(&bootstrapper.step);
     backend_test_step.dependOn(&run_bootstrapper_tests.step);
@@ -423,82 +401,44 @@ pub fn build(b: *std.Build) void {
         const run_tests = b.addRunArtifact(unit_tests);
         backend_test_step.dependOn(&run_tests.step);
     }
-    backend_test_step.dependOn(&run_check_corpus.step);
+    backend_test_step.dependOn(&run_backend_corpus.step);
 
-    // `zig build test-full` - Full validation: corpus execution, check corpus, build corpus, and all stages
-    const full_test_step = b.step("test-full", "Run complete validation: corpus execution across backends, plus all corpus phases (check+build)");
+    const run_full_corpus = addCorpusRun(b, corpus_runner_exec, hybrid_runner_exec, "all", "check build run", false);
+    const full_test_step = b.step("test-full", "Run complete validation: check, build, and run corpus across all backends");
     full_test_step.dependOn(&cli.step);
     full_test_step.dependOn(&bootstrapper.step);
     full_test_step.dependOn(&run_bootstrapper_tests.step);
-    // Fast test already depends on real_runtime_verify_cmd and platform_matrix_cmd via test_step.
-    full_test_step.dependOn(test_step);
-
-    const run_corpus_artifact = b.addRunArtifact(corpus_runner_exec);
-    run_corpus_artifact.addArtifactArg(hybrid_runner_exec);
-    run_corpus_artifact.setEnvironmentVariable("KIRA_CORPUS_PHASES", "run");
-    if (corpus_backend_env) |value| {
-        run_corpus_artifact.setEnvironmentVariable("KIRA_CORPUS_BACKENDS", value);
+    full_test_step.dependOn(&real_runtime_verify_cmd.step);
+    full_test_step.dependOn(&platform_matrix_cmd.step);
+    for (test_roots) |name| {
+        const root_module = if (isRuntimeHotPackage(name))
+            safetyTestModule(b, name, &modules, &safety_test_modules, target, optimize)
+        else
+            modules.get(name).?;
+        const unit_tests = b.addTest(.{ .root_module = root_module });
+        const run_tests = b.addRunArtifact(unit_tests);
+        full_test_step.dependOn(&run_tests.step);
     }
-    run_corpus_artifact.stdio = .inherit;
-    full_test_step.dependOn(&run_corpus_artifact.step);
+    full_test_step.dependOn(&run_full_corpus.step);
 
     b.default_step = test_step; // Default to simple (fast) mode
 }
 
-fn parseCorpusBackends(b: *std.Build, raw: []const u8) []const CorpusBackend {
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "all")) {
-        return b.allocator.dupe(CorpusBackend, &.{ .vm, .llvm, .hybrid }) catch @panic("failed to allocate corpus backend list");
-    }
-
-    var parsed: [3]CorpusBackend = undefined;
-    var count: usize = 0;
-    var parts = std.mem.splitScalar(u8, trimmed, ',');
-    while (parts.next()) |part_raw| {
-        const part = std.mem.trim(u8, part_raw, " \t\r\n");
-        if (part.len == 0) continue;
-        const backend = parseCorpusBackend(part) orelse
-            @panic("invalid -Dcorpus-backends value; expected all, vm, llvm, hybrid, or a comma-separated subset");
-        if (!corpusBackendAlreadyAdded(parsed[0..count], backend)) {
-            parsed[count] = backend;
-            count += 1;
-        }
-    }
-
-    if (count == 0) {
-        @panic("invalid -Dcorpus-backends value; expected at least one backend");
-    }
-
-    return b.allocator.dupe(CorpusBackend, parsed[0..count]) catch @panic("failed to allocate corpus backend list");
-}
-
-fn parseCorpusBackend(name: []const u8) ?CorpusBackend {
-    if (std.mem.eql(u8, name, "vm")) return .vm;
-    if (std.mem.eql(u8, name, "llvm")) return .llvm;
-    if (std.mem.eql(u8, name, "hybrid")) return .hybrid;
-    return null;
-}
-
-fn corpusBackendAlreadyAdded(backends: []const CorpusBackend, backend: CorpusBackend) bool {
-    for (backends) |existing| {
-        if (existing == backend) return true;
-    }
-    return false;
-}
-
-fn isDefaultCorpusBackendSet(backends: []const CorpusBackend) bool {
-    return corpusBackendAlreadyAdded(backends, .vm) and
-        corpusBackendAlreadyAdded(backends, .llvm) and
-        corpusBackendAlreadyAdded(backends, .hybrid);
-}
-
-fn formatCorpusBackends(b: *std.Build, backends: []const CorpusBackend) []const u8 {
-    return switch (backends.len) {
-        1 => std.fmt.allocPrint(b.allocator, "{s}", .{@tagName(backends[0])}) catch @panic("failed to format corpus backend list"),
-        2 => std.fmt.allocPrint(b.allocator, "{s},{s}", .{ @tagName(backends[0]), @tagName(backends[1]) }) catch @panic("failed to format corpus backend list"),
-        3 => std.fmt.allocPrint(b.allocator, "{s},{s},{s}", .{ @tagName(backends[0]), @tagName(backends[1]), @tagName(backends[2]) }) catch @panic("failed to format corpus backend list"),
-        else => @panic("invalid corpus backend list"),
-    };
+fn addCorpusRun(
+    b: *std.Build,
+    corpus_runner_exec: *std.Build.Step.Compile,
+    hybrid_runner_exec: *std.Build.Step.Compile,
+    backends: []const u8,
+    phases: []const u8,
+    stable: bool,
+) *std.Build.Step.Run {
+    const run = b.addRunArtifact(corpus_runner_exec);
+    run.addArtifactArg(hybrid_runner_exec);
+    run.setEnvironmentVariable("KIRA_CORPUS_BACKENDS", backends);
+    run.setEnvironmentVariable("KIRA_CORPUS_PHASES", phases);
+    if (stable) run.setEnvironmentVariable("KIRA_CORPUS_STABLE", "1");
+    run.stdio = .inherit;
+    return run;
 }
 
 fn preferredDefaultTarget(host: std.Target) std.Target.Query {

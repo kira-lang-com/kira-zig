@@ -1,0 +1,22 @@
+enum Direction {
+    Left
+    Right
+}
+
+function flip(value: borrow Direction) -> Direction {
+    match value {
+        Left -> { return Direction.Right }
+        Right -> { return Direction.Left }
+    }
+}
+
+Test EnumOkResult {
+    test {
+        return flip(Direction.Left)
+    }
+
+    expect {
+        let expected: Result<Direction, TestFailure> = Result.Ok(Direction.Right)
+        return expected
+    }
+}

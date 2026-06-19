@@ -6,8 +6,10 @@ construct Widget {
         @State;
     }
 
-    requires {
-        content;
+    content {
+        content {
+            count 1..
+        }
     }
 }
 

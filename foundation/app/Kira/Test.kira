@@ -1,0 +1,34 @@
+enum TestCaseKind {
+    Success
+    CompilerDiagnostic
+    RuntimeFailure
+}
+
+struct TestCase {
+    let name: String
+    let kind: TestCaseKind
+}
+
+struct KiraTestReport {
+    let passed: Int
+    let failed: Int
+    let total: Int
+}
+
+enum TestFailureKind {
+    WrongDiagnostic
+    UnexpectedSuccess
+    UnexpectedFailure
+    ValueMismatch
+}
+
+struct ExpectedDiagnostic {
+    let code: KiraError
+}
+
+function testPackage(path: borrow String) -> DeveloperCommandReport {
+    let developer = createDeveloperSession()
+    let report = developer.test(path, Backend.Vm)
+    developer.close()
+    return report
+}

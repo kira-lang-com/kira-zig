@@ -98,6 +98,9 @@ pub fn parseStatement(self: *Parser) anyerror!?syntax.ast.Statement {
     if (self.match(.kw_switch)) {
         return .{ .switch_stmt = try self.finishSwitchStatement(self.previous().span.start) };
     }
+    if (self.match(.kw_attempt)) {
+        return .{ .attempt_stmt = try self.finishAttemptStatement(self.previous().span.start) };
+    }
 
     const expr = try self.parseExpression();
     if (self.match(.equal)) {
@@ -217,6 +220,45 @@ pub fn finishMatchStatement(self: *Parser, start: usize) anyerror!syntax.ast.Mat
     };
 }
 
+pub fn finishAttemptStatement(self: *Parser, start: usize) anyerror!syntax.ast.AttemptStatement {
+    const body = try self.parseBlock();
+    // `handle` is a contextual keyword recognized only here, immediately after the attempt body.
+    if (!(self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "handle"))) {
+        try self.emitUnexpectedToken(
+            "expected 'handle' after attempt block",
+            self.peek(),
+            "an `attempt { ... }` block must be followed by `handle { ... }`",
+            "Add a `handle { ... }` block listing one case per reachable failure variant.",
+        );
+        return error.DiagnosticsEmitted;
+    }
+    _ = self.advance();
+    _ = try self.expect(.l_brace, "expected '{' to start handle block", "open the handle block here");
+    var handlers = std.array_list.Managed(syntax.ast.HandleCase).init(self.allocator);
+    while (!self.at(.r_brace) and !self.at(.eof)) {
+        const variant_token = try self.expect(.identifier, "expected failure variant name", "name the failure variant to handle here");
+        var binding_name: ?[]const u8 = null;
+        if (self.match(.l_paren)) {
+            const binding_token = try self.expect(.identifier, "expected binding name", "name the failure payload binding here");
+            binding_name = binding_token.lexeme;
+            _ = try self.expect(.r_paren, "expected ')' after binding name", "close the failure payload binding here");
+        }
+        const case_body = try self.parseBlock();
+        try handlers.append(.{
+            .variant_name = variant_token.lexeme,
+            .binding_name = binding_name,
+            .body = case_body,
+            .span = source_pkg.Span.init(variant_token.span.start, case_body.span.end),
+        });
+    }
+    const close = try self.expect(.r_brace, "expected '}' to close handle block", "handle block should end here");
+    return .{
+        .body = body.statements,
+        .handlers = try handlers.toOwnedSlice(),
+        .span = source_pkg.Span.init(start, close.span.end),
+    };
+}
+
 pub fn finishSwitchStatement(self: *Parser, start: usize) anyerror!syntax.ast.SwitchStatement {
     const subject = try self.parseExpressionWithoutTrailingBlockCall();
     _ = try self.expect(.l_brace, "expected '{' to start switch body", "open the switch body here");
@@ -321,5 +363,6 @@ fn statementSpan(statement: syntax.ast.Statement) source_pkg.Span {
         .continue_stmt => |node| node.span,
         .match_stmt => |node| node.span,
         .switch_stmt => |node| node.span,
+        .attempt_stmt => |node| node.span,
     };
 }

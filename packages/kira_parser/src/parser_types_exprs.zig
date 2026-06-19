@@ -329,6 +329,17 @@ pub fn parseFactor(self: *Parser) anyerror!*syntax.ast.Expr {
 }
 
 pub fn parseUnary(self: *Parser) anyerror!*syntax.ast.Expr {
+    if (self.match(.kw_try)) {
+        const try_token = self.previous();
+        const operand = try self.parseUnary();
+        const node = try self.allocator.create(syntax.ast.Expr);
+        node.* = .{ .try_expr = .{
+            .operand = operand,
+            .span = source_pkg.Span.init(try_token.span.start, exprSpan(operand.*).end),
+        } };
+        return node;
+    }
+
     if (looksLikeOwnershipUnary(self)) {
         const token = self.advance();
         const operand = try self.parseUnary();
@@ -391,7 +402,7 @@ pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
             while (!self.at(.r_paren) and !self.at(.eof)) {
                 const start_token = self.peek();
                 var label: ?[]const u8 = null;
-                if (self.at(.identifier) and self.peekNext().kind == .colon) {
+                if (self.at(.identifier) and (self.peekNext().kind == .colon or self.peekNext().kind == .equal)) {
                     label = self.advance().lexeme;
                     _ = self.advance();
                 }

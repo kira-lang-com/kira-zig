@@ -15,10 +15,6 @@ construct Widget {
         @Env;
     }
 
-    requires {
-        content;
-    }
-
     lifecycle {
         onAppear() {}
         onDisappear() {}

@@ -10,6 +10,7 @@ pub fn addManagedToolchainInstallStep(
     metadata_file: std.Build.LazyPath,
     templates_dir: std.Build.LazyPath,
     foundation_dir: std.Build.LazyPath,
+    kira_main_include_dir: std.Build.LazyPath,
     bootstrapper_install_dir: []const u8,
 ) *std.Build.Step.Run {
     const step = switch (host.os.tag) {
@@ -18,7 +19,7 @@ pub fn addManagedToolchainInstallStep(
             "-NoProfile",
             "-Command",
             b.fmt(
-                "& {{ param([string]$cliSource, [string]$bootstrapperSource, [string]$version, [string]$channel, [string]$metadataSource, [string]$templatesSource, [string]$foundationSource, [string]$bootstrapperBinDir); " ++
+                "& {{ param([string]$cliSource, [string]$bootstrapperSource, [string]$version, [string]$channel, [string]$metadataSource, [string]$templatesSource, [string]$foundationSource, [string]$kiraMainIncludeSource, [string]$bootstrapperBinDir); " ++
                     "$ErrorActionPreference = 'Stop'; " ++
                     "$kiraHome = Join-Path $HOME '.kira'; " ++
                     "$toolchainRoot = Join-Path $kiraHome ('toolchains\\' + $channel + '\\' + $version); " ++
@@ -46,6 +47,9 @@ pub fn addManagedToolchainInstallStep(
                     "$foundationDest = Join-Path $toolchainRoot 'foundation'; " ++
                     "if (Test-Path $foundationDest) {{ Remove-Item $foundationDest -Recurse -Force; }}; " ++
                     "Copy-Item $foundationSource $foundationDest -Recurse -Force; " ++
+                    "$kiraMainIncludeDest = Join-Path $toolchainRoot 'packages\\kira_main\\include'; " ++
+                    "New-Item -ItemType Directory -Force -Path $kiraMainIncludeDest | Out-Null; " ++
+                    "Copy-Item (Join-Path $kiraMainIncludeSource '*') $kiraMainIncludeDest -Recurse -Force; " ++
                     "$currentDir = Join-Path $kiraHome 'toolchains'; " ++
                     "New-Item -ItemType Directory -Force -Path $currentDir | Out-Null; " ++
                     "$currentPath = Join-Path $currentDir 'current.toml'; " ++
@@ -75,7 +79,7 @@ pub fn addManagedToolchainInstallStep(
             "-c",
             b.fmt(
                 "set -eu; " ++
-                    "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; foundation_source=\"$6\"; bootstrapper_bin_dir=\"$7\"; " ++
+                    "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; foundation_source=\"$6\"; kira_main_include_source=\"$7\"; bootstrapper_bin_dir=\"$8\"; " ++
                     "kira_home=\"$HOME/.kira\"; toolchain_root=\"$kira_home/toolchains/$channel/$version\"; bin_dir=\"$toolchain_root/bin\"; " ++
                     "rm -rf \"$toolchain_root\"; " ++
                     "mkdir -p \"$bin_dir\"; " ++
@@ -86,6 +90,7 @@ pub fn addManagedToolchainInstallStep(
                     "cp \"$metadata_source\" \"$toolchain_root/llvm-metadata.toml\"; " ++
                     "rm -rf \"$toolchain_root/templates\"; cp -R \"$templates_source\" \"$toolchain_root/templates\"; " ++
                     "rm -rf \"$toolchain_root/foundation\"; cp -R \"$foundation_source\" \"$toolchain_root/foundation\"; " ++
+                    "mkdir -p \"$toolchain_root/packages/kira_main/include\"; cp -R \"$kira_main_include_source\"/. \"$toolchain_root/packages/kira_main/include\"; " ++
                     "mkdir -p \"$kira_home/toolchains\"; " ++
                     "cat > \"$kira_home/toolchains/current.toml\" <<EOF\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
                     "path_added=0; " ++
@@ -111,6 +116,7 @@ pub fn addManagedToolchainInstallStep(
     step.addFileArg(metadata_file);
     step.addFileArg(templates_dir);
     step.addFileArg(foundation_dir);
+    step.addFileArg(kira_main_include_dir);
     step.addArg(bootstrapper_install_dir);
     return step;
 }

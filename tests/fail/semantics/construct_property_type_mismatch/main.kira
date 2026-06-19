@@ -1,0 +1,19 @@
+// The value supplied for a property must match the property's declared type. `path` is a
+// `String`, so assigning an integer is a type mismatch.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+        path: 42
+    }
+}
+
+@Main
+function main() {
+    return
+}

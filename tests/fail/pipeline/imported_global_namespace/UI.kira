@@ -7,10 +7,6 @@ construct Widget {
         @State;
     }
 
-    requires {
-        content;
-    }
-
     lifecycle {
         onAppear() {}
     }

@@ -40,8 +40,25 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
         }
         return .{ .enum_decl = try self.parseEnumDecl() };
     }
+    if (self.at(.kw_comptime)) {
+        const comptime_token = self.advance();
+        if (self.at(.kw_function)) {
+            return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, false, true) };
+        }
+        if (self.at(.kw_construct)) {
+            return .{ .construct_decl = try self.parseConstructDeclWithAnnotations(annotations, true) };
+        }
+        try self.emitUnexpectedToken(
+            "expected comptime declaration",
+            self.peek(),
+            "`comptime` applies to function or construct declarations",
+            "Write `comptime function ...` or `comptime construct ...`.",
+        );
+        _ = comptime_token;
+        return error.DiagnosticsEmitted;
+    }
     if (self.at(.kw_function)) {
-        return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, false) };
+        return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, false, false) };
     }
     if (self.at(.kw_class)) {
         return .{ .type_decl = try self.parseTypeDeclWithAnnotations(annotations, .class) };
@@ -68,7 +85,7 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
         return error.DiagnosticsEmitted;
     }
     if (self.at(.kw_construct)) {
-        return .{ .construct_decl = try self.parseConstructDeclWithAnnotations(annotations) };
+        return .{ .construct_decl = try self.parseConstructDeclWithAnnotations(annotations, false) };
     }
     if (self.at(.kw_extend)) {
         return .{ .extend_decl = try parseExtendDecl(self, annotations) };
@@ -290,7 +307,7 @@ pub fn parseGeneratedMember(self: *Parser) !syntax.ast.GeneratedMember {
     const start_token = self.peek();
     const overridable = self.match(.kw_overridable);
     if (self.at(.kw_function)) {
-        const function_decl = try self.parseFunctionDeclWithAnnotations(&.{}, false);
+        const function_decl = try self.parseFunctionDeclWithAnnotations(&.{}, false, false);
         return .{
             .overridable = overridable,
             .member = .{ .function_decl = function_decl },
@@ -409,7 +426,7 @@ pub fn parseAnnotationBlock(self: *Parser) !syntax.ast.AnnotationBlock {
     };
 }
 
-pub fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation, is_override: bool) !syntax.ast.FunctionDecl {
+pub fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation, is_override: bool, is_comptime: bool) !syntax.ast.FunctionDecl {
     const function_token = try self.expect(.kw_function, "expected 'function'", "function declarations start with 'function'");
     const name_token = try self.expect(.identifier, "expected function name", "name the function here");
     const params = try self.parseParamList();
@@ -426,6 +443,7 @@ pub fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const synt
     return .{
         .annotations = annotations,
         .is_override = is_override,
+        .is_comptime = is_comptime,
         .name = name_token.lexeme,
         .params = params,
         .return_type = return_type,
@@ -434,13 +452,15 @@ pub fn parseFunctionDeclWithAnnotations(self: *Parser, annotations: []const synt
     };
 }
 
-pub fn parseFunctionSignature(self: *Parser) !syntax.ast.FunctionSignature {
+pub fn parseFunctionSignature(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.FunctionSignature {
     const function_token = try self.expect(.kw_function, "expected 'function'", "function signatures start with 'function'");
     const name_token = try self.expect(.identifier, "expected function name", "name the function here");
-    const params = try self.parseParamList();
+    const has_params = self.at(.l_paren);
+    const params = if (has_params) try self.parseParamList() else try self.allocator.alloc(syntax.ast.ParamDecl, 0);
     const return_type = try self.parseOptionalReturnType();
-    const end = if (return_type) |ty| typeSpan(ty.*).end else paramsEnd(params, name_token.span.end);
+    const end = if (return_type) |ty| typeSpan(ty.*).end else if (has_params) paramsEnd(params, name_token.span.end) else name_token.span.end;
     return .{
+        .annotations = annotations,
         .name = name_token.lexeme,
         .params = params,
         .return_type = return_type,
@@ -538,7 +558,7 @@ pub fn parseTypeDeclWithAnnotations(self: *Parser, annotations: []const syntax.a
     };
 }
 
-pub fn parseConstructDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation) !syntax.ast.ConstructDecl {
+pub fn parseConstructDeclWithAnnotations(self: *Parser, annotations: []const syntax.ast.Annotation, is_comptime: bool) !syntax.ast.ConstructDecl {
     const construct_token = try self.expect(.kw_construct, "expected 'construct'", "construct declarations start with 'construct'");
     const name_token = try self.expect(.identifier, "expected construct name", "name the construct here");
     var parents = std.array_list.Managed(syntax.ast.QualifiedName).init(self.allocator);
@@ -570,6 +590,7 @@ pub fn parseConstructDeclWithAnnotations(self: *Parser, annotations: []const syn
     const start = if (annotations.len > 0) annotations[0].span.start else construct_token.span.start;
     return .{
         .annotations = annotations,
+        .is_comptime = is_comptime,
         .name = name_token.lexeme,
         .parents = try parents.toOwnedSlice(),
         .sections = try sections.toOwnedSlice(),
@@ -685,11 +706,21 @@ pub fn parseConstructSection(self: *Parser) !syntax.ast.ConstructSection {
             try entries.append(.{ .field_decl = try self.parseFieldDecl(&.{}, false) });
             continue;
         }
+        const entry_annotations = try self.parseAnnotations();
         if (self.at(.kw_function)) {
-            const signature = try self.parseFunctionSignature();
+            const signature = try self.parseFunctionSignature(entry_annotations);
             _ = self.match(.semicolon);
             try entries.append(.{ .function_signature = signature });
             continue;
+        }
+        if (entry_annotations.len != 0) {
+            try self.emitUnexpectedToken(
+                "expected annotated construct section entry",
+                self.peek(),
+                "annotations in construct sections must apply to a function signature",
+                "Write `@Required function name(...) -> Type` or remove the annotation.",
+            );
+            return error.DiagnosticsEmitted;
         }
         if (self.isLifecycleHookStart()) {
             try entries.append(.{ .lifecycle_hook = try self.parseLifecycleHook() });
@@ -1002,7 +1033,7 @@ pub fn parseBodyMember(self: *Parser, annotations: []const syntax.ast.Annotation
         return error.DiagnosticsEmitted;
     }
     if (self.at(.kw_let) or self.at(.kw_var)) return .{ .field_decl = try self.parseFieldDecl(annotations, is_override) };
-    if (self.at(.kw_function)) return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, is_override) };
+    if (self.at(.kw_function)) return .{ .function_decl = try self.parseFunctionDeclWithAnnotations(annotations, is_override, false) };
     if (is_override) {
         try self.emitUnexpectedToken(
             "expected override member declaration",

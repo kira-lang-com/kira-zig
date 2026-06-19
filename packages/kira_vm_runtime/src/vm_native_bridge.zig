@@ -485,7 +485,10 @@ pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_na
 pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
     const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
     if (src[0] != .integer) {
-        self.rememberError("enum native lowering requires an integer tag slot");
+        self.rememberFmt(
+            "enum native lowering requires an integer tag slot: type={s} slot0={s} slot1={s} ptr=0x{x}",
+            .{ type_name, @tagName(src[0]), @tagName(src[1]), runtime_ptr },
+        );
         return error.RuntimeFailure;
     }
     const discriminant: u32 = @intCast(src[0].integer);

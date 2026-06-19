@@ -1,0 +1,18 @@
+enum AutobindApi {
+    Generic
+    Vulkan
+    DirectX12
+}
+
+struct AutobindInput {
+    let api: AutobindApi
+    let headerPath: String
+    let outputPath: String
+}
+
+struct AutobindReport {
+    let success: Bool
+    let artifacts: [Artifact]
+    let diagnostics: [KiraDiagnostic]
+    let cacheKey: String
+}

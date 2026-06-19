@@ -1,0 +1,18 @@
+enum ArtifactKind {
+    Bytecode
+    NativeObject
+    NativeLibrary
+    Executable
+    HybridManifest
+    ShaderSource
+    BindingSource
+}
+
+struct Artifact {
+    let kind: ArtifactKind
+    let path: String
+}
+
+struct ArtifactSet {
+    let artifacts: [Artifact]
+}

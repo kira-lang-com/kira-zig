@@ -1,0 +1,46 @@
+construct Node {
+    @Required let label: String
+}
+
+Node TextNode {
+    let text: String = ""
+
+    let label: String {
+        text
+    }
+}
+
+Node SpacerNode {
+    let label: String {
+        "spacer"
+    }
+}
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+Widget Text {
+    let text: String = ""
+
+    let node: Node {
+        TextNode(text: text)
+    }
+}
+
+Widget Spacer {
+    let node: Node {
+        SpacerNode()
+    }
+}
+
+@Main
+function main() {
+    let children: [any Widget] = [Text(text: "one"), Spacer(), Text(text: "two")]
+    for child in children {
+        let node: any Node = child.node
+        print(node.label)
+    }
+    return
+}

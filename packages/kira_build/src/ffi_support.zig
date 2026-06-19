@@ -8,6 +8,7 @@ const program_graph = @import("kira_program_graph");
 const llvm_backend = @import("kira_llvm_backend");
 const resolver = @import("native_lib_resolver.zig");
 const autobind = @import("ffi_autobind.zig");
+const autobind_cache = @import("ffi_autobind_cache.zig");
 
 fn nowTimestamp() std.Io.Clock.Timestamp {
     return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
@@ -27,6 +28,32 @@ fn timingsEnvEnabled() bool {
 
 fn timingPrint(comptime fmt: []const u8, args: anytype) void {
     if (timingsEnvEnabled()) std.debug.print(fmt, args);
+}
+
+pub const NativePreparationMode = enum {
+    full,
+    artifacts_only,
+    resolve_only,
+};
+
+pub const NativeWarningKind = enum {
+    artifact_out_of_date,
+    bindings_out_of_date,
+};
+
+pub const NativeWarning = struct {
+    kind: NativeWarningKind,
+    library_name: []const u8,
+    manifest_path: ?[]const u8 = null,
+    artifact_path: ?[]const u8 = null,
+    bindings_path: ?[]const u8 = null,
+};
+
+var native_preparation_mode: NativePreparationMode = .full;
+
+pub fn setNativePreparationMode(mode: NativePreparationMode) void {
+    native_preparation_mode = mode;
+    autobind.setBindingMode(if (mode == .full) .ensure else .skip);
 }
 
 pub fn prepareNativeLibraries(
@@ -50,12 +77,7 @@ pub fn prepareNativeLibrariesForTarget(
     var libraries = std.array_list.Managed(native.ResolvedNativeLibrary).init(allocator);
     for (manifest_paths) |manifest_path| {
         var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
-        const artifact_start = nowTimestamp();
-        try ensureNativeArtifact(allocator, &library);
-        timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
-        const autobind_start = nowTimestamp();
-        try autobind.ensureGeneratedBindings(allocator, library);
-        timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
+        try applyPreparationPolicy(allocator, &library);
         try libraries.append(library);
     }
     return libraries.toOwnedSlice();
@@ -96,6 +118,47 @@ pub fn prepareDeclaredNativeLibrariesForTarget(
     }
 
     return libraries.toOwnedSlice();
+}
+
+pub fn collectDeclaredNativeWarningsForSource(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    explicit_selector: ?native.TargetSelector,
+) ![]const NativeWarning {
+    const libraries = try resolveDeclaredNativeLibrariesForSource(allocator, source_path, explicit_selector);
+    return collectWarningsForLibraries(allocator, libraries);
+}
+
+pub fn collectDeclaredNativeWarningsForSourceRoot(
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    explicit_selector: ?native.TargetSelector,
+) ![]const NativeWarning {
+    const module_files = try program_graph.collectPackageModuleFiles(allocator, source_root);
+    if (module_files.len == 0) return &.{};
+    return collectDeclaredNativeWarningsForSource(allocator, module_files[0], explicit_selector);
+}
+
+pub fn ensureDeclaredNativeBindingsForSource(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    explicit_selector: ?native.TargetSelector,
+) ![]const native.ResolvedNativeLibrary {
+    const libraries = try resolveDeclaredNativeLibrariesForSource(allocator, source_path, explicit_selector);
+    for (libraries) |library| {
+        try autobind.ensureGeneratedBindings(allocator, library);
+    }
+    return libraries;
+}
+
+pub fn ensureDeclaredNativeBindingsForSourceRoot(
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    explicit_selector: ?native.TargetSelector,
+) ![]const native.ResolvedNativeLibrary {
+    const module_files = try program_graph.collectPackageModuleFiles(allocator, source_root);
+    if (module_files.len == 0) return &.{};
+    return ensureDeclaredNativeBindingsForSource(allocator, module_files[0], explicit_selector);
 }
 
 pub fn prepareImportedNativeLibrariesForTarget(
@@ -166,14 +229,127 @@ fn appendNativeLibrariesFromPackageRoot(
         var library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
         const identity = try artifactIdentity(allocator, library);
         if (seen.contains(identity)) continue;
-        const artifact_start = nowTimestamp();
-        try ensureNativeArtifact(allocator, &library);
-        timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
-        const autobind_start = nowTimestamp();
-        try autobind.ensureGeneratedBindings(allocator, library);
-        timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
+        try applyPreparationPolicy(allocator, &library);
         try seen.put(identity, {});
         try libraries.append(library);
+    }
+}
+
+fn resolveDeclaredNativeLibrariesForSource(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    explicit_selector: ?native.TargetSelector,
+) ![]const native.ResolvedNativeLibrary {
+    const selector = try resolvedTargetSelector(allocator, explicit_selector);
+    var libraries = std.array_list.Managed(native.ResolvedNativeLibrary).init(allocator);
+    var seen = std.StringHashMap(void).init(allocator);
+    var visited_packages = std.StringHashMap(void).init(allocator);
+
+    const manifest_paths = try loadProjectNativeManifestPaths(allocator, source_path);
+    try appendResolvedNativeLibrariesFromManifestPaths(allocator, selector, manifest_paths, &seen, &libraries);
+
+    if (package_manager.loadModuleMapForSource(allocator, source_path)) |module_map| {
+        for (module_map.owners) |owner| {
+            const package_root = std.fs.path.dirname(owner.source_root) orelse continue;
+            try appendResolvedNativeLibrariesFromPackageRootRecursive(allocator, selector, package_root, module_map, &visited_packages, &seen, &libraries);
+        }
+    } else |_| {}
+
+    return libraries.toOwnedSlice();
+}
+
+fn appendResolvedNativeLibrariesFromManifestPaths(
+    allocator: std.mem.Allocator,
+    selector: native.TargetSelector,
+    manifest_paths: []const []const u8,
+    seen: *std.StringHashMap(void),
+    libraries: *std.array_list.Managed(native.ResolvedNativeLibrary),
+) !void {
+    for (manifest_paths) |manifest_path| {
+        const library = try resolver.resolveNativeManifestFile(allocator, manifest_path, selector);
+        const identity = try artifactIdentity(allocator, library);
+        if (seen.contains(identity)) continue;
+        try seen.put(identity, {});
+        try libraries.append(library);
+    }
+}
+
+fn appendResolvedNativeLibrariesFromPackageRootRecursive(
+    allocator: std.mem.Allocator,
+    selector: native.TargetSelector,
+    package_root: []const u8,
+    module_map: package_manager.ModuleMap,
+    visited_packages: *std.StringHashMap(void),
+    seen: *std.StringHashMap(void),
+    libraries: *std.array_list.Managed(native.ResolvedNativeLibrary),
+) !void {
+    const package_key = try packageIdentity(allocator, package_root);
+    if (visited_packages.contains(package_key)) return;
+    try visited_packages.put(package_key, {});
+
+    const manifest_paths = try loadNativeManifestPathsFromProjectRoot(allocator, package_root);
+    try appendResolvedNativeLibrariesFromManifestPaths(allocator, selector, manifest_paths, seen, libraries);
+
+    const project_manifest = try loadProjectManifestFromRoot(allocator, package_root);
+    for (project_manifest.dependencies) |dependency| {
+        const owner = findModuleOwner(module_map, dependency.name) orelse continue;
+        const dependency_root = std.fs.path.dirname(owner.source_root) orelse continue;
+        try appendResolvedNativeLibrariesFromPackageRootRecursive(allocator, selector, dependency_root, module_map, visited_packages, seen, libraries);
+    }
+}
+
+fn collectWarningsForLibraries(
+    allocator: std.mem.Allocator,
+    libraries: []const native.ResolvedNativeLibrary,
+) ![]const NativeWarning {
+    var warnings = std.array_list.Managed(NativeWarning).init(allocator);
+    for (libraries) |library| {
+        if (library.build.sources.len != 0) {
+            const fingerprint = try nativeArtifactFingerprint(allocator, library);
+            defer allocator.free(fingerprint);
+            const fingerprint_path = try nativeArtifactFingerprintPath(allocator, library);
+            defer allocator.free(fingerprint_path);
+            if (!try nativeArtifactIsFresh(allocator, library.artifact_path, fingerprint_path, fingerprint)) {
+                try warnings.append(.{
+                    .kind = .artifact_out_of_date,
+                    .library_name = library.name,
+                    .manifest_path = library.manifest_path,
+                    .artifact_path = library.artifact_path,
+                });
+            }
+        }
+        if (library.autobinding) |autobinding| {
+            const cache_key = try autobind_cache.cacheKey(allocator, library, autobinding);
+            defer allocator.free(cache_key);
+            if (!try autobind_cache.bindingsAreCurrent(allocator, autobinding.output_path, cache_key)) {
+                try warnings.append(.{
+                    .kind = .bindings_out_of_date,
+                    .library_name = library.name,
+                    .manifest_path = library.manifest_path,
+                    .bindings_path = autobinding.output_path,
+                });
+            }
+        }
+    }
+    return warnings.toOwnedSlice();
+}
+
+fn applyPreparationPolicy(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
+    switch (native_preparation_mode) {
+        .resolve_only => {},
+        .artifacts_only => {
+            const artifact_start = nowTimestamp();
+            try ensureNativeArtifact(allocator, library);
+            timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
+        },
+        .full => {
+            const artifact_start = nowTimestamp();
+            try ensureNativeArtifact(allocator, library);
+            timingPrint("[kira:timing] native.ensureArtifact library={s} path={s} ns={d}\n", .{ library.name, library.artifact_path, elapsedNs(artifact_start) });
+            const autobind_start = nowTimestamp();
+            try autobind.ensureGeneratedBindings(allocator, library.*);
+            timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
+        },
     }
 }
 
@@ -218,7 +394,7 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
 
     const fingerprint = try nativeArtifactFingerprint(allocator, library.*);
     defer allocator.free(fingerprint);
-    const fingerprint_path = try std.fmt.allocPrint(allocator, "{s}.fingerprint", .{library.artifact_path});
+    const fingerprint_path = try nativeArtifactFingerprintPath(allocator, library.*);
     defer allocator.free(fingerprint_path);
 
     if (try nativeArtifactIsFresh(allocator, library.artifact_path, fingerprint_path, fingerprint)) {
@@ -229,6 +405,16 @@ fn ensureNativeArtifact(allocator: std.mem.Allocator, library: *native.ResolvedN
         .dynamic => try compileSharedLibraryViaClang(allocator, library),
     }
     try writeFile(fingerprint_path, fingerprint);
+}
+
+fn nativeArtifactFingerprintPath(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary) ![]const u8 {
+    const metadata_root = try nativeMetadataRoot(allocator, library);
+    defer allocator.free(metadata_root);
+    const digest = try nativeMetadataDigest(allocator, library);
+    defer allocator.free(digest);
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.fingerprint", .{digest});
+    defer allocator.free(file_name);
+    return std.fs.path.join(allocator, &.{ metadata_root, file_name });
 }
 
 fn nativeArtifactIsFresh(allocator: std.mem.Allocator, artifact_path: []const u8, fingerprint_path: []const u8, expected_fingerprint: []const u8) !bool {
@@ -263,6 +449,33 @@ fn nativeArtifactFingerprint(allocator: std.mem.Allocator, library: native.Resol
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
     return hexDigest(allocator, &digest);
+}
+
+fn nativeMetadataRoot(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary) ![]const u8 {
+    const base_path = if (library.manifest_path) |manifest_path|
+        std.fs.path.dirname(manifest_path) orelse manifest_path
+    else
+        std.fs.path.dirname(library.artifact_path) orelse ".";
+    const project_root = try discoverProjectRootFromPath(allocator, base_path);
+    defer allocator.free(project_root);
+    return std.fs.path.join(allocator, &.{ project_root, ".kira-build", "native" });
+}
+
+fn nativeMetadataDigest(allocator: std.mem.Allocator, library: native.ResolvedNativeLibrary) ![]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    if (library.manifest_path) |manifest_path| {
+        const canonical_manifest = try absolutize(allocator, manifest_path);
+        defer allocator.free(canonical_manifest);
+        hasher.update(canonical_manifest);
+    }
+    hasher.update(library.name);
+    hasher.update("\n");
+    hasher.update(library.artifact_path);
+    hasher.update("\n");
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const hex = try hexDigest(allocator, &digest);
+    return hex[0 .. hex.len - 1];
 }
 
 fn hashFiles(allocator: std.mem.Allocator, hasher: anytype, paths: []const []const u8) !void {
@@ -645,6 +858,25 @@ fn discoverProjectManifestPath(allocator: std.mem.Allocator, source_path: []cons
     return null;
 }
 
+fn discoverProjectRootFromPath(allocator: std.mem.Allocator, start_path: []const u8) ![]const u8 {
+    var cursor = try absolutize(allocator, start_path);
+    errdefer allocator.free(cursor);
+
+    while (true) {
+        if (try findManifestInDirectory(allocator, cursor)) |_| {
+            return cursor;
+        }
+
+        const parent = std.fs.path.dirname(cursor) orelse break;
+        if (std.mem.eql(u8, parent, cursor)) break;
+        const copy = try allocator.dupe(u8, parent);
+        allocator.free(cursor);
+        cursor = copy;
+    }
+
+    return cursor;
+}
+
 fn findManifestInDirectory(allocator: std.mem.Allocator, directory: []const u8) !?[]const u8 {
     const names = [_][]const u8{ "kira.toml", "project.toml" };
     for (names) |name| {
@@ -727,15 +959,12 @@ test "native artifact freshness tracks C and header content changes" {
     const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.c", allocator);
     const header_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.h", allocator);
     const manifest_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Native/fresh.toml", allocator);
-    const artifact_path = try std.fs.path.join(allocator, &.{ root, "libfresh.a" });
-    const fingerprint_path = try std.fmt.allocPrint(allocator, "{s}.fingerprint", .{artifact_path});
-
     var library: native.ResolvedNativeLibrary = .{
         .manifest_path = manifest_path,
         .name = "fresh",
         .link_mode = .static,
         .abi = .c,
-        .artifact_path = artifact_path,
+        .artifact_path = try std.fs.path.join(allocator, &.{ root, "libfresh.a" }),
         .target = try hostTargetSelector(allocator),
         .headers = .{
             .entrypoint = header_path,
@@ -747,6 +976,8 @@ test "native artifact freshness tracks C and header content changes" {
         },
         .link = .{},
     };
+    const artifact_path = library.artifact_path;
+    const fingerprint_path = try nativeArtifactFingerprintPath(allocator, library);
 
     try ensureNativeArtifact(allocator, &library);
     const fingerprint1 = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, allocator, .limited(1024));

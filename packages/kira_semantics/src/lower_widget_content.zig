@@ -64,6 +64,7 @@ pub fn validateWidgetContent(ctx: *shared.Context, program: syntax.ast.Program) 
             switch (member) {
                 .field_decl => |field| if (field.body) |body| try walkBlock(ctx, body, &forms),
                 .function_decl => |function| if (function.body) |body| try walkBlock(ctx, body, &forms),
+                .named_rule => |rule| if (rule.block) |body| try walkBlock(ctx, body, &forms),
                 else => {},
             }
         }

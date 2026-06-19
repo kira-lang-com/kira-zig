@@ -23,6 +23,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         return executeWebRunner(allocator, parsed, stdout, stderr);
     }
     build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
+    build.setNativePreparationMode(.artifacts_only);
+    defer build.setNativePreparationMode(.full);
     const previous_trace = runtime_abi.executionTraceEnabled();
     runtime_abi.setExecutionTraceEnabled(parsed.trace_execution);
     defer runtime_abi.setExecutionTraceEnabled(previous_trace);
@@ -54,6 +56,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             return err;
         };
     }
+    try support.warnNativePreparationState(allocator, stderr, "run", input, backend);
 
     try support.logFrontendStarted(stderr, "run", source_path);
     var system = build.BuildSystem.init(allocator);

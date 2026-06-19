@@ -1,0 +1,8 @@
+import Foundation
+import Cases as Cases
+
+@Main
+function main() {
+    print("struct harness")
+    return
+}

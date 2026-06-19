@@ -11,7 +11,9 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\
         \\Commands:
         \\  check        Analyze a project, example, or source file.
+        \\  test         Execute comptime Test declarations.
         \\  build        Build a project, example, library, or source file.
+        \\  ffi          Run explicit FFI maintenance tasks.
         \\  run          Build and execute a runnable target.
         \\  live         Start a live server/client session for an app/example target.
         \\  shader       Check, inspect, or build KSL shaders.
@@ -45,9 +47,19 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
             \\Analyze a target. Libraries are valid check targets.
             \\
         ),
+        .test_cmd => try writer.writeAll(
+            \\usage: kira test [--backend vm] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
+            \\Build a target in test mode and execute its comptime Test declarations.
+            \\
+        ),
         .build => try writer.writeAll(
             \\usage: kira build [--backend vm|llvm|hybrid|wasm32-emscripten] [--target wasm32-emscripten] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
             \\Build a target. Libraries are validated as package roots; apps/examples emit backend artifacts.
+            \\
+        ),
+        .ffi => try writer.writeAll(
+            \\usage: kira ffi autobind [--backend vm|llvm|hybrid|wasm32-emscripten] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
+            \\Regenerate native FFI bindings explicitly instead of doing heavy autobinding during normal check/build/run flows.
             \\
         ),
         .run => try writer.writeAll(

@@ -15,6 +15,7 @@ pub const Program = struct {
     constructs: []Construct,
     types: []TypeDecl,
     forms: []ConstructForm,
+    tests: []TestCase = &.{},
     functions: []Function,
     entry_index: usize,
 };
@@ -23,6 +24,7 @@ pub const Import = struct {
     module_name: []const u8,
     alias: ?[]const u8,
     package_name: ?[]const u8 = null,
+    source_path: []const u8 = "",
     span: source_pkg.Span,
 };
 
@@ -116,6 +118,7 @@ pub const Construct = struct {
     content_sealed: bool = false,
     content_passthrough: bool = false,
     required_functions: []RequiredFunction = &.{},
+    section_functions: []SectionFunction = &.{},
     // Fields a construct requires its concrete declarations to provide, declared as direct
     // `@Required let name: T` members (the SwiftUI-style surface).
     required_fields: []RequiredField = &.{},
@@ -132,6 +135,14 @@ pub const Construct = struct {
     // content channels (`content { name { count 1.. } }`), not here.
     content_element_type: ?[]const u8 = null,
     allowed_lifecycle_hooks: [][]const u8,
+    span: source_pkg.Span,
+};
+
+pub const SectionFunction = struct {
+    name: []const u8,
+    required: bool,
+    param_types: []const []const u8,
+    return_type: []const u8,
     span: source_pkg.Span,
 };
 
@@ -229,9 +240,18 @@ pub const MethodMember = struct {
 pub const ConstructForm = struct {
     construct: ConstructConstraint,
     name: []const u8,
+    families: []const []const u8 = &.{},
     fields: []const Field,
     content: ?BuilderBlock,
     lifecycle_hooks: []LifecycleHook,
+    span: source_pkg.Span,
+};
+
+pub const TestCase = struct {
+    name: []const u8,
+    test_function: []const u8,
+    expect_function: []const u8,
+    result_type: ResolvedType,
     span: source_pkg.Span,
 };
 
@@ -423,6 +443,8 @@ pub const BuilderIfItem = struct {
 
 pub const BuilderForItem = struct {
     binding_name: []const u8,
+    binding_local_id: u32,
+    binding_ty: ResolvedType,
     iterator: *Expr,
     body: BuilderBlock,
     span: source_pkg.Span,
@@ -468,6 +490,7 @@ pub const Expr = union(enum) {
     virtual_call: VirtualCallExpr,
     call_value: CallValueExpr,
     array: ArrayExpr,
+    builder_array: BuilderArrayExpr,
     index: IndexExpr,
 };
 
@@ -690,6 +713,12 @@ pub const ArrayExpr = struct {
     span: source_pkg.Span,
 };
 
+pub const BuilderArrayExpr = struct {
+    builder: BuilderBlock,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
 pub const IndexExpr = struct {
     object: *Expr,
     index: *Expr,
@@ -751,6 +780,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .virtual_call => |node| node.ty,
         .call_value => |node| node.ty,
         .array => |node| node.ty,
+        .builder_array => |node| node.ty,
         .index => |node| node.ty,
     };
 }

@@ -23,6 +23,7 @@ pub const TypeHelpers = struct {
 pub const Destructors = struct {
     map: std.StringHashMapUnmanaged(TypeHelpers) = .{},
     destroy_raw_ptr: capi.RuntimeDecls.Decl,
+    destroy_struct_ptr: capi.RuntimeDecls.Decl,
     // Tag-safe owned-closure drop (kira_destroy_closure(i64)): frees a heap closure
     // block, no-ops a callable-value function id. Used for owned closure parameters.
     destroy_closure: capi.RuntimeDecls.Decl,
@@ -77,6 +78,7 @@ pub fn build(
     const void_ptr_ty = api.LLVMFunctionType(types.void_ty, &ptr_param, ptr_param.len, 0);
 
     const destroy_raw = api.LLVMAddFunction(module_ref, "kira_destroy_raw_ptr", void_ptr_ty);
+    const destroy_struct = api.LLVMAddFunction(module_ref, "kira_destroy_struct_ptr", void_ptr_ty);
     var closure_param = [_]llvm.c.LLVMTypeRef{types.i64};
     const void_i64_ty = api.LLVMFunctionType(types.void_ty, &closure_param, closure_param.len, 0);
     const destroy_closure = api.LLVMAddFunction(module_ref, "kira_destroy_closure", void_i64_ty);
@@ -84,6 +86,7 @@ pub fn build(
     const enum_clone = api.LLVMAddFunction(module_ref, "kira_enum_clone", ptr_ptr_ty);
     var result = Destructors{
         .destroy_raw_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_raw },
+        .destroy_struct_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_struct },
         .destroy_closure = .{ .ty = void_i64_ty, .fn_value = destroy_closure },
         .enum_clone = .{ .ty = ptr_ptr_ty, .fn_value = enum_clone },
     };
@@ -96,6 +99,13 @@ pub fn build(
         api.LLVMPositionBuilderAtEnd(builder, entry);
         var args = [_]llvm.c.LLVMValueRef{api.LLVMGetParam(destroy_raw, 0)};
         _ = api.LLVMBuildCall2(builder, runtime.free.ty, runtime.free.fn_value, &args, args.len, "");
+        _ = api.LLVMBuildRetVoid(builder);
+    }
+    {
+        const entry = api.LLVMAppendBasicBlockInContext(types.context, destroy_struct, "entry");
+        api.LLVMPositionBuilderAtEnd(builder, entry);
+        var args = [_]llvm.c.LLVMValueRef{api.LLVMGetParam(destroy_struct, 0)};
+        _ = api.LLVMBuildCall2(builder, runtime.struct_free.ty, runtime.struct_free.fn_value, &args, args.len, "");
         _ = api.LLVMBuildRetVoid(builder);
     }
 
@@ -154,7 +164,7 @@ pub fn build(
         try buildReleaseContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.release_contents.fn_value);
         try buildDestroy(api, builder, types, runtime, struct_ty, helpers.release_contents, helpers.destroy.fn_value);
         try buildCloneContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.clone_contents.fn_value);
-        try buildClone(api, builder, types, runtime, struct_ty, helpers.clone_contents, helpers.clone.fn_value);
+        try buildClone(api, builder, types, runtime, struct_ty, type_decl.name, helpers.clone_contents, helpers.clone.fn_value);
     }
 
     return result;
@@ -217,7 +227,7 @@ fn buildDestroy(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Type
     var rc_args = [_]llvm.c.LLVMValueRef{value};
     _ = api.LLVMBuildCall2(b, rc.ty, rc.fn_value, &rc_args, rc_args.len, "");
     var free_args = [_]llvm.c.LLVMValueRef{value};
-    _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &free_args, free_args.len, "");
+    _ = api.LLVMBuildCall2(b, runtime.struct_free.ty, runtime.struct_free.fn_value, &free_args, free_args.len, "");
     _ = api.LLVMBuildBr(b, done);
     api.LLVMPositionBuilderAtEnd(b, done);
     _ = api.LLVMBuildRetVoid(b);
@@ -259,7 +269,7 @@ fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: cap
     _ = api.LLVMBuildRetVoid(b);
 }
 
-fn buildClone(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, struct_ty: llvm.c.LLVMTypeRef, cc: capi.RuntimeDecls.Decl, fn_value: llvm.c.LLVMValueRef) !void {
+fn buildClone(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, struct_ty: llvm.c.LLVMTypeRef, type_name: []const u8, cc: capi.RuntimeDecls.Decl, fn_value: llvm.c.LLVMValueRef) !void {
     const entry = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "entry");
     const nullret = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "nullret");
     const body = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "body");
@@ -271,8 +281,11 @@ fn buildClone(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types,
     api.LLVMPositionBuilderAtEnd(b, nullret);
     _ = api.LLVMBuildRet(b, api.LLVMConstInt(types.i64, 0, 0));
     api.LLVMPositionBuilderAtEnd(b, body);
-    var malloc_args = [_]llvm.c.LLVMValueRef{api.LLVMSizeOf(struct_ty)};
-    const dst = api.LLVMBuildCall2(b, runtime.malloc.ty, runtime.malloc.fn_value, &malloc_args, malloc_args.len, "clone.dst");
+    var malloc_args = [_]llvm.c.LLVMValueRef{
+        api.LLVMConstInt(types.i64, ir.nativeStateTypeId(type_name), 0),
+        api.LLVMSizeOf(struct_ty),
+    };
+    const dst = api.LLVMBuildCall2(b, runtime.struct_alloc.ty, runtime.struct_alloc.fn_value, &malloc_args, malloc_args.len, "clone.dst");
     const val = api.LLVMBuildLoad2(b, struct_ty, src, "clone.val");
     _ = api.LLVMBuildStore(b, val, dst);
     var cc_args = [_]llvm.c.LLVMValueRef{dst};

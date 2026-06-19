@@ -4,6 +4,7 @@ const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
 const type_impl = @import("lower_program_types.zig");
+const form_surface = @import("construct_form_surface.zig");
 
 // The Widget->Node bridge executes through computed-property accessors. A computed member
 // `let node: T { ... }` on a concrete declaration lowers to a nullary method `Form.node(self) -> T`
@@ -18,7 +19,8 @@ pub fn registerFormAccessorHeaders(
     form_decl: syntax.ast.ConstructFormDecl,
     function_headers: *std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !void {
-    for (form_decl.body.members) |member| {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    for (body_members) |member| {
         if (member != .field_decl) continue;
         const field = member.field_decl;
         if (field.body == null) continue;
@@ -43,6 +45,43 @@ pub fn registerFormAccessorHeaders(
     }
 }
 
+pub fn registerFormAccessorMethods(
+    ctx: *shared.Context,
+    form_decl: syntax.ast.ConstructFormDecl,
+    type_headers: *std.StringHashMapUnmanaged(shared.TypeHeader),
+    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !void {
+    var header = type_headers.get(form_decl.name) orelse return;
+    var methods = std.array_list.Managed(shared.MethodMember).init(ctx.allocator);
+    try methods.appendSlice(header.methods);
+
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    for (body_members) |member| {
+        if (member != .field_decl) continue;
+        const field = member.field_decl;
+        if (field.body == null) continue;
+        if (!returnsConcreteType(ctx, field)) continue;
+        if (type_impl.methodNameExists(methods.items, field.name)) continue;
+
+        const full_name = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ form_decl.name, field.name });
+        const function_header = function_headers.get(full_name) orelse continue;
+        try methods.append(.{
+            .name = try ctx.allocator.dupe(u8, field.name),
+            .full_name = full_name,
+            .receiver_type_name = try ctx.allocator.dupe(u8, form_decl.name),
+            .receiver_offset = 0,
+            .params = if (function_header.params.len > 0) function_header.params[1..] else &.{},
+            .param_ownership = if (function_header.param_ownership.len > 0) function_header.param_ownership[1..] else &.{},
+            .return_type = function_header.return_type,
+            .return_ownership = function_header.return_ownership,
+            .span = field.span,
+        });
+    }
+
+    header.methods = try methods.toOwnedSlice();
+    try type_headers.put(ctx.allocator, form_decl.name, header);
+}
+
 // Lower each computed member into a `Form.member(self) -> T` accessor function. The block's
 // trailing expression is returned, so `let node: T { TextNode(text: text) }` becomes
 // `function node(self) -> T { return TextNode(text: text) }` (bare field names resolve via
@@ -54,7 +93,8 @@ pub fn lowerFormAccessors(
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) ![]model.Function {
     var functions = std.array_list.Managed(model.Function).init(ctx.allocator);
-    for (form_decl.body.members) |member| {
+    const body_members = try form_surface.effectiveMembers(ctx, form_decl);
+    for (body_members) |member| {
         if (member != .field_decl) continue;
         const field = member.field_decl;
         const body = field.body orelse continue;
@@ -78,13 +118,20 @@ pub fn lowerFormAccessors(
 // structs themselves). A computed member typed by an abstract construct family (`let node: Node`)
 // can only be realized through `any`-dispatch, which is not yet wired, so it stays validation-only
 // — preserving the prior skip behavior and keeping such declarations buildable.
-fn returnsConcreteType(ctx: *shared.Context, field: syntax.ast.FieldDecl) bool {
+pub fn returnsConcreteType(ctx: *shared.Context, field: syntax.ast.FieldDecl) bool {
     const type_expr = field.type_expr orelse return false;
     if (type_expr.* != .named) return false;
     const segments = type_expr.named.segments;
     const leaf = segments[segments.len - 1].text;
+    if (std.mem.eql(u8, leaf, "Int") or
+        std.mem.eql(u8, leaf, "Float") or
+        std.mem.eql(u8, leaf, "Bool") or
+        std.mem.eql(u8, leaf, "String") or
+        std.mem.eql(u8, leaf, "Void"))
+        return true;
     const headers = ctx.type_headers orelse return false;
-    return headers.get(leaf) != null;
+    if (headers.get(leaf) != null) return true;
+    return ctx.construct_headers != null and ctx.construct_headers.?.get(leaf) != null;
 }
 
 // Turn a computed-member block into a function body that returns its value: if the final

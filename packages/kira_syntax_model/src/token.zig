@@ -10,6 +10,7 @@ pub const TokenKind = enum {
     kw_annotation,
     kw_capability,
     kw_class,
+    kw_comptime,
     kw_construct,
     kw_enum,
     kw_struct,
