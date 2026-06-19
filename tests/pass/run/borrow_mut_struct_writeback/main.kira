@@ -1,0 +1,51 @@
+// Regression: mutations through a `borrow mut` struct parameter must write back
+// to the caller across all backends. Covers scalar fields, array-element fields
+// (scalar and struct-valued), and the copy-then-mutate (`var r = t`) pattern that
+// the KiraLayout engine relies on. A VM-only loss of array-element writes (and a
+// shared `var x = <borrow mut>` copy-instead-of-reborrow) previously collapsed all
+// UI layout to the origin.
+
+struct Pair { var w: Int = 0; var h: Int = 0 }
+struct Node { var v: Int = 0; var sz: Pair = Pair {} }
+struct Tree { var nodes: [Node] = [] }
+
+function mutScalar(s: borrow mut Pair) {
+    s.w = 111
+    return
+}
+
+function mutElemScalar(t: borrow mut Tree) {
+    t.nodes[0].v = 222
+    return
+}
+
+function mutElemStruct(t: borrow mut Tree) {
+    t.nodes[0].sz = Pair { w: 333, h: 444 }
+    return
+}
+
+function mutViaCopy(t: borrow mut Tree) {
+    var r = t
+    r.nodes[0].sz = Pair { w: 555, h: 666 }
+    return
+}
+
+@Main
+function main() {
+    var p = Pair { w: 0, h: 0 }
+    mutScalar(p)
+    print(p.w)
+
+    var a = Tree { nodes: [Node { v: 0, sz: Pair {} }] }
+    mutElemScalar(a)
+    print(a.nodes[0].v)
+
+    var b = Tree { nodes: [Node { v: 0, sz: Pair {} }] }
+    mutElemStruct(b)
+    print(b.nodes[0].sz.w)
+
+    var c = Tree { nodes: [Node { v: 0, sz: Pair {} }] }
+    mutViaCopy(c)
+    print(c.nodes[0].sz.w)
+    return
+}
