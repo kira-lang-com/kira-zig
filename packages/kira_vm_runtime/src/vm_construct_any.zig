@@ -2,6 +2,24 @@ const std = @import("std");
 const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 
+/// Materialize an `any Construct` value that crossed the native boundary into a
+/// managed VM struct, recovering its concrete type.
+///
+/// Precondition on a non-null `construct_any` payload `raw_ptr`: it is either
+/// (a) a managed VM struct — handled by the early return — or (b) a C-runtime
+/// construct from `kira_struct_alloc`, which prepends an 8-byte type-id header
+/// (see `kira_struct_alloc`/`kira_struct_type_id` in runtime_helpers.c). Only
+/// case (b) has its header read at `raw_ptr - @sizeOf(u64)`.
+///
+/// The precondition holds because the VM never lowers a `construct_any` value
+/// into a header-less native buffer: `copyValueToNativeLayout` and
+/// `writeNativeFieldValue` pass `construct_any` through verbatim (keeping the
+/// managed pointer), so `copyStructToNativeLayout`'s un-prefixed allocations
+/// never occupy a `construct_any` slot. As defense in depth against a stray or
+/// untagged pointer, `resolveNativeTypeName` rejects header words that cannot be
+/// a real type-id and only resolves on an exact hash match, so a bad read
+/// degrades to "no concrete type" (pointer returned unchanged) rather than a
+/// misidentification.
 pub fn materializeFromNativeIfNeeded(
     vm: anytype,
     module: *const bytecode.Module,
@@ -18,6 +36,10 @@ fn resolveNativeTypeName(module: *const bytecode.Module, value_type: bytecode.Ty
     if (raw_ptr <= @sizeOf(u64) or runtime_abi.isTaggedNativeClosurePointer(raw_ptr)) return null;
     const type_id_ptr: *const u64 = @ptrFromInt(raw_ptr - @sizeOf(u64));
     const type_id = type_id_ptr.*;
+    // `nativeStateTypeId` always clears the top bit, so a header word with it set
+    // cannot be a real construct type-id. Reject it rather than scanning for an
+    // (cryptographically unlikely) collision against an untagged/stray word.
+    if (type_id & 0x8000_0000_0000_0000 != 0) return null;
 
     if (value_type.construct_constraint) |constraint| {
         for (module.construct_implementations) |implementation| {
