@@ -451,11 +451,7 @@ test "hybrid_native_state_field_set_releases_replaced_managed_values" {
     const native_payload = try vm.allocator.alloc(runtime_abi.BridgeValue, 1);
     native_payload[0] = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = 0 });
     const box = try vm.allocator.create(NativeStateBox);
-    box.* = .{
-        .type_id = 77,
-        .payload = @intFromPtr(native_payload.ptr),
-        .runtime_payload = 0,
-    };
+    box.* = NativeStateBox.init(&module, "State", 77, 1, @intFromPtr(native_payload.ptr));
     defer {
         if (box.runtime_payload != 0) {
             const runtime_payload: [*]runtime_abi.Value = @ptrFromInt(box.runtime_payload);
@@ -573,6 +569,74 @@ test "native state field set clones borrowed callbacks" {
     const result = try vm.runFunctionById(&module, 0, &.{}, &discarding.writer, .{});
     try std.testing.expectEqual(@as(i64, 42), result.integer);
     try std.testing.expectEqual(@as(usize, 0), vm.heap.count());
+}
+
+test "vm deinit releases tracked native state boxes before recovery" {
+    const handle_fields = [_]bytecode.Field{
+        .{ .name = "id", .ty = .{ .kind = .integer, .name = "I64" } },
+    };
+    const state_fields = [_]bytecode.Field{
+        .{ .name = "handle", .ty = .{ .kind = .ffi_struct, .name = "Handle" } },
+    };
+    const module = bytecode.Module{
+        .types = @constCast(&[_]bytecode.TypeDecl{
+            .{ .name = "Handle", .fields = @constCast(&handle_fields) },
+            .{ .name = "State", .fields = @constCast(&state_fields) },
+        }),
+        .functions = &.{},
+        .entry_function_id = null,
+    };
+
+    var vm = Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const handle_ptr = try vm.allocateStruct(&module, "Handle");
+    const handle_values: [*]runtime_abi.Value = @ptrFromInt(handle_ptr);
+    handle_values[0] = .{ .integer = 99 };
+
+    const state_ptr = try vm.allocateStruct(&module, "State");
+    const state_values: [*]runtime_abi.Value = @ptrFromInt(state_ptr);
+    state_values[0] = .{ .raw_ptr = handle_ptr };
+
+    _ = try vm.allocateNativeState(&module, "State", 91, state_ptr);
+    vm.dropManagedValue(.{ .raw_ptr = state_ptr });
+
+    try std.testing.expectEqual(@as(usize, 1), vm.native_state_boxes.count());
+}
+
+test "vm deinit releases tracked native state boxes after materialization" {
+    const mode_enum_ty = bytecode.TypeRef{ .kind = .enum_instance, .name = "Mode" };
+    const module = bytecode.Module{
+        .types = @constCast(&[_]bytecode.TypeDecl{.{
+            .name = "State",
+            .fields = @constCast(&[_]bytecode.Field{.{ .name = "mode", .ty = mode_enum_ty }}),
+        }}),
+        .enums = @constCast(&[_]bytecode.EnumTypeDecl{.{
+            .name = "Mode",
+            .variants = @constCast(&[_]bytecode.EnumVariantDecl{
+                .{ .name = "None", .discriminant = 0 },
+                .{ .name = "Surface", .discriminant = 1 },
+            }),
+        }}),
+        .functions = &.{},
+        .entry_function_id = null,
+    };
+
+    var vm = Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const state_ptr = try vm.allocateStruct(&module, "State");
+    const state_values: [*]runtime_abi.Value = @ptrFromInt(state_ptr);
+    state_values[0] = .{ .raw_ptr = try vm.allocateEnum("Mode", 1, .{ .void = {} }) };
+
+    const state_token = try vm.allocateNativeState(&module, "State", 81, state_ptr);
+    _ = try vm.recoverNativeState(&module, "State", state_token, 81);
+    vm.dropManagedValue(.{ .raw_ptr = state_ptr });
+
+    const box: *const NativeStateBox = @ptrFromInt(state_token);
+    try std.testing.expectEqual(@as(usize, 1), vm.native_state_boxes.count());
+    try std.testing.expectEqual(@as(usize, 0), box.payload);
+    try std.testing.expect(box.runtime_payload != 0);
 }
 
 test "native state preserves nested enum values inside arrays of structs" {

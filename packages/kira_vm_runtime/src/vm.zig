@@ -14,7 +14,31 @@ const native_bridge = @import("vm_native_bridge.zig");
 const ArrayObject = ownership.ArrayObject;
 const ClosureObject = ownership.ClosureObject;
 
-pub const NativeStateBox = extern struct { type_id: u64, payload: usize, runtime_payload: usize };
+pub const NativeStateBox = extern struct {
+    type_id: u64,
+    payload: usize,
+    runtime_payload: usize,
+    module: *const bytecode.Module,
+    type_name_ptr: [*]const u8,
+    type_name_len: usize,
+    field_count: usize,
+
+    pub fn init(module: *const bytecode.Module, type_name: []const u8, type_id: u64, field_count: usize, payload: usize) NativeStateBox {
+        return .{
+            .type_id = type_id,
+            .payload = payload,
+            .runtime_payload = 0,
+            .module = module,
+            .type_name_ptr = type_name.ptr,
+            .type_name_len = type_name.len,
+            .field_count = field_count,
+        };
+    }
+
+    pub fn typeName(self: *const NativeStateBox) []const u8 {
+        return self.type_name_ptr[0..self.type_name_len];
+    }
+};
 
 pub const ExportedNativeClosure = struct {
     native_ptr: usize,
@@ -199,7 +223,7 @@ pub const Vm = struct {
             self.allocator.free(words[0..word_count]);
         }
         self.exported_native_closures.deinit();
-        self.native_state_boxes.deinit();
+        native_bridge.deinitTrackedNativeStates(self);
         self.heap.deinit();
         self.native_state_materialized_types.deinit();
         if (self.prepared_cache) |prepared| {
