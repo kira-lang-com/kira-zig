@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const kira_toolchain = @import("packages/kira_toolchain/src/root.zig");
 const llvm_metadata = @import("packages/kira_build/src/llvm_metadata.zig");
 const toolchain_layout = @import("packages/kira_llvm_toolchain_layout/src/root.zig");
@@ -145,6 +146,20 @@ pub fn build(b: *std.Build) void {
     if (llvm_probe) |probe| {
         for (probe.include_dirs) |dir| {
             modules.get("kira_llvm_backend").?.addIncludePath(.{ .cwd_relative = dir });
+        }
+        if (probe.library_dir) |dir| {
+            if (probe.link_name) |name| {
+                const llvm_backend = modules.get("kira_llvm_backend").?;
+                llvm_backend.addLibraryPath(.{ .cwd_relative = dir });
+                llvm_backend.linkSystemLibrary(name, .{
+                    .use_pkg_config = .no,
+                    .preferred_link_mode = .dynamic,
+                    .search_strategy = .paths_first,
+                });
+                if (target.result.os.tag != .windows) {
+                    llvm_backend.addRPath(.{ .cwd_relative = dir });
+                }
+            }
         }
     }
     if (apple_sdk.len > 0) {
@@ -469,6 +484,8 @@ fn preferredDefaultTarget(host: std.Target) std.Target.Query {
 
 const LlvmHeaderProbe = struct {
     include_dirs: []const []const u8,
+    library_dir: ?[]const u8 = null,
+    link_name: ?[]const u8 = null,
 };
 
 fn discoverLlvmHeaders(
@@ -506,7 +523,14 @@ fn discoverLlvmHeaders(
 fn headerProbeForHome(allocator: std.mem.Allocator, home: []const u8) ?LlvmHeaderProbe {
     const install_include = std.fs.path.join(allocator, &.{ home, "include" }) catch return null;
     if (isValidLlvmIncludeDir(install_include)) {
-        return .{ .include_dirs = allocator.dupe([]const u8, &.{install_include}) catch return null };
+        const install_bin = std.fs.path.join(allocator, &.{ home, "bin" }) catch return null;
+        const install_lib = std.fs.path.join(allocator, &.{ home, "lib" }) catch return null;
+        const library = llvmLinkProbe(allocator, install_bin, install_lib);
+        return .{
+            .include_dirs = allocator.dupe([]const u8, &.{install_include}) catch return null,
+            .library_dir = if (library) |value| value.dir else null,
+            .link_name = if (library) |value| value.name else null,
+        };
     }
 
     const source_include = std.fs.path.join(allocator, &.{ home, "llvm-project", "llvm", "include" }) catch return null;
@@ -521,10 +545,50 @@ fn headerProbeForHome(allocator: std.mem.Allocator, home: []const u8) ?LlvmHeade
     for (build_variants) |suffix| {
         const build_include = std.fs.path.join(allocator, &.{ home, suffix }) catch continue;
         if (isValidLlvmSplitIncludeDirs(source_include, build_include)) {
+            const variant_root = std.fs.path.dirname(build_include) orelse continue;
+            const variant_bin = std.fs.path.join(allocator, &.{ variant_root, "bin" }) catch continue;
+            const variant_lib = std.fs.path.join(allocator, &.{ variant_root, "lib" }) catch continue;
+            const library = llvmLinkProbe(allocator, variant_bin, variant_lib);
             return .{
                 .include_dirs = allocator.dupe([]const u8, &.{ source_include, build_include }) catch return null,
+                .library_dir = if (library) |value| value.dir else null,
+                .link_name = if (library) |value| value.name else null,
             };
         }
+    }
+    return null;
+}
+
+const LlvmLinkProbe = struct {
+    dir: []const u8,
+    name: []const u8,
+};
+
+fn llvmLinkProbe(allocator: std.mem.Allocator, bin_dir: []const u8, lib_dir: []const u8) ?LlvmLinkProbe {
+    const candidates = switch (builtin.os.tag) {
+        .linux => [_]LlvmLinkProbe{
+            .{ .dir = lib_dir, .name = "LLVM-C" },
+            .{ .dir = lib_dir, .name = "LLVM" },
+            .{ .dir = bin_dir, .name = "LLVM-C" },
+            .{ .dir = bin_dir, .name = "LLVM" },
+        },
+        .macos => [_]LlvmLinkProbe{
+            .{ .dir = lib_dir, .name = "LLVM-C" },
+            .{ .dir = lib_dir, .name = "LLVM" },
+            .{ .dir = bin_dir, .name = "LLVM-C" },
+            .{ .dir = bin_dir, .name = "LLVM" },
+        },
+        else => return null,
+    };
+
+    for (candidates) |candidate| {
+        const filename = switch (builtin.os.tag) {
+            .linux => if (std.mem.eql(u8, candidate.name, "LLVM-C")) "libLLVM-C.so" else "libLLVM.so",
+            .macos => if (std.mem.eql(u8, candidate.name, "LLVM-C")) "libLLVM-C.dylib" else "libLLVM.dylib",
+            else => unreachable,
+        };
+        const path = std.fs.path.join(allocator, &.{ candidate.dir, filename }) catch continue;
+        if (isFile(path)) return candidate;
     }
     return null;
 }
