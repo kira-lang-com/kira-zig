@@ -16,6 +16,7 @@ const frontend_pipeline = @import("pipeline_frontend.zig");
 const timing = @import("pipeline_timing.zig");
 
 pub const setTimingsEnabled = timing.setTimingsEnabled;
+pub const timingsEnabled = timing.timingsEnabled;
 const nowNs = timing.nowNs;
 const elapsedNs = timing.elapsedNs;
 pub const timingPrint = timing.timingPrint;
@@ -66,6 +67,10 @@ pub const ExecutablePipelineResult = struct {
     source: source_pkg.SourceFile,
     diagnostics: []const diagnostics.Diagnostic,
     ir_program: ?ir.Program,
+    /// Set only when the executable-obligation verifier passed; the proof carried alongside
+    /// the raw IR so downstream emission constructs a backend request from a `VerifiedProgram`
+    /// rather than re-wrapping a raw program.
+    verified_program: ?ir.VerifiedProgram = null,
     bytecode_module: ?bytecode.Module = null,
     native_libraries: []const native.ResolvedNativeLibrary = &.{},
     failure_stage: ?FrontendStage = null,
@@ -295,6 +300,38 @@ pub fn compileFileForBackendWithOptions(
     }
 
     const ir_program = frontend.ir_program.?;
+
+    // Phase gate: prove the lowered program satisfies its executable obligations before any
+    // backend consumes it. A failure here is a precise compile diagnostic, not a later
+    // runtime detonation. Native backends additionally require known aggregate layouts.
+    const verify_start = nowNs();
+    const verify_caps = ir.BackendCapabilities{ .requires_native_layout = target != .vm };
+    const verify_result = try ir.verify(allocator, .{ .program = ir_program }, verify_caps);
+    timingPrint("[kira:timing] verifyExecutableProgram path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(verify_start) });
+    switch (verify_result) {
+        .failure => |failure| {
+            const diag = try diag_messages.BackendMessages.executableObligationUnmet(
+                allocator,
+                failure.kind.summary(),
+                failure.function_name,
+                failure.detail,
+            );
+            const items = try allocator.alloc(diagnostics.Diagnostic, 1);
+            items[0] = diag;
+            timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
+            return .{
+                .source = frontend.source,
+                .diagnostics = items,
+                .ir_program = ir_program,
+                .bytecode_module = null,
+                .native_libraries = frontend.native_libraries,
+                .failure_stage = .backend_prepare,
+            };
+        },
+        .verified => {},
+    }
+    const verified_program = verify_result.verified;
+
     const merge_start = nowNs();
     const merged_native_libraries = try mergeNativeLibraries(allocator, explicit_native_libraries, frontend.native_libraries);
     timingPrint("[kira:timing] mergeNativeLibraries path={s} explicit={d} discovered={d} merged={d} ns={d}\n", .{ path, explicit_native_libraries.len, frontend.native_libraries.len, merged_native_libraries.len, elapsedNs(merge_start) });
@@ -302,7 +339,7 @@ pub fn compileFileForBackendWithOptions(
     switch (target) {
         .vm => {
             const bytecode_start = nowNs();
-            const module = bytecode.compileProgram(allocator, ir_program, .vm) catch |err| {
+            const module = bytecode.compileProgram(allocator, verified_program, .vm) catch |err| {
                 const backend_diagnostics = try backendDiagnosticsForVm(allocator, frontend.source.path, err, merged_native_libraries);
                 timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=vm ns={d}\n", .{ path, elapsedNs(bytecode_start) });
                 timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
@@ -321,6 +358,7 @@ pub fn compileFileForBackendWithOptions(
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
                 .ir_program = ir_program,
+                .verified_program = verified_program,
                 .bytecode_module = module,
                 .native_libraries = merged_native_libraries,
                 .failure_stage = frontend.failure_stage,
@@ -330,7 +368,7 @@ pub fn compileFileForBackendWithOptions(
             const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .llvm_native,
-                .program = &ir_program,
+                .program = &verified_program,
                 .module_name = std.fs.path.stem(path),
                 .emit = dummyNativeEmitOptions(),
                 .target_selector = effective_selector,
@@ -354,6 +392,7 @@ pub fn compileFileForBackendWithOptions(
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
                 .ir_program = ir_program,
+                .verified_program = verified_program,
                 .bytecode_module = null,
                 .native_libraries = merged_native_libraries,
                 .failure_stage = frontend.failure_stage,
@@ -361,7 +400,7 @@ pub fn compileFileForBackendWithOptions(
         },
         .hybrid => {
             const bytecode_start = nowNs();
-            const module = bytecode.compileProgram(allocator, ir_program, .hybrid_runtime) catch |err| {
+            const module = bytecode.compileProgram(allocator, verified_program, .hybrid_runtime) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
                 timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=hybrid_runtime ns={d}\n", .{ path, elapsedNs(bytecode_start) });
                 timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
@@ -378,7 +417,7 @@ pub fn compileFileForBackendWithOptions(
             const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .hybrid,
-                .program = &ir_program,
+                .program = &verified_program,
                 .module_name = std.fs.path.stem(path),
                 .emit = dummyNativeEmitOptions(),
                 .target_selector = effective_selector,
@@ -402,6 +441,7 @@ pub fn compileFileForBackendWithOptions(
                 .source = frontend.source,
                 .diagnostics = frontend.diagnostics,
                 .ir_program = ir_program,
+                .verified_program = verified_program,
                 .bytecode_module = module,
                 .native_libraries = merged_native_libraries,
                 .failure_stage = frontend.failure_stage,

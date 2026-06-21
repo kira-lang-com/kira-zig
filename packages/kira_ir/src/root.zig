@@ -39,6 +39,17 @@ pub const lowerProgramWithOptions = @import("lower_from_hir.zig").lowerProgramWi
 pub const LowerProgramOptions = @import("lower_from_hir.zig").LowerProgramOptions;
 pub const nativeStateTypeId = @import("lower_from_hir.zig").nativeStateTypeId;
 
+// Explicit compiler-phase types + obligation verifier. Backends accept only VerifiedProgram.
+const program_phases = @import("program_phases.zig");
+pub const ExecutableProgram = program_phases.ExecutableProgram;
+pub const VerifiedProgram = program_phases.VerifiedProgram;
+pub const BackendCapabilities = program_phases.BackendCapabilities;
+pub const VerifyFailure = program_phases.VerifyFailure;
+pub const VerifyFailureKind = program_phases.VerifyFailureKind;
+pub const VerifyResult = program_phases.VerifyResult;
+pub const verify = program_phases.verify;
+
 test {
     _ = @import("widget_executable_lowering_tests.zig");
+    _ = @import("program_phases.zig");
 }

@@ -93,7 +93,7 @@ pub const FunctionCodegen = struct {
         try drop.setup(self);
         defer drop.teardown(self);
 
-        self.register_types = try inferRegisterTypes(self.allocator, self.request.program.*, self.function_decl);
+        self.register_types = try inferRegisterTypes(self.allocator, self.request.program.programPtr().*, self.function_decl);
         defer self.allocator.free(self.register_types);
         self.registers = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.register_count);
         defer self.allocator.free(self.registers);
@@ -294,7 +294,7 @@ pub const FunctionCodegen = struct {
                 // type and reclaim the clone by tracking dst as struct_contents (aliasing
                 // would double-free, since src and dst are separate drop slots).
                 const clone_default = blk: {
-                    const td = utils.findTypeDecl(self.request.program, v.type_name) orelse break :blk false;
+                    const td = utils.findTypeDecl(self.request.program.programPtr(), v.type_name) orelse break :blk false;
                     break :blk td.ffi == null;
                 };
                 if ((self.drop_enabled or clone_default)) {
@@ -395,7 +395,7 @@ pub const FunctionCodegen = struct {
     }
 
     pub fn storageType(self: *FunctionCodegen, value_type: ir.ValueType) !llvm.c.LLVMTypeRef {
-        return capi.fieldStorageType(self.types, self.struct_types.*, self.request.program, value_type);
+        return capi.fieldStorageType(self.types, self.struct_types.*, self.request.program.programPtr(), value_type);
     }
 
     // Read a value through a pointer (register i64), converting the in-memory
