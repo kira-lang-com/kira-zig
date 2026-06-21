@@ -138,6 +138,10 @@ fn lowerMoveExpr(
             try emitAlreadyMoved(ctx, local.name, node.span, local.binding.move_span);
             return error.DiagnosticsEmitted;
         }
+        if (local.binding.hasMovedFields()) {
+            try emitUseAfterPartialMove(ctx, local.name, node.span, local.binding.move_span);
+            return error.DiagnosticsEmitted;
+        }
         if (local.binding.ownership == .borrow_read or local.binding.ownership == .borrow_mut) {
             try emitMoveBorrowedValue(ctx, local.name, node.span, local.binding.decl_span);
             return error.DiagnosticsEmitted;
@@ -364,4 +368,3 @@ fn emitNonTrivialCopyNotImplemented(ctx: *shared.Context, span: source_pkg.Span,
         .help = "Borrow the value, move it, or add explicit clone semantics before using `copy` on this type.",
     });
 }
-

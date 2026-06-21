@@ -61,8 +61,8 @@ pub fn linkExecutable(
     try argv.append(driver_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
     try argv.appendSlice(&.{ "-o", executable_path });
-    if (shouldAddWindowsConsoleSubsystem(selector)) {
-        try argv.append("-Wl,/subsystem:console");
+    if (windowsConsoleSubsystemArg(selector)) |subsystem_arg| {
+        try argv.append(subsystem_arg);
     }
     try appendNativeLibraryPaths(allocator, &argv);
     for (object_paths) |path| try argv.append(path);
@@ -176,6 +176,15 @@ fn shouldAddWindowsConsoleSubsystem(selector: ?native.TargetSelector) bool {
     return isWindowsTarget(selector) and !emscripten.isSelector(selector);
 }
 
+fn windowsConsoleSubsystemArg(selector: ?native.TargetSelector) ?[]const u8 {
+    if (!shouldAddWindowsConsoleSubsystem(selector)) return null;
+    const value = selector orelse return "-Wl,/subsystem:console";
+    return if (std.mem.eql(u8, value.abi, "gnu"))
+        "-Wl,--subsystem,console"
+    else
+        "-Wl,/subsystem:console";
+}
+
 fn isWindowsTarget(selector: ?native.TargetSelector) bool {
     const value = selector orelse return builtin.os.tag == .windows;
     return std.mem.eql(u8, value.operating_system, "windows");
@@ -202,4 +211,17 @@ test "windows console subsystem only applies to native windows targets" {
         .operating_system = "emscripten",
         .abi = "unknown",
     }));
+}
+
+test "windows console subsystem flag matches windows toolchain abi" {
+    try std.testing.expectEqualStrings("-Wl,/subsystem:console", windowsConsoleSubsystemArg(.{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "msvc",
+    }).?);
+    try std.testing.expectEqualStrings("-Wl,--subsystem,console", windowsConsoleSubsystemArg(.{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "gnu",
+    }).?);
 }

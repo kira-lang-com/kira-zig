@@ -37,6 +37,17 @@ pub const LocalBinding = struct {
         try self.moved_fields.append(allocator, name);
     }
 
+    pub fn clone(self: LocalBinding, allocator: std.mem.Allocator) !LocalBinding {
+        var cloned = self;
+        cloned.moved_fields = .empty;
+        try cloned.moved_fields.appendSlice(allocator, self.moved_fields.items);
+        return cloned;
+    }
+
+    pub fn deinit(self: *LocalBinding, allocator: std.mem.Allocator) void {
+        self.moved_fields.deinit(allocator);
+    }
+
     /// Re-initialize a moved field (`obj.field = ...`), making it whole again.
     pub fn clearFieldMoved(self: *LocalBinding, name: []const u8) void {
         var index: usize = 0;
@@ -47,6 +58,17 @@ pub const LocalBinding = struct {
                 index += 1;
             }
         }
+    }
+
+    pub fn replaceMovedFields(self: *LocalBinding, allocator: std.mem.Allocator, fields: []const []const u8) !void {
+        self.moved_fields.clearRetainingCapacity();
+        try self.moved_fields.appendSlice(allocator, fields);
+    }
+
+    pub fn clearMoveState(self: *LocalBinding) void {
+        self.moved = false;
+        self.move_span = null;
+        self.moved_fields.clearRetainingCapacity();
     }
 };
 
@@ -61,7 +83,20 @@ pub const Scope = struct {
         return self.entries.get(name);
     }
 
+    pub fn clone(self: Scope, allocator: std.mem.Allocator) !Scope {
+        var cloned = Scope{};
+        var iterator = self.entries.iterator();
+        while (iterator.next()) |entry| {
+            try cloned.put(allocator, entry.key_ptr.*, try entry.value_ptr.clone(allocator));
+        }
+        return cloned;
+    }
+
     pub fn deinit(self: *Scope, allocator: std.mem.Allocator) void {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |binding| {
+            binding.deinit(allocator);
+        }
         self.entries.deinit(allocator);
     }
 };

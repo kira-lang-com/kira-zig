@@ -30,6 +30,7 @@ pub const lowerOwnershipExpr = ownership_exprs.lowerOwnershipExpr;
 pub const emitUseAfterMove = ownership_exprs.emitUseAfterMove;
 pub const rejectOutstandingMovedFields = ownership_exprs.rejectOutstandingMovedFields;
 pub const lowerAssignmentTarget = assignment.lowerAssignmentTarget;
+pub const commitAssignmentTarget = assignment.commitAssignmentTarget;
 pub const lowerCallbackArgument = callbacks.lowerCallbackArgument;
 pub const callbackTypesCompatible = callbacks.callbackTypesCompatible;
 const qualifiedNameRootMatches = names.qualifiedNameRootMatches;

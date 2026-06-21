@@ -1,7 +1,5 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const llvm_metadata = @import("llvm_metadata.zig");
-extern "c" fn system(command: [*:0]const u8) c_int;
 
 pub fn extractArchive(
     allocator: std.mem.Allocator,
@@ -57,39 +55,13 @@ fn extractTarGz(
     archive_path: []const u8,
     destination_path: []const u8,
 ) !void {
-    const quoted_archive = try shQuote(allocator, archive_path);
-    defer allocator.free(quoted_archive);
-    const quoted_destination = try shQuote(allocator, destination_path);
-    defer allocator.free(quoted_destination);
-    const command = try std.fmt.allocPrint(
-        allocator,
-        "tar -xzf {s} -C {s}",
-        .{ quoted_archive, quoted_destination },
-    );
-    defer allocator.free(command);
-    try runSystemCommand(allocator, command);
-}
-
-fn runSystemCommand(allocator: std.mem.Allocator, command: []const u8) !void {
-    if (!builtin.link_libc) return error.SystemCommandUnavailable;
-
-    const command_z = try allocator.dupeZ(u8, command);
-    defer allocator.free(command_z);
-    if (system(command_z.ptr) != 0) return error.ExternalCommandFailed;
-}
-
-fn shQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-    var quoted = std.array_list.Managed(u8).init(allocator);
-    defer quoted.deinit();
-
-    try quoted.append('\'');
-    for (value) |byte| {
-        if (byte == '\'') {
-            try quoted.appendSlice("'\\''");
-        } else {
-            try quoted.append(byte);
-        }
-    }
-    try quoted.append('\'');
-    return quoted.toOwnedSlice();
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = &.{ "tar", "-xzf", archive_path, "-C", destination_path },
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return error.ExternalCommandFailed;
 }
