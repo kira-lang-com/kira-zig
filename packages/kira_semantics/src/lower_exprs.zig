@@ -21,6 +21,7 @@ pub const lowerNativeStateExpr = native_state.lowerNativeStateExpr;
 pub const lowerNativeUserDataExpr = native_state.lowerNativeUserDataExpr;
 pub const lowerNativeRecoverExpr = native_state.lowerNativeRecoverExpr;
 pub const lowerMatchStatement = matches.lowerMatchStatement;
+pub const rejectOutstandingMovedFields = types.rejectOutstandingMovedFields;
 
 pub const lowerImplicitSelfFieldExpr = members.lowerImplicitSelfFieldExpr;
 pub const lowerImplicitSelfMethodCall = members.lowerImplicitSelfMethodCall;

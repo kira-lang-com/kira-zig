@@ -28,6 +28,7 @@ pub const functionTypeFromHeader = signature_types.functionTypeFromHeader;
 pub const lowerCallArgument = ownership_exprs.lowerCallArgument;
 pub const lowerOwnershipExpr = ownership_exprs.lowerOwnershipExpr;
 pub const emitUseAfterMove = ownership_exprs.emitUseAfterMove;
+pub const rejectOutstandingMovedFields = ownership_exprs.rejectOutstandingMovedFields;
 pub const lowerAssignmentTarget = assignment.lowerAssignmentTarget;
 pub const lowerCallbackArgument = callbacks.lowerCallbackArgument;
 pub const callbackTypesCompatible = callbacks.callbackTypesCompatible;

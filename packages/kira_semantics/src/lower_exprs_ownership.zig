@@ -208,6 +208,30 @@ pub fn emitUseAfterMove(ctx: *shared.Context, name: []const u8, use_span: source
     });
 }
 
+/// At scope exit, a binding that still has a field moved out (a partial move that was never
+/// restored) cannot be dropped safely: a field read aliases the source field rather than
+/// transferring it, so both the field's new owner and the base own the same array/enum
+/// backing. Writing the field back (`x.field = ...`) clears the mark and makes the base whole
+/// again (the in-place mutation idiom); anything else is the same double-free/use-after-free
+/// class KSEM107 prevents and must be rejected here rather than at runtime.
+pub fn rejectOutstandingMovedFields(ctx: *shared.Context, scope: *model.Scope) !void {
+    var it = scope.entries.iterator();
+    while (it.next()) |entry| {
+        const binding = entry.value_ptr;
+        if (!binding.hasMovedFields()) continue;
+        const span = binding.move_span orelse binding.decl_span;
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM107",
+            .title = "local was moved",
+            .message = try std.fmt.allocPrint(ctx.allocator, "`{s}` has a field (`{s}`) moved out and never restored, so it cannot be dropped safely.", .{ entry.key_ptr.*, binding.moved_fields.items[0] }),
+            .labels = &.{diagnostics.primaryLabel(span, "a field was moved out here and never written back")},
+            .help = "Re-initialize the moved field (`x.field = ...`) before the value goes out of scope, or `move` the whole value instead of a single field.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+}
+
 pub fn emitUseAfterPartialMove(ctx: *shared.Context, name: []const u8, use_span: source_pkg.Span, move_span: ?source_pkg.Span) !void {
     const labels = if (move_span) |span|
         &.{
