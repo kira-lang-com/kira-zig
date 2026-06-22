@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const llvm_metadata = @import("llvm_metadata.zig");
 
 pub fn extractArchive(
@@ -52,49 +51,55 @@ fn extractTarXz(
 }
 
 fn extractTarGz(
-    _: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     archive_path: []const u8,
     destination_path: []const u8,
 ) !void {
-    var child = try std.process.spawn(std.Options.debug_io, .{
-        .argv = &.{ "tar", "-xzf", archive_path, "-C", destination_path },
-        .expand_arg0 = .expand,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .inherit,
-    });
-    const term = try child.wait(std.Options.debug_io);
-    if (term == .exited and term.exited == 0) return;
-    return error.ExternalCommandFailed;
+    const file = try std.Io.Dir.openFileAbsolute(std.Options.debug_io, archive_path, .{});
+    defer file.close(std.Options.debug_io);
+
+    var file_buffer: [16 * 1024]u8 = undefined;
+    var file_reader = file.reader(std.Options.debug_io, &file_buffer);
+
+    // flate asserts the window buffer is at least `max_window_len` bytes; a
+    // smaller buffer caused the earlier in-process attempt to be abandoned for
+    // a `tar` subprocess, which in turn returned OutOfMemory in CI.
+    const decompress_buffer = try allocator.alloc(u8, std.compress.flate.max_window_len);
+    defer allocator.free(decompress_buffer);
+    var gz = std.compress.flate.Decompress.init(&file_reader.interface, .gzip, decompress_buffer);
+
+    var destination_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, destination_path, .{});
+    defer destination_dir.close(std.Options.debug_io);
+
+    try std.tar.extract(std.Options.debug_io, destination_dir, &gz.reader, .{});
 }
 
-test "extractTarGz extracts archive with system tar" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "extractTarGz extracts a gzip tarball in-process" {
+    // Build a small gzip tarball entirely in-process so the regression test
+    // exercises the real decompression path on every platform without relying
+    // on an external `tar` binary.
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var archive_storage: [16 * 1024]u8 = undefined;
+    var archive_writer = std.Io.Writer.fixed(&archive_storage);
+    var compress = try std.compress.flate.Compress.init(&archive_writer, &window, .gzip, .default);
+
+    var tar_writer: std.tar.Writer = .{ .underlying_writer = &compress.writer };
+    try tar_writer.writeFileBytes("payload/hello.txt", "hello from tar.gz", .{});
+    try tar_writer.finishPedantically();
+    try compress.finish();
+
+    const archive_bytes = archive_writer.buffered();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(std.testing.io, "source/payload");
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "source/payload/hello.txt", .data = "hello from tar.gz" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sample.tar.gz", .data = archive_bytes });
     try tmp.dir.createDirPath(std.testing.io, "out");
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sample.tar.gz", .data = "" });
 
     const archive_path = try tmp.dir.realPathFileAlloc(std.testing.io, "sample.tar.gz", std.testing.allocator);
     defer std.testing.allocator.free(archive_path);
-    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "source", std.testing.allocator);
-    defer std.testing.allocator.free(source_path);
     const output_path = try tmp.dir.realPathFileAlloc(std.testing.io, "out", std.testing.allocator);
     defer std.testing.allocator.free(output_path);
-
-    var create_child = try std.process.spawn(std.Options.debug_io, .{
-        .argv = &.{ "tar", "-czf", archive_path, "-C", source_path, "." },
-        .expand_arg0 = .expand,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .inherit,
-    });
-    const create_term = try create_child.wait(std.Options.debug_io);
-    try std.testing.expectEqual(@as(std.process.Child.Term, .{ .exited = 0 }), create_term);
 
     try extractTarGz(std.testing.allocator, archive_path, output_path);
 
