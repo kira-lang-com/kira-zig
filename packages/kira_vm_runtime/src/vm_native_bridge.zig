@@ -769,26 +769,34 @@ fn materializeNativeResultWithOwner(
                 self.rememberError("native struct result requires a valid pointer");
                 return error.RuntimeFailure;
             }
-            const copied = try copyStructFromNativeLayout(self, module, return_ty.name orelse {
+            const type_name = return_ty.name orelse {
                 self.rememberError("native struct result is missing a type name");
                 return error.RuntimeFailure;
-            }, value.raw_ptr);
-            destroyStructNativeLayoutWithOwner(self, module, return_ty.name orelse unreachable, value.raw_ptr, owner);
+            };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyStructNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            const copied = try copyStructFromNativeLayout(self, module, type_name, value.raw_ptr);
+            destroyStructNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
             break :blk .{ .raw_ptr = copied };
         },
         .array => blk: {
             if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyArrayNativeLayoutWithOwner(self, module, return_ty, value.raw_ptr, owner);
             const copied = try copyArrayFromNativeLayout(self, module, return_ty, value.raw_ptr);
             destroyArrayNativeLayoutWithOwner(self, module, return_ty, value.raw_ptr, owner);
             break :blk .{ .raw_ptr = copied };
         },
         .enum_instance => blk: {
             if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
-            const copied = try copyEnumFromNativeLayout(self, module, return_ty.name orelse {
+            const type_name = return_ty.name orelse {
                 self.rememberError("native enum result is missing a type name");
                 return error.RuntimeFailure;
-            }, value.raw_ptr);
-            destroyEnumNativeLayoutWithOwner(self, module, return_ty.name orelse unreachable, value.raw_ptr, owner);
+            };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyEnumNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            const copied = try copyEnumFromNativeLayout(self, module, type_name, value.raw_ptr);
+            destroyEnumNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
             break :blk .{ .raw_ptr = copied };
         },
         .construct_any => blk: {
