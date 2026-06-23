@@ -4,6 +4,7 @@ const runtime_abi = @import("kira_runtime_abi");
 
 const Vm = @import("vm.zig").Vm;
 const ArrayObject = @import("ownership.zig").ArrayObject;
+const native_bridge = @import("vm_native_bridge.zig");
 
 fn modeModule() bytecode.Module {
     return .{
@@ -13,6 +14,21 @@ fn modeModule() bytecode.Module {
             .variants = @constCast(&[_]bytecode.EnumVariantDecl{
                 .{ .name = "None", .discriminant = 0 },
                 .{ .name = "Surface", .discriminant = 1 },
+            }),
+        }}),
+        .functions = &.{},
+        .entry_function_id = null,
+    };
+}
+
+fn messageModule() bytecode.Module {
+    return .{
+        .types = &.{},
+        .enums = @constCast(&[_]bytecode.EnumTypeDecl{.{
+            .name = "Message",
+            .variants = @constCast(&[_]bytecode.EnumVariantDecl{
+                .{ .name = "Empty", .discriminant = 0 },
+                .{ .name = "Text", .discriminant = 1, .payload_ty = .{ .kind = .string } },
             }),
         }}),
         .functions = &.{},
@@ -36,6 +52,59 @@ test "copyEnumToNativeLayout follows wrapper slots to the managed enum" {
     const words: [*]const u64 = @ptrFromInt(native_ptr);
     try std.testing.expectEqual(@as(u64, 1), words[0]);
     try std.testing.expectEqual(@as(u64, 0), words[1]);
+}
+
+test "copyEnumToNativeLayout keeps managed string payloads alive" {
+    const module = messageModule();
+
+    var vm = Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const owned = try vm.allocator.dupe(u8, "hello");
+    errdefer vm.allocator.free(owned);
+    try vm.heap.registerString(owned);
+
+    const runtime_enum = try vm.allocateEnum("Message", 1, .{ .string = owned });
+    defer vm.dropManagedValue(.{ .raw_ptr = runtime_enum });
+
+    const before = vm.heap.stats.strings_current;
+    var wrapper = runtime_abi.Value{ .raw_ptr = runtime_enum };
+    const native_ptr = try vm.copyEnumToNativeLayout(&module, "Message", @intFromPtr(&wrapper));
+    defer vm.destroyEnumNativeLayout(&module, "Message", native_ptr);
+
+    try std.testing.expectEqual(before, vm.heap.stats.strings_current);
+    const words: [*]const u64 = @ptrFromInt(native_ptr);
+    const boxed: *const runtime_abi.BridgeString = @ptrFromInt(@as(usize, @intCast(words[1])));
+    try std.testing.expectEqualStrings("hello", if (boxed.ptr) |ptr| ptr[0..boxed.len] else "");
+}
+
+test "lowerEnumToNativeOwned keeps managed string payloads alive" {
+    const module = messageModule();
+
+    var vm = Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const owned = try vm.allocator.dupe(u8, "hello");
+    errdefer vm.allocator.free(owned);
+    try vm.heap.registerString(owned);
+
+    const runtime_enum = try vm.allocateEnum("Message", 1, .{ .string = owned });
+    defer vm.dropManagedValue(.{ .raw_ptr = runtime_enum });
+
+    const before = vm.heap.stats.strings_current;
+    var wrapper = runtime_abi.Value{ .raw_ptr = runtime_enum };
+    const native_ptr = try vm.lowerEnumToNativeOwned(&module, "Message", @intFromPtr(&wrapper));
+    defer {
+        const words: [*]const u64 = @ptrFromInt(native_ptr);
+        native_bridge.destroyEnumNativePayload(&vm, &module, .{ .kind = .string }, words[1]);
+        const native_words: []u64 = @as([*]u64, @ptrFromInt(native_ptr))[0..2];
+        std.heap.c_allocator.free(native_words);
+    }
+
+    try std.testing.expectEqual(before, vm.heap.stats.strings_current);
+    const words: [*]const u64 = @ptrFromInt(native_ptr);
+    const boxed: *const runtime_abi.BridgeString = @ptrFromInt(@as(usize, @intCast(words[1])));
+    try std.testing.expectEqualStrings("hello", if (boxed.ptr) |ptr| ptr[0..boxed.len] else "");
 }
 
 test "materializeNativeResult copies native array returns into managed arrays" {

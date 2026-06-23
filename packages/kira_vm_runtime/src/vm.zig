@@ -449,6 +449,10 @@ pub const Vm = struct {
         return native_bridge.destroyEnumNativeLayout(self, module, type_name, native_ptr);
     }
 
+    pub fn destroyOwnedEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+        return native_bridge.destroyOwnedEnumNativeLayout(self, module, type_name, native_ptr);
+    }
+
     pub fn enumPayloadFromNativeWord(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) anyerror!runtime_abi.Value {
         return native_bridge.enumPayloadFromNativeWord(self, module, payload_ty, word);
     }

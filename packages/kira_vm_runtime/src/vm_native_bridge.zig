@@ -468,14 +468,27 @@ pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, c
     return runtime_abi.tagNativeClosurePointer(raw_ptr);
 }
 
+fn resolveManagedEnumSlots(self: *Vm, runtime_ptr: usize) ?[*]align(1) const runtime_abi.Value {
+    var candidate = runtime_ptr;
+    var depth: usize = 0;
+    while (candidate != 0 and depth < 8) : (depth += 1) {
+        const slots: [*]align(1) const runtime_abi.Value = @ptrFromInt(candidate);
+        if (slots[0] == .integer) return slots;
+        if (slots[0] == .raw_ptr and slots[0].raw_ptr != 0 and slots[0].raw_ptr != candidate) {
+            candidate = slots[0].raw_ptr;
+            continue;
+        }
+        if (self.isManagedStructPointer(candidate)) break;
+        return null;
+    }
+    return null;
+}
+
 pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const normalized = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = runtime_ptr });
-    if (normalized != .raw_ptr or normalized.raw_ptr == 0) {
+    const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
         self.rememberError("enum native copy requires a managed enum value");
         return error.RuntimeFailure;
-    }
-    defer self.heap.dropValue(normalized);
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(normalized.raw_ptr);
+    };
     if (src[0] != .integer) {
         self.rememberError("enum native copy requires an integer tag slot");
         return error.RuntimeFailure;
@@ -509,17 +522,14 @@ pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_na
 /// no out-of-line payload — `kira_destroy_raw_ptr` does not recurse), matching
 /// `kira_enum_clone`'s verbatim 16-byte copy.
 pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const normalized = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = runtime_ptr });
-    if (normalized != .raw_ptr or normalized.raw_ptr == 0) {
+    const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
         self.rememberError("enum native lowering requires a managed enum value");
         return error.RuntimeFailure;
-    }
-    defer self.heap.dropValue(normalized);
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(normalized.raw_ptr);
+    };
     if (src[0] != .integer) {
         self.rememberFmt(
             "enum native lowering requires an integer tag slot: type={s} slot0={s} slot1={s} ptr=0x{x}",
-            .{ type_name, @tagName(src[0]), @tagName(src[1]), normalized.raw_ptr },
+            .{ type_name, @tagName(src[0]), @tagName(src[1]), runtime_ptr },
         );
         return error.RuntimeFailure;
     }
@@ -599,6 +609,16 @@ pub fn destroyEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_n
     }
     const native_words: []u64 = words[0..2];
     self.allocator.free(native_words);
+}
+
+pub fn destroyOwnedEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    if (native_ptr == 0) return;
+    const words: [*]u64 = @ptrFromInt(native_ptr);
+    if (enumNativeVariant(self, module, type_name, words[0])) |native_variant| {
+        destroyEnumNativePayload(self, module, native_variant.payload_ty, words[1]);
+    }
+    const native_words: []u64 = words[0..2];
+    std.heap.c_allocator.free(native_words);
 }
 
 const EnumNativeVariant = struct {
