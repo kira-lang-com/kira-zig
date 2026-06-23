@@ -905,7 +905,8 @@ fn emitBuilderArrayItems(
                     const compare_reg = lowerer.freshRegister();
                     const case_label = lowerer.freshLabel();
                     const next_label = lowerer.freshLabel();
-                    try instructions.append(.{ .compare = .{ .dst = compare_reg, .lhs = subject_reg, .rhs = pattern_reg, .op = .equal } });
+                    const normalized = try normalizeCompareOperands(lowerer, instructions, subject_ty, subject_reg, pattern_reg);
+                    try instructions.append(.{ .compare = .{ .dst = compare_reg, .lhs = normalized.lhs, .rhs = normalized.rhs, .op = .equal } });
                     try instructions.append(.{ .branch = .{ .condition = compare_reg, .true_label = case_label, .false_label = next_label } });
                     try instructions.append(.{ .label = .{ .id = case_label } });
                     try emitBuilderArrayItems(lowerer, instructions, array_reg, case_node.body);
@@ -918,6 +919,30 @@ fn emitBuilderArrayItems(
             },
         }
     }
+}
+
+const CompareOperands = struct {
+    lhs: u32,
+    rhs: u32,
+};
+
+fn normalizeCompareOperands(
+    lowerer: *Lowerer,
+    instructions: *std.array_list.Managed(ir.Instruction),
+    operand_vt: ir.ValueType,
+    lhs: u32,
+    rhs: u32,
+) !CompareOperands {
+    if (operand_vt.kind != .enum_instance) return .{ .lhs = lhs, .rhs = rhs };
+
+    // Enum equality compares discriminant tags, not heap value identity. Without this,
+    // `e == E.A` and builder-switch pattern matches compare boxed enum handles and never
+    // agree for equal discriminants.
+    const lhs_tag = lowerer.freshRegister();
+    try instructions.append(.{ .enum_tag = .{ .dst = lhs_tag, .src = lhs } });
+    const rhs_tag = lowerer.freshRegister();
+    try instructions.append(.{ .enum_tag = .{ .dst = rhs_tag, .src = rhs } });
+    return .{ .lhs = lhs_tag, .rhs = rhs_tag };
 }
 
 pub const Lowerer = struct {
@@ -1511,23 +1536,11 @@ pub const Lowerer = struct {
                     },
                     .equal, .not_equal, .less, .less_equal, .greater, .greater_equal => {
                         const operand_vt = try lowerExecutableCompareOperandType(self.program, model.hir.exprType(node.lhs.*), node.op);
-                        var cmp_lhs = lhs;
-                        var cmp_rhs = rhs;
-                        if (operand_vt.kind == .enum_instance) {
-                            // Enum equality compares discriminant tags, not heap value
-                            // identity. Without this, `e == E.A` always compares the
-                            // boxed enum handles (never equal) and falls through.
-                            const lhs_tag = self.freshRegister();
-                            try instructions.append(.{ .enum_tag = .{ .dst = lhs_tag, .src = lhs } });
-                            const rhs_tag = self.freshRegister();
-                            try instructions.append(.{ .enum_tag = .{ .dst = rhs_tag, .src = rhs } });
-                            cmp_lhs = lhs_tag;
-                            cmp_rhs = rhs_tag;
-                        }
+                        const normalized = try normalizeCompareOperands(self, instructions, operand_vt, lhs, rhs);
                         try instructions.append(.{ .compare = .{
                             .dst = dst,
-                            .lhs = cmp_lhs,
-                            .rhs = cmp_rhs,
+                            .lhs = normalized.lhs,
+                            .rhs = normalized.rhs,
                             .op = lowerCompareOp(node.op),
                         } });
                     },

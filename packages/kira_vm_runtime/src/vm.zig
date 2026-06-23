@@ -461,6 +461,10 @@ pub const Vm = struct {
         return native_bridge.materializeNativeResult(self, module, return_ty, result);
     }
 
+    pub fn materializeNativeResultFromC(self: *Vm, module: *const bytecode.Module, return_ty: bytecode.TypeRef, result: runtime_abi.Value) anyerror!runtime_abi.Value {
+        return native_bridge.materializeNativeResultFromC(self, module, return_ty, result);
+    }
+
     pub fn materializeNativeStateValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
         return native_bridge.materializeNativeStateValue(self, module, ty, value);
     }

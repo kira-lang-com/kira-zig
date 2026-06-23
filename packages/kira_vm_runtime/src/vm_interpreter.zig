@@ -724,7 +724,7 @@ pub fn runPrepared(
             defer if (spill) vm.allocator.free(call_args);
             for (value.args, 0..) |register_index, index| call_args[index] = registers[register_index];
             var result = try callback(hooks.context, value.function_id, call_args);
-            result = try vm.materializeNativeResult(module, value.return_ty, result);
+            result = try vm.materializeNativeResultFromC(module, value.return_ty, result);
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
             continue :dispatch code[pc];
@@ -783,6 +783,11 @@ pub fn runPrepared(
                         .owned, .move => if (register_owned[value.receiver]) {
                             register_owned[value.receiver] = false;
                             registers[value.receiver] = .{ .void = {} };
+                        } else {
+                            // Borrowed receiver handed to an owned `self`: clone so the
+                            // callee owns an independent copy instead of freeing storage
+                            // the original owner still references.
+                            call_args[0] = try slot_impl.cloneArgForOwnedParam(vm, module, param_types, 0, call_args[0]);
                         },
                         .borrow_read, .borrow_mut, .copy => {},
                     }
@@ -812,7 +817,7 @@ pub fn runPrepared(
                     return error.RuntimeFailure;
                 };
                 var native_value = try callback(hooks.context, resolved_method.function_id, call_args);
-                native_value = try vm.materializeNativeResult(module, value.return_ty, native_value);
+                native_value = try vm.materializeNativeResultFromC(module, value.return_ty, native_value);
                 break :native_result native_value;
             };
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);

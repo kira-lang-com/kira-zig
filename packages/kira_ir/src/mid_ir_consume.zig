@@ -339,6 +339,7 @@ pub fn ensurePlaceLive(self: *Checker, state: *State, place: mid.Place, span: so
     switch (root_state.availability) {
         .live => {},
         .uninitialized => {
+            if (self.failed) return;
             const message = try std.fmt.allocPrint(
                 self.allocator,
                 "In `{s}`, `{s}` is used here but does not hold a live value on every path that reaches this point.",
@@ -354,6 +355,7 @@ pub fn ensurePlaceLive(self: *Checker, state: *State, place: mid.Place, span: so
             return;
         },
         .moved, .maybe_moved => {
+            if (self.failed) return;
             const message = try std.fmt.allocPrint(
                 self.allocator,
                 "In `{s}`, `{s}` is used here after it was moved or dropped earlier in this control-flow path.",
@@ -373,6 +375,7 @@ pub fn ensurePlaceLive(self: *Checker, state: *State, place: mid.Place, span: so
         const relation = placeRelation(place, moved_place);
         switch (relation) {
             .same, .ancestor, .descendant, .overlap => {
+                if (self.failed) return;
                 const moved_desc = try self.describeMovedPaths(local_name, &.{moved_place});
                 defer self.allocator.free(moved_desc);
                 const message = try std.fmt.allocPrint(

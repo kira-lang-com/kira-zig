@@ -372,6 +372,7 @@ pub const Checker = struct {
             const local_state = state.locals.getPtr(local_id) orelse continue;
             if (local_state.local.ownership != .borrow_read and local_state.local.ownership != .borrow_mut) {
                 if (local_state.moved_paths.items.len != 0 and local_state.availability == .live) {
+                    if (self.failed) return;
                     const moved_desc = try self.describeMovedPaths(local_state.local.name, local_state.moved_paths.items);
                     defer self.allocator.free(moved_desc);
                     // The message is referenced (not copied) by the diagnostic, so it
