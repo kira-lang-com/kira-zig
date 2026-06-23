@@ -469,7 +469,13 @@ pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, c
 }
 
 pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    const normalized = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = runtime_ptr });
+    if (normalized != .raw_ptr or normalized.raw_ptr == 0) {
+        self.rememberError("enum native copy requires a managed enum value");
+        return error.RuntimeFailure;
+    }
+    defer self.heap.dropValue(normalized);
+    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(normalized.raw_ptr);
     if (src[0] != .integer) {
         self.rememberError("enum native copy requires an integer tag slot");
         return error.RuntimeFailure;
@@ -503,11 +509,17 @@ pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_na
 /// no out-of-line payload — `kira_destroy_raw_ptr` does not recurse), matching
 /// `kira_enum_clone`'s verbatim 16-byte copy.
 pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    const normalized = try self.cloneEnumValue(module, type_name, .{ .raw_ptr = runtime_ptr });
+    if (normalized != .raw_ptr or normalized.raw_ptr == 0) {
+        self.rememberError("enum native lowering requires a managed enum value");
+        return error.RuntimeFailure;
+    }
+    defer self.heap.dropValue(normalized);
+    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(normalized.raw_ptr);
     if (src[0] != .integer) {
         self.rememberFmt(
             "enum native lowering requires an integer tag slot: type={s} slot0={s} slot1={s} ptr=0x{x}",
-            .{ type_name, @tagName(src[0]), @tagName(src[1]), runtime_ptr },
+            .{ type_name, @tagName(src[0]), @tagName(src[1]), normalized.raw_ptr },
         );
         return error.RuntimeFailure;
     }
@@ -671,15 +683,33 @@ pub fn materializeNativeResult(
                 self.rememberError("native struct result requires a valid pointer");
                 return error.RuntimeFailure;
             }
-            break :blk .{ .raw_ptr = try copyStructFromNativeLayout(self, module, return_ty.name orelse {
+            const copied = try copyStructFromNativeLayout(self, module, return_ty.name orelse {
                 self.rememberError("native struct result is missing a type name");
                 return error.RuntimeFailure;
-            }, value.raw_ptr) };
+            }, value.raw_ptr);
+            destroyStructNativeLayout(self, module, return_ty.name orelse unreachable, value.raw_ptr);
+            break :blk .{ .raw_ptr = copied };
+        },
+        .array => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            const copied = try copyArrayFromNativeLayout(self, module, return_ty, value.raw_ptr);
+            destroyArrayNativeLayout(self, module, return_ty, value.raw_ptr);
+            break :blk .{ .raw_ptr = copied };
+        },
+        .enum_instance => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            const copied = try copyEnumFromNativeLayout(self, module, return_ty.name orelse {
+                self.rememberError("native enum result is missing a type name");
+                return error.RuntimeFailure;
+            }, value.raw_ptr);
+            destroyEnumNativeLayout(self, module, return_ty.name orelse unreachable, value.raw_ptr);
+            break :blk .{ .raw_ptr = copied };
         },
         .construct_any => blk: {
             if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
             break :blk try construct_any.materializeFromNativeIfNeeded(self, module, return_ty, value.raw_ptr);
         },
+        .raw_ptr => try materializeCallbackValueFromNative(self, module, return_ty, value),
         else => value,
     };
 }

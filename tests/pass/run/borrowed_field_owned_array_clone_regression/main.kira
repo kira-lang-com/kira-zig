@@ -1,0 +1,39 @@
+// Regression: a method running on a borrowed `self` may pass one of its array fields
+// to a by-value helper, but that helper must receive its own owned copy. Before the
+// VM clone-on-borrow-to-owned fix, `capture(values)` reused the same heap array for
+// both `saved.values` and the original `Holder.values`, so scope exit double-freed or
+// reused the array across vm/hybrid while LLVM stayed correct.
+struct Snapshot {
+    let values: [Int]
+    let total: Int
+}
+
+function capture(values: [Int]) -> Snapshot {
+    var total = 0
+    var index = 0
+    while index < values.count {
+        total = total + values[index]
+        index = index + 1
+    }
+    return Snapshot {
+        values: move values
+        total: total
+    }
+}
+
+class Holder {
+    let values: [Int]
+
+    function score() -> Int {
+        let saved = capture(self.values)
+        return saved.total + saved.values.count + self.values.count + self.values[0] + self.values[2]
+    }
+}
+
+@Main
+function main() {
+    let holder = Holder([3, 4, 5])
+    print(holder.score())
+    print(holder.score())
+    return
+}

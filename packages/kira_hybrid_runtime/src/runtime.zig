@@ -203,6 +203,11 @@ pub const HybridRuntime = struct {
                 .ptr = native_result,
             });
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_result });
+        } else if (function_decl.return_type.kind == .array and result == .raw_ptr and result.raw_ptr != 0) {
+            const array_ty = function_decl.return_type;
+            const native_array = try self.vm.copyArrayToNativeLayout(&self.module, array_ty, result.raw_ptr);
+            errdefer self.vm.destroyArrayNativeLayout(&self.module, array_ty, native_array);
+            bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_array });
         } else if (function_decl.return_type.kind == .enum_instance and result == .raw_ptr and result.raw_ptr != 0) {
             // An enum returned to native is moved into a native struct field as a raw pointer
             // and later freed by that struct's `release_contents` (libc `free`). The VM enum
@@ -376,8 +381,11 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     defer {
         for (native_arg_ptrs, 0..) |native_ptr, index| {
             if (native_ptr == 0 or index >= function_decl.param_types.len) continue;
-            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index))) continue;
             const param_type = function_decl.param_types[index];
+            // Enums are copy-across-the-boundary values in the native backend: even if
+            // the source IR marks the param as owned/move, the callee receives an
+            // ephemeral native copy and never takes ownership of the caller's VM enum.
+            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index)) and param_type.kind != .enum_instance) continue;
             switch (param_type.kind) {
                 .ffi_struct => if (param_type.name) |name| {
                     self.vm.destroyStructNativeLayout(&self.module, name, native_ptr);
@@ -387,6 +395,9 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
                     convertManifestTypeRef(param_type),
                     native_ptr,
                 ),
+                .enum_instance => if (param_type.name) |name| {
+                    self.vm.destroyEnumNativeLayout(&self.module, name, native_ptr);
+                },
                 else => {},
             }
         }
@@ -418,6 +429,14 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
                 native_arg_ptrs[index] = try self.vm.copyArrayToNativeLayout(
                     &self.module,
                     convertManifestTypeRef(param_type),
+                    arg.raw_ptr,
+                );
+                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+            },
+            .enum_instance => {
+                native_arg_ptrs[index] = try self.vm.copyEnumToNativeLayout(
+                    &self.module,
+                    param_type.name orelse return error.RuntimeFailure,
                     arg.raw_ptr,
                 );
                 lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };

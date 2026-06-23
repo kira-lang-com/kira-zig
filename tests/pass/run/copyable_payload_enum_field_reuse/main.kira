@@ -1,0 +1,46 @@
+// Regression: an enum that carries a payload but whose every payload is itself `Copy`
+// (here only `Float`s) is `Copy`, mirroring Rust's rule that an enum derives `Copy`
+// exactly when all of its variants' fields are `Copy`. Passing such an enum field by
+// value must duplicate it, not move it out of the aggregate, so reading `box.width`
+// twice is two copies rather than a use-after-partial-move.
+//
+// This is the UI Foundation `SizeMode`/`LayoutDescriptor` shape: before payload-copyable
+// enums were recognised, reading `child.descriptor.width` into a by-value parameter
+// moved it out of the owned child and the scope drop was rejected (KIR003), which kept
+// `kira run` from ever reaching the renderer. The sibling `tests/fail/pipeline/
+// partial_move_field_reuse` case proves a heap-owning payload (a `String`) stays
+// non-`Copy` and is still rejected, so the copy relaxation does not reopen the latent
+// hybrid native enum-copy use-after-free.
+enum Dimension {
+    Fixed(Float)
+    Fill
+    Bounded(Float)
+}
+
+struct Box {
+    let width: Dimension
+    let height: Dimension
+}
+
+function consume(d: Dimension) -> Int {
+    match d {
+        Fill -> return 1;
+        Fixed(_) -> return 0;
+        Bounded(_) -> return 0;
+    }
+}
+
+function check(box: Box) -> Int {
+    // `box.width` is `Copy`, so both reads are independent duplicates and `box` stays
+    // fully live across them.
+    let a = consume(box.width)
+    let b = consume(box.width)
+    return a + b
+}
+
+@Main
+function main() {
+    let box = Box { width: Dimension.Fill, height: Dimension.Fixed(3.0) }
+    print(check(move box))
+    return
+}

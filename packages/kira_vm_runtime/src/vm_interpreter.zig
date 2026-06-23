@@ -707,7 +707,7 @@ pub fn runPrepared(
             const spill = value.args.len > arg_stack.len;
             const call_args = if (spill) try vm.allocator.alloc(runtime_abi.Value, value.args.len) else arg_stack[0..value.args.len];
             defer if (spill) vm.allocator.free(call_args);
-            fillTransferredArgs(call_args, registers, register_owned, value.args, callee.decl.param_ownership, callee.decl.local_types, hooks.copy_struct_args_by_value);
+            try fillTransferredArgs(vm, module, call_args, registers, register_owned, value.args, callee.decl.param_ownership, callee.decl.local_types, hooks.copy_struct_args_by_value);
             const result = try runPrepared(vm, prepared, callee, call_args, writer, hooks);
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
@@ -793,6 +793,11 @@ pub fn runPrepared(
                         .owned, .move => if (register_owned[register_index]) {
                             register_owned[register_index] = false;
                             registers[register_index] = .{ .void = {} };
+                        } else {
+                            // Borrowed source handed to an owned parameter: clone so the
+                            // callee owns an independent copy and does not free a value the
+                            // caller still references (mirrors fillTransferredArgs).
+                            call_args[index + 1] = try slot_impl.cloneArgForOwnedParam(vm, module, param_types, index + 1, registers[register_index]);
                         },
                         .borrow_read, .borrow_mut, .copy => {},
                     }
@@ -829,7 +834,7 @@ pub fn runPrepared(
             defer if (arg_spill) vm.allocator.free(call_args);
             // call_value carries no parameter types, so struct args cannot be
             // identified here; pass an empty type list (no copy-by-value skip).
-            fillTransferredArgs(call_args, registers, register_owned, value.args, value.param_ownership, &.{}, hooks.copy_struct_args_by_value);
+            try fillTransferredArgs(vm, module, call_args, registers, register_owned, value.args, value.param_ownership, &.{}, hooks.copy_struct_args_by_value);
             const result = if (vm.heap.getClosure(callee_value.raw_ptr)) |closure| closure_call: {
                 runtime_abi.emitExecutionTrace("CALLABLE", "INVOKE_CLOSURE", "raw=0x{x} fn={d} captures={d}", .{ callee_value.raw_ptr, closure.function_id, closure.captures.len });
                 const total_args = call_args.len + closure.captures.len;

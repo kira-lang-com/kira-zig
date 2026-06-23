@@ -6,6 +6,7 @@ const mid = @import("mid_ir.zig");
 const place_algebra = @import("mid_ir_place.zig");
 const state_mod = @import("mid_ir_state.zig");
 const consume = @import("mid_ir_consume.zig");
+const copyable = @import("mid_ir_copyable.zig");
 
 // Place/value algebra and dataflow-state types live in sibling modules; alias them
 // here so the checker body can reference them unqualified.
@@ -14,7 +15,6 @@ const rootLocalId = place_algebra.rootLocalId;
 const isMovablePlaceValue = place_algebra.isMovablePlaceValue;
 const placeHasIndexProjection = place_algebra.placeHasIndexProjection;
 const valueType = place_algebra.valueType;
-const isTriviallyCopyableType = place_algebra.isTriviallyCopyableType;
 const placeRelation = place_algebra.placeRelation;
 const rootsEqual = place_algebra.rootsEqual;
 const placesEqual = place_algebra.placesEqual;
@@ -87,6 +87,10 @@ pub const Checker = struct {
     pub const ensurePlaceLive = consume.ensurePlaceLive;
     pub const ensureNoConflictingAccess = consume.ensureNoConflictingAccess;
     pub const ensureAccessesCompatible = consume.ensureAccessesCompatible;
+
+    // Rust-style `Copy` classification lives in `mid_ir_copyable.zig`; re-expose it
+    // so call sites read as `self.isCopyableType(...)`.
+    pub const isCopyableType = copyable.isCopyableType;
 
     allocator: std.mem.Allocator,
     program: mid.Program,
@@ -368,12 +372,22 @@ pub const Checker = struct {
             const local_state = state.locals.getPtr(local_id) orelse continue;
             if (local_state.local.ownership != .borrow_read and local_state.local.ownership != .borrow_mut) {
                 if (local_state.moved_paths.items.len != 0 and local_state.availability == .live) {
+                    const moved_desc = try self.describeMovedPaths(local_state.local.name, local_state.moved_paths.items);
+                    defer self.allocator.free(moved_desc);
+                    // The message is referenced (not copied) by the diagnostic, so it
+                    // must live as long as the diagnostics list; `self.allocator` is the
+                    // same long-lived allocator that backs the diagnostic labels.
+                    const message = try std.fmt.allocPrint(
+                        self.allocator,
+                        "In `{s}`, `{s}` is dropped at the end of this scope while {s} still moved out, so Kira cannot build an honest drop plan.",
+                        .{ self.function_decl.name, local_state.local.name, moved_desc },
+                    );
                     try self.emitOwnershipDiagnostic(
                         "KIR003",
                         "scope would drop an incompletely moved value",
-                        "This scope exits while an owned aggregate still has moved children, so Kira cannot build an honest drop plan.",
+                        message,
                         local_state.move_span orelse local_state.local.span,
-                        "Write the moved field back, replace the whole value, or move the whole aggregate instead of leaving a child path moved.",
+                        "Write the moved field back before the scope ends, replace the whole value, or move the whole aggregate instead of leaving a child path moved.",
                     );
                     return;
                 }
@@ -459,6 +473,40 @@ pub const Checker = struct {
         }
     }
 
+    /// Render the moved child paths of a local as human-readable backtick-quoted
+    /// field chains (e.g. ``child.descriptor.width` and `child.descriptor.height``)
+    /// so ownership diagnostics name the exact paths instead of a bare span. The
+    /// caller owns the returned slice.
+    pub fn describeMovedPaths(self: *Checker, root_name: []const u8, paths: []const mid.Place) ![]u8 {
+        var buffer = std.array_list.Managed(u8).init(self.allocator);
+        defer buffer.deinit();
+        try buffer.appendSlice(if (paths.len == 1) "field `" else "fields `");
+        for (paths, 0..) |path, index| {
+            if (index != 0) {
+                try buffer.appendSlice(if (index + 1 == paths.len) "` and `" else "`, `");
+            }
+            try buffer.appendSlice(root_name);
+            for (path.projections) |projection| switch (projection) {
+                .field => |field| {
+                    try buffer.append('.');
+                    try buffer.appendSlice(field.field_name);
+                },
+                .index => |index_projection| {
+                    if (index_projection.index) |literal| {
+                        var scratch: [24]u8 = undefined;
+                        const rendered = try std.fmt.bufPrint(&scratch, "[{d}]", .{literal});
+                        try buffer.appendSlice(rendered);
+                    } else {
+                        try buffer.appendSlice("[_]");
+                    }
+                },
+                .parent_view => try buffer.appendSlice(".^"),
+            };
+        }
+        try buffer.append('`');
+        return buffer.toOwnedSlice();
+    }
+
     pub fn emitOwnershipDiagnostic(
         self: *Checker,
         code: []const u8,
@@ -498,30 +546,43 @@ pub const Checker = struct {
             .borrow_read => .borrow_shared,
             .borrow_mut => .borrow_mut,
             .copy => .read,
-            .move, .owned => if (self.isCopyableType(valueType(value))) .read else if (isMovablePlaceValue(value)) .move else .read,
+            // A by-value use cannot move out of a place reached through a borrow
+            // (mirroring Rust's "cannot move out of `*x` behind a shared/mut
+            // reference"): the borrowed storage is not ours to empty, so the value
+            // is cloned (read) instead. Copyable values are likewise duplicated.
+            // Only an owned, movable, non-indexed place actually transfers ownership.
+            .move, .owned => if (self.isCopyableType(valueType(value)))
+                .read
+            else if (self.placeRootIsBorrow(value))
+                .read
+            else if (isMovablePlaceValue(value))
+                .move
+            else
+                .read,
         };
     }
 
-    /// A value type that is duplicated rather than moved when passed by value:
-    /// trivially copyable scalars and fieldless enums (every variant payload-less).
-    /// The runtime already copies such enums by value, so treating them as moves
-    /// would over-reject without preventing any real use-after-free.
-    pub fn isCopyableType(self: *const Checker, ty: model.ResolvedType) bool {
-        if (isTriviallyCopyableType(ty)) return true;
-        return self.isFieldlessEnumType(ty);
+    /// Whether a place value is rooted in a borrowed local/parameter/capture, in
+    /// which case its contents cannot be moved out (only borrowed or cloned).
+    fn placeRootIsBorrow(self: *const Checker, value: mid.Value) bool {
+        const place = switch (value) {
+            .place => |node| node.place,
+            else => return false,
+        };
+        const ownership = self.rootLocalOwnership(place) orelse return false;
+        return ownership == .borrow_read or ownership == .borrow_mut;
     }
 
-    fn isFieldlessEnumType(self: *const Checker, ty: model.ResolvedType) bool {
-        if (ty.kind != .enum_instance) return false;
-        const name = ty.name orelse return false;
-        for (self.program.source_program.enums) |enum_decl| {
-            if (!std.mem.eql(u8, enum_decl.name, name)) continue;
-            for (enum_decl.variants) |variant| {
-                if (variant.payload_ty != null) return false;
-            }
-            return true;
+    fn rootLocalOwnership(self: *const Checker, place: mid.Place) ?model.OwnershipMode {
+        const id = rootLocalId(place.root) orelse return null;
+        for (self.function_decl.locals) |local| {
+            if (local.id == id) return local.ownership;
         }
-        return false;
+        for (self.function_decl.captures) |capture| {
+            if (capture.local_id == id) return capture.ownership;
+        }
+        return null;
     }
+
 };
 

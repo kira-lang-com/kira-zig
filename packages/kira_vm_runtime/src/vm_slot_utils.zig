@@ -60,6 +60,8 @@ pub fn transferSlot(
 }
 
 pub fn fillTransferredArgs(
+    vm: anytype,
+    module: *const bytecode.Module,
     values: []runtime_abi.Value,
     registers: []runtime_abi.Value,
     register_owned: []bool,
@@ -67,7 +69,7 @@ pub fn fillTransferredArgs(
     param_ownership: []const bytecode.OwnershipMode,
     param_types: []const bytecode.TypeRef,
     copy_struct_args_by_value: bool,
-) void {
+) !void {
     for (argument_registers, 0..) |register_index, index| {
         values[index] = registers[register_index];
         // In copy-by-value (VM) mode a struct argument is passed as an
@@ -81,13 +83,41 @@ pub fn fillTransferredArgs(
         switch (ownershipModeAt(param_ownership, index)) {
             .owned, .move => {
                 if (register_owned[register_index]) {
+                    // The caller owns this value: transfer it into the call and
+                    // void the source register (a move).
                     register_owned[register_index] = false;
                     registers[register_index] = .{ .void = {} };
+                } else {
+                    // The caller does NOT own this value (it is borrowed — e.g. a
+                    // field read out of a `borrow self`). Handing the raw pointer to
+                    // an owned parameter would make the callee free it at frame exit
+                    // while the real owner still references it (use-after-free). Clone
+                    // so the callee owns an independent copy — the runtime realization
+                    // of the checker's "move out of a borrow becomes a read" rule.
+                    values[index] = try cloneArgForOwnedParam(vm, module, param_types, index, registers[register_index]);
                 }
             },
             .borrow_read, .borrow_mut, .copy => {},
         }
     }
+}
+
+pub fn cloneArgForOwnedParam(
+    vm: anytype,
+    module: *const bytecode.Module,
+    param_types: []const bytecode.TypeRef,
+    index: usize,
+    value: runtime_abi.Value,
+) !runtime_abi.Value {
+    if (index < param_types.len) {
+        // Typed clone: handles arrays (deep), enums, nested structs, strings,
+        // closures, and construct_any materialization; primitives pass through.
+        return vm.cloneBorrowedValueForStore(module, param_types[index], value);
+    }
+    // Untyped call sites (indirect/closure calls carry no parameter types): clone
+    // managed values dynamically, pass everything else through unchanged.
+    if (!vm.heap.isManagedValue(value)) return value;
+    return vm.cloneBorrowedManagedValueDynamic(module, value);
 }
 
 pub fn ownershipModeAt(values: []const bytecode.OwnershipMode, index: usize) bytecode.OwnershipMode {
