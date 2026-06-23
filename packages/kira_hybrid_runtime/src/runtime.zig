@@ -13,6 +13,8 @@ pub const HybridRuntime = struct {
     vm: vm_runtime.Vm,
     bridge: native_bridge.NativeBridge,
     pending_callback_return_values: std.ArrayListUnmanaged(runtime_abi.Value) = .empty,
+    pending_callback_native_arrays: std.ArrayListUnmanaged(NativeArrayReturn) = .empty,
+    pending_callback_native_enums: std.ArrayListUnmanaged(NativeEnumReturn) = .empty,
     pending_callback_native_structs: std.ArrayListUnmanaged(NativeStructReturn) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, manifest: hybrid.HybridModuleManifest) !HybridRuntime {
@@ -46,6 +48,8 @@ pub const HybridRuntime = struct {
     pub fn deinit(self: *HybridRuntime) void {
         self.cleanupPendingCallbackReturns();
         self.pending_callback_return_values.deinit(self.allocator);
+        self.pending_callback_native_arrays.deinit(self.allocator);
+        self.pending_callback_native_enums.deinit(self.allocator);
         self.pending_callback_native_structs.deinit(self.allocator);
         self.vm.deinit();
         self.bridge.deinit();
@@ -190,6 +194,7 @@ pub const HybridRuntime = struct {
 
         var bridge_result = runtime_abi.bridgeValueFromValue(result);
         var result_owned_by_pending = false;
+        errdefer if (!result_owned_by_pending) self.vm.dropManagedValue(result);
         if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
             const type_name = function_decl.return_type.name orelse return error.RuntimeFailure;
             const native_result = try self.vm.lowerStructToNativeLayout(
@@ -202,17 +207,36 @@ pub const HybridRuntime = struct {
                 .type_name = type_name,
                 .ptr = native_result,
             });
+            try self.pending_callback_return_values.append(self.allocator, result);
+            result_owned_by_pending = true;
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_result });
+        } else if (function_decl.return_type.kind == .array and result == .raw_ptr and result.raw_ptr != 0) {
+            const array_ty = function_decl.return_type;
+            const native_array = try self.vm.copyArrayToNativeLayout(&self.module, array_ty, result.raw_ptr);
+            errdefer self.vm.destroyArrayNativeLayout(&self.module, array_ty, native_array);
+            try self.pending_callback_native_arrays.append(self.allocator, .{
+                .ty = array_ty,
+                .ptr = native_array,
+            });
+            try self.pending_callback_return_values.append(self.allocator, result);
+            result_owned_by_pending = true;
+            bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_array });
         } else if (function_decl.return_type.kind == .enum_instance and result == .raw_ptr and result.raw_ptr != 0) {
             // An enum returned to native is moved into a native struct field as a raw pointer
             // and later freed by that struct's `release_contents` (libc `free`). The VM enum
             // block is allocated with the runner's `smp_allocator`, so handing it to native
             // verbatim makes native `free` a non-libc pointer ("pointer being freed was not
-            // allocated") and double-owns it with `pending_callback_return_values`. Lower it
-            // to a libc-`malloc`'d native enum block owned by native, then drop the VM copy
-            // below (`result_owned_by_pending` stays false) — mirroring the ffi_struct path.
+            // allocated"). Lower it to a libc-`malloc`'d native enum block, and retain the
+            // original managed enum so any borrowed payload (for example string bytes boxed
+            // into the native enum) stays alive until runtime teardown.
             const type_name = function_decl.return_type.name orelse return error.RuntimeFailure;
             const native_enum = try self.vm.lowerEnumToNativeOwned(&self.module, type_name, result.raw_ptr);
+            try self.pending_callback_native_enums.append(self.allocator, .{
+                .type_name = type_name,
+                .ptr = native_enum,
+            });
+            try self.pending_callback_return_values.append(self.allocator, result);
+            result_owned_by_pending = true;
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_enum });
         } else {
             try self.pending_callback_return_values.append(self.allocator, result);
@@ -229,6 +253,14 @@ pub const HybridRuntime = struct {
     }
 
     fn cleanupPendingCallbackReturns(self: *HybridRuntime) void {
+        for (self.pending_callback_native_arrays.items) |item| {
+            self.vm.destroyArrayNativeLayout(&self.module, item.ty, item.ptr);
+        }
+        self.pending_callback_native_arrays.clearRetainingCapacity();
+        for (self.pending_callback_native_enums.items) |item| {
+            self.vm.destroyOwnedEnumNativeLayout(&self.module, item.type_name, item.ptr);
+        }
+        self.pending_callback_native_enums.clearRetainingCapacity();
         for (self.pending_callback_native_structs.items) |item| {
             self.vm.destroyStructNativeLayout(&self.module, item.type_name, item.ptr);
         }
@@ -253,6 +285,16 @@ pub const HybridRuntime = struct {
 };
 
 const NativeStructReturn = struct {
+    type_name: []const u8,
+    ptr: usize,
+};
+
+const NativeArrayReturn = struct {
+    ty: bytecode.TypeRef,
+    ptr: usize,
+};
+
+const NativeEnumReturn = struct {
     type_name: []const u8,
     ptr: usize,
 };
@@ -376,8 +418,11 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
     defer {
         for (native_arg_ptrs, 0..) |native_ptr, index| {
             if (native_ptr == 0 or index >= function_decl.param_types.len) continue;
-            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index))) continue;
             const param_type = function_decl.param_types[index];
+            // Enums are copy-across-the-boundary values in the native backend: even if
+            // the source IR marks the param as owned/move, the callee receives an
+            // ephemeral native copy and never takes ownership of the caller's VM enum.
+            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index)) and param_type.kind != .enum_instance) continue;
             switch (param_type.kind) {
                 .ffi_struct => if (param_type.name) |name| {
                     self.vm.destroyStructNativeLayout(&self.module, name, native_ptr);
@@ -387,6 +432,9 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
                     convertManifestTypeRef(param_type),
                     native_ptr,
                 ),
+                .enum_instance => if (param_type.name) |name| {
+                    self.vm.destroyEnumNativeLayout(&self.module, name, native_ptr);
+                },
                 else => {},
             }
         }
@@ -418,6 +466,14 @@ fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.
                 native_arg_ptrs[index] = try self.vm.copyArrayToNativeLayout(
                     &self.module,
                     convertManifestTypeRef(param_type),
+                    arg.raw_ptr,
+                );
+                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
+            },
+            .enum_instance => {
+                native_arg_ptrs[index] = try self.vm.copyEnumToNativeLayout(
+                    &self.module,
+                    param_type.name orelse return error.RuntimeFailure,
                     arg.raw_ptr,
                 );
                 lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };

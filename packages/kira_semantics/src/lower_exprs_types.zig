@@ -210,7 +210,7 @@ pub fn lowerExpectedValue(
         }
         const lowered = try ctx.allocator.create(model.Expr);
         lowered.* = .{ .builder_array = .{
-            .builder = try parent.lowerBuilderBlock(ctx, syntax_arg.builder_array.builder, imports, scope),
+            .builder = try parent.lowerBuilderBlock(ctx, syntax_arg.builder_array.builder, imports, scope, function_headers),
             .ty = expected_type,
             .span = syntax_arg.builder_array.span,
         } };

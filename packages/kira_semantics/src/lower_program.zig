@@ -717,7 +717,7 @@ fn lowerConstructForm(
             },
             .content_section => |content_section| {
                 try shared.validateAnnotationPlacement(ctx, content_section.annotations, .content_section, construct_model);
-                const lowered_content = try exprs.lowerBuilderBlock(ctx, content_section.builder, imports, null);
+                const lowered_content = try exprs.lowerBuilderBlock(ctx, content_section.builder, imports, null, ctx.function_headers);
                 if (construct_model) |construct_info| {
                     if (construct_info.content_element_type) |element_type| {
                         try content_validation.validateBlock(ctx, lowered_content, element_type);

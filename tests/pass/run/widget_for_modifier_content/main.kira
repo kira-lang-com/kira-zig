@@ -1,8 +1,7 @@
 // Regression: a content builder block that mixes a modifier-chained widget (`Text(..).font(..)`)
-// with a `For(...)` item used to crash semantics with KIC014 (the modifier call was lowered as a
-// real method and returned `DiagnosticsEmitted` without a diagnostic). Modifiers are `extend`
-// declarations that are not yet lowered to runtime, so the content array carries the base widget;
-// the For items render in order. Executes on vm/llvm/hybrid.
+// with a `For(...)` item used to crash semantics with KIC014. The content array must now preserve
+// the real modifier chain rather than stripping it to the base widget, so the `FontLayer` prefix
+// stays observable ahead of the `For(...)` items on vm/llvm/hybrid alike.
 
 construct Widget {
     @Required let body: Widget
@@ -37,8 +36,17 @@ Widget FontLayer(size: Float) {
     @Content let child: Widget
 
     function render() -> [String] {
-        let ignored = size + 0.0
-        return child.render()
+        var out: [String] = []
+        if size > 0.0 {
+            out.append("font")
+        }
+        let inner = child.render()
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
     }
 }
 

@@ -548,7 +548,7 @@ pub fn lowerResolvedMethodCall(
                 .callee_name = method_decl.full_name,
                 .function_id = resolved_header.id,
                 .args = try args.toOwnedSlice(),
-                .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope) else null,
+                .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope, function_headers) else null,
                 .ty = resolved_header.return_type,
                 .span = node.span,
             } };
@@ -585,7 +585,7 @@ pub fn lowerResolvedMethodCall(
             .callee_name = method_decl.full_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope) else null,
+            .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope, function_headers) else null,
             .ty = resolved_imported.return_type,
             .span = node.span,
         } };

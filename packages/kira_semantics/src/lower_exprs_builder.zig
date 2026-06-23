@@ -8,22 +8,12 @@ const scope_flow = @import("lower_exprs_scope_flow.zig");
 const lowerExpr = parent.lowerExpr;
 const resolveArrayElementType = parent.resolveArrayElementType;
 
-// Unwrap a content expression's trailing modifier chain down to the base widget construction.
-// A modifier call is a `.call` whose callee is a `.member` access (`Base(..).modifier(..)`);
-// the base widget is reached once the callee is no longer a member access (e.g. `Text(..)`).
-pub fn stripContentModifiers(expr: *syntax.ast.Expr) *syntax.ast.Expr {
-    var current = expr;
-    while (current.* == .call and current.call.callee.* == .member) {
-        current = current.call.callee.member.object;
-    }
-    return current;
-}
-
 pub fn lowerBuilderBlock(
     ctx: *shared.Context,
     builder: syntax.ast.BuilderBlock,
     imports: []const model.Import,
     scope: ?*model.Scope,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) anyerror!model.BuilderBlock {
     var empty_scope = model.Scope{};
     defer empty_scope.deinit(ctx.allocator);
@@ -34,21 +24,21 @@ pub fn lowerBuilderBlock(
         switch (item) {
             .expr => |value| try items.append(.{
                 .expr = .{
-                    // Content items may be modifier chains (`Text(..).font(..)`). Modifiers are
-                    // `extend` declarations that are validated but not yet lowered to runtime, so the
-                    // runtime content array carries the base widget, matching ordinary widget content.
-                    .expr = try lowerExpr(ctx, stripContentModifiers(value.expr), imports, active_scope, null),
+                    // Content items may be modifier chains (`Text(..).font(..)`). Lower the full
+                    // chain so widget content preserves the same runtime styling semantics as
+                    // ordinary expression evaluation instead of silently discarding modifiers.
+                    .expr = try lowerExpr(ctx, value.expr, imports, active_scope, function_headers),
                     .span = value.span,
                 },
             }),
             .if_item => |value| try items.append(.{ .if_item = .{
-                .condition = try lowerExpr(ctx, value.condition, imports, active_scope, null),
-                .then_block = try lowerBuilderBlock(ctx, value.then_block, imports, active_scope),
-                .else_block = if (value.else_block) |else_block| try lowerBuilderBlock(ctx, else_block, imports, active_scope) else null,
+                .condition = try lowerExpr(ctx, value.condition, imports, active_scope, function_headers),
+                .then_block = try lowerBuilderBlock(ctx, value.then_block, imports, active_scope, function_headers),
+                .else_block = if (value.else_block) |else_block| try lowerBuilderBlock(ctx, else_block, imports, active_scope, function_headers) else null,
                 .span = value.span,
             } }),
             .for_item => |value| blk: {
-                const iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, null);
+                const iterator = try lowerExpr(ctx, value.iterator, imports, active_scope, function_headers);
                 var binding_local_id: u32 = 0;
                 var binding_ty: model.ResolvedType = .{ .kind = .unknown };
                 var loop_scope_ptr = active_scope;
@@ -84,7 +74,7 @@ pub fn lowerBuilderBlock(
                     .binding_local_id = binding_local_id,
                     .binding_ty = binding_ty,
                     .iterator = iterator,
-                    .body = try lowerBuilderBlock(ctx, value.body, imports, loop_scope_ptr),
+                    .body = try lowerBuilderBlock(ctx, value.body, imports, loop_scope_ptr, function_headers),
                     .span = value.span,
                 } });
                 break :blk;
@@ -93,15 +83,15 @@ pub fn lowerBuilderBlock(
                 var cases = std.array_list.Managed(model.BuilderSwitchCase).init(ctx.allocator);
                 for (value.cases) |case_node| {
                     try cases.append(.{
-                        .pattern = try lowerExpr(ctx, case_node.pattern, imports, active_scope, null),
-                        .body = try lowerBuilderBlock(ctx, case_node.body, imports, active_scope),
+                        .pattern = try lowerExpr(ctx, case_node.pattern, imports, active_scope, function_headers),
+                        .body = try lowerBuilderBlock(ctx, case_node.body, imports, active_scope, function_headers),
                         .span = case_node.span,
                     });
                 }
                 try items.append(.{ .switch_item = .{
-                    .subject = try lowerExpr(ctx, value.subject, imports, active_scope, null),
+                    .subject = try lowerExpr(ctx, value.subject, imports, active_scope, function_headers),
                     .cases = try cases.toOwnedSlice(),
-                    .default_block = if (value.default_block) |default_block| try lowerBuilderBlock(ctx, default_block, imports, active_scope) else null,
+                    .default_block = if (value.default_block) |default_block| try lowerBuilderBlock(ctx, default_block, imports, active_scope, function_headers) else null,
                     .span = value.span,
                 } });
                 break :blk;

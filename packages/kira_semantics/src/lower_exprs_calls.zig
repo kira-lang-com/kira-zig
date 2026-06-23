@@ -333,10 +333,10 @@ fn contentArg(
         var elements = std.array_list.Managed(*syntax.ast.Expr).init(ctx.allocator);
         for (items) |item| {
             if (item == .expr) {
-                // Strip check-only modifier chains down to the base widget so list content
-                // lowers uniformly (the builder_array path strips the same way). Modifiers are
-                // `extend` declarations that do not yet lower to runtime.
-                try elements.append(parent.stripContentModifiers(item.expr.expr));
+                // Preserve full modifier chains inside content-array fields so a widget list
+                // sees the same runtime values the author wrote, including chained `extend`
+                // modifiers such as `.padding(..)` / `.background(..)`.
+                try elements.append(item.expr.expr);
                 continue;
             }
             all_expr_items = false;
@@ -350,7 +350,7 @@ fn contentArg(
         return .{ .label = field.name, .value = array_expr, .span = span };
     }
     for (items) |item| {
-        if (item == .expr) return .{ .label = field.name, .value = parent.stripContentModifiers(item.expr.expr), .span = span };
+        if (item == .expr) return .{ .label = field.name, .value = item.expr.expr, .span = span };
     }
     return null;
 }
@@ -626,7 +626,7 @@ pub fn lowerCallExpr(
                 .callee_name = callee_name,
                 .function_id = resolved_header.id,
                 .args = try args.toOwnedSlice(),
-                .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope) else null,
+                .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope, function_headers) else null,
                 .ty = resolved_header.return_type,
                 .span = node.span,
             } };
@@ -669,7 +669,7 @@ pub fn lowerCallExpr(
             .callee_name = callee_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .trailing_builder = if (node.trailing_builder) |builder| try lowerBuilderBlock(ctx, builder, imports, scope) else null,
+            .trailing_builder = if (node.trailing_builder) |builder| try lowerBuilderBlock(ctx, builder, imports, scope, function_headers) else null,
             .ty = .{ .kind = .unknown },
             .span = node.span,
         } };
@@ -721,7 +721,7 @@ pub fn lowerCallExpr(
                         .callee_name = callee_name,
                         .function_id = resolved_header.id,
                         .args = try args.toOwnedSlice(),
-                        .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope) else null,
+                        .trailing_builder = if (trailing_callback_type == null and node.trailing_builder != null) try lowerBuilderBlock(ctx, node.trailing_builder.?, imports, scope, function_headers) else null,
                         .ty = resolved_header.return_type,
                         .span = node.span,
                     } };
@@ -833,7 +833,7 @@ pub fn lowerCallExpr(
             .callee_name = callee_name,
             .function_id = null,
             .args = try args.toOwnedSlice(),
-            .trailing_builder = if (node.trailing_builder) |builder| try lowerBuilderBlock(ctx, builder, imports, scope) else null,
+            .trailing_builder = if (node.trailing_builder) |builder| try lowerBuilderBlock(ctx, builder, imports, scope, function_headers) else null,
             .ty = .{ .kind = .unknown },
             .span = node.span,
         } };

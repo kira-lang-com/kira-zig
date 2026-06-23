@@ -78,7 +78,6 @@ pub const resolveArrayElementType = types.resolveArrayElementType;
 pub const flattenCalleeName = types.flattenCalleeName;
 pub const flattenMemberExpr = types.flattenMemberExpr;
 pub const flattenMemberExprPath = types.flattenMemberExprPath;
-pub const stripContentModifiers = builder.stripContentModifiers;
 pub const lowerBuilderBlock = builder.lowerBuilderBlock;
 const emitUseAfterMove = types.emitUseAfterMove;
 pub const lowerEnumVariantExprExpected = lowerEnumVariantExprExpectedInternal;
@@ -592,7 +591,7 @@ pub fn lowerExpr(
         },
         .builder_array => |node| {
             lowered.* = .{ .builder_array = .{
-                .builder = try lowerBuilderBlock(ctx, node.builder, imports, scope),
+                .builder = try lowerBuilderBlock(ctx, node.builder, imports, scope, function_headers),
                 .ty = .{ .kind = .array },
                 .span = node.span,
             } };

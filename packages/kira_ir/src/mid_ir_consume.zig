@@ -335,23 +335,36 @@ pub fn ensurePlaceLive(self: *Checker, state: *State, place: mid.Place, span: so
     if (place.root == .return_slot) return;
     const local_id = rootLocalId(place.root) orelse return;
     const root_state = state.locals.get(local_id) orelse return;
+    const local_name = root_state.local.name;
     switch (root_state.availability) {
         .live => {},
         .uninitialized => {
+            if (self.failed) return;
+            const message = try std.fmt.allocPrint(
+                self.allocator,
+                "In `{s}`, `{s}` is used here but does not hold a live value on every path that reaches this point.",
+                .{ self.function_decl.name, local_name },
+            );
             try self.emitOwnershipDiagnostic(
                 "KIR002",
                 "place is not initialized on every path",
-                "This place does not hold a live value here.",
+                message,
                 span,
                 "Initialize the value on every control-flow path before using it.",
             );
             return;
         },
         .moved, .maybe_moved => {
+            if (self.failed) return;
+            const message = try std.fmt.allocPrint(
+                self.allocator,
+                "In `{s}`, `{s}` is used here after it was moved or dropped earlier in this control-flow path.",
+                .{ self.function_decl.name, local_name },
+            );
             try self.emitOwnershipDiagnostic(
                 "KIR002",
                 "place is moved or dropped before this use",
-                "This use reads a place that was moved or dropped earlier in the current control-flow state.",
+                message,
                 span,
                 "Avoid reusing the place after moving it, or reinitialize it before the next use.",
             );
@@ -362,10 +375,18 @@ pub fn ensurePlaceLive(self: *Checker, state: *State, place: mid.Place, span: so
         const relation = placeRelation(place, moved_place);
         switch (relation) {
             .same, .ancestor, .descendant, .overlap => {
+                if (self.failed) return;
+                const moved_desc = try self.describeMovedPaths(local_name, &.{moved_place});
+                defer self.allocator.free(moved_desc);
+                const message = try std.fmt.allocPrint(
+                    self.allocator,
+                    "In `{s}`, `{s}` is used here but its {s} was already moved out, so it is not fully available.",
+                    .{ self.function_decl.name, local_name, moved_desc },
+                );
                 try self.emitOwnershipDiagnostic(
                     "KIR002",
                     "place is only partially live after a move",
-                    "A moved child or ancestor overlaps this use, so the place is not fully available here.",
+                    message,
                     span,
                     "Reinitialize the moved path or keep using only disjoint siblings.",
                 );

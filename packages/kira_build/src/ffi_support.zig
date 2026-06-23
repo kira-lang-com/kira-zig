@@ -531,6 +531,9 @@ fn collectNativeInputFilesInDir(
 fn isNativeBuildInput(path: []const u8) bool {
     const ext = std.fs.path.extension(path);
     return std.mem.eql(u8, ext, ".c") or
+        std.mem.eql(u8, ext, ".cc") or
+        std.mem.eql(u8, ext, ".cpp") or
+        std.mem.eql(u8, ext, ".cxx") or
         std.mem.eql(u8, ext, ".h") or
         std.mem.eql(u8, ext, ".hpp") or
         std.mem.eql(u8, ext, ".hh") or
@@ -712,7 +715,19 @@ fn appendClangCompileCommand(
     if (shouldCompileAsObjectiveC(library.target, library, source_path)) {
         try argv.appendSlice(&.{ "-x", "objective-c" });
     }
+    if (isCxxSource(source_path)) {
+        // C++ translation units (e.g. HarfBuzz) need an explicit standard.
+        try argv.append("-std=c++17");
+    }
     try argv.appendSlice(&.{ source_path, "-o", object_path });
+}
+
+fn isCxxSource(source_path: []const u8) bool {
+    const extension = std.fs.path.extension(source_path);
+    return std.mem.eql(u8, extension, ".cc") or
+        std.mem.eql(u8, extension, ".cpp") or
+        std.mem.eql(u8, extension, ".cxx") or
+        std.mem.eql(u8, extension, ".mm");
 }
 
 fn shouldCompileAsObjectiveC(selector: native.TargetSelector, library: native.ResolvedNativeLibrary, source_path: []const u8) bool {

@@ -190,39 +190,73 @@ pub fn syncStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, typ
 }
 
 pub fn destroyArrayNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) void {
+    destroyArrayNativeLayoutWithOwner(self, module, array_ty, native_array_ptr, .vm);
+}
+
+pub fn destroyOwnedArrayNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) void {
+    destroyArrayNativeLayoutWithOwner(self, module, array_ty, native_array_ptr, .c);
+}
+
+fn destroyArrayNativeLayoutWithOwner(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize, owner: NativeLayoutOwner) void {
     if (native_array_ptr == 0) return;
     const object: *ArrayObject = @ptrFromInt(native_array_ptr);
     const items = object.items[0..@max(object.len, 1)];
     const element_ty = self.arrayElementType(module, array_ty) catch .{ .kind = .raw_ptr };
     for (items[0..object.len]) |item| {
-        destroyNativeLayoutValue(self, module, element_ty, runtime_abi.bridgeValueToValue(item));
+        destroyNativeLayoutValueWithOwner(self, module, element_ty, runtime_abi.bridgeValueToValue(item), owner);
     }
-    self.allocator.free(items);
-    self.allocator.destroy(object);
+    switch (owner) {
+        .vm => {
+            self.allocator.free(items);
+            self.allocator.destroy(object);
+        },
+        .c => {
+            std.heap.c_allocator.free(items);
+            std.heap.c_allocator.destroy(object);
+        },
+    }
     recordNativeArrayFree(self);
 }
 
 pub fn destroyStructNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    destroyStructNativeLayoutWithOwner(self, module, type_name, native_ptr, .vm);
+}
+
+pub fn destroyOwnedStructNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    destroyStructNativeLayoutWithOwner(self, module, type_name, native_ptr, .c);
+}
+
+fn destroyStructNativeLayoutWithOwner(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize, owner: NativeLayoutOwner) void {
     if (native_ptr == 0) return;
-    destroyStructNativeLayoutFields(self, module, type_name, native_ptr);
+    destroyStructNativeLayoutFieldsWithOwner(self, module, type_name, native_ptr, owner);
     const layout = native_layout.structLayout(module, type_name) catch return;
     const word_count = @max(1, std.math.divCeil(usize, layout.size, @sizeOf(u64)) catch unreachable);
     const words: [*]u64 = @ptrFromInt(native_ptr);
-    self.allocator.free(words[0..word_count]);
+    switch (owner) {
+        .vm => self.allocator.free(words[0..word_count]),
+        .c => std.heap.c_allocator.free(words[0..word_count]),
+    }
     recordNativeStructFree(self);
 }
 
 pub fn destroyNativeLayoutValue(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) void {
+    destroyNativeLayoutValueWithOwner(self, module, ty, value, .vm);
+}
+
+fn destroyNativeLayoutValueWithOwner(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value, owner: NativeLayoutOwner) void {
     switch (ty.kind) {
         .ffi_struct => {
             if (value == .raw_ptr) {
-                if (ty.name) |name| destroyStructNativeLayout(self, module, name, value.raw_ptr);
+                if (ty.name) |name| destroyStructNativeLayoutWithOwner(self, module, name, value.raw_ptr, owner);
             }
         },
         .array => {
-            if (value == .raw_ptr) destroyArrayNativeLayout(self, module, ty, value.raw_ptr);
+            if (value == .raw_ptr) destroyArrayNativeLayoutWithOwner(self, module, ty, value.raw_ptr, owner);
         },
-        .enum_instance, .construct_any => self.heap.dropValue(value),
+        .enum_instance => if (ty.name) |name| {
+            if (value == .raw_ptr) destroyEnumNativeLayoutWithOwner(self, module, name, value.raw_ptr, owner);
+        },
+        .construct_any => self.heap.dropValue(value),
         else => {},
     }
 }
@@ -468,8 +502,27 @@ pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, c
     return runtime_abi.tagNativeClosurePointer(raw_ptr);
 }
 
+fn resolveManagedEnumSlots(self: *Vm, runtime_ptr: usize) ?[*]align(1) const runtime_abi.Value {
+    var candidate = runtime_ptr;
+    var depth: usize = 0;
+    while (candidate != 0 and depth < 8) : (depth += 1) {
+        const slots: [*]align(1) const runtime_abi.Value = @ptrFromInt(candidate);
+        if (slots[0] == .integer) return slots;
+        if (slots[0] == .raw_ptr and slots[0].raw_ptr != 0 and slots[0].raw_ptr != candidate) {
+            candidate = slots[0].raw_ptr;
+            continue;
+        }
+        if (self.isManagedStructPointer(candidate)) break;
+        return null;
+    }
+    return null;
+}
+
 pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
+        self.rememberError("enum native copy requires a managed enum value");
+        return error.RuntimeFailure;
+    };
     if (src[0] != .integer) {
         self.rememberError("enum native copy requires an integer tag slot");
         return error.RuntimeFailure;
@@ -503,7 +556,10 @@ pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_na
 /// no out-of-line payload — `kira_destroy_raw_ptr` does not recurse), matching
 /// `kira_enum_clone`'s verbatim 16-byte copy.
 pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
-    const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
+    const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
+        self.rememberError("enum native lowering requires a managed enum value");
+        return error.RuntimeFailure;
+    };
     if (src[0] != .integer) {
         self.rememberFmt(
             "enum native lowering requires an integer tag slot: type={s} slot0={s} slot1={s} ptr=0x{x}",
@@ -580,18 +636,34 @@ pub fn resolveNativeEnumLayoutPointer(self: *Vm, module: *const bytecode.Module,
 }
 
 pub fn destroyEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    destroyEnumNativeLayoutWithOwner(self, module, type_name, native_ptr, .vm);
+}
+
+fn destroyEnumNativeLayoutWithOwner(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize, owner: NativeLayoutOwner) void {
     if (native_ptr == 0) return;
     const words: [*]u64 = @ptrFromInt(native_ptr);
     if (enumNativeVariant(self, module, type_name, words[0])) |native_variant| {
-        destroyEnumNativePayload(self, module, native_variant.payload_ty, words[1]);
+        destroyEnumNativePayloadWithOwner(self, module, native_variant.payload_ty, words[1], owner);
     }
     const native_words: []u64 = words[0..2];
-    self.allocator.free(native_words);
+    switch (owner) {
+        .vm => self.allocator.free(native_words),
+        .c => std.heap.c_allocator.free(native_words),
+    }
+}
+
+pub fn destroyOwnedEnumNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    destroyEnumNativeLayoutWithOwner(self, module, type_name, native_ptr, .c);
 }
 
 const EnumNativeVariant = struct {
     discriminant: u32,
     payload_ty: bytecode.TypeRef,
+};
+
+const NativeLayoutOwner = enum {
+    vm,
+    c,
 };
 
 pub fn enumNativeVariant(self: *Vm, module: *const bytecode.Module, type_name: []const u8, word: u64) ?EnumNativeVariant {
@@ -649,12 +721,19 @@ pub fn enumPayloadFromNativeWord(self: *Vm, module: *const bytecode.Module, payl
 }
 
 pub fn destroyEnumNativePayload(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64) void {
+    destroyEnumNativePayloadWithOwner(self, module, payload_ty, word, .vm);
+}
+
+fn destroyEnumNativePayloadWithOwner(self: *Vm, module: *const bytecode.Module, payload_ty: bytecode.TypeRef, word: u64, owner: NativeLayoutOwner) void {
     if (word == 0) return;
     switch (payload_ty.kind) {
-        .ffi_struct => destroyStructNativeLayout(self, module, payload_ty.name orelse return, @intCast(word)),
-        .array => destroyArrayNativeLayout(self, module, payload_ty, @intCast(word)),
-        .enum_instance => destroyEnumNativeLayout(self, module, payload_ty.name orelse return, @intCast(word)),
-        .string => self.allocator.destroy(@as(*runtime_abi.BridgeString, @ptrFromInt(@as(usize, @intCast(word))))),
+        .ffi_struct => destroyStructNativeLayoutWithOwner(self, module, payload_ty.name orelse return, @intCast(word), owner),
+        .array => destroyArrayNativeLayoutWithOwner(self, module, payload_ty, @intCast(word), owner),
+        .enum_instance => destroyEnumNativeLayoutWithOwner(self, module, payload_ty.name orelse return, @intCast(word), owner),
+        .string => switch (owner) {
+            .vm => self.allocator.destroy(@as(*runtime_abi.BridgeString, @ptrFromInt(@as(usize, @intCast(word))))),
+            .c => std.heap.c_allocator.destroy(@as(*runtime_abi.BridgeString, @ptrFromInt(@as(usize, @intCast(word))))),
+        },
         else => {},
     }
 }
@@ -665,21 +744,66 @@ pub fn materializeNativeResult(
     return_ty: bytecode.TypeRef,
     value: runtime_abi.Value,
 ) !runtime_abi.Value {
+    return materializeNativeResultWithOwner(self, module, return_ty, value, .vm);
+}
+
+pub fn materializeNativeResultFromC(
+    self: *Vm,
+    module: *const bytecode.Module,
+    return_ty: bytecode.TypeRef,
+    value: runtime_abi.Value,
+) !runtime_abi.Value {
+    return materializeNativeResultWithOwner(self, module, return_ty, value, .c);
+}
+
+fn materializeNativeResultWithOwner(
+    self: *Vm,
+    module: *const bytecode.Module,
+    return_ty: bytecode.TypeRef,
+    value: runtime_abi.Value,
+    owner: NativeLayoutOwner,
+) !runtime_abi.Value {
     return switch (return_ty.kind) {
         .ffi_struct => blk: {
             if (value != .raw_ptr or value.raw_ptr == 0) {
                 self.rememberError("native struct result requires a valid pointer");
                 return error.RuntimeFailure;
             }
-            break :blk .{ .raw_ptr = try copyStructFromNativeLayout(self, module, return_ty.name orelse {
+            const type_name = return_ty.name orelse {
                 self.rememberError("native struct result is missing a type name");
                 return error.RuntimeFailure;
-            }, value.raw_ptr) };
+            };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyStructNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            const copied = try copyStructFromNativeLayout(self, module, type_name, value.raw_ptr);
+            destroyStructNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            break :blk .{ .raw_ptr = copied };
+        },
+        .array => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyArrayNativeLayoutWithOwner(self, module, return_ty, value.raw_ptr, owner);
+            const copied = try copyArrayFromNativeLayout(self, module, return_ty, value.raw_ptr);
+            destroyArrayNativeLayoutWithOwner(self, module, return_ty, value.raw_ptr, owner);
+            break :blk .{ .raw_ptr = copied };
+        },
+        .enum_instance => blk: {
+            if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
+            const type_name = return_ty.name orelse {
+                self.rememberError("native enum result is missing a type name");
+                return error.RuntimeFailure;
+            };
+            // Release the native result storage even if materialization fails.
+            errdefer destroyEnumNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            const copied = try copyEnumFromNativeLayout(self, module, type_name, value.raw_ptr);
+            destroyEnumNativeLayoutWithOwner(self, module, type_name, value.raw_ptr, owner);
+            break :blk .{ .raw_ptr = copied };
         },
         .construct_any => blk: {
             if (value != .raw_ptr or value.raw_ptr == 0) break :blk .{ .raw_ptr = 0 };
             break :blk try construct_any.materializeFromNativeIfNeeded(self, module, return_ty, value.raw_ptr);
         },
+        .raw_ptr => try materializeCallbackValueFromNative(self, module, return_ty, value),
         else => value,
     };
 }
@@ -774,6 +898,10 @@ pub fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, t
 }
 
 pub fn destroyStructNativeLayoutFields(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize) void {
+    destroyStructNativeLayoutFieldsWithOwner(self, module, type_name, native_ptr, .vm);
+}
+
+fn destroyStructNativeLayoutFieldsWithOwner(self: *Vm, module: *const bytecode.Module, type_name: []const u8, native_ptr: usize, owner: NativeLayoutOwner) void {
     const type_decl = self.findTypeCached(module, type_name) orelse return;
     for (type_decl.fields, 0..) |field_decl, index| {
         const offset = native_layout.fieldOffset(module, type_name, index) catch continue;
@@ -781,14 +909,14 @@ pub fn destroyStructNativeLayoutFields(self: *Vm, module: *const bytecode.Module
         switch (field_decl.ty.kind) {
             .array => {
                 const array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
-                destroyArrayNativeLayout(self, module, field_decl.ty, array_ptr);
+                destroyArrayNativeLayoutWithOwner(self, module, field_decl.ty, array_ptr, owner);
             },
             .ffi_struct => if (field_decl.ty.name) |nested_name| {
-                destroyStructNativeLayoutFields(self, module, nested_name, address);
+                destroyStructNativeLayoutFieldsWithOwner(self, module, nested_name, address, owner);
             },
             .enum_instance => {
                 const enum_ptr = (@as(*const usize, @ptrFromInt(address))).*;
-                destroyEnumNativeLayout(self, module, field_decl.ty.name orelse return, enum_ptr);
+                destroyEnumNativeLayoutWithOwner(self, module, field_decl.ty.name orelse return, enum_ptr, owner);
             },
             .construct_any => {},
             else => {},
