@@ -354,7 +354,10 @@ pub fn materializeNativeStateValue(self: *Vm, module: *const bytecode.Module, ty
         // then destroys the box payload (see `recoverNativeState`). Clone the
         // preserved `construct_any` so the recovered value is independent of the
         // box copy that is about to be dropped, mirroring `preserveNativeStateValue`.
-        .construct_any => try self.cloneBorrowedManagedValueDynamic(module, value),
+        .construct_any => if (self.heap.isManagedValue(value))
+            try self.cloneBorrowedManagedValueDynamic(module, value)
+        else
+            try copyValueFromNativeLayout(self, module, ty, value),
         .ffi_struct, .array, .enum_instance => try copyValueFromNativeLayout(self, module, ty, value),
         .raw_ptr => try materializeCallbackValueFromNative(self, module, ty, value),
         else => value,
