@@ -237,6 +237,40 @@ aliasing the managed value, then drop it immediately instead of retaining).
 (see the Frontend section) — still open; needs depth guards at the lowering
 recursion sites (`registerExpr`, the main expr lowering, ternary lowering).
 
+## Runtime sweep findings (4-finder run-only sweep)
+
+### S1. Hybrid corrupts stdout when redirected to a file — FIXED
+
+`kira run --backend hybrid DIR > out.txt` wrote only a fragment (e.g. `\nCC` for
+three prints) — silent data loss; pipes/TTYs masked it. `DirectStdoutWriter`
+(`packages/kira_hybrid_runtime/src/runtime.zig`) built a fresh POSITIONAL
+`File.writer()` per call, each writing from logical offset 0 and clobbering a
+seekable destination. FIXED: use `writerStreaming` (advances the shared fd offset).
+Verified: file output now byte-identical to vm/llvm; pipe unaffected.
+
+### S2. VM/hybrid drop stores & mutations to array-element places ≥2 projections deep (high, OPEN)
+
+`repro`: `arr[0].inner.x = 77` prints `1` on vm/hybrid, `77` on llvm. The VM resolves
+the array-index base `arr[i]` to a throwaway COPY for any place nested 2+ levels
+below the index, so the store/mutation is applied to the copy and discarded — silent
+data loss, no diagnostic. Confirmed variants (same root cause): `arr[i].a.b = v`,
+`arr[i].xs[j] = v`, `arr[i].xs.append(v)` (count stays 0; a later index aborts
+"array index out of bounds"), and `borrow mut` of an array element
+(`bump(arr[i])` where `bump(r: borrow mut Row)` never writes back). Single-projection
+(`arr[i].n = v`, `arr[i].whole = struct`) works; the same deep stores on a plain
+local struct work. LLVM is correct throughout. This is a high-impact VM
+place-resolution bug (common patterns) affecting both vm and hybrid; the affine
+backend lvalue path handles it but the VM interpreter does not. Likely in the VM's
+store/append/borrow-arg place resolution for array-element-rooted projections.
+
+### S6. VM/hybrid interpreter stack-overflow on moderate recursion (~350+ frames) (high, OPEN)
+
+`rec(1000)` (simple `1 + rec(d-1)`) crashes the VM interpreter (SIGABRT/SIGSEGV, no
+diagnostic) while llvm returns 1000. The bytecode interpreter recurses on the native
+stack per Kira call frame with no depth bound. Needs a recursion-depth guard in the
+VM interpreter that raises a clean runtime error (the analogue of FE1 for the VM,
+and related to FE2). Real programs with deepish recursion hit this.
+
 ## Coverage gaps to expand next
 
 - attempt/try/handle (blocked by F4)

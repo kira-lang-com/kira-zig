@@ -548,7 +548,13 @@ fn callNativeFunction(self: *HybridRuntime, function_id: u32, args: []const runt
 const DirectStdoutWriter = struct {
     pub fn writeAll(_: DirectStdoutWriter, bytes: []const u8) !void {
         var buffer: [1024]u8 = undefined;
-        var writer = std.Io.File.stdout().writer(std.Options.debug_io, &buffer);
+        // STREAMING, not the default positional, writer. `File.writer()` defaults to
+        // positional writes from logical offset 0; a fresh writer per call therefore
+        // re-clobbered offset 0 on a seekable destination
+        // (`kira run --backend hybrid > out.txt`), losing all but a fragment of the
+        // last print — silent data loss a pipe/TTY masked. Streaming mode uses the
+        // shared, advancing fd offset, so sequential prints append for files and pipes.
+        var writer = std.Io.File.stdout().writerStreaming(std.Options.debug_io, &buffer);
         defer writer.interface.flush() catch {};
         try writer.interface.writeAll(bytes);
     }
