@@ -50,9 +50,21 @@ store/overwrite drop elaboration in
 (`onStoreLocal`/`freeSlot`) and the entry-block enum local slot in
 `backend_capi_codegen.zig`. This is a silent wrong-answer parity bug, not a crash.
 
-### F2. Hybrid leaks a struct-with-owned-array moved into a consumer (high)
+### F2. Hybrid leaks a struct-with-owned-array moved into a consumer — FIXED
 
-`repro: known-bugs/hybrid_struct_array_move_leak`
+`repro: known-bugs/hybrid_struct_array_move_leak` (now leak-clean on all backends)
+
+FIXED in `packages/kira_vm_runtime/src/vm_interpreter_prologue.zig` (`bindArguments`):
+in hybrid mode (`copy_struct_args_by_value=false`) an `.owned`/`.move` struct
+param was unconditionally bound as borrowed, so a `move`d-in managed struct was
+dropped by neither caller nor callee. It is now bound owned (dropped at frame
+exit) when the incoming value is a managed VM struct; a native-layout struct (a
+borrow handed in by native code, e.g. a sokol GraphicsFrame) stays borrowed.
+Verified: leak gone (vm + hybrid `current=0`), kira_ui still renders leak-clean,
+harness parity unchanged, full corpus unchanged (222/223, no new failures).
+
+Original report:
+
 
 A struct holding an owned `[Int]` field, moved into a by-value (owned) consuming
 function, is never dropped in hybrid mode — leaking the struct shell and its
