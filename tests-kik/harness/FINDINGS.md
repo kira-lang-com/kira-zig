@@ -248,7 +248,20 @@ three prints) — silent data loss; pipes/TTYs masked it. `DirectStdoutWriter`
 seekable destination. FIXED: use `writerStreaming` (advances the shared fd offset).
 Verified: file output now byte-identical to vm/llvm; pipe unaffected.
 
-### S2. VM/hybrid drop stores & mutations to array-element places ≥2 projections deep (high, OPEN)
+### S2. VM/hybrid drop stores & mutations to array-element places ≥2 projections deep — FIXED
+
+FIXED via a new `packages/kira_ir/src/lower_from_hir_places.zig` (lowerMutableObject /
+WritebackList / emitWritebacks / lowerDirectCallArgs) wired into
+`lower_from_hir_program.zig` (deep field/index assignment) and `lower_from_hir.zig`
+(nested `.append` receiver + `borrow mut` array-element call args). Any place rooted
+at an array index now read-modify-write-backs the whole element (array_get → apply
+projections to the copy → array_set), so `arr[i].a.b = v`, `arr[i].xs[j] = v`,
+`arr[i].xs.append(v)`, and `bump(arr[i])` (borrow mut) all persist. Verified: all
+variants + a 2000-iter stress are identical across vm/llvm/hybrid and leak-clean;
+corpus green. Regression tests: tests/pass/run/array_element_{deep_field_store,
+nested_append,borrow_mut_writeback,mixed_projection}_parity.
+
+Original report:
 
 `repro`: `arr[0].inner.x = 77` prints `1` on vm/hybrid, `77` on llvm. The VM resolves
 the array-index base `arr[i]` to a throwaway COPY for any place nested 2+ levels
