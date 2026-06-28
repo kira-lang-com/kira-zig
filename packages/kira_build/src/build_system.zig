@@ -186,7 +186,9 @@ pub const BuildSystem = struct {
         if (self.use_cache) {
             const maybe_cache = cache.Cache.initForSource(self.allocator, request.source_path) catch null;
             if (maybe_cache) |build_cache| {
-                const maybe_entry = build_cache.entryForBuild(request.source_path, request.target.execution) catch null;
+                const native_deps_fp = self.nativeDepsFingerprint(request);
+                defer if (native_deps_fp) |fp| self.allocator.free(fp);
+                const maybe_entry = build_cache.entryForBuildWithNativeDeps(request.source_path, request.target.execution, native_deps_fp orelse "") catch null;
                 if (maybe_entry) |entry| {
                     if (entry.hasArtifacts()) {
                         const restore_start = nowTimestamp();
@@ -239,6 +241,38 @@ pub const BuildSystem = struct {
     fn resolveCachedNativeLibraries(self: BuildSystem, request: build_def.BuildRequest) []const native.ResolvedNativeLibrary {
         if (request.target.execution != .vm) return &.{};
         return ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, request.target.selector) catch &.{};
+    }
+
+    /// A content fingerprint of the native static libraries an executable links,
+    /// folded into the build cache key. Resolving the libraries here also ensures
+    /// their artifacts are up to date (recompiling stale ones) before they are
+    /// hashed, so a change to a native source/header produces a new artifact, a
+    /// new fingerprint, and therefore a relink instead of a stale cache restore.
+    /// Returns null for VM (which loads native libraries dynamically at runtime,
+    /// so the bytecode artifact does not depend on their content) or when there
+    /// are no native libraries. Caller owns the returned slice.
+    fn nativeDepsFingerprint(self: BuildSystem, request: build_def.BuildRequest) ?[]const u8 {
+        if (request.target.execution == .vm) return null;
+        const libs = ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, request.target.selector) catch return null;
+        if (libs.len == 0) return null;
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update("native-deps-v1\n");
+        for (libs) |lib| {
+            hasher.update(lib.name);
+            hasher.update("\x00");
+            hasher.update(lib.artifact_path);
+            hasher.update("\x00");
+            if (lib.artifact_path.len > 0) {
+                if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, lib.artifact_path, self.allocator, .limited(256 * 1024 * 1024))) |contents| {
+                    defer self.allocator.free(contents);
+                    hasher.update(contents);
+                } else |_| {}
+            }
+            hasher.update("\n");
+        }
+        var digest: [32]u8 = undefined;
+        hasher.final(&digest);
+        return self.allocator.dupe(u8, &digest) catch null;
     }
 
     fn buildUncached(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
