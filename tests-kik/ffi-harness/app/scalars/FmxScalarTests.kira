@@ -813,3 +813,23 @@ Test FmxManyHopsStress {
     }
     expect { let e: Result<Int, TestFailure> = Result.Ok(174); return e }
 }
+
+// ─── Trap test whose `expect` bridges into @Native ───────────────────────────
+// Regression guard for the hybrid trap path evaluating `__expect()` THROUGH THE
+// BRIDGE. The expect block calls @Native (`fmxNativeAdd`) to select the expected
+// runtime-failure message; on the embedded VM with no @Native hook that call
+// could not resolve, so the expected message would be lost. The runtime now runs
+// `__expect()` through the bridge (runFunctionForValue), so the substring is
+// computed and matched against the real divide-by-zero trap raised by `test()`.
+Test FmxTrapExpectBridgesNative {
+    test { return 1 / 0 }
+    expect {
+        let probe = fmxNativeAdd(40, 2)
+        if probe == 42 {
+            let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("division by zero"))
+            return e
+        }
+        let other: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("unreachable probe value"))
+        return other
+    }
+}

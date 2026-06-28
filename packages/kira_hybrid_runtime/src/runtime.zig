@@ -90,6 +90,31 @@ pub const HybridRuntime = struct {
         try self.invokeRuntime(&runtime_context, function_id, &.{}, null);
     }
 
+    /// Run a zero-argument @Runtime function by id THROUGH THE BRIDGE (the
+    /// @Native invoker installed exactly as `run` sets it up) and return its
+    /// managed VM `runtime_abi.Value`. Unlike `runFunctionWithWriter` this hands
+    /// back the value instead of writing markers, and unlike `invokeRuntime` it
+    /// does not lower the result into a native-layout copy — the caller wants the
+    /// managed VM value to decode in Kira terms (used by `kira test` to evaluate a
+    /// trap test's `__expect()` whose body may call @Native/FFI). The returned
+    /// value is owned by the caller; drop it via `self.vm.dropManagedValue`.
+    pub fn runFunctionForValue(self: *HybridRuntime, function_id: u32, writer: anytype) !runtime_abi.Value {
+        const Context = RuntimeContext(@TypeOf(writer));
+        var runtime_context = Context{
+            .runtime = self,
+            .writer = writer,
+        };
+        native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
+        defer native_bridge.clearRuntimeInvoker();
+        const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
+        return self.vm.runFunctionById(&self.module, function_decl.id, &.{}, writer, .{
+            .context = @as(?*anyopaque, @ptrCast(&runtime_context)),
+            .call_native = nativeCallHook(Context),
+            .resolve_function = resolveFunctionHook(Context),
+            .copy_struct_args_by_value = false,
+        });
+    }
+
     fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: ?*runtime_abi.BridgeValue) !void {
         const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
         runtime_abi.emitExecutionTrace("CALLBACK", "ENTER", "native->runtime fn={s}({d}) args={d}", .{

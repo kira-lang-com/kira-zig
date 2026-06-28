@@ -516,6 +516,28 @@ fn expectedTrapMessage(
     };
 }
 
+/// Same as `expectedTrapMessage`, but evaluates `<name>__expect()` THROUGH THE
+/// HYBRID BRIDGE so an expect block that calls @Native/FFI runs correctly (the
+/// embedded VM with empty hooks would otherwise abort or mis-evaluate it). The
+/// resulting value is still a pure-Kira `Result`, so it decodes against the
+/// runtime's own VM + module exactly as the pure-VM path does.
+fn expectedTrapMessageHybrid(
+    allocator: std.mem.Allocator,
+    runtime: *hybrid_runtime.HybridRuntime,
+    name: []const u8,
+) []const u8 {
+    const expect_name = std.fmt.allocPrint(allocator, "{s}__expect", .{name}) catch return "";
+    const expect_fn = findFunctionByName(runtime.module, expect_name) orelse return "";
+    var discard: std.Io.Writer.Allocating = .init(allocator);
+    defer discard.deinit();
+    const value = runtime.runFunctionForValue(expect_fn.id, &discard.writer) catch return "";
+    const expectation = decodeTestExpectation(&runtime.vm, &runtime.module, expect_fn.return_type, value) catch return "";
+    return switch (expectation) {
+        .expected_error => |expected_error| allocator.dupe(u8, expected_error.message) catch "",
+        .ok => "",
+    };
+}
+
 /// Outcome of re-running a trap-expectation test's `test()` in isolation.
 const TrapResult = struct {
     /// The test raised a runtime trap (the abort the driver could not catch).
@@ -562,14 +584,14 @@ const VmTrapChecker = struct {
 /// Same, but re-runs the trap test through the hybrid runtime (so a trapping
 /// @Native-bridged test is detected too). The expected-message check matches the
 /// VM path: the trap must occur and, when a message was named, contain it. The
-/// expected message is decoded by running `__expect()` on the hybrid runtime's
-/// embedded VM (it is pure Kira), and the actual trap message comes from that
-/// same VM's error buffer.
+/// expected message is decoded by running `__expect()` THROUGH THE BRIDGE (so an
+/// expect block that calls @Native/FFI evaluates correctly), and the actual trap
+/// message comes from the runtime's VM error buffer.
 const HybridTrapChecker = struct {
     runtime: *hybrid_runtime.HybridRuntime,
 
     fn traps(self: HybridTrapChecker, allocator: std.mem.Allocator, name: []const u8) !TrapResult {
-        const expected = expectedTrapMessage(allocator, &self.runtime.vm, &self.runtime.module, name, vm_runtime.Hooks{});
+        const expected = expectedTrapMessageHybrid(allocator, self.runtime, name);
         const fn_name = try std.fmt.allocPrint(allocator, "{s}__test", .{name});
         const fn_id = blk: {
             for (self.runtime.manifest.functions) |function| {
