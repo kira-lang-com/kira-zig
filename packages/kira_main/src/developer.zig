@@ -8,6 +8,7 @@ const kira_project = @import("kira_project");
 const source_pkg = @import("kira_source");
 const runtime_abi = @import("kira_runtime_abi");
 const vm_runtime = @import("kira_vm_runtime");
+const hybrid_runtime = @import("kira_hybrid_runtime");
 const wrappers = @import("runtime_wrappers.zig");
 
 pub const DeveloperFacade = struct {
@@ -165,6 +166,14 @@ pub const DeveloperFacade = struct {
         // and prints PASS/FAIL/SKIP, then execute *that* (no Zig comparison
         // override). Gated by KIRA_PURE_TEST while it is brought up to parity.
         const pure_test = std.c.getenv("KIRA_PURE_TEST") != null;
+        // Under hybrid the driver must run through the hybrid runtime so its
+        // @Native/FFI calls bridge — which needs the linked native library only
+        // the artifact build produces. Take the dedicated hybrid path.
+        if (pure_test and backend == .hybrid) {
+            const output_root = try outputRoot(allocator, input.target.root_path);
+            try ensurePath(output_root);
+            return executeViaHybridDriver(self, source_path, output_root, writer);
+        }
         const result = try build.compileFileForBackendWithOptions(allocator, source_path, test_backend, null, &.{}, .{
             .allow_runtime_direct_ffi = true,
             .require_main = false,
@@ -420,9 +429,15 @@ fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipeli
         return .{ .failed = 1, .total = 1 };
     };
 
+    return tallyDriverOutput(captured.written(), writer);
+}
+
+/// Parse the synthesized driver's PASS/FAIL/SKIP lines into a TestReport,
+/// forwarding each line to the report writer.
+fn tallyDriverOutput(output: []const u8, writer: anytype) !TestReport {
     var report = TestReport{};
     var skipped: usize = 0;
-    var lines = std.mem.tokenizeScalar(u8, captured.written(), '\n');
+    var lines = std.mem.tokenizeScalar(u8, output, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         try writer.print("{s}\n", .{line});
@@ -436,6 +451,53 @@ fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipeli
     }
     report.total = report.passed + report.failed + skipped;
     return report;
+}
+
+/// Run the pure-Kira test driver under the hybrid runtime so @Native/FFI calls
+/// bridge: build the leaf for hybrid (with the driver + Test sections), load the
+/// manifest, and invoke `__kira_test_main` through the bridge, capturing output.
+fn executeViaHybridDriver(self: *DeveloperFacade, source_path: []const u8, output_root: []const u8, writer: anytype) !TestReport {
+    const allocator = self.arena.allocator();
+    const stem = std.fs.path.stem(source_path);
+    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/{s}.test.khm", .{ output_root, stem });
+    var system = build.BuildSystem.init(allocator);
+    const outcome = try system.build(.{
+        .source_path = source_path,
+        .output_path = manifest_path,
+        .target = .{ .execution = .hybrid },
+        .test_mode = true,
+        .synthesize_test_driver = true,
+    });
+    if (outcome.failed()) {
+        if (outcome.source) |source| {
+            try writeDiagnostics(writer, &source, outcome.diagnostics);
+        }
+        return .{ .failed = 1, .total = 1 };
+    }
+    const manifest_artifact = blk: {
+        for (outcome.artifacts) |artifact| {
+            if (artifact.kind == .hybrid_manifest) break :blk artifact;
+        }
+        return error.MissingHybridManifestArtifact;
+    };
+    const manifest = try hybrid_runtime.loadHybridModule(allocator, manifest_artifact.path);
+    var runtime = try hybrid_runtime.HybridRuntime.init(allocator, manifest);
+    defer runtime.deinit();
+
+    const driver_id = blk: {
+        for (manifest.functions) |function| {
+            if (std.mem.eql(u8, function.name, "__kira_test_main")) break :blk function.id;
+        }
+        return .{}; // no tests
+    };
+
+    var captured: std.Io.Writer.Allocating = .init(allocator);
+    defer captured.deinit();
+    runtime.runFunctionWithWriter(driver_id, &captured.writer) catch |err| {
+        try writer.print("FAIL <test-driver> ({s})\n", .{@errorName(err)});
+        return .{ .failed = 1, .total = 1 };
+    };
+    return tallyDriverOutput(captured.written(), writer);
 }
 
 fn executeOneTest(

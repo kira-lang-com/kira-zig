@@ -162,17 +162,27 @@ pub const BuildSystem = struct {
     }
 
     pub fn compileForBackend(self: BuildSystem, request: build_def.BuildRequest) !pipeline.ExecutablePipelineResult {
-        return pipeline.compileFileForBackendWithSelector(
+        return pipeline.compileFileForBackendWithOptions(
             self.allocator,
             request.source_path,
             request.target.execution,
             request.target.selector,
             request.native_libraries,
+            .{
+                .allow_runtime_direct_ffi = request.target.execution == .vm,
+                .require_main = !request.test_mode,
+                .test_mode = request.test_mode,
+                .synthesize_test_driver = request.synthesize_test_driver,
+            },
         );
     }
 
     pub fn build(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
         const total_start = nowTimestamp();
+        // Test builds keep Test sections / the synthesized driver that a normal
+        // build drops, so the on-disk cache (keyed only by source+backend) must
+        // not serve a non-test artifact for them. Always rebuild uncached.
+        if (request.test_mode) return self.buildUncached(request);
         if (self.use_cache) {
             const maybe_cache = cache.Cache.initForSource(self.allocator, request.source_path) catch null;
             if (maybe_cache) |build_cache| {

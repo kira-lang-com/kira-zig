@@ -75,6 +75,21 @@ pub const HybridRuntime = struct {
         }
     }
 
+    /// Invoke a single @Runtime function by id, writing its output to `writer`,
+    /// with the @Native bridge installed exactly as `run` sets it up. Used by
+    /// `kira test --backend hybrid` to run the synthesized pure-Kira test driver
+    /// (so its @Native/FFI calls bridge) and capture its PASS/FAIL/SKIP output.
+    pub fn runFunctionWithWriter(self: *HybridRuntime, function_id: u32, writer: anytype) !void {
+        const Context = RuntimeContext(@TypeOf(writer));
+        var runtime_context = Context{
+            .runtime = self,
+            .writer = writer,
+        };
+        native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
+        defer native_bridge.clearRuntimeInvoker();
+        try self.invokeRuntime(&runtime_context, function_id, &.{}, null);
+    }
+
     fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: ?*runtime_abi.BridgeValue) !void {
         const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
         runtime_abi.emitExecutionTrace("CALLBACK", "ENTER", "native->runtime fn={s}({d}) args={d}", .{
