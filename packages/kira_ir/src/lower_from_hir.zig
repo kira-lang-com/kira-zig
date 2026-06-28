@@ -540,6 +540,7 @@ fn countCallbacksInExpr(expr: *model.Expr) u32 {
         .binary => |node| countCallbacksInExpr(node.lhs) + countCallbacksInExpr(node.rhs),
         .conditional => |node| countCallbacksInExpr(node.condition) + countCallbacksInExpr(node.then_expr) + countCallbacksInExpr(node.else_expr),
         .unary => |node| countCallbacksInExpr(node.operand),
+        .cast => |node| countCallbacksInExpr(node.operand),
         .array => |node| blk: {
             var count: u32 = 0;
             for (node.elements) |element| count += countCallbacksInExpr(element);
@@ -1565,6 +1566,13 @@ pub const Lowerer = struct {
                     },
                     .logical_and, .logical_or => unreachable,
                 }
+                break :blk dst;
+            },
+            .cast => |node| blk: {
+                const src = try self.lowerExpr(instructions, node.operand);
+                const target_vt = try lowerResolvedType(self.program, node.ty);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .convert = .{ .dst = dst, .src = src, .target = target_vt.kind } });
                 break :blk dst;
             },
             .conditional => |node| try self.lowerConditionalExpr(instructions, node),

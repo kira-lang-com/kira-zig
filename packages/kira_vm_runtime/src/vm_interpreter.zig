@@ -248,6 +248,12 @@ pub fn runPrepared(
             pc += 1;
             continue :dispatch code[pc];
         },
+        .convert => |value| {
+            const src = registers[value.src];
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.convertValue(vm, src, value.to_float));
+            pc += 1;
+            continue :dispatch code[pc];
+        },
         .compare => |value| {
             const lhs = registers[value.lhs];
             const rhs = registers[value.rhs];

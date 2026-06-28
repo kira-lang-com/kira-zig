@@ -17,6 +17,7 @@ pub const OpCode = enum(u8) {
     multiply,
     divide,
     modulo,
+    convert,
     compare,
     unary,
     store_local,
@@ -80,6 +81,10 @@ pub const Instruction = union(OpCode) {
     multiply: struct { dst: u32, lhs: u32, rhs: u32 },
     divide: struct { dst: u32, lhs: u32, rhs: u32 },
     modulo: struct { dst: u32, lhs: u32, rhs: u32 },
+    // Numeric cast. `to_float` selects the target: true => Int->Float, false =>
+    // Float->Int (truncate toward zero). A cast to a value's existing kind is an
+    // identity copy. The source kind is resolved from the operand's runtime tag.
+    convert: struct { dst: u32, src: u32, to_float: bool },
     compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp },
     unary: struct { dst: u32, src: u32, op: UnaryOp },
     store_local: struct { local: u32, src: u32, borrow: bool = false },

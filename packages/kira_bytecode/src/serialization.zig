@@ -179,6 +179,11 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.lhs, .little);
                     try writer.writeInt(u32, value.rhs, .little);
                 },
+                .convert => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writer.writeByte(if (value.to_float) 1 else 0);
+                },
                 .compare => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
@@ -575,6 +580,11 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.takeInt(u32, .little),
                     .lhs = try reader.takeInt(u32, .little),
                     .rhs = try reader.takeInt(u32, .little),
+                } }),
+                .convert => try instructions.append(.{ .convert = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                    .to_float = (try reader.takeByte()) != 0,
                 } }),
                 .compare => try instructions.append(.{ .compare = .{
                     .dst = try reader.takeInt(u32, .little),

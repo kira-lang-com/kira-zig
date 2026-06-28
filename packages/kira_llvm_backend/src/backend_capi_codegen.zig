@@ -196,6 +196,16 @@ pub const FunctionCodegen = struct {
             .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, self.registers[v.lhs], self.registers[v.rhs], "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
             .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
             .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
+            .convert => |v| {
+                const src_is_float = self.isFloat(v.src);
+                if (v.target == .float) {
+                    // Int -> Float is sitofp; Float -> Float is identity.
+                    self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
+                } else {
+                    // Float -> Int truncates toward zero (fptosi); Int -> Int is identity.
+                    self.registers[v.dst] = if (src_is_float) api.LLVMBuildFPToSI(b, self.registers[v.src], self.types.i64, "fptosi") else self.registers[v.src];
+                }
+            },
             .compare => |v| self.registers[v.dst] = try self.lowerCompare(v),
             .unary => |v| self.registers[v.dst] = switch (v.op) {
                 .negate => if (self.isFloat(v.src)) api.LLVMBuildFNeg(b, self.registers[v.src], "fneg") else api.LLVMBuildNeg(b, self.registers[v.src], "neg"),

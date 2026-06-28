@@ -201,6 +201,41 @@ pub fn divideValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value)
     };
 }
 
+// Truncate a float toward zero into an i64, saturating out-of-range and NaN
+// inputs so the VM never hits Zig's `@intFromFloat` UB. In-range values match
+// the LLVM backend's `fptosi`.
+fn floatToIntTruncate(f: f64) i64 {
+    if (std.math.isNan(f)) return 0;
+    const max_f: f64 = @floatFromInt(std.math.maxInt(i64));
+    const min_f: f64 = @floatFromInt(std.math.minInt(i64));
+    if (f >= max_f) return std.math.maxInt(i64);
+    if (f <= min_f) return std.math.minInt(i64);
+    return @intFromFloat(@trunc(f));
+}
+
+// `Int(x)` / `Float(x)` numeric cast. `to_float` selects the target. A cast to
+// a value's existing kind is an identity copy; Float->Int truncates toward zero.
+pub fn convertValue(vm: anytype, src: runtime_abi.Value, to_float: bool) !runtime_abi.Value {
+    if (to_float) {
+        return switch (src) {
+            .float => src,
+            .integer => |value| .{ .float = @floatFromInt(value) },
+            else => {
+                vm.rememberError("vm Float() expects a numeric operand");
+                return error.RuntimeFailure;
+            },
+        };
+    }
+    return switch (src) {
+        .integer => src,
+        .float => |value| .{ .integer = floatToIntTruncate(value) },
+        else => {
+            vm.rememberError("vm Int() expects a numeric operand");
+            return error.RuntimeFailure;
+        },
+    };
+}
+
 pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
     return switch (lhs) {
         .integer => |lhs_value| blk: {
