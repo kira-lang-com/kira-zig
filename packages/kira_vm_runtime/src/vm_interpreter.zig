@@ -49,7 +49,16 @@ fn nativeStateConsumesRuntimeOwnership(field_ty: bytecode.TypeRef) bool {
     };
 }
 
-var dbg_call_depth: usize = 0;
+/// Process-global native-call-stack depth for the bytecode interpreter, which
+/// recurses on the native stack once per Kira call frame (`runPrepared` calls
+/// itself for nested calls). Bounded by `max_call_depth` so deep or runaway
+/// recursion raises a clean `RuntimeFailure` instead of overflowing the native
+/// stack and aborting (SIGABRT/SIGSEGV with no diagnostic). The limit is
+/// conservative because each `runPrepared` frame is large (~26 KiB on the
+/// observed build): the native-stack overflow cliff sits just above ~315 frames
+/// on a default 8 MiB stack, so the bound is kept comfortably below it. (S6)
+var call_depth: usize = 0;
+const max_call_depth: usize = 256;
 
 pub fn runPrepared(
     vm: *Vm,
@@ -60,11 +69,11 @@ pub fn runPrepared(
     hooks: Hooks,
 ) anyerror!runtime_abi.Value {
     const decl = function.decl;
-    dbg_call_depth += 1;
-    defer dbg_call_depth -= 1;
-    if (dbg_call_depth > 600 and std.c.getenv("KIRA_DBG") != null) {
-        if (dbg_call_depth % 50 == 0 or dbg_call_depth > 1400) std.debug.print("DBG depth={d} fn={s}\n", .{ dbg_call_depth, decl.name });
-        if (dbg_call_depth > 1500) return error.RuntimeFailure;
+    call_depth += 1;
+    defer call_depth -= 1;
+    if (call_depth > max_call_depth) {
+        vm.rememberError("recursion depth limit exceeded (256 nested calls)");
+        return error.RuntimeFailure;
     }
     const module = prepared.module;
     const code = function.code;

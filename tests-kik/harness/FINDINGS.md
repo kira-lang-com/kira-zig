@@ -276,13 +276,23 @@ place-resolution bug (common patterns) affecting both vm and hybrid; the affine
 backend lvalue path handles it but the VM interpreter does not. Likely in the VM's
 store/append/borrow-arg place resolution for array-element-rooted projections.
 
-### S6. VM/hybrid interpreter stack-overflow on moderate recursion (~350+ frames) (high, OPEN)
+### S6. VM interpreter stack-overflow on moderate recursion — FIXED
 
-`rec(1000)` (simple `1 + rec(d-1)`) crashes the VM interpreter (SIGABRT/SIGSEGV, no
-diagnostic) while llvm returns 1000. The bytecode interpreter recurses on the native
-stack per Kira call frame with no depth bound. Needs a recursion-depth guard in the
-VM interpreter that raises a clean runtime error (the analogue of FE1 for the VM,
-and related to FE2). Real programs with deepish recursion hit this.
+`rec(1000)` (simple `1 + rec(d-1)`) crashed the VM interpreter
+(SIGABRT/SIGSEGV, no diagnostic) — `runPrepared` recurses on the native stack
+once per Kira call frame with no depth bound, and each frame is large (~26 KiB),
+so the 8 MiB stack overflows at ~315 frames. FIXED with an always-on depth guard
+in `vm_interpreter.zig runPrepared`: a process-global `call_depth` bounded by
+`max_call_depth` (256, comfortably below the ~315-frame cliff) raises a clean
+`RuntimeFailure` ("recursion depth limit exceeded (256 nested calls)") instead of
+crashing. (Replaces the old env-gated `KIRA_DBG` debug counter that only tripped
+at 1500 — far past the crash.) Shallow recursion is unaffected. Kik regression:
+`CfxSShallowRecursionOk` (rec 200 → 200) and `CfxSDeepRecursionTrapsCleanly`
+(rec 1000 → clean trap). NOTE: the limit is conservative because of the large
+per-frame footprint; raising it would require running the interpreter on a
+larger execution stack (the LLVM backend, with small native frames, recurses far
+deeper — a remaining vm/llvm depth-parity gap, but both now fail safely rather
+than corrupting memory).
 
 ### S7. Property access on a call's temporary fails to lower (KIR001) — FIXED
 
