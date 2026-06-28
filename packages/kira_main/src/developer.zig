@@ -155,10 +155,15 @@ pub const DeveloperFacade = struct {
         // native-bridge code be exercised as `Test` declarations. Bare `kira test`
         // stays on the VM (fast) regardless of the project's default backend.
         const test_backend: build_def.ExecutionTarget = if (backend == .hybrid) .hybrid else .vm;
+        // Opt-in pure-Kira driver: synthesize a Kira entry that runs every Test
+        // and prints PASS/FAIL/SKIP, then execute *that* (no Zig comparison
+        // override). Gated by KIRA_PURE_TEST while it is brought up to parity.
+        const pure_test = std.c.getenv("KIRA_PURE_TEST") != null;
         const result = try build.compileFileForBackendWithOptions(allocator, source_path, test_backend, null, &.{}, .{
             .allow_runtime_direct_ffi = true,
             .require_main = false,
             .test_mode = true,
+            .synthesize_test_driver = pure_test,
         });
         if (result.failed()) {
             if (expected_diagnostic) |expected| {
@@ -177,6 +182,7 @@ pub const DeveloperFacade = struct {
             try writer.print("FAIL {s} (expected diagnostic {s}, but program succeeded)\n", .{ input.target.displayPath(), expected });
             return .{ .failed = 1, .total = 1 };
         }
+        if (pure_test) return executeViaDriver(allocator, result, writer);
         return executeCompiledTests(allocator, result, writer);
     }
 
@@ -343,8 +349,8 @@ fn executeCompiledTests(allocator: std.mem.Allocator, result: build.ExecutablePi
     for (module.construct_implementations) |implementation| {
         if (!std.mem.eql(u8, implementation.construct_constraint.construct_name, "Test")) continue;
         report.total += 1;
-        const test_name = try std.fmt.allocPrint(allocator, "{s}.test", .{implementation.type_name});
-        const expect_name = try std.fmt.allocPrint(allocator, "{s}.expect", .{implementation.type_name});
+        const test_name = try std.fmt.allocPrint(allocator, "{s}__test", .{implementation.type_name});
+        const expect_name = try std.fmt.allocPrint(allocator, "{s}__expect", .{implementation.type_name});
         const test_function = findFunctionByName(module, test_name) orelse {
             report.failed += 1;
             try writer.print("FAIL {s} (missing test artifact)\n", .{implementation.type_name});
@@ -370,6 +376,47 @@ fn executeCompiledTests(allocator: std.mem.Allocator, result: build.ExecutablePi
         };
         try executeOneTest(&report, &vm, &module, test_function, expectation, &ffi_dispatcher, writer, implementation.type_name);
     }
+    return report;
+}
+
+/// Execute the synthesized pure-Kira test driver: run `__kira_test_main` (which
+/// runs every Test, compares in Kira, and prints PASS/FAIL/SKIP) and tally its
+/// output. No Zig comparison override — the suite ran as ordinary Kira.
+fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipelineResult, writer: anytype) !TestReport {
+    const module = result.bytecode_module orelse return error.MissingBytecodeArtifact;
+    const driver = findFunctionByName(module, "__kira_test_main") orelse return .{};
+
+    var vm = vm_runtime.Vm.init(std.heap.smp_allocator);
+    defer vm.deinit();
+    var ffi_dispatcher = vm_runtime.FfiDispatcher.init(std.heap.smp_allocator, &module);
+    defer ffi_dispatcher.deinit();
+    for (result.native_libraries) |library| try ffi_dispatcher.registerLibrary(library.name, library.artifact_path);
+
+    var captured: std.Io.Writer.Allocating = .init(allocator);
+    defer captured.deinit();
+    _ = vm.runFunctionById(&module, driver.id, &.{}, &captured.writer, .{
+        .context = &ffi_dispatcher,
+        .call_native = vm_runtime.FfiDispatcher.hook,
+    }) catch |err| {
+        try writer.print("FAIL <test-driver> ({s})\n", .{@errorName(err)});
+        return .{ .failed = 1, .total = 1 };
+    };
+
+    var report = TestReport{};
+    var skipped: usize = 0;
+    var lines = std.mem.tokenizeScalar(u8, captured.written(), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try writer.print("{s}\n", .{line});
+        if (std.mem.startsWith(u8, line, "PASS ")) {
+            report.passed += 1;
+        } else if (std.mem.startsWith(u8, line, "FAIL ")) {
+            report.failed += 1;
+        } else if (std.mem.startsWith(u8, line, "SKIP ")) {
+            skipped += 1;
+        }
+    }
+    report.total = report.passed + report.failed + skipped;
     return report;
 }
 

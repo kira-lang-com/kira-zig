@@ -55,6 +55,10 @@ pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Prog
             try markReachableFunctionByName(allocator, program, &reachable, test_case.test_function);
             try markReachableFunctionByName(allocator, program, &reachable, test_case.expect_function);
         }
+        // The synthesized pure-Kira test driver (when present) is the entry the
+        // test runner invokes by name; keep it (and everything it calls) live.
+        // No-op when the driver was not synthesized.
+        try markReachableFunctionByName(allocator, program, &reachable, "__kira_test_main");
     }
 
     const constructs = try lowerConstructs(allocator, program);
