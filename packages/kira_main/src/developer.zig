@@ -104,8 +104,14 @@ pub const DeveloperFacade = struct {
 
     pub fn testPackage(self: *DeveloperFacade, path: []const u8, backend: api.KiraDeveloperBackend) !bool {
         self.reset();
-        if (backend != .default and backend != .vm) {
-            try self.setReport("error[KCLI020]: unsupported test backend\n  kira test currently executes generated Test artifacts through the VM runner.\n");
+        // Test functions execute through the VM runner. The VM can additionally
+        // dispatch into @Native packages when the leaf is built for hybrid, so
+        // `--backend hybrid` (and a hybrid project default) is supported and lets
+        // FFI / native-bridge code be exercised as Foundation `Test` declarations.
+        // llvm/wasm produce a standalone native artifact rather than VM-runnable
+        // Test functions, so they remain unsupported here.
+        if (backend == .llvm or backend == .wasm32_emscripten) {
+            try self.setReport("error[KCLI020]: unsupported test backend\n  kira test executes Test functions through the VM runner (optionally dispatching into @Native packages under hybrid); llvm/wasm are not supported.\n");
             return false;
         }
         build.setNativePreparationMode(.artifacts_only);
@@ -118,7 +124,7 @@ pub const DeveloperFacade = struct {
         var aggregate = TestReport{};
         for (leaves) |leaf| {
             if (leaves.len > 1) try full.writer.print("suite {s}\n", .{leaf});
-            const leaf_report = try self.executeLeaf(leaf, &full.writer);
+            const leaf_report = try self.executeLeaf(leaf, backend, &full.writer);
             aggregate.add(leaf_report);
         }
         try full.writer.print("test result: {d} passed; {d} failed; {d} total\n", .{
@@ -138,12 +144,18 @@ pub const DeveloperFacade = struct {
         return @ptrCast(&self.error_buffer);
     }
 
-    fn executeLeaf(self: *DeveloperFacade, input_path: []const u8, writer: anytype) !TestReport {
+    fn executeLeaf(self: *DeveloperFacade, input_path: []const u8, backend: api.KiraDeveloperBackend, writer: anytype) !TestReport {
         const allocator = self.arena.allocator();
         const input = try resolveInput(allocator, input_path);
         const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
         const expected_diagnostic = try discoverExpectedDiagnostic(allocator, input.target.root_path orelse std.fs.path.dirname(source_path) orelse ".");
-        const result = try build.compileFileForBackendWithOptions(allocator, source_path, .vm, null, &.{}, .{
+        // Test functions run on the VM. When `--backend hybrid` is explicitly
+        // requested the leaf is compiled for hybrid so its @Native packages
+        // produce native libraries the VM dispatches into, letting FFI /
+        // native-bridge code be exercised as `Test` declarations. Bare `kira test`
+        // stays on the VM (fast) regardless of the project's default backend.
+        const test_backend: build_def.ExecutionTarget = if (backend == .hybrid) .hybrid else .vm;
+        const result = try build.compileFileForBackendWithOptions(allocator, source_path, test_backend, null, &.{}, .{
             .allow_runtime_direct_ffi = true,
             .require_main = false,
             .test_mode = true,
