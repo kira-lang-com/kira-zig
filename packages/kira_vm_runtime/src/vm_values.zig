@@ -197,7 +197,10 @@ pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value)
                 vm.rememberError("vm modulo does not allow division by zero");
                 return error.RuntimeFailure;
             }
-            break :blk .{ .integer = @mod(lhs_value, rhs.integer) };
+            // Truncated remainder (toward zero) to match `@divTrunc` above, the
+            // LLVM backend's `srem`, and Rust's `%`, so `(a/b)*b + a%b == a`
+            // holds for negative operands and vm/llvm/hybrid agree (S8).
+            break :blk .{ .integer = @rem(lhs_value, rhs.integer) };
         },
         .float => |lhs_value| blk: {
             if (rhs != .float) {
@@ -208,7 +211,9 @@ pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value)
                 vm.rememberError("vm modulo does not allow division by zero");
                 return error.RuntimeFailure;
             }
-            break :blk .{ .float = @mod(lhs_value, rhs.float) };
+            // Truncated remainder (toward zero) to match integer `%`, the LLVM
+            // backend's `frem`, and Rust's `%` (S8).
+            break :blk .{ .float = @rem(lhs_value, rhs.float) };
         },
         else => {
             vm.rememberError("vm modulo expects numeric operands");

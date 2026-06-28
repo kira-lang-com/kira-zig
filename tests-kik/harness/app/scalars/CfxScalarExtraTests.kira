@@ -1269,3 +1269,81 @@ Test CfxSTrapModZeroLoop {
     }
     expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
 }
+
+// ---------------------------------------------------------------------------
+// Negative `%` truncates toward zero (S8)
+//
+// `%` must truncate (sign follows the dividend) to match `/` (@divTrunc), the
+// LLVM backend's srem, and Rust — NOT floored (@mod). These previously failed
+// on the VM (floored gave 3 / -3) and disagreed with the LLVM backend.
+// ---------------------------------------------------------------------------
+
+Test CfxSModNegDividendPosDivisor {
+    test { return (0 - 17) % 5 }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 2); return e }
+}
+
+Test CfxSModPosDividendNegDivisor {
+    test { return 17 % (0 - 5) }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+}
+
+Test CfxSModNegDividendNegDivisor {
+    test { return (0 - 17) % (0 - 5) }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 2); return e }
+}
+
+Test CfxSModNegExact {
+    test { return (0 - 20) % 5 }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+}
+
+Test CfxSDivModIdentityNegDividend {
+    test {
+        let a = 0 - 17
+        let b = 5
+        return (a / b) * b + (a % b)
+    }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 17); return e }
+}
+
+Test CfxSDivModIdentityNegDivisor {
+    test {
+        let a = 17
+        let b = 0 - 5
+        return (a / b) * b + (a % b)
+    }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(17); return e }
+}
+
+Test CfxSDivModIdentityGridMixedSigns {
+    test {
+        // (a/b)*b + a%b == a over a grid of signed operands; count the holds.
+        var ok = 0
+        var a = 0 - 12
+        while a <= 12 {
+            var b = 0 - 4
+            while b <= 4 {
+                if b != 0 {
+                    if (a / b) * b + (a % b) == a {
+                        ok = ok + 1
+                    }
+                }
+                b = b + 1
+            }
+            a = a + 1
+        }
+        // a in [-12,12] = 25 values; b in [-4,4] \ {0} = 8 -> 200 holds.
+        return ok
+    }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(200); return e }
+}
+
+Test CfxSFloatModNegTruncates {
+    test {
+        let r = (0.0 - 9.0) % 4.0
+        // truncated remainder: sign follows dividend -> -1.0 (floored would be 3.0)
+        return r == (0.0 - 1.0) ? 1 : 0
+    }
+    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+}

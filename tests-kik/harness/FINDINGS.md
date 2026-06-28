@@ -297,16 +297,18 @@ marked the callee reachable → never lowered. FIXED by adding the missing
 `tests/pass/run/call_temp_string_count_parity`. `call().count` now lowers on
 vm/llvm/hybrid.
 
-### S8. Negative `%` uses floored modulo while `/` truncates toward zero (medium, OPEN)
+### S8. Negative `%` was floored on the VM while `/` truncates — FIXED
 
-Surfaced by the `kira test` suite migration. `(0 - 17) % 5` returns `3`
-(Python/floored modulo) but `(0 - 17) / 5` returns `-3` (truncated toward zero),
-so the standard division identity `(a / b) * b + (a % b) == a` is BROKEN for
-negative `a`. `/` and `%` must agree on rounding. Kira models Rust affine
-ownership and Rust uses truncated modulo (`-17 % 5 == -2`), so the fix is to make
-`%` truncate toward zero to match `/` — and it must be fixed across BOTH the VM
-interpreter and the LLVM backend for parity. Minimal repro:
-`test { return (0 - 17) % 5 } expect { Result.Ok(0 - 2) }` fails (gets 3).
+Surfaced by the `kira test` suite migration. The VM computed `%` with `@mod`
+(floored): `(0 - 17) % 5` returned `3`, while `(0 - 17) / 5` returned `-3`
+(`@divTrunc`), so `(a/b)*b + a%b == a` was BROKEN for negative operands — AND it
+disagreed with the LLVM backend, which uses truncated `srem`/`frem` (so this was
+a vm/hybrid-vs-llvm PARITY bug too: VM/hybrid gave `3`, LLVM gave `-2`). FIXED by
+switching VM integer and float modulo to `@rem` (truncated toward zero), matching
+`@divTrunc`, LLVM, and Rust (`vm_values.zig moduloValues`). Now all three
+backends agree and the division identity holds. Regression coverage:
+`tests/pass/run/negative_modulo_truncation_parity` (vm/llvm/hybrid) and the
+`CfxSMod*`/`CfxSDivModIdentity*` tests in the kik harness.
 
 ## Coverage gaps to expand next
 
