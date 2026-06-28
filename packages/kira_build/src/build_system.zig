@@ -7,6 +7,7 @@ const hybrid = @import("kira_hybrid_definition");
 const runtime_abi = @import("kira_runtime_abi");
 const llvm_backend = @import("kira_llvm_backend");
 const native = @import("kira_native_lib_definition");
+const package_manager = @import("kira_package_manager");
 const pipeline = @import("pipeline.zig");
 const ffi_support = @import("ffi_support.zig");
 const builtin = @import("builtin");
@@ -261,12 +262,18 @@ pub const BuildSystem = struct {
             (llvm_backend.emscripten.selector(self.allocator) catch return null)
         else
             request.target.selector;
-        // The linker draws from the project's resolved native libraries (which
-        // already include transitive package dependencies) AND any explicit
-        // pre-resolved libraries carried on the request, so the fingerprint must
-        // cover both -- otherwise a change to an explicit/dependency artifact
-        // would not invalidate the cached executable.
-        const resolved = ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, selector) catch return null;
+        // Resolve the same native-library set the linker uses: the leaf's
+        // manifest libraries PLUS every dependency package's libraries reachable
+        // through the module map (the compile path resolves via the module map,
+        // not just the leaf manifest). Plus any explicit pre-resolved libraries
+        // on the request. Otherwise a change to a dependency/import-only or
+        // explicit artifact would not invalidate the cached executable. Falls
+        // back to the leaf-only set if the module map cannot be loaded.
+        const leaf = ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, selector) catch return null;
+        const resolved = blk: {
+            const module_map = package_manager.loadModuleMapForSource(self.allocator, request.source_path) catch break :blk leaf;
+            break :blk ffi_support.prepareDeclaredNativeLibrariesForTarget(self.allocator, leaf, module_map, selector) catch leaf;
+        };
         if (resolved.len == 0 and request.native_libraries.len == 0) return null;
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
         hasher.update("native-deps-v1\n");
