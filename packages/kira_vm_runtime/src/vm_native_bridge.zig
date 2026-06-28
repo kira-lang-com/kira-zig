@@ -786,6 +786,54 @@ fn destroyEnumNativePayloadWithOwner(self: *Vm, module: *const bytecode.Module, 
     }
 }
 
+fn isFlatScalarKind(kind: bytecode.TypeRef.Kind) bool {
+    return switch (kind) {
+        .void, .integer, .float, .boolean => true,
+        else => false,
+    };
+}
+
+/// Whether the native layout produced for a callback return of `return_ty` (whose
+/// managed runtime value is at `runtime_ptr`) owns ALL of its data — so the
+/// managed VM value can be dropped immediately after lowering: a Rust-style move
+/// into native ownership, with no lingering alias and no per-call retention.
+///
+/// Returns false (the managed value MUST stay alive, because the native copy
+/// borrows its bytes) whenever any payload / field / element is a `string`,
+/// `raw_ptr`, or `construct_any`, or is a nested aggregate this conservative,
+/// allocation-free check does not descend into. Flat-scalar aggregates
+/// (an enum with a scalar/void payload, a struct of scalars, an array of scalars)
+/// are deep-copied wholesale by the lowering, so they are self-contained.
+pub fn nativeReturnIsSelfContained(
+    self: *Vm,
+    module: *const bytecode.Module,
+    return_ty: bytecode.TypeRef,
+    runtime_ptr: usize,
+) bool {
+    return switch (return_ty.kind) {
+        .enum_instance => blk: {
+            const type_name = return_ty.name orelse break :blk false;
+            const slots = resolveManagedEnumSlots(self, runtime_ptr) orelse break :blk false;
+            if (slots[0] != .integer) break :blk false;
+            const payload_ty = enumPayloadType(self, module, type_name, @intCast(slots[0].integer)) orelse break :blk false;
+            break :blk isFlatScalarKind(payload_ty.kind);
+        },
+        .array => blk: {
+            const element_ty = self.arrayElementType(module, return_ty) catch break :blk false;
+            break :blk isFlatScalarKind(element_ty.kind);
+        },
+        .ffi_struct => blk: {
+            const type_name = return_ty.name orelse break :blk false;
+            const type_decl = self.findTypeCached(module, type_name) orelse break :blk false;
+            for (type_decl.fields) |field_decl| {
+                if (!isFlatScalarKind(field_decl.ty.kind)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
 pub fn materializeNativeResult(
     self: *Vm,
     module: *const bytecode.Module,

@@ -393,6 +393,10 @@ pub const Vm = struct {
         return native_bridge.copyArrayToNativeLayout(self, module, array_ty, runtime_array_ptr);
     }
 
+    pub fn nativeReturnIsSelfContained(self: *Vm, module: *const bytecode.Module, return_ty: bytecode.TypeRef, runtime_ptr: usize) bool {
+        return native_bridge.nativeReturnIsSelfContained(self, module, return_ty, runtime_ptr);
+    }
+
     pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) anyerror!usize {
         return native_bridge.copyArrayFromNativeLayout(self, module, array_ty, native_array_ptr);
     }

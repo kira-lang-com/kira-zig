@@ -209,8 +209,15 @@ pub const HybridRuntime = struct {
                 .type_name = type_name,
                 .ptr = native_result,
             });
-            try self.pending_callback_return_values.append(self.allocator, result);
-            result_owned_by_pending = true;
+            if (self.vm.nativeReturnIsSelfContained(&self.module, function_decl.return_type, result.raw_ptr)) {
+                // The native copy owns all of its data, so this is a Rust-style
+                // move into native ownership: drop the managed VM value immediately
+                // (via the trailing drop below) instead of retaining it for the
+                // whole runtime lifetime, which otherwise grows without bound (F6).
+            } else {
+                try self.pending_callback_return_values.append(self.allocator, result);
+                result_owned_by_pending = true;
+            }
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_result });
         } else if (function_decl.return_type.kind == .array and result == .raw_ptr and result.raw_ptr != 0) {
             const array_ty = function_decl.return_type;
@@ -220,8 +227,15 @@ pub const HybridRuntime = struct {
                 .ty = array_ty,
                 .ptr = native_array,
             });
-            try self.pending_callback_return_values.append(self.allocator, result);
-            result_owned_by_pending = true;
+            if (self.vm.nativeReturnIsSelfContained(&self.module, function_decl.return_type, result.raw_ptr)) {
+                // The native copy owns all of its data, so this is a Rust-style
+                // move into native ownership: drop the managed VM value immediately
+                // (via the trailing drop below) instead of retaining it for the
+                // whole runtime lifetime, which otherwise grows without bound (F6).
+            } else {
+                try self.pending_callback_return_values.append(self.allocator, result);
+                result_owned_by_pending = true;
+            }
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_array });
         } else if (function_decl.return_type.kind == .enum_instance and result == .raw_ptr and result.raw_ptr != 0) {
             // An enum returned to native is moved into a native struct field as a raw pointer
@@ -237,8 +251,15 @@ pub const HybridRuntime = struct {
                 .type_name = type_name,
                 .ptr = native_enum,
             });
-            try self.pending_callback_return_values.append(self.allocator, result);
-            result_owned_by_pending = true;
+            if (self.vm.nativeReturnIsSelfContained(&self.module, function_decl.return_type, result.raw_ptr)) {
+                // The native copy owns all of its data, so this is a Rust-style
+                // move into native ownership: drop the managed VM value immediately
+                // (via the trailing drop below) instead of retaining it for the
+                // whole runtime lifetime, which otherwise grows without bound (F6).
+            } else {
+                try self.pending_callback_return_values.append(self.allocator, result);
+                result_owned_by_pending = true;
+            }
             bridge_result = runtime_abi.bridgeValueFromValue(.{ .raw_ptr = native_enum });
         } else switch (result) {
             // A scalar/void return owns no heap and is handed to native BY VALUE

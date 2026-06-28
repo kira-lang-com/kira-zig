@@ -240,19 +240,25 @@ and are handed to native BY VALUE, so native cannot borrow into them — they ar
 longer retained (dropped immediately, a no-op). This bounds growth for the common
 case (a per-frame callback returning a status Int/Bool or nothing).
 
-STILL OPEN (the headline aggregate case): enum/struct/array/string returns are
-still retained until teardown. They genuinely MUST be, because the native block
-the callback hands back BORROWS into the managed value rather than owning a copy —
-e.g. `enumPayloadToNativeWord` (vm_native_bridge.zig) boxes a string payload as a
+SELF-CONTAINED AGGREGATES — also fixed (Rust-style move). An aggregate return whose
+payload/fields/elements are all flat scalars (an enum with a scalar/void payload, a
+struct of scalars, an array of scalars) is deep-copied wholesale by the lowering, so
+the native copy owns everything and borrows nothing. `nativeReturnIsSelfContained`
+(vm_native_bridge.zig) detects this from the return type (+ the actual enum
+discriminant), and the managed VM value is then MOVED into native ownership and
+dropped immediately rather than retained — zero extra copies, no lingering alias,
+growth bounded. Validated: runtime_native_* 6/6 (incl. the F3 enum-bridge case,
+leak-clean), full backend suite GREEN.
+
+STILL OPEN (borrow-bearing aggregates only): a return that contains a `string`,
+`raw_ptr`, or `construct_any` anywhere is still retained, because the native block
+BORROWS those bytes — e.g. `enumPayloadToNativeWord` boxes a string payload as a
 `BridgeString { .ptr = value.string.ptr }` pointing straight at the managed VM
-string's bytes; dropping the managed enum would dangle it (a UAF — the same affine
-ownership boundary that produced the F3 double-free). Bounding these requires the
-native lowering (`lowerEnumToNativeOwned`, `lowerStructToNativeLayout`,
-`copyArrayToNativeLayout`, and the `BridgeString` string path) to DEEP-COPY borrowed
-payloads into native-owned (libc) memory that native frees, so the managed value
-becomes independent and droppable per-call. That is a cross-cutting ownership
-change in the F3 minefield and is deferred rather than risk reintroducing a
-double-free/UAF.
+string's bytes, and `destroyStructNativeLayoutFieldsWithOwner` has no `.string`
+case (struct string fields borrow too). Dropping the managed value would dangle
+them (UAF — the F3 affine boundary). Fully moving these needs the lowering to
+DEEP-COPY the borrowed bytes into native-owned (libc) memory and every destroy path
+to free them; deferred rather than risk reintroducing a double-free/UAF.
 
 ### FE2. Semantic-lowering stack overflow on long flat chains (high, open)
 
