@@ -253,7 +253,15 @@ pub const BuildSystem = struct {
     /// are no native libraries. Caller owns the returned slice.
     fn nativeDepsFingerprint(self: BuildSystem, request: build_def.BuildRequest) ?[]const u8 {
         if (request.target.execution == .vm) return null;
-        const libs = ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, request.target.selector) catch return null;
+        // Resolve with the target's real selector. The CLI leaves the selector
+        // null for wasm and the pipeline substitutes the Emscripten one later, so
+        // mirror that here -- otherwise the fingerprint would hash host libraries
+        // instead of the wasm ones the executable actually links.
+        const selector: ?native.TargetSelector = if (request.target.execution == .wasm32_emscripten and request.target.selector == null)
+            (llvm_backend.emscripten.selector(self.allocator) catch return null)
+        else
+            request.target.selector;
+        const libs = ffi_support.prepareNativeLibrariesForTarget(self.allocator, request.source_path, &.{}, selector) catch return null;
         if (libs.len == 0) return null;
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
         hasher.update("native-deps-v1\n");

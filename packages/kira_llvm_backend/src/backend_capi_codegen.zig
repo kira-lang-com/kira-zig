@@ -179,6 +179,33 @@ pub const FunctionCodegen = struct {
         return reg < self.register_types.len and self.register_types[reg].kind == .float;
     }
 
+    /// Float -> Int conversion matching the VM's `convertValue`: truncate toward
+    /// zero, but saturate out-of-range magnitudes to i64 min/max and map NaN to
+    /// 0. A bare `fptosi` is poison for those inputs, so VM and LLVM would
+    /// otherwise diverge (Core Law #1). `raw` is only selected when the source
+    /// is in range and non-NaN, so its poison value never reaches the result.
+    fn lowerFloatToIntSaturating(self: *FunctionCodegen, src: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+        const api = self.api;
+        const b = self.builder;
+        const i64_ty = self.types.i64;
+        const f64_ty = self.types.double_ty;
+        const raw = api.LLVMBuildFPToSI(b, src, i64_ty, "fptosi");
+        // i64 bounds as doubles (these round to +/-2^63, matching the VM's
+        // `@floatFromInt(maxInt/minInt)` comparison thresholds).
+        const max_f = api.LLVMConstReal(f64_ty, @as(f64, @floatFromInt(std.math.maxInt(i64))));
+        const min_f = api.LLVMConstReal(f64_ty, @as(f64, @floatFromInt(std.math.minInt(i64))));
+        const max_i = api.LLVMConstInt(i64_ty, @bitCast(@as(i64, std.math.maxInt(i64))), 1);
+        const min_i = api.LLVMConstInt(i64_ty, @bitCast(@as(i64, std.math.minInt(i64))), 1);
+        const zero_i = api.LLVMConstInt(i64_ty, 0, 1);
+        const ge_max = api.LLVMBuildFCmp(b, llvm.c.LLVMRealOGE, src, max_f, "sat.ge");
+        const le_min = api.LLVMBuildFCmp(b, llvm.c.LLVMRealOLE, src, min_f, "sat.le");
+        const is_nan = api.LLVMBuildFCmp(b, llvm.c.LLVMRealUNO, src, src, "sat.nan");
+        var result = api.LLVMBuildSelect(b, ge_max, max_i, raw, "sat.hi");
+        result = api.LLVMBuildSelect(b, le_min, min_i, result, "sat.lo");
+        result = api.LLVMBuildSelect(b, is_nan, zero_i, result, "sat.nan.sel");
+        return result;
+    }
+
     fn lowerInstruction(self: *FunctionCodegen, instruction: ir.Instruction) !void {
         const api = self.api;
         const b = self.builder;
@@ -202,8 +229,8 @@ pub const FunctionCodegen = struct {
                     // Int -> Float is sitofp; Float -> Float is identity.
                     self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
                 } else {
-                    // Float -> Int truncates toward zero (fptosi); Int -> Int is identity.
-                    self.registers[v.dst] = if (src_is_float) api.LLVMBuildFPToSI(b, self.registers[v.src], self.types.i64, "fptosi") else self.registers[v.src];
+                    // Float -> Int truncates toward zero; Int -> Int is identity.
+                    self.registers[v.dst] = if (src_is_float) self.lowerFloatToIntSaturating(self.registers[v.src]) else self.registers[v.src];
                 }
             },
             .compare => |v| self.registers[v.dst] = try self.lowerCompare(v),
