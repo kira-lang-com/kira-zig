@@ -182,6 +182,20 @@ pub const DeveloperFacade = struct {
             .synthesize_test_driver = pure_test,
         });
         if (result.failed()) {
+            // A native-FFI suite's @Native packages cannot run on the VM, so its
+            // verdict build fails with KBE001. Such a suite is inherently hybrid-
+            // shaped (VM runtime + native bridge) and cannot be a pure native
+            // LLVM executable, so the pure-LLVM codegen gate does not apply --
+            // hybrid IS its native form. When a native-capable backend was
+            // requested, run the (backend-independent) verdict through the hybrid
+            // driver instead of reporting a spurious failure.
+            if (expected_diagnostic == null and pure_test and backend == .llvm and
+                isNativeBackendRequiredError(result.diagnostics))
+            {
+                const output_root = try outputRoot(allocator, input.target.root_path);
+                try ensurePath(output_root);
+                return executeViaHybridDriver(self, source_path, output_root, writer);
+            }
             if (expected_diagnostic) |expected| {
                 const actual = firstErrorCode(result.diagnostics) orelse "";
                 if (std.mem.eql(u8, expected, actual)) {
@@ -202,13 +216,7 @@ pub const DeveloperFacade = struct {
         // clears the LLVM executable phase gate (codegens for native). The test
         // verdict itself is the backend-independent build-time VM run below.
         if (backend == .llvm) {
-            var system = build.BuildSystem.init(allocator);
-            const llvm_check = try system.checkForBackend(source_path, .llvm_native);
-            if (llvm_check.failed()) {
-                try writer.print("FAIL {s} (llvm backend parity: program does not codegen for llvm)\n", .{input.target.displayPath()});
-                try writeDiagnostics(writer, &llvm_check.source, llvm_check.diagnostics);
-                return .{ .failed = 1, .total = 1 };
-            }
+            if (try llvmTestParityFailure(allocator, source_path, pure_test, input.target.displayPath(), writer)) |parity_failure| return parity_failure;
         }
         if (pure_test) return executeViaDriver(allocator, result, writer);
         return executeCompiledTests(allocator, result, writer);
@@ -446,8 +454,17 @@ fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipeli
 fn tallyDriverOutput(allocator: std.mem.Allocator, output: []const u8, writer: anytype, trap_ctx: anytype) !TestReport {
     var report = TestReport{};
     var lines = std.mem.tokenizeScalar(u8, output, '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
+    while (lines.next()) |raw_line| {
+        if (raw_line.len == 0) continue;
+        // Driver markers are NUL-prefixed (see synth_test_driver.zig). Anything
+        // else is ordinary output the tests themselves printed onto the shared
+        // stdout stream: forward it for visibility, but never count it as a
+        // result (a test that printed "PASS x" must not become a passed test).
+        if (raw_line[0] != 0) {
+            try writer.print("{s}\n", .{raw_line});
+            continue;
+        }
+        const line = raw_line[1..];
         if (std.mem.startsWith(u8, line, "KTRAP ")) {
             const name = line["KTRAP ".len..];
             if (try trap_ctx.traps(allocator, name)) {
@@ -749,6 +766,39 @@ fn extractKiraErrorCode(allocator: std.mem.Allocator, text: []const u8) ?[]const
 
 fn firstErrorCode(items: []const diagnostics.Diagnostic) ?[]const u8 {
     for (items) |item| if (item.severity == .@"error") return item.code;
+    return null;
+}
+
+/// True when the build failed because a package needs a native-capable backend
+/// (its @Native/FFI packages cannot run on the VM) — diagnostic code KBE001.
+fn isNativeBackendRequiredError(items: []const diagnostics.Diagnostic) bool {
+    const code = firstErrorCode(items) orelse return false;
+    return std.mem.eql(u8, code, "KBE001");
+}
+
+/// `--backend llvm` parity gate: prove the program codegens for native LLVM
+/// using test-mode lowering (require_main = false + the synthesized driver), so
+/// suites whose entrypoint is only `Test` declarations are validated through the
+/// driver rather than the executable path. Returns a failing report (after
+/// writing the diagnostic) when codegen fails, or null on success.
+fn llvmTestParityFailure(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    pure_test: bool,
+    display_path: []const u8,
+    writer: anytype,
+) !?TestReport {
+    const llvm_result = try build.compileFileForBackendWithOptions(allocator, source_path, .llvm_native, null, &.{}, .{
+        .allow_runtime_direct_ffi = true,
+        .require_main = false,
+        .test_mode = true,
+        .synthesize_test_driver = pure_test,
+    });
+    if (llvm_result.failed()) {
+        try writer.print("FAIL {s} (llvm backend parity: program does not codegen for llvm)\n", .{display_path});
+        try writeDiagnostics(writer, &llvm_result.source, llvm_result.diagnostics);
+        return TestReport{ .failed = 1, .total = 1 };
+    }
     return null;
 }
 

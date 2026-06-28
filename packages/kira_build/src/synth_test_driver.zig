@@ -51,17 +51,24 @@ pub fn injectTestDriver(
     for (names.items) |name| {
         // The string literals bake the test name in at synthesis time (Kira has
         // no string concatenation), so each line is self-describing.
+        //
+        // Each marker line is prefixed with a NUL (`\0`) sentinel. The driver's
+        // PASS/FAIL/KTRAP output is captured on the same stdout stream as any
+        // output the tests themselves print, so without a sentinel a test that
+        // printed e.g. "PASS x" would be miscounted as a test result. The runner
+        // only treats NUL-prefixed lines as driver markers; ordinary test output
+        // never begins with a NUL.
         try writer.print(
             "    match {s}__expect() {{\n" ++
                 "        Ok(__expected) -> {{\n" ++
                 "            let __actual = {s}__test()\n" ++
-                "            if __actual == __expected {{ print(\"PASS {s}\") }} else {{ print(\"FAIL {s} (value mismatch)\") }}\n" ++
+                "            if __actual == __expected {{ print(\"\\0PASS {s}\") }} else {{ print(\"\\0FAIL {s} (value mismatch)\") }}\n" ++
                 "        }}\n" ++
                 // A trap-expectation test (expect = Result.Error): the driver must
                 // NOT call test() here (a hard abort would kill the whole driver).
                 // Emit a marker so the runner re-runs test() in isolation and
                 // checks that it traps.
-                "        Error(__failure) -> {{ print(\"KTRAP {s}\") }}\n" ++
+                "        Error(__failure) -> {{ print(\"\\0KTRAP {s}\") }}\n" ++
                 "    }}\n",
             .{ name, name, name, name, name },
         );
