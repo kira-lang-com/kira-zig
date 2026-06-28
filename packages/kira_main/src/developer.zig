@@ -162,10 +162,11 @@ pub const DeveloperFacade = struct {
         // build-time result. @Native packages can't build for vm, so they execute
         // under the hybrid bridge instead.
         const test_backend: build_def.ExecutionTarget = if (backend == .hybrid) .hybrid else .vm;
-        // Opt-in pure-Kira driver: synthesize a Kira entry that runs every Test
-        // and prints PASS/FAIL/SKIP, then execute *that* (no Zig comparison
-        // override). Gated by KIRA_PURE_TEST while it is brought up to parity.
-        const pure_test = std.c.getenv("KIRA_PURE_TEST") != null;
+        // Default: the pure-Kira test driver — synthesize a Kira entry that runs
+        // every Test, compares in Kira (`==`), and reports PASS/FAIL, with trap
+        // tests re-run in isolation and checked for the abort. No Zig comparison
+        // override. KIRA_LEGACY_TEST=1 falls back to the historical Zig runner.
+        const pure_test = std.c.getenv("KIRA_LEGACY_TEST") == null;
         // Under hybrid the driver must run through the hybrid runtime so its
         // @Native/FFI calls bridge — which needs the linked native library only
         // the artifact build produces. Take the dedicated hybrid path.
@@ -429,29 +430,85 @@ fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipeli
         return .{ .failed = 1, .total = 1 };
     };
 
-    return tallyDriverOutput(captured.written(), writer);
+    return tallyDriverOutput(allocator, captured.written(), writer, VmTrapChecker{
+        .vm = &vm,
+        .module = &module,
+        .ffi_dispatcher = &ffi_dispatcher,
+    });
 }
 
-/// Parse the synthesized driver's PASS/FAIL/SKIP lines into a TestReport,
-/// forwarding each line to the report writer.
-fn tallyDriverOutput(output: []const u8, writer: anytype) !TestReport {
+/// Parse the synthesized driver's PASS/FAIL/KTRAP lines into a TestReport.
+/// PASS/FAIL lines are forwarded as-is. A `KTRAP <name>` line is a
+/// trap-expectation test the driver could not run inline (a hard abort would
+/// kill the whole driver): `trap_ctx.traps(allocator, name)` re-runs that test's
+/// `test()` in isolation and reports whether it trapped — turning it into a real
+/// PASS/FAIL. `trap_ctx` is backend-specific (VM or hybrid).
+fn tallyDriverOutput(allocator: std.mem.Allocator, output: []const u8, writer: anytype, trap_ctx: anytype) !TestReport {
     var report = TestReport{};
-    var skipped: usize = 0;
     var lines = std.mem.tokenizeScalar(u8, output, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        try writer.print("{s}\n", .{line});
-        if (std.mem.startsWith(u8, line, "PASS ")) {
-            report.passed += 1;
-        } else if (std.mem.startsWith(u8, line, "FAIL ")) {
-            report.failed += 1;
-        } else if (std.mem.startsWith(u8, line, "SKIP ")) {
-            skipped += 1;
+        if (std.mem.startsWith(u8, line, "KTRAP ")) {
+            const name = line["KTRAP ".len..];
+            if (try trap_ctx.traps(allocator, name)) {
+                report.passed += 1;
+                try writer.print("PASS {s}\n", .{name});
+            } else {
+                report.failed += 1;
+                try writer.print("FAIL {s} (expected a runtime trap, but the test produced a value)\n", .{name});
+            }
+        } else {
+            try writer.print("{s}\n", .{line});
+            if (std.mem.startsWith(u8, line, "PASS ")) {
+                report.passed += 1;
+            } else if (std.mem.startsWith(u8, line, "FAIL ")) {
+                report.failed += 1;
+            }
         }
     }
-    report.total = report.passed + report.failed + skipped;
+    report.total = report.passed + report.failed;
     return report;
 }
+
+/// Re-runs a trap-expectation test's `test()` on the build-time VM and reports
+/// whether it raised a runtime failure (the abort the driver could not catch).
+const VmTrapChecker = struct {
+    vm: *vm_runtime.Vm,
+    module: *const bytecode.Module,
+    ffi_dispatcher: *vm_runtime.FfiDispatcher,
+
+    fn traps(self: VmTrapChecker, allocator: std.mem.Allocator, name: []const u8) !bool {
+        const fn_name = try std.fmt.allocPrint(allocator, "{s}__test", .{name});
+        const func = findFunctionByName(self.module.*, fn_name) orelse return false;
+        var discard: std.Io.Writer.Allocating = .init(allocator);
+        defer discard.deinit();
+        _ = self.vm.runFunctionById(self.module, func.id, &.{}, &discard.writer, .{
+            .context = self.ffi_dispatcher,
+            .call_native = vm_runtime.FfiDispatcher.hook,
+        }) catch return true;
+        return false;
+    }
+};
+
+/// Same, but re-runs the trap test through the hybrid runtime (so a trapping
+/// @Native-bridged test is detected too).
+const HybridTrapChecker = struct {
+    runtime: *hybrid_runtime.HybridRuntime,
+
+    fn traps(self: HybridTrapChecker, allocator: std.mem.Allocator, name: []const u8) !bool {
+        const fn_name = try std.fmt.allocPrint(allocator, "{s}__test", .{name});
+        const fn_id = blk: {
+            for (self.runtime.manifest.functions) |function| {
+                if (std.mem.eql(u8, function.name, fn_name)) break :blk function.id;
+            }
+            return false;
+        };
+        var discard: std.Io.Writer.Allocating = .init(allocator);
+        defer discard.deinit();
+        self.runtime.runFunctionWithWriter(fn_id, &discard.writer) catch return true;
+        return false;
+    }
+};
 
 /// Run the pure-Kira test driver under the hybrid runtime so @Native/FFI calls
 /// bridge: build the leaf for hybrid (with the driver + Test sections), load the
@@ -497,7 +554,7 @@ fn executeViaHybridDriver(self: *DeveloperFacade, source_path: []const u8, outpu
         try writer.print("FAIL <test-driver> ({s})\n", .{@errorName(err)});
         return .{ .failed = 1, .total = 1 };
     };
-    return tallyDriverOutput(captured.written(), writer);
+    return tallyDriverOutput(allocator, captured.written(), writer, HybridTrapChecker{ .runtime = &runtime });
 }
 
 fn executeOneTest(

@@ -57,7 +57,11 @@ pub fn injectTestDriver(
                 "            let __actual = {s}__test()\n" ++
                 "            if __actual == __expected {{ print(\"PASS {s}\") }} else {{ print(\"FAIL {s} (value mismatch)\") }}\n" ++
                 "        }}\n" ++
-                "        Error(__failure) -> {{ print(\"SKIP {s} (trap; not yet runnable in pure Kira)\") }}\n" ++
+                // A trap-expectation test (expect = Result.Error): the driver must
+                // NOT call test() here (a hard abort would kill the whole driver).
+                // Emit a marker so the runner re-runs test() in isolation and
+                // checks that it traps.
+                "        Error(__failure) -> {{ print(\"KTRAP {s}\") }}\n" ++
                 "    }}\n",
             .{ name, name, name, name, name },
         );
