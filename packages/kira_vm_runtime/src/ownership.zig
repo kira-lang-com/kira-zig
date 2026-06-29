@@ -215,6 +215,11 @@ pub const Heap = struct {
     objects: PointerObjectMap,
     pin_frames: std.ArrayListUnmanaged(PinFrame) = .empty,
     stats: HeapStats = .{},
+    // KIRA_LEAK_HEAP diagnostic: leak every object instead of destroying it.
+    // Read ONCE at init — dropPtr runs ~140k times per hybrid UI frame, and a
+    // getenv() per drop (linear environ scan + strcmp) was a measurable slice of
+    // the frame (libsystem __findenv_locked). Memoized like the trace gate.
+    leak_heap: bool = false,
     // Free-list caches for the allocation shapes the VM churns hardest:
     // struct field slices, array backing stores, and the array/closure object
     // headers. Every pooled block is a real allocator allocation of exactly
@@ -310,6 +315,7 @@ pub const Heap = struct {
             .allocator = allocator,
             .objects = .{},
             .pin_frames = .empty,
+            .leak_heap = std.c.getenv("KIRA_LEAK_HEAP") != null,
         };
     }
 
@@ -521,7 +527,7 @@ pub const Heap = struct {
         if (ptr == 0) return;
         const removed = self.objects.fetchRemove(ptr) orelse return;
         self.recordFree(removed.kind);
-        if (std.c.getenv("KIRA_LEAK_HEAP") != null) return; // diagnostic: leak everything
+        if (self.leak_heap) return; // diagnostic: leak everything
         self.destroy(removed.kind);
     }
 
