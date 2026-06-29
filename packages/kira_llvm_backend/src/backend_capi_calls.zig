@@ -250,6 +250,19 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
     _ = api.LLVMBuildCall2(b, rt.ty, rt.fn_value, &rt_args, rt_args.len, "");
     if (call.dst) |dst| {
         const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, result_slot, "rt.result.bv");
-        fc.registers[dst] = try fc.unpackBridge(callee_decl.return_type, bv);
+        const unpacked = try fc.unpackBridge(callee_decl.return_type, bv);
+        fc.registers[dst] = switch (callee_decl.return_type.kind) {
+            .ffi_struct => blk: {
+                const type_name = callee_decl.return_type.name orelse break :blk unpacked;
+                const helpers = fc.dtors.map.get(type_name) orelse break :blk unpacked;
+                var clone_args = [_]llvm.c.LLVMValueRef{unpacked};
+                break :blk api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &clone_args, clone_args.len, "rt.struct.clone");
+            },
+            else => unpacked,
+        };
+        switch (callee_decl.return_type.kind) {
+            .ffi_struct => drop.onAlloc(fc, dst),
+            else => {},
+        }
     }
 }

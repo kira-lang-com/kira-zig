@@ -404,6 +404,10 @@ pub const Vm = struct {
         return native_bridge.copyArrayFromNativeLayout(self, module, array_ty, native_array_ptr);
     }
 
+    pub fn writeArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
+        return native_bridge.writeArrayToNativeLayout(self, module, array_ty, runtime_array_ptr, native_array_ptr);
+    }
+
     pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
         return native_bridge.syncArrayFromNativeLayout(self, module, array_ty, runtime_array_ptr, native_array_ptr);
     }

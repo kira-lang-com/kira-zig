@@ -141,7 +141,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             const runtime_allocator = std.heap.smp_allocator;
             const manifest = try hybrid_runtime.loadHybridModule(runtime_allocator, manifest_artifact.path);
             var runtime = try hybrid_runtime.HybridRuntime.init(runtime_allocator, manifest);
-            defer runtime.deinit();
+            var runtime_deinitialized = false;
+            defer if (!runtime_deinitialized) runtime.deinit();
             var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
             defer {
                 if (input.target.root_path) |_| std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
@@ -164,8 +165,12 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
                 }
                 return err;
             };
-            if (runtimeMemoryReportEnabled()) runtime.vm.emitMemoryReport("hybrid");
             if (runtimeMemoryDetailEnabled()) runtime.vm.emitMemoryDetail();
+            if (runtimeMemoryReportEnabled()) {
+                runtime.deinit();
+                runtime_deinitialized = true;
+                runtime.vm.emitMemoryReport("hybrid");
+            }
         },
     }
 }
