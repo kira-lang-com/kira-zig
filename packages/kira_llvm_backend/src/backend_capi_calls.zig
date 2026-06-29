@@ -71,6 +71,21 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
     const merge_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.merge");
     const trap_block = api.LLVMAppendBasicBlockInContext(ctx, fc.function_value, "vcall.trap");
 
+    // lowerCall may rewrite an owned/move ffi_struct argument's register to a
+    // per-call heap shell (moveOrCloneToHeap) as a side effect. A construct-family
+    // virtual call lowers the SAME argument list into one block per candidate
+    // implementation (the dispatch cases are mutually-exclusive siblings), so that
+    // rewrite must NOT persist from one case into the next: otherwise a borrowed
+    // struct arg in case N+1 is cloned from case N's clone — a value defined in a
+    // sibling block that does not dominate case N+1 — producing "instruction does not
+    // dominate all uses" invalid IR. Snapshot the original argument registers (all
+    // defined before the dispatch, so they dominate every case) and restore them
+    // before lowering each case, so every case clones/moves from the same source.
+    const saved_receiver = fc.registers[v.receiver];
+    const saved_args = try fc.allocator.alloc(llvm.c.LLVMValueRef, v.args.len);
+    defer fc.allocator.free(saved_args);
+    for (v.args, 0..) |a, i| saved_args[i] = fc.registers[a];
+
     var current_test = api.LLVMGetInsertBlock(b);
     var matched: usize = 0;
     for (fc.request.program.programPtr().construct_implementations) |implementation| {
@@ -86,6 +101,8 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
         _ = api.LLVMBuildCondBr(b, is_match, case_block, next_block);
 
         api.LLVMPositionBuilderAtEnd(b, case_block);
+        fc.registers[v.receiver] = saved_receiver;
+        for (v.args, 0..) |a, i| fc.registers[a] = saved_args[i];
         const args = try fc.allocator.alloc(u32, v.args.len + 1);
         defer fc.allocator.free(args);
         args[0] = v.receiver;
@@ -233,6 +250,22 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
     _ = api.LLVMBuildCall2(b, rt.ty, rt.fn_value, &rt_args, rt_args.len, "");
     if (call.dst) |dst| {
         const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, result_slot, "rt.result.bv");
-        fc.registers[dst] = try fc.unpackBridge(callee_decl.return_type, bv);
+        const unpacked = try fc.unpackBridge(callee_decl.return_type, bv);
+        var cloned_owned = false;
+        fc.registers[dst] = switch (callee_decl.return_type.kind) {
+            .ffi_struct => blk: {
+                const type_name = callee_decl.return_type.name orelse break :blk unpacked;
+                const helpers = fc.dtors.map.get(type_name) orelse break :blk unpacked;
+                var clone_args = [_]llvm.c.LLVMValueRef{unpacked};
+                const cloned = api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &clone_args, clone_args.len, "rt.struct.clone");
+                cloned_owned = true;
+                break :blk cloned;
+            },
+            else => unpacked,
+        };
+        // Track for native drop ONLY when a native-owned clone was produced. Without clone
+        // metadata the value is the VM-returned (VM-owned) pointer; tracking it would have the
+        // native epilogue free VM-owned storage.
+        if (cloned_owned) drop.onAlloc(fc, dst);
     }
 }

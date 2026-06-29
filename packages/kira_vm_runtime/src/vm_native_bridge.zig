@@ -166,6 +166,41 @@ pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, arra
     return try self.heap.registerArray(object);
 }
 
+pub fn writeArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
+    const source = self.heap.getArray(runtime_array_ptr) orelse {
+        self.rememberFmt(
+            "array native writeback was handed an unmanaged/dangling runtime array pointer: ty={s} ptr=0x{x}",
+            .{ array_ty.name orelse "?", runtime_array_ptr },
+        );
+        return error.RuntimeFailure;
+    };
+    const destination: *ArrayObject = @ptrFromInt(native_array_ptr);
+
+    const items = try self.allocator.alloc(runtime_abi.BridgeValue, @max(source.len, 1));
+    const element_ty = try self.arrayElementType(module, array_ty);
+    for (items) |*item| item.* = runtime_abi.bridgeValueFromValue(.{ .void = {} });
+    var initialized: usize = 0;
+    errdefer {
+        for (items[0..initialized]) |item| {
+            destroyNativeLayoutValueWithOwner(self, module, element_ty, runtime_abi.bridgeValueToValue(item), .vm);
+        }
+        self.allocator.free(items);
+    }
+    for (source.items[0..source.len], 0..) |item, index| {
+        const value = runtime_abi.bridgeValueToValue(item);
+        items[index] = runtime_abi.bridgeValueFromValue(try copyValueToNativeLayout(self, module, element_ty, value));
+        initialized += 1;
+    }
+
+    const old_items = destination.items[0..@max(destination.len, 1)];
+    for (old_items[0..destination.len]) |item| {
+        destroyNativeLayoutValueWithOwner(self, module, element_ty, runtime_abi.bridgeValueToValue(item), .vm);
+    }
+    self.allocator.free(old_items);
+    destination.len = source.len;
+    destination.items = items.ptr;
+}
+
 pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
     const source: *const ArrayObject = @ptrFromInt(native_array_ptr);
     const destination: *ArrayObject = @ptrFromInt(runtime_array_ptr);
@@ -554,22 +589,32 @@ fn resolveManagedEnumSlots(self: *Vm, runtime_ptr: usize) ?[*]align(1) const run
     var candidate = runtime_ptr;
     var depth: usize = 0;
     while (candidate != 0 and depth < 8) : (depth += 1) {
+        // Only a managed block is a VM Value-array; an unmanaged pointer is native
+        // layout (a native-materialized enum or an interned payload-less enum) whose
+        // first word is a raw discriminant, NOT a Value tag — reading it as a Value
+        // would panic on an invalid union tag. Return null so the caller copies the
+        // native words verbatim.
+        if (!self.isManagedStructPointer(candidate)) return null;
         const slots: [*]align(1) const runtime_abi.Value = @ptrFromInt(candidate);
         if (slots[0] == .integer) return slots;
         if (slots[0] == .raw_ptr and slots[0].raw_ptr != 0 and slots[0].raw_ptr != candidate) {
             candidate = slots[0].raw_ptr;
             continue;
         }
-        if (self.isManagedStructPointer(candidate)) break;
-        return null;
+        break;
     }
     return null;
 }
 
 pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
     const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
-        self.rememberError("enum native copy requires a managed enum value");
-        return error.RuntimeFailure;
+        // Already native-layout (an interned payload-less enum, or a native-materialized
+        // enum crossing again): copy the {tag, payload-word} pair verbatim.
+        const native_words: [*]const u64 = @ptrFromInt(runtime_ptr);
+        const words = try self.allocator.alloc(u64, 2);
+        words[0] = native_words[0];
+        words[1] = native_words[1];
+        return @intFromPtr(words.ptr);
     };
     if (src[0] != .integer) {
         self.rememberError("enum native copy requires an integer tag slot");
@@ -605,8 +650,14 @@ pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_na
 /// `kira_enum_clone`'s verbatim 16-byte copy.
 pub fn lowerEnumToNativeOwned(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
     const src = resolveManagedEnumSlots(self, runtime_ptr) orelse {
-        self.rememberError("enum native lowering requires a managed enum value");
-        return error.RuntimeFailure;
+        // Already native-layout (an interned payload-less enum, or a native-materialized
+        // enum crossing again): copy verbatim onto the C heap so the native clone/free
+        // pair stays heap-consistent.
+        const native_words: [*]const u64 = @ptrFromInt(runtime_ptr);
+        const words = try std.heap.c_allocator.alloc(u64, 2);
+        words[0] = native_words[0];
+        words[1] = native_words[1];
+        return @intFromPtr(words.ptr);
     };
     if (src[0] != .integer) {
         self.rememberFmt(
@@ -663,6 +714,8 @@ pub fn copyEnumFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_
         );
         return error.RuntimeFailure;
     };
+    // A payload-less variant materialised back from native interns to the shared block.
+    if (native_variant.payload_ty.kind == .void) return self.internedPureEnum(type_name, native_variant.discriminant);
     const slots = try self.allocator.alloc(runtime_abi.Value, 2);
     errdefer self.allocator.free(slots);
     slots[0] = .{ .integer = @intCast(native_variant.discriminant) };
@@ -1000,7 +1053,31 @@ pub fn copyStructToNativeLayoutInto(self: *Vm, module: *const bytecode.Module, t
     const fields: [*]align(1) const runtime_abi.Value = @ptrFromInt(runtime_ptr);
     for (type_decl.fields, 0..) |field_decl, index| {
         const offset = try native_layout.fieldOffset(module, type_name, index);
+        releaseNativeFieldBeforeOverwrite(self, module, field_decl.ty, native_ptr + offset);
         try helper_impl.writeNativeFieldValue(self, module, field_decl.ty, fields[index], native_ptr + offset);
+    }
+}
+
+fn releaseNativeFieldBeforeOverwrite(self: *Vm, module: *const bytecode.Module, field_ty: bytecode.TypeRef, address: usize) void {
+    switch (field_ty.kind) {
+        .enum_instance => {
+            const old_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+            if (old_ptr != 0) {
+                destroyEnumNativeLayoutWithOwner(self, module, field_ty.name orelse return, old_ptr, .c);
+                (@as(*usize, @ptrFromInt(address))).* = 0;
+            }
+        },
+        .array => {
+            const old_ptr = (@as(*const usize, @ptrFromInt(address))).*;
+            if (old_ptr != 0) {
+                destroyArrayNativeLayoutWithOwner(self, module, field_ty, old_ptr, .vm);
+                (@as(*usize, @ptrFromInt(address))).* = 0;
+            }
+        },
+        .ffi_struct => {
+            destroyStructNativeLayoutFieldsWithOwner(self, module, field_ty.name orelse return, address, .c);
+        },
+        else => {},
     }
 }
 
@@ -1017,6 +1094,9 @@ fn destroyStructNativeLayoutFieldsWithOwner(self: *Vm, module: *const bytecode.M
             .array => {
                 const array_ptr = (@as(*const usize, @ptrFromInt(address))).*;
                 destroyArrayNativeLayoutWithOwner(self, module, field_decl.ty, array_ptr, owner);
+                // Clear the slot so a subsequent overwrite (releaseNativeFieldBeforeOverwrite ->
+                // re-entry on the same address) does not free this now-stale pointer again.
+                (@as(*usize, @ptrFromInt(address))).* = 0;
             },
             .ffi_struct => if (field_decl.ty.name) |nested_name| {
                 destroyStructNativeLayoutFieldsWithOwner(self, module, nested_name, address, owner);
@@ -1024,6 +1104,7 @@ fn destroyStructNativeLayoutFieldsWithOwner(self: *Vm, module: *const bytecode.M
             .enum_instance => {
                 const enum_ptr = (@as(*const usize, @ptrFromInt(address))).*;
                 destroyEnumNativeLayoutWithOwner(self, module, field_decl.ty.name orelse return, enum_ptr, owner);
+                (@as(*usize, @ptrFromInt(address))).* = 0;
             },
             .construct_any => {},
             else => {},
