@@ -182,8 +182,22 @@ fn storeResult(fc: *FunctionCodegen, dst: u32, ret_type: ir.ValueType, result: l
             fc.registers[dst] = api.LLVMBuildPtrToInt(b, slot, fc.types.i64, "cret.struct.int");
         },
         .integer => {
+            // Widen a sub-64-bit C return to Kira's i64 register. Unsigned types
+            // (U8/U16/U32) must ZERO-extend; sign-extending an unsigned value whose
+            // high bit is set (e.g. a packed 0xAARRGGBB pixel returned as U32) would
+            // make it negative and mismatch the VM path, which zero-extends. Signed
+            // types (I8/I16/I32) sign-extend.
             const abi = intAbiType(fc.types, ret_type.name);
-            fc.registers[dst] = if (abi == fc.types.i64) result else api.LLVMBuildSExt(b, result, fc.types.i64, "cret.sext");
+            if (abi == fc.types.i64) {
+                fc.registers[dst] = result;
+            } else {
+                const name = ret_type.name orelse "I64";
+                const unsigned = name.len > 0 and name[0] == 'U';
+                fc.registers[dst] = if (unsigned)
+                    api.LLVMBuildZExt(b, result, fc.types.i64, "cret.zext")
+                else
+                    api.LLVMBuildSExt(b, result, fc.types.i64, "cret.sext");
+            }
         },
         .float => {
             const abi = floatAbiType(fc.types, ret_type.name);

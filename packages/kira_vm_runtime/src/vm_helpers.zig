@@ -43,7 +43,7 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
                 vm.rememberError("runtime enum field cannot be lowered to native memory");
                 return error.RuntimeFailure;
             }
-            (@as(*usize, @ptrFromInt(address))).* = if (value.raw_ptr == 0) 0 else try vm.copyEnumToNativeLayout(module, field_ty.name orelse {
+            (@as(*usize, @ptrFromInt(address))).* = if (value.raw_ptr == 0) 0 else try vm.lowerEnumToNativeOwned(module, field_ty.name orelse {
                 vm.rememberError("enum field type is missing a name");
                 return error.RuntimeFailure;
             }, value.raw_ptr);

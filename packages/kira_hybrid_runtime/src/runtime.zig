@@ -5,6 +5,8 @@ const native_bridge = @import("kira_native_bridge");
 const runtime_abi = @import("kira_runtime_abi");
 const binder = @import("binder.zig");
 const vm_runtime = @import("kira_vm_runtime");
+const native_calls = @import("native_calls.zig");
+const DirectStdoutWriter = @import("direct_stdout_writer.zig").DirectStdoutWriter;
 
 pub const HybridRuntime = struct {
     allocator: std.mem.Allocator,
@@ -70,7 +72,7 @@ pub const HybridRuntime = struct {
 
         switch (self.manifest.entry_execution) {
             .runtime => try self.invokeRuntime(&runtime_context, self.manifest.entry_function_id, &.{}, null),
-            .native => _ = try callNativeFunction(self, self.manifest.entry_function_id, &.{}),
+            .native => _ = try native_calls.callNativeFunction(self, self.manifest.entry_function_id, &.{}),
             .inherited => unreachable,
         }
     }
@@ -115,6 +117,10 @@ pub const HybridRuntime = struct {
         });
     }
 
+    pub fn flushPendingCallbackReturns(self: *HybridRuntime) void {
+        self.cleanupPendingCallbackReturns();
+    }
+
     fn invokeRuntime(self: *HybridRuntime, context: anytype, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: ?*runtime_abi.BridgeValue) !void {
         const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
         runtime_abi.emitExecutionTrace("CALLBACK", "ENTER", "native->runtime fn={s}({d}) args={d}", .{
@@ -127,11 +133,12 @@ pub const HybridRuntime = struct {
         const materialized_args = try self.allocator.alloc(bool, args.len);
         defer self.allocator.free(materialized_args);
         @memset(materialized_args, false);
-        defer {
+        var materialized_args_cleaned = false;
+        errdefer if (!materialized_args_cleaned) {
             for (materialized_args, 0..) |materialized, index| {
                 if (materialized) self.vm.dropManagedValue(runtime_args[index]);
             }
-        }
+        };
         const native_arg_ptrs = try self.allocator.alloc(usize, args.len);
         defer self.allocator.free(native_arg_ptrs);
         @memset(native_arg_ptrs, 0);
@@ -188,6 +195,16 @@ pub const HybridRuntime = struct {
                 materialized_args[index] = true;
                 continue;
             }
+            if (local_ty.kind == .array and runtime_args[index] == .raw_ptr and runtime_args[index].raw_ptr != 0 and self.vm.heap.getArray(runtime_args[index].raw_ptr) == null) {
+                native_arg_ptrs[index] = runtime_args[index].raw_ptr;
+                runtime_args[index] = .{ .raw_ptr = try self.vm.copyArrayFromNativeLayout(
+                    &self.module,
+                    local_ty,
+                    runtime_args[index].raw_ptr,
+                ) };
+                materialized_args[index] = true;
+                continue;
+            }
             if (local_ty.kind != .ffi_struct or runtime_args[index] != .raw_ptr or runtime_args[index].raw_ptr == 0) continue;
             native_arg_ptrs[index] = runtime_args[index].raw_ptr;
             runtime_args[index] = .{ .raw_ptr = try self.vm.materializeNativeStruct(
@@ -205,6 +222,11 @@ pub const HybridRuntime = struct {
             .copy_struct_args_by_value = false,
         });
         if (std.c.getenv("KIRA_DBG") != null) std.debug.print("DBG invoke fn={d} -> runFunctionById DONE result_tag={s}\n", .{ function_id, @tagName(result) });
+        // Armed before the fallible borrow-mut writeback below: a writeback error must release
+        // `result`, or the managed return value leaks. Cleared once ownership transfers to a
+        // pending-callback list further down.
+        var result_owned_by_pending = false;
+        errdefer if (!result_owned_by_pending) self.vm.dropManagedValue(result);
         for (native_arg_ptrs, 0..) |native_ptr, index| {
             if (native_ptr == 0) continue;
             // Only a `borrow mut` param can be mutated by the callee, so only it needs to
@@ -218,25 +240,30 @@ pub const HybridRuntime = struct {
             const writeback_mode = if (index < function_decl.param_ownership.len) function_decl.param_ownership[index] else .owned;
             if (writeback_mode != .borrow_mut) continue;
             const local_ty = function_decl.local_types[index];
-            // Struct-only sync: writeStructToNativeLayout walks struct fields. A `borrow mut` enum
-            // arg is materialized above but has no struct field layout to write back.
-            if (local_ty.kind != .ffi_struct) continue;
-            try self.vm.writeStructToNativeLayout(
-                &self.module,
-                local_ty.name orelse return error.RuntimeFailure,
-                runtime_args[index].raw_ptr,
-                native_ptr,
-            );
+            switch (local_ty.kind) {
+                .ffi_struct => try self.vm.writeStructToNativeLayout(
+                    &self.module,
+                    local_ty.name orelse return error.RuntimeFailure,
+                    runtime_args[index].raw_ptr,
+                    native_ptr,
+                ),
+                .array => try self.vm.writeArrayToNativeLayout(
+                    &self.module,
+                    local_ty,
+                    runtime_args[index].raw_ptr,
+                    native_ptr,
+                ),
+                else => {},
+            }
         }
-        for (native_arg_ptrs, 0..) |native_ptr, index| {
-            if (native_ptr == 0 or !materialized_args[index]) continue;
+        for (materialized_args, 0..) |materialized, index| {
+            if (!materialized) continue;
             if (result == .raw_ptr and result.raw_ptr == runtime_args[index].raw_ptr) continue;
             self.vm.dropManagedValue(runtime_args[index]);
         }
+        materialized_args_cleaned = true;
 
         var bridge_result = runtime_abi.bridgeValueFromValue(result);
-        var result_owned_by_pending = false;
-        errdefer if (!result_owned_by_pending) self.vm.dropManagedValue(result);
         if (function_decl.return_type.kind == .ffi_struct and result == .raw_ptr and result.raw_ptr != 0) {
             const type_name = function_decl.return_type.name orelse return error.RuntimeFailure;
             const native_result = try self.vm.lowerStructToNativeLayout(
@@ -408,7 +435,7 @@ fn nativeCallHook(comptime Context: type) *const fn (?*anyopaque, u32, []const r
     return struct {
         fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
-            return callNative(runtime_context.runtime, function_id, args);
+            return native_calls.callNative(runtime_context.runtime, function_id, args);
         }
     }.invoke;
 }
@@ -484,168 +511,3 @@ fn convertManifestTypeRef(value: hybrid.TypeRef) bytecode.TypeRef {
 fn isCallbackTypeName(name: []const u8) bool {
     return std.mem.indexOf(u8, name, "->") != null;
 }
-
-fn callNative(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
-    try self.vm.beginNativeBoundary();
-    defer self.vm.endNativeBoundary();
-
-    const function_decl = findFunction(self.manifest.functions, function_id) orelse return error.UnknownFunction;
-    if (std.c.getenv("KIRA_DBG") != null) {
-        const kname = if (self.module.findFunctionById(function_id)) |fd| fd.name else "<none>";
-        std.debug.print("DBG callNative fn={s} kira={s}({d}) args={d} ret={s}\n", .{ function_decl.exported_name orelse "?", kname, function_id, args.len, @tagName(function_decl.return_type.kind) });
-    }
-    const lowered_args = try self.allocator.alloc(runtime_abi.Value, args.len);
-    defer self.allocator.free(lowered_args);
-    const native_arg_ptrs = try self.allocator.alloc(usize, args.len);
-    defer self.allocator.free(native_arg_ptrs);
-    @memset(native_arg_ptrs, 0);
-    defer {
-        for (native_arg_ptrs, 0..) |native_ptr, index| {
-            if (native_ptr == 0 or index >= function_decl.param_types.len) continue;
-            const param_type = function_decl.param_types[index];
-            // Enums are copy-across-the-boundary values in the native backend: even if
-            // the source IR marks the param as owned/move, the callee receives an
-            // ephemeral native copy and never takes ownership of the caller's VM enum.
-            if (ownershipTransfersToCallee(paramOwnershipAt(function_decl.param_ownership, index)) and param_type.kind != .enum_instance) continue;
-            switch (param_type.kind) {
-                .ffi_struct => if (param_type.name) |name| {
-                    self.vm.destroyStructNativeLayout(&self.module, name, native_ptr);
-                },
-                .array => self.vm.destroyArrayNativeLayout(
-                    &self.module,
-                    convertManifestTypeRef(param_type),
-                    native_ptr,
-                ),
-                .enum_instance => if (param_type.name) |name| {
-                    self.vm.destroyEnumNativeLayout(&self.module, name, native_ptr);
-                },
-                else => {},
-            }
-        }
-    }
-
-    for (args, 0..) |arg, index| {
-        try self.vm.pinNativeBoundaryValue(arg);
-        lowered_args[index] = arg;
-        if (index >= function_decl.param_types.len) continue;
-        const param_type = function_decl.param_types[index];
-        if (arg != .raw_ptr or arg.raw_ptr == 0) continue;
-        switch (param_type.kind) {
-            .raw_ptr => {
-                if (param_type.name) |name| {
-                    if (isCallbackTypeName(name) and self.vm.heap.getClosure(arg.raw_ptr) != null) {
-                        lowered_args[index] = .{ .raw_ptr = try self.vm.exportRuntimeClosureToNative(&self.module, arg.raw_ptr) };
-                    }
-                }
-            },
-            .ffi_struct => {
-                native_arg_ptrs[index] = try self.vm.lowerStructToNativeLayout(
-                    &self.module,
-                    param_type.name orelse return error.RuntimeFailure,
-                    arg.raw_ptr,
-                );
-                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
-            },
-            .array => {
-                native_arg_ptrs[index] = try self.vm.copyArrayToNativeLayout(
-                    &self.module,
-                    convertManifestTypeRef(param_type),
-                    arg.raw_ptr,
-                );
-                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
-            },
-            .enum_instance => {
-                native_arg_ptrs[index] = try self.vm.copyEnumToNativeLayout(
-                    &self.module,
-                    param_type.name orelse return error.RuntimeFailure,
-                    arg.raw_ptr,
-                );
-                lowered_args[index] = .{ .raw_ptr = native_arg_ptrs[index] };
-            },
-            else => {},
-        }
-    }
-
-    if (std.c.getenv("KIRA_DBG") != null) std.debug.print("DBG callNative fn={d} -> bridge.call START\n", .{function_id});
-    const result = try self.bridge.call(function_id, lowered_args);
-    if (std.c.getenv("KIRA_DBG") != null) std.debug.print("DBG callNative fn={d} -> bridge.call DONE tag={s}\n", .{ function_id, @tagName(result) });
-    self.vm.retainManagedValue(result);
-    for (native_arg_ptrs, 0..) |native_ptr, index| {
-        if (native_ptr == 0) continue;
-        if (!ownershipSyncsBack(paramOwnershipAt(function_decl.param_ownership, index))) continue;
-        const param_type = function_decl.param_types[index];
-        switch (param_type.kind) {
-            .ffi_struct => try self.vm.syncStructFromNativeLayout(
-                &self.module,
-                param_type.name orelse return error.RuntimeFailure,
-                args[index].raw_ptr,
-                native_ptr,
-            ),
-            .array => try self.vm.syncArrayFromNativeLayout(
-                &self.module,
-                convertManifestTypeRef(param_type),
-                args[index].raw_ptr,
-                native_ptr,
-            ),
-            else => {},
-        }
-    }
-
-    return result;
-}
-
-fn paramOwnershipAt(param_ownership: []const hybrid.OwnershipMode, index: usize) hybrid.OwnershipMode {
-    if (index < param_ownership.len) return param_ownership[index];
-    return .owned;
-}
-
-fn ownershipTransfersToCallee(mode: hybrid.OwnershipMode) bool {
-    return switch (mode) {
-        .owned, .move => true,
-        .borrow_read, .borrow_mut, .copy => false,
-    };
-}
-
-fn ownershipSyncsBack(mode: hybrid.OwnershipMode) bool {
-    return mode == .borrow_mut;
-}
-
-fn callNativeFunction(self: *HybridRuntime, function_id: u32, args: []const runtime_abi.Value) !runtime_abi.Value {
-    try self.vm.beginNativeBoundary();
-    defer self.vm.endNativeBoundary();
-
-    const result = try self.bridge.call(function_id, args);
-    self.vm.retainManagedValue(result);
-    return result;
-}
-
-const DirectStdoutWriter = struct {
-    pub fn writeAll(_: DirectStdoutWriter, bytes: []const u8) !void {
-        var buffer: [1024]u8 = undefined;
-        // STREAMING, not the default positional, writer. `File.writer()` defaults to
-        // positional writes from logical offset 0; a fresh writer per call therefore
-        // re-clobbered offset 0 on a seekable destination
-        // (`kira run --backend hybrid > out.txt`), losing all but a fragment of the
-        // last print — silent data loss a pipe/TTY masked. Streaming mode uses the
-        // shared, advancing fd offset, so sequential prints append for files and pipes.
-        var writer = std.Io.File.stdout().writerStreaming(std.Options.debug_io, &buffer);
-        defer writer.interface.flush() catch {};
-        try writer.interface.writeAll(bytes);
-    }
-
-    pub fn writeByte(self: DirectStdoutWriter, byte: u8) !void {
-        _ = self;
-        if (@import("builtin").os.tag == .windows and byte == '\n') {
-            try DirectStdoutWriter.writeAll(.{}, "\r\n");
-            return;
-        }
-        var buffer = [1]u8{byte};
-        try DirectStdoutWriter.writeAll(.{}, &buffer);
-    }
-
-    pub fn print(self: DirectStdoutWriter, comptime fmt: []const u8, args: anytype) !void {
-        var buffer: [512]u8 = undefined;
-        const rendered = try std.fmt.bufPrint(&buffer, fmt, args);
-        try self.writeAll(rendered);
-    }
-};

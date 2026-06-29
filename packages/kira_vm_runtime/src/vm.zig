@@ -131,6 +131,11 @@ pub const Vm = struct {
     // and a linear module.types scan, which profiling showed hot in array
     // clone/copy paths.
     element_type_cache: std.HashMapUnmanaged(SliceKey, bytecode.TypeRef, SliceKeyContext, std.hash_map.default_max_load_percentage) = .empty,
+    // Pointer-keyed fast path in front of enum_cache, mirroring type_ptr_cache.
+    // findEnumCached otherwise string-hashes (wyhash + memcmp) on every enum
+    // payload-type / clone-by-name resolve, which the per-frame UI enum churn
+    // made one of the largest remaining hybrid-frame costs.
+    enum_ptr_cache: std.HashMapUnmanaged(SliceKey, ?bytecode.EnumTypeDecl, SliceKeyContext, std.hash_map.default_max_load_percentage) = .empty,
 
     pub const FrameBuf = struct { values: []runtime_abi.Value, owned: []bool };
 
@@ -191,6 +196,7 @@ pub const Vm = struct {
         self.type_ptr_cache.clearRetainingCapacity();
         self.element_type_cache.clearRetainingCapacity();
         self.enum_cache.clearRetainingCapacity();
+        self.enum_ptr_cache.clearRetainingCapacity();
         self.type_cache.ensureTotalCapacity(self.allocator, @intCast(module.types.len)) catch return false;
         self.enum_cache.ensureTotalCapacity(self.allocator, @intCast(module.enums.len)) catch return false;
         for (module.types) |type_decl| self.type_cache.putAssumeCapacity(type_decl.name, type_decl);
@@ -214,7 +220,10 @@ pub const Vm = struct {
             }
             return null;
         }
-        return self.enum_cache.get(name);
+        if (self.enum_ptr_cache.get(sliceKey(name))) |cached| return cached;
+        const result = self.enum_cache.get(name);
+        self.enum_ptr_cache.put(self.allocator, sliceKey(name), result) catch {};
+        return result;
     }
 
     pub fn acquireFrame(self: *Vm, count: usize) !FrameBuf {
@@ -262,6 +271,7 @@ pub const Vm = struct {
         self.type_ptr_cache.deinit(self.allocator);
         self.element_type_cache.deinit(self.allocator);
         self.enum_cache.deinit(self.allocator);
+        self.enum_ptr_cache.deinit(self.allocator);
     }
 
     pub fn managedObjectCount(self: *const Vm) usize {
@@ -402,6 +412,10 @@ pub const Vm = struct {
 
     pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize) anyerror!usize {
         return native_bridge.copyArrayFromNativeLayout(self, module, array_ty, native_array_ptr);
+    }
+
+    pub fn writeArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
+        return native_bridge.writeArrayToNativeLayout(self, module, array_ty, runtime_array_ptr, native_array_ptr);
     }
 
     pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
