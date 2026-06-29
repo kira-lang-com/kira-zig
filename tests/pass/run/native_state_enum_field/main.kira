@@ -1,0 +1,39 @@
+// Regression: an enum field stored in nativeState must survive recovery.
+//
+// A Kira enum value is a heap {tag, payload} block referenced by pointer. When a
+// struct with an enum field was stored via nativeState, the LLVM backend copied
+// only the pointer into the native-state payload; the source struct was then
+// dropped, freeing the enum block, so recovering the state and reading the enum
+// dereferenced freed memory and matched a garbage tag (nondeterministically). The
+// fix clones the enum block into the native state so it owns independent storage.
+// The allocation churn below perturbs the heap to surface any dangling block.
+
+enum Mode { Red Green Blue }
+
+struct Holder {
+    var mode: Mode
+    var count: Int
+}
+
+function modeCode(m: Mode) -> Int {
+    match m {
+        Red -> return 1;
+        Green -> return 2;
+        Blue -> return 3;
+    }
+    return 0
+}
+
+@Main
+function main() {
+    let state = nativeState(Holder { mode: Mode.Green, count: 42 })
+    var i = 0
+    while i < 50 {
+        let scratch = nativeState(Holder { mode: Mode.Blue, count: i })
+        i = i + 1
+    }
+    var recovered = nativeRecover<Holder>(nativeUserData(state))
+    print(modeCode(recovered.mode))
+    print(recovered.count)
+    return
+}

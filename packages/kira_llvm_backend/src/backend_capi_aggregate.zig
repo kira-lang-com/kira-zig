@@ -22,10 +22,22 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
     for (type_decl.fields, 0..) |field_decl, index| {
         var f_idx = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(fc.types.i32, 0, 0), api.LLVMConstInt(fc.types.i32, @intCast(index), 0) };
         const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, src, &f_idx, f_idx.len, "state.field.ptr");
-        const field_value = if (field_decl.ty.kind == .ffi_struct)
+        var field_value = if (field_decl.ty.kind == .ffi_struct)
             api.LLVMBuildPtrToInt(b, field_ptr, fc.types.i64, "state.field.struct")
         else
             try fc.loadConverted(field_ptr, field_decl.ty);
+        // An enum field is a heap {tag,payload} block referenced by pointer. The
+        // source struct that supplied it is dropped after this allocation, freeing
+        // that block; copying only the pointer would leave the native-state payload
+        // referencing freed memory (a use-after-free that reads a garbage tag on
+        // recovery). Clone the block so the native state owns independent storage,
+        // matching the borrowed-enum rule in lowerStoreIndirect.
+        if (field_decl.ty.kind == .enum_instance and fc.drop_enabled and fc.request.mode == .llvm_native) {
+            const sptr = api.LLVMBuildIntToPtr(b, field_value, fc.types.ptr_ty, "state.enum.src");
+            var cargs = [_]llvm.c.LLVMValueRef{sptr};
+            const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "state.enum.clone");
+            field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.enum.cloneint");
+        }
         const bv = try fc.packBridge(field_decl.ty, field_value);
         var s_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, @intCast(index), 0)};
         const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, payload, &s_idx, s_idx.len, "state.slot");
