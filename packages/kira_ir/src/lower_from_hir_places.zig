@@ -133,6 +133,41 @@ pub fn paramOwnership(program: model.Program, function_id: u32, arg_index: usize
 /// callee's mutations are persisted back into the array after the call. Other arguments
 /// are lowered by value exactly as before. Records the required write-backs in
 /// `writebacks`; the caller emits them after the call instruction (see `emitWritebacks`).
+/// The local a place expression is ultimately rooted in (walking `index`/`field`
+/// projections to their base `local`), or null when it is not a plain local.
+fn rootLocalId(expr: *const model.Expr) ?u32 {
+    return switch (expr.*) {
+        .local => |node| node.local_id,
+        .index => |node| rootLocalId(node.object),
+        .field => |node| rootLocalId(node.object),
+        else => null,
+    };
+}
+
+/// True when the array of the index argument at `k` could be mutated by the callee
+/// during the call: some OTHER argument passes the same root local to an `owned` /
+/// `move` / `borrow mut` parameter, so the callee can reach and mutate (or free)
+/// that array — which would invalidate an aliased element borrow.
+fn indexArgArrayMayBeMutated(
+    program: model.Program,
+    args: []const *model.Expr,
+    function_id: u32,
+    k: usize,
+) bool {
+    const array_root = rootLocalId(args[k].index.object) orelse return false;
+    for (args, 0..) |other, j| {
+        if (j == k) continue;
+        switch (paramOwnership(program, function_id, j)) {
+            .owned, .move, .borrow_mut => {},
+            .borrow_read, .copy => continue,
+        }
+        if (rootLocalId(other)) |other_root| {
+            if (other_root == array_root) return true;
+        }
+    }
+    return false;
+}
+
 pub fn lowerDirectCallArgs(
     lowerer: anytype,
     instructions: *std.array_list.Managed(ir.Instruction),
@@ -143,10 +178,38 @@ pub fn lowerDirectCallArgs(
     const regs = try lowerer.allocator.alloc(u32, args.len);
     errdefer lowerer.allocator.free(regs);
     for (args, 0..) |arg, k| {
-        if (paramOwnership(lowerer.program, function_id, k) == .borrow_mut) {
-            regs[k] = try lowerMutableObject(lowerer, instructions, arg, writebacks);
-        } else {
-            regs[k] = try lowerer.lowerExpr(instructions, arg);
+        switch (paramOwnership(lowerer.program, function_id, k)) {
+            .borrow_mut => regs[k] = try lowerMutableObject(lowerer, instructions, arg, writebacks),
+            .borrow_read => {
+                // An array-element argument passed to a `borrow` (read) parameter is
+                // lowered as a borrowing `array_get` (no deep copy) when the array
+                // cannot be mutated by the same call — matching the native backend,
+                // which never copies a borrowed element. Everything else lowers by
+                // value exactly as before.
+                const elem_ty: ?ir.ValueType = if (arg.* == .index)
+                    (lowerResolvedType(lowerer.program, arg.index.ty) catch null)
+                else
+                    null;
+                if (elem_ty != null and elem_ty.?.kind == .ffi_struct and
+                    !indexArgArrayMayBeMutated(lowerer.program, args, function_id, k))
+                {
+                    const node = arg.index;
+                    const array_reg = try lowerer.lowerExpr(instructions, node.object);
+                    const index_reg = try lowerer.lowerExpr(instructions, node.index);
+                    const dst = lowerer.freshRegister();
+                    try instructions.append(.{ .array_get = .{
+                        .dst = dst,
+                        .array = array_reg,
+                        .index = index_reg,
+                        .ty = elem_ty.?,
+                        .borrow = true,
+                    } });
+                    regs[k] = dst;
+                } else {
+                    regs[k] = try lowerer.lowerExpr(instructions, arg);
+                }
+            },
+            else => regs[k] = try lowerer.lowerExpr(instructions, arg),
         }
     }
     return regs;
