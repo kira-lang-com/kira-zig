@@ -37,8 +37,18 @@ pub fn prepareArrayElement(
     module: *const bytecode.Module,
     element_ty: bytecode.TypeRef,
     item_value: runtime_abi.Value,
+    borrow: bool,
 ) !PreparedArrayElement {
     if (element_ty.kind == .ffi_struct and item_value == .raw_ptr and item_value.raw_ptr != 0) {
+        // Borrow-elided element read: the IR proved this element only feeds a
+        // non-escaping `borrow` call argument and the array stays alive and
+        // unmutated across that call, so alias the managed struct in place
+        // instead of deep-cloning it. The result is borrowed (owned=false): the
+        // callee reads it, the array keeps ownership, and nothing frees it twice.
+        // Native-layout elements still materialize a managed value below.
+        if (borrow and vm.isManagedStructPointer(item_value.raw_ptr)) {
+            return .{ .value = item_value, .owned = false };
+        }
         const type_name = element_ty.name orelse {
             vm.rememberError("array element struct type is missing a name");
             return error.RuntimeFailure;

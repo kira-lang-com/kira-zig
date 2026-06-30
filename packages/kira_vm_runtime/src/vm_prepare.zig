@@ -172,6 +172,8 @@ fn dump(prepared: *const PreparedModule) void {
                 .fused_arith_locals_store => |value| std.debug.print("  {d:>4}: fused_arith_locals_store l{d} <- l{d} {s} l{d}\n", .{ pc, value.dst_local, value.lhs_local, @tagName(value.kind), value.rhs_local }),
                 .fused_arith_local_const_store => |value| std.debug.print("  {d:>4}: fused_arith_local_const_store l{d} <- l{d} {s} {d}\n", .{ pc, value.dst_local, value.lhs_local, @tagName(value.kind), value.imm }),
                 .fused_arith_locals_ret => |value| std.debug.print("  {d:>4}: fused_arith_locals_ret l{d} {s} l{d}\n", .{ pc, value.lhs_local, @tagName(value.kind), value.rhs_local }),
+                .fused_array_bind_local => |value| std.debug.print("  {d:>4}: fused_array_bind_local l{d} <- r{d}[r{d}] ({s})\n", .{ pc, value.dst_local, value.array, value.index, value.type_name }),
+                .fused_array_field_load => |value| std.debug.print("  {d:>4}: fused_array_field_load r{d} <- r{d}[r{d}].{d} ({s})\n", .{ pc, value.dst, value.array, value.index, value.field_index, @tagName(value.elem_ty.kind) }),
                 else => std.debug.print("  {d:>4}: {s}\n", .{ pc, @tagName(inst) }),
             }
         }
@@ -224,6 +226,38 @@ fn prepareFunction(
     var index: usize = 0;
     while (index < body_len) {
         old_to_new[index] = @intCast(code_list.items.len);
+        // Fuse `arr[i].scalar`: array_get(borrow) + field_ptr + load_indirect of a
+        // scalar field, with both intermediate registers pattern-private (read
+        // exactly once). Replaces three dispatched ops + two register write-backs
+        // with one superinstruction — the layout engine reads node scalars this way
+        // tens of thousands of times per frame.
+        if (index + 2 < body_len and
+            instructions[index] == .array_get and instructions[index].array_get.borrow and
+            instructions[index + 1] == .field_ptr and
+            instructions[index + 2] == .load_indirect)
+        {
+            const get = instructions[index].array_get;
+            const fp = instructions[index + 1].field_ptr;
+            const ld = instructions[index + 2].load_indirect;
+            const scalar = switch (ld.ty.kind) {
+                .integer, .float, .boolean => true,
+                else => false,
+            };
+            if (scalar and fp.base == get.dst and ld.ptr == fp.dst and
+                reads[get.dst] == 1 and reads[fp.dst] == 1)
+            {
+                for (index..index + 3) |consumed_pc| old_to_new[consumed_pc] = @intCast(code_list.items.len);
+                try code_list.append(allocator, .{ .fused_array_field_load = .{
+                    .dst = ld.dst,
+                    .array = get.array,
+                    .index = get.index,
+                    .elem_ty = get.ty,
+                    .field_index = fp.field_index,
+                } });
+                index += 3;
+                continue;
+            }
+        }
         if (analysis.bind_sites.contains(@intCast(index))) {
             const get = instructions[index].array_get;
             const binding = instructions[index + 1].load_local;
@@ -968,6 +1002,7 @@ fn instructionReadsRegister(inst: bytecode.Instruction, register: u32) bool {
         .fused_compare_branch => |value| return value.lhs == register or value.rhs == register,
         .fused_compare_const_branch => |value| return value.lhs == register,
         .fused_array_bind_local => |value| return value.array == register or value.index == register,
+        .fused_array_field_load => |value| return value.array == register or value.index == register,
         .fused_cmp_local_const_branch, .fused_arith_locals_store, .fused_arith_local_const_store, .fused_arith_locals_ret => return false,
     }
 }
@@ -1107,15 +1142,13 @@ fn countRegisterReads(allocator: std.mem.Allocator, instructions: []const byteco
             },
             .ret => |value| if (value.src) |register| bumpRead(reads, register),
             // Fused instructions never appear in compiler/serializer output,
-            // which is the only input this pass sees.
-            .fused_compare_branch,
-            .fused_compare_const_branch,
-            .fused_cmp_local_const_branch,
-            .fused_arith_locals_store,
-            .fused_arith_local_const_store,
-            .fused_arith_locals_ret,
-            .fused_array_bind_local,
-            => unreachable,
+            // which is the only input this pass sees. Every real opcode counts
+            // its reads explicitly above, so the only tags reaching here are the
+            // fused superinstructions.
+            else => {
+                std.debug.assert(bytecode.isFused(std.meta.activeTag(inst)));
+                unreachable;
+            },
         }
     }
     return reads;

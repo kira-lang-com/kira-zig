@@ -423,12 +423,41 @@ pub fn runPrepared(
                 vm.rememberError("array index is out of bounds");
                 return error.RuntimeFailure;
             }
-            const element = try prologue.prepareArrayElement(vm, module, value.ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]));
+            const element = try prologue.prepareArrayElement(vm, module, value.ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]), value.borrow);
             if (element.owned) {
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], element.value);
             } else {
                 setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], element.value);
             }
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .fused_array_field_load => |value| {
+            // `arr[i].scalar`: borrow the element, read one scalar field directly,
+            // free the materialization if the element was native-layout. Equivalent
+            // to array_get(borrow)+field_ptr+load_indirect with the two intermediate
+            // registers elided. Safe for scalar fields only (the value owns no heap).
+            const array_value = registers[value.array];
+            const index_value = registers[value.index];
+            if (array_value != .raw_ptr or array_value.raw_ptr == 0 or index_value != .integer or index_value.integer < 0) {
+                vm.rememberError("array field load requires a valid array handle and index");
+                return error.RuntimeFailure;
+            }
+            const array_ptr: *const ArrayObject = @ptrFromInt(array_value.raw_ptr);
+            const index: usize = @intCast(index_value.integer);
+            if (index >= array_ptr.len) {
+                vm.rememberError("array index is out of bounds");
+                return error.RuntimeFailure;
+            }
+            const element = try prologue.prepareArrayElement(vm, module, value.elem_ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]), true);
+            if (element.value != .raw_ptr or element.value.raw_ptr == 0) {
+                vm.rememberError("array element field load requires a valid struct pointer");
+                return error.RuntimeFailure;
+            }
+            const slot_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(element.value.raw_ptr);
+            const field_value = slot_ptr[@as(usize, @intCast(value.field_index))];
+            setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], field_value);
+            if (element.owned) vm.heap.dropValue(element.value);
             pc += 1;
             continue :dispatch code[pc];
         },

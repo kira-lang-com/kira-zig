@@ -1,3 +1,4 @@
+const std = @import("std");
 const ownership_mode = @import("ownership_mode.zig");
 
 pub const OpCode = enum(u8) {
@@ -66,6 +67,7 @@ pub const OpCode = enum(u8) {
     fused_arith_local_const_store,
     fused_arith_locals_ret,
     fused_array_bind_local,
+    fused_array_field_load,
 };
 
 pub const Instruction = union(OpCode) {
@@ -98,7 +100,12 @@ pub const Instruction = union(OpCode) {
     c_string_to_string: struct { dst: u32, src: u32 },
     array_len: struct { dst: u32, array: u32 },
     string_len: struct { dst: u32, string: u32 },
-    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef },
+    // `borrow=true` marks an element read whose result is consumed only as a
+    // non-escaping `borrow` argument to an immediately-following call (set by the
+    // IR lowering, guarded so the array cannot be mutated/freed during that call).
+    // The interpreter then aliases a managed element instead of deep-cloning it,
+    // matching the native backend, which never copies a borrowed element.
+    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef, borrow: bool = false },
     array_set: struct { array: u32, index: u32, src: u32 },
     array_append: struct { array: u32, src: u32 },
     enum_tag: struct { dst: u32, src: u32 },
@@ -141,7 +148,54 @@ pub const Instruction = union(OpCode) {
     // elements). type_name preserves the clone fallback for native-layout
     // elements.
     fused_array_bind_local: struct { array: u32, index: u32, dst_local: u32, type_name: []const u8 },
+    // array_get(e, array, index, ffi_struct, borrow); field_ptr(p, e, field_index,
+    // scalar); load_indirect(dst, p, scalar) — reading one scalar field of an
+    // array element (`arr[i].f`). The two intermediates are pattern-private, so the
+    // element is borrowed, the scalar read directly, and a native-layout element's
+    // materialization freed in one step. Restricted to scalar fields (int/float/
+    // bool) whose loaded value owns no heap, so the immediate free is always safe.
+    fused_array_field_load: struct { dst: u32, array: u32, index: u32, elem_ty: TypeRef, field_index: u32 },
 };
+
+/// True for the VM-internal fused superinstructions — the ones produced only by
+/// the VM's decode pass (vm_prepare.zig), never by the compiler or serializer.
+///
+/// Single source of truth so passes that treat every fused op identically
+/// (serialize/deserialize reject them, countRegisterReads never sees them) can
+/// gate on one predicate instead of listing all fused tags. Adding a fused
+/// superinstruction needs no edit here: it is a range check over the contiguous
+/// trailing block of fused tags, an invariant the comptime guard below proves.
+pub fn isFused(op: OpCode) bool {
+    return @intFromEnum(op) >= @intFromEnum(OpCode.fused_compare_branch);
+}
+
+comptime {
+    // Guard the range assumption behind isFused: every OpCode tag at or after
+    // the first fused op must be a `fused_*` tag, and none before it may be. A
+    // future non-fused opcode appended after the fused block (or a fused op
+    // inserted before it) fails the build here and forces a real decision
+    // instead of silently mis-classifying instructions.
+    const first_fused = @intFromEnum(OpCode.fused_compare_branch);
+    for (std.meta.fields(OpCode)) |field| {
+        const at_or_after = field.value >= first_fused;
+        const named_fused = std.mem.startsWith(u8, field.name, "fused_");
+        if (at_or_after != named_fused)
+            @compileError("fused opcodes must form a contiguous trailing block; offender: " ++ field.name);
+    }
+}
+
+test "isFused classifies every opcode by its fused_ naming" {
+    // Enumerate the whole OpCode space so a new tag that slips outside the
+    // fused block — or a fused tag the range check misses — fails here instead
+    // of being silently mis-handled by the serializer / register-read analysis.
+    inline for (std.meta.fields(OpCode)) |field| {
+        const op = @field(OpCode, field.name);
+        try std.testing.expectEqual(
+            std.mem.startsWith(u8, field.name, "fused_"),
+            isFused(op),
+        );
+    }
+}
 
 pub const ArithKind = enum(u8) {
     add,

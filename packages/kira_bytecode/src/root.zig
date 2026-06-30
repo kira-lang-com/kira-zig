@@ -13,6 +13,7 @@ pub const EnumVariantDecl = bytecode.EnumVariantDecl;
 pub const Field = bytecode.Field;
 pub const Instruction = @import("instruction.zig").Instruction;
 pub const OpCode = @import("instruction.zig").OpCode;
+pub const isFused = @import("instruction.zig").isFused;
 pub const CompareOp = @import("instruction.zig").CompareOp;
 pub const UnaryOp = @import("instruction.zig").UnaryOp;
 pub const ArithKind = @import("instruction.zig").ArithKind;
