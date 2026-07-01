@@ -633,7 +633,7 @@ fn synthesizeFormStruct(ctx: *shared.Context, form_decl: syntax.ast.ConstructFor
             // Caller-provided children are stored as `any Family` slots so heterogeneous widgets
             // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `any` form.
             var content_field = field;
-            content_field.type_expr = if (field.type_expr) |type_expr| try anyifyContentType(ctx.allocator, type_expr) else null;
+            content_field.type_expr = if (field.type_expr) |type_expr| try existentializeContentType(ctx.allocator, type_expr) else null;
             try members.append(.{ .field_decl = content_field });
             continue;
         }
@@ -649,12 +649,14 @@ fn synthesizeFormStruct(ctx: *shared.Context, form_decl: syntax.ast.ConstructFor
     };
 }
 
-// Rewrite an `@Content` field's family type to its `any` form: `[Widget]` -> `[any Widget]`,
-// `Widget` -> `any Widget`. A type already wrapped in `any` is left as-is.
-fn anyifyContentType(allocator: std.mem.Allocator, type_expr: *syntax.ast.TypeExpr) !*syntax.ast.TypeExpr {
+// Rewrite an `@Content` field's family type to its existential `some` form:
+// `[Widget]` -> `[some Widget]`, `Widget` -> `some Widget`. Content fields hold heterogeneous
+// concrete constructs dispatched dynamically, so they use the existential `some` qualifier (not
+// `any`, which is a monomorphized generic). A type already wrapped is left as-is.
+fn existentializeContentType(allocator: std.mem.Allocator, type_expr: *syntax.ast.TypeExpr) !*syntax.ast.TypeExpr {
     switch (type_expr.*) {
         .array => |array| {
-            const element = try anyifyContentType(allocator, array.element_type);
+            const element = try existentializeContentType(allocator, array.element_type);
             const rewritten = try allocator.create(syntax.ast.TypeExpr);
             rewritten.* = .{ .array = .{ .element_type = element, .span = array.span } };
             return rewritten;
@@ -663,7 +665,7 @@ fn anyifyContentType(allocator: std.mem.Allocator, type_expr: *syntax.ast.TypeEx
             const target = try allocator.create(syntax.ast.TypeExpr);
             target.* = .{ .named = named };
             const rewritten = try allocator.create(syntax.ast.TypeExpr);
-            rewritten.* = .{ .any = .{ .target = target, .span = named.span } };
+            rewritten.* = .{ .any = .{ .target = target, .span = named.span, .existential = true } };
             return rewritten;
         },
         else => return type_expr,
