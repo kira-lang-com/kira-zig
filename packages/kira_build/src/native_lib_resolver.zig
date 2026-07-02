@@ -8,12 +8,63 @@ pub fn resolveNativeManifestFile(allocator: std.mem.Allocator, path: []const u8,
     const parsed = try manifest.parseNativeLibManifest(allocator, text);
     var resolved = try native.resolveLibrary(allocator, parsed.library, target);
     resolved.manifest_path = try absolutizePath(allocator, path, path);
+
+    // A manifest path may reference an environment variable (e.g. an SDK root
+    // like `${VULKAN_SDK}`). When that variable is unset we cannot resolve the
+    // library on this machine; mark it unavailable so preparation skips it with
+    // a warning instead of absolutizing a bogus `${VULKAN_SDK}/...` literal and
+    // handing it to clang (which then fails opaquely).
+    if (try firstUnresolvedEnvVar(allocator, resolved)) |missing| {
+        resolved.unavailable = .{ .reason = .missing_environment_variable, .detail = missing };
+        return resolved;
+    }
+
     resolved.artifact_path = try absolutizePath(allocator, path, resolved.artifact_path);
     resolved.headers = try resolveHeaders(allocator, path, resolved.headers);
     resolved.autobinding = if (resolved.autobinding) |autobinding| try resolveAutobinding(allocator, path, autobinding) else null;
     resolved.build = try resolveBuildRecipe(allocator, path, resolved.build);
     resolved.link = try resolveLinkExtras(allocator, path, resolved.link);
     return resolved;
+}
+
+/// Returns the name of the first environment variable referenced by a manifest
+/// path (via `${NAME}`) that is not set in the current process environment, or
+/// null when every referenced variable resolves. The caller owns the returned
+/// slice.
+fn firstUnresolvedEnvVar(allocator: std.mem.Allocator, resolved: native.ResolvedNativeLibrary) !?[]const u8 {
+    if (resolved.headers.entrypoint) |entrypoint| {
+        if (try unresolvedEnvVarName(allocator, entrypoint)) |name| return name;
+    }
+    if (try firstUnresolvedEnvVarInList(allocator, resolved.headers.include_dirs)) |name| return name;
+    if (try firstUnresolvedEnvVarInList(allocator, resolved.build.sources)) |name| return name;
+    if (try firstUnresolvedEnvVarInList(allocator, resolved.build.include_dirs)) |name| return name;
+    if (try firstUnresolvedEnvVarInList(allocator, resolved.link.include_dirs)) |name| return name;
+    if (resolved.autobinding) |autobinding| {
+        if (try firstUnresolvedEnvVarInList(allocator, autobinding.headers)) |name| return name;
+    }
+    if (try unresolvedEnvVarName(allocator, resolved.artifact_path)) |name| return name;
+    return null;
+}
+
+fn firstUnresolvedEnvVarInList(allocator: std.mem.Allocator, values: []const []const u8) !?[]const u8 {
+    for (values) |value| {
+        if (try unresolvedEnvVarName(allocator, value)) |name| return name;
+    }
+    return null;
+}
+
+fn unresolvedEnvVarName(allocator: std.mem.Allocator, value: []const u8) !?[]const u8 {
+    // Mirror `expandEnvPath`: only a leading `${NAME}` reference is treated as an
+    // environment substitution.
+    if (!std.mem.startsWith(u8, value, "${")) return null;
+    const close = std.mem.indexOfScalar(u8, value, '}') orelse return null;
+    const name = value[2..close];
+    if (envVarOwned(allocator, name)) |resolved_value| {
+        allocator.free(resolved_value);
+        return null;
+    } else |_| {
+        return try allocator.dupe(u8, name);
+    }
 }
 
 fn resolveHeaders(allocator: std.mem.Allocator, manifest_path: []const u8, headers: native.HeaderSpec) !native.HeaderSpec {
@@ -133,4 +184,59 @@ fn cloneStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]con
         try list.append(try allocator.dupe(u8, value));
     }
     return list.toOwnedSlice();
+}
+
+// A variable name that no reasonable environment would define, so these tests
+// exercise the unset-variable path deterministically.
+const unset_env_probe = "KIRA_TEST_UNSET_ENV_XYZ";
+
+test "unresolvedEnvVarName ignores plain paths and reports unset variables" {
+    const allocator = std.testing.allocator;
+
+    // Relative and absolute literal paths are not environment references.
+    try std.testing.expect((try unresolvedEnvVarName(allocator, "Text/kira_text.h")) == null);
+    try std.testing.expect((try unresolvedEnvVarName(allocator, "/usr/include/foo.h")) == null);
+
+    const missing = try unresolvedEnvVarName(allocator, "${" ++ unset_env_probe ++ "}/Include/vulkan.h");
+    try std.testing.expect(missing != null);
+    defer allocator.free(missing.?);
+    try std.testing.expectEqualStrings(unset_env_probe, missing.?);
+}
+
+test "resolveNativeManifestFile marks library unavailable when a required env var is unset" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "vulkan.toml",
+        .data =
+        \\[library]
+        \\name = "vulkan"
+        \\link_mode = "dynamic"
+        \\abi = "c"
+        \\
+        \\[headers]
+        \\entrypoint = "${KIRA_TEST_UNSET_ENV_XYZ}/Include/vulkan/vulkan.h"
+        \\include_dirs = ["${KIRA_TEST_UNSET_ENV_XYZ}/Include"]
+        \\
+        \\[target.x86_64-linux-gnu]
+        \\dynamic_lib = ""
+        \\
+        ,
+    });
+
+    const manifest_path = try tmp.dir.realPathFileAlloc(std.testing.io, "vulkan.toml", allocator);
+    const selector = try native.TargetSelector.parse(allocator, "x86_64-linux-gnu");
+    const resolved = try resolveNativeManifestFile(allocator, manifest_path, selector);
+
+    try std.testing.expect(resolved.unavailable != null);
+    try std.testing.expectEqual(
+        native.Unavailable.Reason.missing_environment_variable,
+        resolved.unavailable.?.reason,
+    );
+    try std.testing.expectEqualStrings(unset_env_probe, resolved.unavailable.?.detail);
 }

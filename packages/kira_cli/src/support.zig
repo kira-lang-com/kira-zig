@@ -266,6 +266,26 @@ fn nativeWarningDiagnostic(
     warning: build.NativeWarning,
 ) !diagnostics.Diagnostic {
     const target_path = input.displayPath();
+    if (warning.kind == .skipped_missing_environment) {
+        const variable = warning.detail orelse "<unknown variable>";
+        return .{
+            .severity = .warning,
+            .title = "native library skipped",
+            .message = try std.fmt.allocPrint(
+                allocator,
+                "Skipped native library `{s}` while running `{s}` for `{s}` because the required environment variable `{s}` is not set.",
+                .{ warning.library_name, command, target_path, variable },
+            ),
+            .notes = try allocator.dupe([]const u8, &.{
+                warning.manifest_path orelse "<unknown manifest>",
+            }),
+            .help = try std.fmt.allocPrint(
+                allocator,
+                "Set `{s}` to the SDK location and re-run to build/bind this library, or ignore this warning if the library is not needed on this platform.",
+                .{variable},
+            ),
+        };
+    }
     const notes = try allocator.dupe([]const u8, &.{
         warning.manifest_path orelse "<unknown manifest>",
         warning.artifact_path orelse warning.bindings_path orelse "<unknown path>",
@@ -293,6 +313,8 @@ fn nativeWarningDiagnostic(
             .notes = notes,
             .help = "Run `kira ffi autobind <target>` to regenerate native bindings.",
         },
+        // Handled by the early return above.
+        .skipped_missing_environment => unreachable,
     };
 }
 
