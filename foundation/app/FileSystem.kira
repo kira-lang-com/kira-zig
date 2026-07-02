@@ -89,3 +89,45 @@ function listDirectory(path: borrow String) -> DirectoryListing {
         handle: fs_list_directory(path)
     }
 }
+
+// --- Byte-level file IO (binary-safe; the CString paths above truncate at NULs) ---
+
+// RawPtr-typed redeclarations of the fs byte APIs (the autobound signatures use the
+// opaque `uint8_t_ptr`; a raw dynamic buffer is the natural caller representation).
+@FFI.Extern { library: fs; symbol: fs_write_bytes; abi: c; }
+function fsWriteBytesRaw(path: CString, data: RawPtr, size: U64): CBool;
+@FFI.Extern { library: fs; symbol: fs_read_range; abi: c; }
+function fsReadRangeRaw(path: CString, offset: U64, size: U64, out: RawPtr): U64;
+
+// Write a byte array to a file (explicit size — bytes may contain NULs).
+@Native
+function writeBytesFile(path: borrow String, bytes: borrow [U8]) -> Bool {
+    let count = bytes.count
+    let buf = kira_dynamic_alloc(U64(count))
+    var i = 0
+    while i < count {
+        kira_dynamic_write_u8_at(buf, U64(i), bytes[i])
+        i = i + 1
+    }
+    let ok = fsWriteBytesRaw(path, buf, U64(count))
+    kira_dynamic_free(buf)
+    return ok
+}
+
+// Read `count` bytes starting at `offset` — a true partial read (the file is never
+// read past the requested range). Returns the bytes actually read (short at EOF).
+@Native
+function readFileRange(path: borrow String, offset: Int, count: Int) -> [U8] {
+    var out: [U8] = []
+    if count > 0 {
+        let buf = kira_dynamic_alloc(U64(count))
+        let got = fsReadRangeRaw(path, U64(offset), U64(count), buf)
+        var i: U64 = 0
+        while i < got {
+            out.append(kira_dynamic_read_u8_at(buf, i))
+            i = i + U64(1)
+        }
+        kira_dynamic_free(buf)
+    }
+    return move out
+}

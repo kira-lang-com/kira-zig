@@ -97,8 +97,12 @@ pub const Parser = struct {
     pub const parseConditional = type_expr_impl.parseConditional;
     pub const parseLogicalOr = type_expr_impl.parseLogicalOr;
     pub const parseLogicalAnd = type_expr_impl.parseLogicalAnd;
+    pub const parseBitOr = type_expr_impl.parseBitOr;
+    pub const parseBitXor = type_expr_impl.parseBitXor;
+    pub const parseBitAnd = type_expr_impl.parseBitAnd;
     pub const parseEquality = type_expr_impl.parseEquality;
     pub const parseComparison = type_expr_impl.parseComparison;
+    pub const parseShift = type_expr_impl.parseShift;
     pub const parseTerm = type_expr_impl.parseTerm;
     pub const parseFactor = type_expr_impl.parseFactor;
     pub const parseUnary = type_expr_impl.parseUnary;
@@ -229,6 +233,11 @@ pub const Parser = struct {
                 .greater_equal => .greater_equal,
                 .amp_amp => .logical_and,
                 .pipe_pipe => .logical_or,
+                .amp => .bit_and,
+                .pipe => .bit_or,
+                .caret => .bit_xor,
+                .less_less => .shift_left,
+                .greater_greater => .shift_right,
                 else => unreachable,
             },
             .lhs = lhs,
@@ -506,6 +515,12 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .less_equal => "'<='",
         .greater => "'>'",
         .greater_equal => "'>='",
+        .amp => "'&'",
+        .pipe => "'|'",
+        .caret => "'^'",
+        .tilde => "'~'",
+        .less_less => "'<<'",
+        .greater_greater => "'>>'",
     };
 }
 

@@ -199,6 +199,83 @@ fs_read_result fs_read_file(const char* path) {
     return result;
 }
 
+// Binary-safe write: `size` explicit, no strlen — container bytes may hold NULs.
+bool fs_write_bytes(const char* path, const uint8_t* data, uint64_t size) {
+    if (path == NULL || (data == NULL && size != 0)) {
+        return false;
+    }
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    BOOL ok = WriteFile(file, data, (DWORD)size, &written, NULL);
+    CloseHandle(file);
+    return ok && written == size;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        return false;
+    }
+    uint64_t total_written = 0;
+    while (total_written < size) {
+        ssize_t written = write(fd, data + total_written, size - total_written);
+        if (written < 0) {
+            close(fd);
+            return false;
+        }
+        total_written += (uint64_t)written;
+    }
+    close(fd);
+    return true;
+#endif
+}
+
+// Partial read: `size` bytes from `offset` into caller-owned `out`. Returns bytes
+// actually read (0 on error / EOF-at-offset). Never reads the whole file — the
+// partial-read contract for container streaming (compression blocks < IO units).
+uint64_t fs_read_range(const char* path, uint64_t offset, uint64_t size, uint8_t* out) {
+    if (path == NULL || out == NULL || size == 0) {
+        return 0;
+    }
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)offset;
+    if (!SetFilePointerEx(file, li, NULL, FILE_BEGIN)) {
+        CloseHandle(file);
+        return 0;
+    }
+    DWORD got = 0;
+    BOOL ok = ReadFile(file, out, (DWORD)size, &got, NULL);
+    CloseHandle(file);
+    return ok ? (uint64_t)got : 0;
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    uint64_t total_read = 0;
+    while (total_read < size) {
+        ssize_t got = pread(fd, out + total_read, size - total_read, (off_t)(offset + total_read));
+        if (got < 0) {
+            close(fd);
+            return 0;
+        }
+        if (got == 0) {
+            break;
+        }
+        total_read += (uint64_t)got;
+    }
+    close(fd);
+    return total_read;
+#endif
+}
+
 bool fs_write_file(const char* path, const char* data) {
     if (path == NULL || data == NULL) {
         return false;

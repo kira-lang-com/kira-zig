@@ -306,8 +306,41 @@ pub fn parseLogicalOr(self: *Parser) anyerror!*syntax.ast.Expr {
 }
 
 pub fn parseLogicalAnd(self: *Parser) anyerror!*syntax.ast.Expr {
-    var expr = try self.parseEquality();
+    var expr = try self.parseBitOr();
     while (self.match(.amp_amp)) {
+        const operator = self.previous();
+        const rhs = try self.parseBitOr();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+// Bitwise precedence (C-style): `|` binds looser than `^`, which binds looser
+// than `&`, all looser than equality. `move a & b` still parses as `(move a) & b`
+// since bitwise sits above the unary/ownership level.
+pub fn parseBitOr(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseBitXor();
+    while (self.match(.pipe)) {
+        const operator = self.previous();
+        const rhs = try self.parseBitXor();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseBitXor(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseBitAnd();
+    while (self.match(.caret)) {
+        const operator = self.previous();
+        const rhs = try self.parseBitAnd();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+pub fn parseBitAnd(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseEquality();
+    while (self.match(.amp)) {
         const operator = self.previous();
         const rhs = try self.parseEquality();
         expr = try self.makeBinaryExpr(operator, expr, rhs);
@@ -326,8 +359,20 @@ pub fn parseEquality(self: *Parser) anyerror!*syntax.ast.Expr {
 }
 
 pub fn parseComparison(self: *Parser) anyerror!*syntax.ast.Expr {
-    var expr = try self.parseTerm();
+    var expr = try self.parseShift();
     while (self.match(.less) or self.match(.less_equal) or self.match(.greater) or self.match(.greater_equal)) {
+        const operator = self.previous();
+        const rhs = try self.parseShift();
+        expr = try self.makeBinaryExpr(operator, expr, rhs);
+    }
+    return expr;
+}
+
+// Shifts bind tighter than comparison, looser than additive (`a + b << c` is
+// `a + (b << c)`? No — additive is tighter, so `(a + b) << c`). Matches C.
+pub fn parseShift(self: *Parser) anyerror!*syntax.ast.Expr {
+    var expr = try self.parseTerm();
+    while (self.match(.less_less) or self.match(.greater_greater)) {
         const operator = self.previous();
         const rhs = try self.parseTerm();
         expr = try self.makeBinaryExpr(operator, expr, rhs);
@@ -379,7 +424,7 @@ pub fn parseUnary(self: *Parser) anyerror!*syntax.ast.Expr {
         return node;
     }
 
-    if (self.match(.minus) or self.match(.bang)) {
+    if (self.match(.minus) or self.match(.bang) or self.match(.tilde)) {
         const operator = self.previous();
         const operand = try self.parseUnary();
         const node = try self.allocator.create(syntax.ast.Expr);
@@ -387,6 +432,7 @@ pub fn parseUnary(self: *Parser) anyerror!*syntax.ast.Expr {
             .op = switch (operator.kind) {
                 .minus => .negate,
                 .bang => .not,
+                .tilde => .bit_not,
                 else => unreachable,
             },
             .operand = operand,

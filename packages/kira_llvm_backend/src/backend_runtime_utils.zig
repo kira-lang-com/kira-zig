@@ -152,11 +152,13 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
             .multiply => |value| register_types[value.dst] = register_types[value.lhs],
             .divide => |value| register_types[value.dst] = register_types[value.lhs],
             .modulo => |value| register_types[value.dst] = register_types[value.lhs],
+            .bitwise => |value| register_types[value.dst] = register_types[value.lhs],
             .convert => |value| register_types[value.dst] = .{ .kind = value.target },
             .compare => |value| register_types[value.dst] = .{ .kind = .boolean },
             .unary => |value| register_types[value.dst] = switch (value.op) {
                 .negate => register_types[value.src],
                 .not => .{ .kind = .boolean },
+                .bit_not => register_types[value.src],
             },
             .store_local => {},
             .load_local => |value| register_types[value.dst] = function_decl.local_types[value.local],

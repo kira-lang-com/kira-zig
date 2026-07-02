@@ -21,7 +21,7 @@ const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBC7");
+    try writer.writeAll("KBC8");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -173,22 +173,32 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
                     try writer.writeInt(u32, value.rhs, .little);
+                    try writer.writeByte(@intFromBool(value.unsigned));
                 },
                 .modulo => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
                     try writer.writeInt(u32, value.rhs, .little);
+                    try writer.writeByte(@intFromBool(value.unsigned));
                 },
                 .convert => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.src, .little);
                     try writer.writeByte(if (value.to_float) 1 else 0);
                 },
+                .bitwise => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.lhs, .little);
+                    try writer.writeInt(u32, value.rhs, .little);
+                    try writer.writeByte(@intFromEnum(value.op));
+                    try writer.writeByte(@intFromBool(value.unsigned));
+                },
                 .compare => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.lhs, .little);
                     try writer.writeInt(u32, value.rhs, .little);
                     try writer.writeByte(@intFromEnum(value.op));
+                    try writer.writeByte(@intFromBool(value.unsigned));
                 },
                 .unary => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -344,7 +354,12 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // KBC7 is KBC6 plus the appended `convert` opcode; the container layout and
     // every feature flag are otherwise identical to KBC6.
     const is_kbc7 = std.mem.eql(u8, &magic, "KBC7");
-    const is_kbc6_or_later = is_kbc6 or is_kbc7;
+    // KBC8 is KBC7 plus a trailing `unsigned` flag byte on divide/modulo/compare
+    // (unsigned integer division/remainder/ordering). Older containers omit it and
+    // default to signed, matching their original behavior.
+    const is_kbc8 = std.mem.eql(u8, &magic, "KBC8");
+    const has_unsigned_arith = is_kbc8;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -578,22 +593,32 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.takeInt(u32, .little),
                     .lhs = try reader.takeInt(u32, .little),
                     .rhs = try reader.takeInt(u32, .little),
+                    .unsigned = if (has_unsigned_arith) (try reader.takeByte()) != 0 else false,
                 } }),
                 .modulo => try instructions.append(.{ .modulo = .{
                     .dst = try reader.takeInt(u32, .little),
                     .lhs = try reader.takeInt(u32, .little),
                     .rhs = try reader.takeInt(u32, .little),
+                    .unsigned = if (has_unsigned_arith) (try reader.takeByte()) != 0 else false,
                 } }),
                 .convert => try instructions.append(.{ .convert = .{
                     .dst = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
                     .to_float = (try reader.takeByte()) != 0,
                 } }),
+                .bitwise => try instructions.append(.{ .bitwise = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .lhs = try reader.takeInt(u32, .little),
+                    .rhs = try reader.takeInt(u32, .little),
+                    .op = @enumFromInt(try reader.takeByte()),
+                    .unsigned = (try reader.takeByte()) != 0,
+                } }),
                 .compare => try instructions.append(.{ .compare = .{
                     .dst = try reader.takeInt(u32, .little),
                     .lhs = try reader.takeInt(u32, .little),
                     .rhs = try reader.takeInt(u32, .little),
                     .op = @enumFromInt(try reader.takeByte()),
+                    .unsigned = if (has_unsigned_arith) (try reader.takeByte()) != 0 else false,
                 } }),
                 .unary => try instructions.append(.{ .unary = .{
                     .dst = try reader.takeInt(u32, .little),

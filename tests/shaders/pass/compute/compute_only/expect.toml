@@ -1,0 +1,3 @@
+mode = "pass"
+# Compute shaders lower to a real MSL `kernel` (verified on Metal) and to plausible
+# HLSL/GLSL source (unverified backends). See ADR: KSL compute shaders.

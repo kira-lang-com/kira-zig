@@ -83,6 +83,9 @@ struct fs_read_result {
 @FFI.Pointer { target: __darwin_pthread_handler_rec; ownership: borrowed; }
 struct __darwin_pthread_handler_rec_ptr {}
 
+@FFI.Pointer { target: uint8_t; ownership: borrowed; }
+struct uint8_t_ptr {}
+
 @FFI.Extern { library: fs; symbol: fs_close; abi: c; }
 function fs_close(handle: RawPtr): Void;
 
@@ -124,6 +127,12 @@ function fs_read_all_text_from_handle(handle: RawPtr): CString;
 
 @FFI.Extern { library: fs; symbol: fs_read_file; abi: c; }
 function fs_read_file(path: CString): fs_read_result;
+
+@FFI.Extern { library: fs; symbol: fs_read_range; abi: c; }
+function fs_read_range(path: CString, offset: U64, size: U64, out: uint8_t_ptr): U64;
+
+@FFI.Extern { library: fs; symbol: fs_write_bytes; abi: c; }
+function fs_write_bytes(path: CString, data: uint8_t_ptr, size: U64): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_write_file; abi: c; }
 function fs_write_file(path: CString, data: CString): CBool;
