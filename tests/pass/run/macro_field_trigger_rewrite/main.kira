@@ -1,0 +1,82 @@
+comptime macro Tracked {
+    kind { attribute }
+    appliesTo { form }
+    trigger { field }
+    replace { true }
+
+    expand(target: Declaration) -> Syntax {
+        var stateFields: [Syntax] = []
+        var accessors: [Syntax] = []
+        var rewritten: Syntax = target.syntax
+        for field in target.fields {
+            if field.hasAnnotation("Tracked") {
+                stateFields.append(quote {
+                    var #{field.name}: #{field.type.asSyntax()} = #{field.initializer}
+                })
+                accessors.append(quote {
+                    function __state_#{target.name}_get_#{field.name}() -> #{field.type.asSyntax()} {
+                        print("get:" + #{field.name.asString()})
+                        let store = __State_#{target.name} {}
+                        return store.#{field.name}
+                    }
+                    function __state_#{target.name}_set_#{field.name}(value: #{field.type.asSyntax()}) {
+                        print("set:" + #{field.name.asString()})
+                        return
+                    }
+                })
+                rewritten = rewritten.dropField(field.name)
+                rewritten = rewritten.rewriteProperty(
+                    field.name,
+                    quote { __state_#{target.name}_get_#{field.name}() },
+                    quote { __state_#{target.name}_set_#{field.name} }
+                )
+            }
+        }
+        return quote {
+            struct __State_#{target.name} {
+                #{stateFields}
+            }
+            #{accessors}
+            #{rewritten}
+        }
+    }
+}
+
+construct Panel {
+    @Required let body: Int
+}
+
+Panel Demo() {
+    @Tracked var count: Int = 7
+    @Tracked var label: String = "hello"
+    let body: Int = 1
+
+    function poke() -> Int {
+        count = count + 1
+        return count
+    }
+
+    function readLabel() -> String {
+        return label
+    }
+
+    function shadowed() -> Int {
+        let count = 99
+        return count
+    }
+}
+
+@Main
+function main() {
+    let d = Demo()
+    let a = d.poke()
+    if a == 7 {
+        print("poke-returned-default")
+    }
+    if d.readLabel() == "hello" {
+        print("label-default-ok")
+    }
+    if d.shadowed() == 99 {
+        print("shadow-respected")
+    }
+}
