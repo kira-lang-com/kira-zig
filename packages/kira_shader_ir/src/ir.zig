@@ -235,6 +235,7 @@ pub const Intrinsic = enum {
     dot,
     sample,
     load,
+    atomic_add,
     length,
     pow,
     sin,

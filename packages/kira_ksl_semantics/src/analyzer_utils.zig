@@ -188,6 +188,7 @@ pub fn intrinsicFromName(name: []const u8) ?shader_ir.Intrinsic {
     if (std.mem.eql(u8, name, "dot")) return .dot;
     if (std.mem.eql(u8, name, "sample")) return .sample;
     if (std.mem.eql(u8, name, "load")) return .load;
+    if (std.mem.eql(u8, name, "atomicAdd")) return .atomic_add;
     if (std.mem.eql(u8, name, "length")) return .length;
     if (std.mem.eql(u8, name, "pow")) return .pow;
     if (std.mem.eql(u8, name, "sin")) return .sin;
