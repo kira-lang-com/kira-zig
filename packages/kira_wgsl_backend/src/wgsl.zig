@@ -299,6 +299,15 @@ fn emitExpr(allocator: std.mem.Allocator, writer: anytype, expr: *const shader_i
                     try emitExpr(allocator, writer, call_expr.args[1]);
                     try writer.writeAll("), 0)");
                 },
+                .atomic_add => {
+                    try writer.writeAll("atomicAdd(&");
+                    try emitExpr(allocator, writer, call_expr.args[0]);
+                    try writer.writeAll("[");
+                    try emitExpr(allocator, writer, call_expr.args[1]);
+                    try writer.writeAll("], ");
+                    try emitExpr(allocator, writer, call_expr.args[2]);
+                    try writer.writeByte(')');
+                },
             },
         },
     }
