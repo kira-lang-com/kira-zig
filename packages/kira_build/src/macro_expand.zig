@@ -37,6 +37,14 @@ const StatementList = std.array_list.Managed(ast.Statement);
 
 const max_expansion_depth: u32 = 256;
 
+/// A struct registered as a property-wrapper template: `@PropertyWrapper struct State { ... }`.
+/// The struct is a TEMPLATE (it may carry placeholder types like `Wrapped`) and is removed from
+/// the program; the wrapper macro monomorphizes it per wrapped field.
+pub const WrapperTemplate = struct {
+    macro: ast.MacroDecl,
+    decl: ast.TypeDecl,
+};
+
 /// Substitution target for a fragment parameter within a single expansion.
 pub const Replacement = union(enum) {
     /// Hygienic temporary identifier name bound once at the call site (`expr` fragment).
@@ -62,9 +70,27 @@ pub const Expander = struct {
     proc_macros: std.StringHashMapUnmanaged(ast.MacroDecl) = .{},
     // Procedural function-position macros, keyed by name (invoked via top-level `name!(args)`).
     func_macros: std.StringHashMapUnmanaged(ast.MacroDecl) = .{},
+    // `kind { wrapper }` macros, keyed by name (`@PropertyWrapper` on a struct declares a wrapper
+    // template; the template's name on a FIELD summons the macro over the enclosing declaration).
+    wrapper_macros: std.StringHashMapUnmanaged(ast.MacroDecl) = .{},
+    // Wrapper templates: structs annotated with a wrapper-kind macro's name, keyed by the struct
+    // name. Registered in a pre-scan so declaration order never matters.
+    wrapper_templates: std.StringHashMapUnmanaged(WrapperTemplate) = .{},
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    // Lazy source-file cache keyed by `Span.source_path`, used to slice exact declaration source
+    // for procedural-macro reflection (`Declaration.syntax`, `Field.initializer`, ...).
+    sources: std.StringHashMapUnmanaged([]const u8) = .{},
     gensym_counter: u64 = 0,
     depth: u32 = 0,
+
+    /// The full text of the source file `path`, or null when it cannot be read (e.g. a span into
+    /// macro-generated text). Reflection callers degrade to name-only syntax in that case.
+    pub fn sourceText(self: *Expander, path: []const u8) ?[]const u8 {
+        if (self.sources.get(path)) |text| return text;
+        const contents = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, self.allocator, .limited(source_pkg.max_source_file_bytes)) catch return null;
+        self.sources.put(self.allocator, path, contents) catch return null;
+        return contents;
+    }
 
     pub fn err(self: *Expander, code: []const u8, title: []const u8, message: []const u8, span: Span, label: []const u8, help: []const u8) !void {
         try diagnostics.appendOwned(self.allocator, self.diags, .{
@@ -137,6 +163,9 @@ pub fn expandMacros(
     defer exp.macros.deinit(allocator);
     defer exp.proc_macros.deinit(allocator);
     defer exp.func_macros.deinit(allocator);
+    defer exp.wrapper_macros.deinit(allocator);
+    defer exp.wrapper_templates.deinit(allocator);
+    defer exp.sources.deinit(allocator);
 
     for (program.decls) |decl| {
         if (decl != .macro_decl) continue;
@@ -145,6 +174,22 @@ pub fn expandMacros(
             .declarative => try exp.macros.put(allocator, macro.name, macro),
             .proc_attribute, .proc_derive => try exp.proc_macros.put(allocator, macro.name, macro),
             .proc_function => try exp.func_macros.put(allocator, macro.name, macro),
+            .proc_wrapper => try exp.wrapper_macros.put(allocator, macro.name, macro),
+        }
+    }
+
+    // Pre-scan for wrapper templates (structs annotated with a wrapper-kind macro's name) so a
+    // field can use a wrapper declared later in the merged program — declaration order between
+    // packages must never matter.
+    for (program.decls) |decl| {
+        if (decl != .type_decl) continue;
+        const type_decl = decl.type_decl;
+        for (type_decl.annotations) |annotation| {
+            const segments = annotation.name.segments;
+            if (segments.len != 1) continue;
+            if (exp.wrapper_macros.get(segments[0].text)) |macro| {
+                try exp.wrapper_templates.put(allocator, type_decl.name, .{ .macro = macro, .decl = type_decl });
+            }
         }
     }
     // NOTE: we intentionally do NOT early-return when no user macros are declared —
@@ -177,13 +222,31 @@ pub fn expandMacros(
             continue;
         }
 
-        // Run attribute/derive macros attached to this declaration, stripping their annotations and
-        // appending the declarations they generate (each re-parsed from the macro's `Syntax` output).
+        // A wrapper TEMPLATE struct: run the wrapper macro's validation invocation, splice what
+        // it generates, and drop the template itself (it may carry placeholder types and is
+        // monomorphized per wrapped field, never compiled as-is).
+        if (decl == .type_decl and exp.wrapper_templates.contains(decl.type_decl.name)) {
+            const generated = try proc.applyWrapperTemplate(&exp, decl.type_decl);
+            for (generated) |gen_decl| {
+                const gen_walked = try walkDecl(&exp, gen_decl);
+                try decls.append(gen_walked);
+                if (gen_walked == .function_decl) try functions.append(gen_walked.function_decl);
+                if (have_origins) try decl_origins.append(origin);
+            }
+            continue;
+        }
+
+        // Run attribute/derive macros attached to this declaration (including field-triggered
+        // macros and wrapper summons), stripping their annotations and appending the declarations
+        // they generate (each re-parsed from the macro's `Syntax` output). A `replace { true }`
+        // macro's output stands in for the declaration itself, which is then dropped.
         const processed = try proc.applyDeclMacros(&exp, decl);
-        const walked = try walkDecl(&exp, processed.decl);
-        try decls.append(walked);
-        if (walked == .function_decl) try functions.append(walked.function_decl);
-        if (have_origins) try decl_origins.append(origin);
+        if (!processed.replaced) {
+            const walked = try walkDecl(&exp, processed.decl);
+            try decls.append(walked);
+            if (walked == .function_decl) try functions.append(walked.function_decl);
+            if (have_origins) try decl_origins.append(origin);
+        }
 
         for (processed.generated) |gen_decl| {
             const gen_walked = try walkDecl(&exp, gen_decl);
