@@ -17,20 +17,34 @@ const Expander = expand.Expander;
 pub const DeclMacroResult = struct {
     decl: ast.Decl,
     generated: []ast.Decl,
+    // A `replace { true }` macro ran: `generated` stands in for the declaration, which the caller
+    // must drop.
+    replaced: bool = false,
 };
 
-/// Run attribute (`@Name`) and derive (`@Derive(Name, ...)`) macros attached to `decl`. Returns the
-/// declaration with macro annotations stripped, plus the declarations the macros generated (each
-/// re-parsed from the macro's `Syntax` text via `parser.parseSource`).
+/// Run attribute (`@Name`) and derive (`@Derive(Name, ...)`) macros attached to `decl`, plus any
+/// field-triggered macros (`trigger { field }` macros summoned by an annotation on one of the
+/// declaration's fields). Returns the declaration with macro annotations stripped, plus the
+/// declarations the macros generated (each re-parsed from the macro's `Syntax` text via
+/// `parser.parseSource`). When a replace-mode macro ran, `replaced` is set and the caller drops
+/// the original declaration in favor of `generated`.
 pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
     const annotations = declAnnotations(decl);
-    if (annotations.len == 0 or exp.proc_macros.count() == 0) return .{ .decl = decl, .generated = &.{} };
+    const triggered = try fieldTriggeredMacros(exp, decl);
+    const summons = try wrapperFieldSummons(exp, decl);
+    if (annotations.len == 0 and triggered.len == 0 and summons.len == 0) {
+        return .{ .decl = decl, .generated = &.{} };
+    }
+    if (exp.proc_macros.count() == 0 and summons.len == 0) {
+        return .{ .decl = decl, .generated = &.{} };
+    }
 
     const target = try buildDeclaration(exp, decl);
     const target_kind = declTargetKind(decl);
     var kept = std.array_list.Managed(ast.Annotation).init(exp.allocator);
     var generated = std.array_list.Managed(ast.Decl).init(exp.allocator);
     var stripped_any = false;
+    var replaced_by: ?[]const u8 = null;
 
     for (annotations) |annotation| {
         const name = annotationName(annotation);
@@ -51,7 +65,9 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
         const macro = exp.proc_macros.get(name);
         if (macro != null and macro.?.kind == .proc_attribute) {
             if (try checkAppliesTo(exp, macro.?, target_kind, annotation.span)) {
-                try runProcMacro(exp, macro.?, target, annotation.span, &generated);
+                if (try noteReplacer(exp, macro.?, &replaced_by, annotation.span)) {
+                    try runProcMacro(exp, macro.?, target, annotation.span, &generated);
+                }
             }
             stripped_any = true;
             continue;
@@ -59,10 +75,131 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
         try kept.append(annotation);
     }
 
-    if (!stripped_any) return .{ .decl = decl, .generated = try generated.toOwnedSlice() };
+    // Field-triggered macros observe the same original declaration; each must be replace-mode
+    // (its whole purpose is rewriting the declaration that carries the triggering field).
+    for (triggered) |macro| {
+        const span = declSpan(decl);
+        if (!macro.replace) {
+            const message = try std.fmt.allocPrint(exp.allocator, "macro '{s}' is field-triggered but not replace-mode", .{macro.name});
+            try exp.err("KMAC029", "field-triggered macro must replace", message, span, "a field annotation summoned this macro", "Add `replace { true }` to the macro: a field-triggered macro rewrites the declaration carrying the field, so its output must replace it.");
+            continue;
+        }
+        if (!try checkAppliesTo(exp, macro, target_kind, span)) continue;
+        if (try noteReplacer(exp, macro, &replaced_by, span)) {
+            try runProcMacro(exp, macro, target, span, &generated);
+        }
+    }
+
+    // Wrapper summons: a field annotated with a registered wrapper TEMPLATE's name
+    // (`@State var count: Int = 0`) summons the template's wrapper-kind macro over this
+    // declaration with both sides bound — expand(target, wrapper). Always replace-mode.
+    for (summons) |summon| {
+        const span = declSpan(decl);
+        if (!try checkAppliesTo(exp, summon.macro, target_kind, span)) continue;
+        if (try noteWrapperReplacer(exp, summon.macro, &replaced_by, span)) {
+            const wrapper_target = try buildDeclaration(exp, .{ .type_decl = summon.template });
+            try runProcMacroPair(exp, summon.macro, target, wrapper_target, span, &generated);
+        }
+    }
+
+    if (!stripped_any and replaced_by == null) return .{ .decl = decl, .generated = try generated.toOwnedSlice() };
     return .{
         .decl = setDeclAnnotations(decl, try kept.toOwnedSlice()),
         .generated = try generated.toOwnedSlice(),
+        .replaced = replaced_by != null,
+    };
+}
+
+/// Record `macro` as the declaration's replacer if it is replace-mode. At most one replace-mode
+/// macro may run per declaration — a second one has no original left to observe (KMAC028).
+fn noteReplacer(exp: *Expander, macro: ast.MacroDecl, replaced_by: *?[]const u8, span: Span) !bool {
+    if (!macro.replace) return true;
+    return noteWrapperReplacer(exp, macro, replaced_by, span);
+}
+
+/// A wrapper summon is ALWAYS replace-mode regardless of the macro's `replace` member.
+fn noteWrapperReplacer(exp: *Expander, macro: ast.MacroDecl, replaced_by: *?[]const u8, span: Span) !bool {
+    if (replaced_by.*) |first| {
+        const message = try std.fmt.allocPrint(exp.allocator, "macros '{s}' and '{s}' both replace this declaration", .{ first, macro.name });
+        try exp.err("KMAC028", "multiple replacing macros", message, span, "second replace-mode macro here", "Only one `replace { true }` macro may apply to a declaration; merge the rewrites into one macro.");
+        return false;
+    }
+    replaced_by.* = macro.name;
+    return true;
+}
+
+const WrapperSummon = struct {
+    macro: ast.MacroDecl,
+    template: ast.TypeDecl,
+};
+
+/// Distinct wrapper templates named by this declaration's field annotations, in first-use order.
+/// Each summons its wrapper-kind macro once over the whole declaration (a form with three
+/// `@State` fields produces ONE `State` summon — the macro loops over the fields itself).
+fn wrapperFieldSummons(exp: *Expander, decl: ast.Decl) ![]WrapperSummon {
+    if (exp.wrapper_templates.count() == 0) return &.{};
+    const members = declBodyMembers(decl) orelse return &.{};
+    var found = std.array_list.Managed(WrapperSummon).init(exp.allocator);
+    for (members) |member| {
+        if (member != .field_decl) continue;
+        for (member.field_decl.annotations) |annotation| {
+            const template = exp.wrapper_templates.get(annotationName(annotation)) orelse continue;
+            var already = false;
+            for (found.items) |existing| {
+                if (std.mem.eql(u8, existing.template.name, template.decl.name)) already = true;
+            }
+            if (!already) try found.append(.{ .macro = template.macro, .template = template.decl });
+        }
+    }
+    return found.toOwnedSlice();
+}
+
+/// Run a wrapper-kind macro's VALIDATION invocation over its own template struct — both `target`
+/// and `wrapper` bound to the template (`target.name == wrapper.name` marks the validation path
+/// inside the macro). Returns the declarations it generates; the template itself is dropped by
+/// the caller.
+pub fn applyWrapperTemplate(exp: *Expander, template: ast.TypeDecl) ![]ast.Decl {
+    const registered = exp.wrapper_templates.get(template.name) orelse return &.{};
+    var generated = std.array_list.Managed(ast.Decl).init(exp.allocator);
+    const target = try buildDeclaration(exp, .{ .type_decl = template });
+    try runProcMacroPair(exp, registered.macro, target, target, template.span, &generated);
+    return generated.toOwnedSlice();
+}
+
+/// Distinct `trigger { field }` attribute macros summoned by annotations on the declaration's
+/// fields, in first-trigger order.
+fn fieldTriggeredMacros(exp: *Expander, decl: ast.Decl) ![]ast.MacroDecl {
+    if (exp.proc_macros.count() == 0) return &.{};
+    const members = declBodyMembers(decl) orelse return &.{};
+    var found = std.array_list.Managed(ast.MacroDecl).init(exp.allocator);
+    for (members) |member| {
+        if (member != .field_decl) continue;
+        for (member.field_decl.annotations) |annotation| {
+            const macro = exp.proc_macros.get(annotationName(annotation)) orelse continue;
+            if (!macro.trigger_field or macro.kind != .proc_attribute) continue;
+            var already = false;
+            for (found.items) |existing| {
+                if (std.mem.eql(u8, existing.name, macro.name)) already = true;
+            }
+            if (!already) try found.append(macro);
+        }
+    }
+    return found.toOwnedSlice();
+}
+
+fn declBodyMembers(decl: ast.Decl) ?[]ast.BodyMember {
+    return switch (decl) {
+        .type_decl => |d| d.members,
+        .construct_decl => |d| d.members,
+        .construct_form_decl => |d| d.body.members,
+        else => null,
+    };
+}
+
+fn declSpan(decl: ast.Decl) Span {
+    return switch (decl) {
+        inline .macro_invocation => |d| d.span,
+        inline else => |d| d.span,
     };
 }
 
@@ -160,30 +297,124 @@ fn runProcMacro(exp: *Expander, macro: ast.MacroDecl, target: ?eval.Declaration,
         error.MacroEvalError => return, // diagnostic already emitted
     };
     const text = text_opt orelse return;
+    try spliceGeneratedText(exp, macro, text, generated);
+}
+
+/// Run a wrapper-kind macro with BOTH declarations bound: expand(target, wrapper). Used for the
+/// validation invocation (target == wrapper == the template) and for field summons (target = the
+/// declaration carrying the wrapped field, wrapper = the template).
+fn runProcMacroPair(exp: *Expander, macro: ast.MacroDecl, target: ?eval.Declaration, wrapper: ?eval.Declaration, span: Span, generated: *std.array_list.Managed(ast.Decl)) !void {
+    const decl_target = target orelse {
+        try exp.err("KMAC007", "macro target not supported", "A wrapper macro applies to struct, class, enum, or form declarations.", span, "unsupported macro target", "Use the wrapper on a declaration kind listed in its `appliesTo`.");
+        return;
+    };
+    const decl_wrapper = wrapper orelse return;
+    var evaluator = eval.Evaluator{ .allocator = exp.allocator, .diags = exp.diags };
+    const text_opt = evaluator.runOnDeclarationPair(macro, decl_target, decl_wrapper) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.MacroEvalError => return, // diagnostic already emitted
+    };
+    const text = text_opt orelse return;
+    try spliceGeneratedText(exp, macro, text, generated);
+}
+
+fn spliceGeneratedText(exp: *Expander, macro: ast.MacroDecl, text: []const u8, generated: *std.array_list.Managed(ast.Decl)) !void {
+    // KIRA_MACRO_DEBUG=1 dumps every attribute/derive/wrapper macro expansion to stderr — the only
+    // way to see the generated source when it fails to re-parse (its spans have no real file).
+    if (std.c.getenv("KIRA_MACRO_DEBUG")) |debug_flag| {
+        if (debug_flag[0] != 0) {
+            std.debug.print("=== macro '{s}' expansion ===\n{s}\n=== end expansion ===\n", .{ macro.name, text });
+        }
+    }
 
     const generated_program = parser.parseSource(exp.allocator, text, exp.diags) catch return;
     for (generated_program.decls) |gen_decl| try generated.append(gen_decl);
 }
 
+/// The source text a span points into, when it is available (a real file, cached by the
+/// expander) and the span is inside it. Spans into macro-generated text have no file to read.
+fn spanSource(exp: *Expander, span: Span) ?[]const u8 {
+    const path = span.source_path orelse return null;
+    const text = exp.sourceText(path) orelse return null;
+    if (span.end > text.len or span.start > span.end) return null;
+    return text;
+}
+
+fn spanSlice(exp: *Expander, span: Span) ?[]const u8 {
+    const text = spanSource(exp, span) orelse return null;
+    return span.slice(text);
+}
+
+/// Source text of a whole declaration for `Declaration.syntax` (falls back to the bare name when
+/// the source is unavailable, e.g. a declaration generated by another macro). The declaration's
+/// own annotations are excluded — they are consumed by expansion, and a rewriting macro splicing
+/// `target.syntax` back must not re-emit `@State` / `@PropertyWrapper`. Field annotations inside
+/// the body are unaffected.
+fn declSyntaxText(exp: *Expander, name: []const u8, span: Span, annotations: []const ast.Annotation) []const u8 {
+    const text = spanSource(exp, span) orelse return name;
+    var start = span.start;
+    for (annotations) |annotation| {
+        if (annotation.span.end > start and annotation.span.end <= span.end) start = annotation.span.end;
+    }
+    while (start < span.end and (text[start] == ' ' or text[start] == '\t' or text[start] == '\n' or text[start] == '\r')) start += 1;
+    return text[start..span.end];
+}
+
+/// Build the reflection `Field` records for a declaration body's field members, with annotations,
+/// initializer source, and full field source when the file text is reachable.
+fn buildFields(exp: *Expander, members: []const ast.BodyMember) ![]eval.Field {
+    var fields = std.array_list.Managed(eval.Field).init(exp.allocator);
+    for (members) |member| {
+        if (member != .field_decl) continue;
+        const field = member.field_decl;
+        const type_text = if (field.type_expr) |type_expr|
+            try eval.typeToText(exp.allocator, type_expr.*)
+        else
+            "";
+        var annotation_names = std.array_list.Managed([]const u8).init(exp.allocator);
+        for (field.annotations) |annotation| try annotation_names.append(annotationName(annotation));
+        const initializer_text = if (field.value) |value|
+            (spanSlice(exp, exprSpan(value.*)) orelse "")
+        else
+            "";
+        // The field's own source, annotations included.
+        var field_span = field.span;
+        for (field.annotations) |annotation| {
+            if (annotation.span.start < field_span.start) field_span.start = annotation.span.start;
+        }
+        try fields.append(.{
+            .name = field.name,
+            .type_text = type_text,
+            .annotations = try annotation_names.toOwnedSlice(),
+            .initializer_text = initializer_text,
+            .syntax_text = spanSlice(exp, field_span) orelse "",
+        });
+    }
+    return fields.toOwnedSlice();
+}
+
+fn exprSpan(expr: ast.Expr) Span {
+    return switch (expr) {
+        inline else => |e| e.span,
+    };
+}
+
 fn buildDeclaration(exp: *Expander, decl: ast.Decl) !?eval.Declaration {
     switch (decl) {
         .type_decl => |type_decl| {
-            var fields = std.array_list.Managed(eval.Field).init(exp.allocator);
-            for (type_decl.members) |member| {
-                if (member == .field_decl) {
-                    const field = member.field_decl;
-                    const type_text = if (field.type_expr) |type_expr|
-                        try eval.typeToText(exp.allocator, type_expr.*)
-                    else
-                        "";
-                    try fields.append(.{ .name = field.name, .type_text = type_text });
-                }
-            }
             return eval.Declaration{
                 .name = type_decl.name,
-                .fields = try fields.toOwnedSlice(),
-                .syntax = type_decl.name,
+                .fields = try buildFields(exp, type_decl.members),
+                .syntax = declSyntaxText(exp, type_decl.name, type_decl.span, type_decl.annotations),
                 .span = type_decl.span,
+            };
+        },
+        .construct_form_decl => |form_decl| {
+            return eval.Declaration{
+                .name = form_decl.name,
+                .fields = try buildFields(exp, form_decl.body.members),
+                .syntax = declSyntaxText(exp, form_decl.name, form_decl.span, form_decl.annotations),
+                .span = form_decl.span,
             };
         },
         .enum_decl => |enum_decl| {
@@ -217,6 +448,7 @@ fn declTargetKind(decl: ast.Decl) ?ast.MacroTargetKind {
             .struct_decl => .struct_target,
         },
         .enum_decl => .enum_target,
+        .construct_form_decl => .form_target,
         else => null,
     };
 }
@@ -237,6 +469,7 @@ fn checkAppliesTo(exp: *Expander, macro: ast.MacroDecl, target_kind: ?ast.MacroT
         .struct_target => "struct",
         .class_target => "class",
         .enum_target => "enum",
+        .form_target => "form",
     };
     const message = try std.fmt.allocPrint(exp.allocator, "macro '{s}' does not apply to a {s} declaration", .{ macro.name, kind_name });
     try exp.err("KMAC007", "macro target not in appliesTo", message, span, "this declaration kind is not in the macro's `appliesTo`", "Add this declaration kind to the macro's `appliesTo`, or remove the annotation.");
@@ -266,6 +499,11 @@ fn setDeclAnnotations(decl: ast.Decl, annotations: []const ast.Annotation) ast.D
             var nd = d;
             nd.annotations = annotations;
             return .{ .enum_decl = nd };
+        },
+        .construct_form_decl => |d| {
+            var nd = d;
+            nd.annotations = annotations;
+            return .{ .construct_form_decl = nd };
         },
         else => return decl,
     }

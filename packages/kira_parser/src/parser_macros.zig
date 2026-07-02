@@ -93,6 +93,8 @@ pub fn parseProceduralMacroDecl(
     var kind: ?syntax.ast.MacroKind = null;
     var applies_to = std.array_list.Managed(syntax.ast.MacroTargetKind).init(self.allocator);
     var expand_fn: ?syntax.ast.FunctionDecl = null;
+    var trigger_field = false;
+    var replace = false;
 
     while (!self.at(.r_brace) and !self.at(.eof)) {
         if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "kind")) {
@@ -106,8 +108,10 @@ pub fn parseProceduralMacroDecl(
                 .proc_attribute
             else if (std.mem.eql(u8, kind_token.lexeme, "derive"))
                 .proc_derive
+            else if (std.mem.eql(u8, kind_token.lexeme, "wrapper"))
+                .proc_wrapper
             else {
-                try self.emitUnexpectedToken("unknown macro kind", kind_token, "a comptime macro kind must be 'function', 'attribute', or 'derive'", "Use one of 'function', 'attribute', or 'derive'.");
+                try self.emitUnexpectedToken("unknown macro kind", kind_token, "a comptime macro kind must be 'function', 'attribute', 'derive', or 'wrapper'", "Use one of 'function', 'attribute', 'derive', or 'wrapper'.");
                 return error.DiagnosticsEmitted;
             };
             _ = try self.expect(.r_brace, "expected '}' after macro kind", "close the kind section here");
@@ -123,14 +127,39 @@ pub fn parseProceduralMacroDecl(
                     .class_target
                 else if (std.mem.eql(u8, target_token.lexeme, "enum"))
                     .enum_target
+                else if (std.mem.eql(u8, target_token.lexeme, "form"))
+                    .form_target
                 else {
-                    try self.emitUnexpectedToken("unknown macro target", target_token, "an 'appliesTo' target must be 'struct', 'class', or 'enum'", "Use 'struct', 'class', or 'enum'.");
+                    try self.emitUnexpectedToken("unknown macro target", target_token, "an 'appliesTo' target must be 'struct', 'class', 'enum', or 'form'", "Use 'struct', 'class', 'enum', or 'form' (a construct-backed declaration such as `Widget Name(...) { ... }`).");
                     return error.DiagnosticsEmitted;
                 };
                 try applies_to.append(target);
                 if (!self.match(.comma)) break;
             }
             _ = try self.expect(.r_brace, "expected '}' after appliesTo targets", "close the appliesTo section here");
+        } else if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "trigger")) {
+            _ = self.advance();
+            _ = try self.expect(.l_brace, "expected '{' after 'trigger'", "write the trigger kind here");
+            const trigger_token = self.advance();
+            if (!std.mem.eql(u8, trigger_token.lexeme, "field")) {
+                try self.emitUnexpectedToken("unknown macro trigger", trigger_token, "the only supported trigger is 'field'", "Write 'trigger { field }' to auto-apply this attribute macro to a declaration whose field carries a matching annotation.");
+                return error.DiagnosticsEmitted;
+            }
+            trigger_field = true;
+            _ = try self.expect(.r_brace, "expected '}' after macro trigger", "close the trigger section here");
+        } else if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "replace")) {
+            _ = self.advance();
+            _ = try self.expect(.l_brace, "expected '{' after 'replace'", "write 'true' or 'false' here");
+            const replace_token = self.advance();
+            if (std.mem.eql(u8, replace_token.lexeme, "true")) {
+                replace = true;
+            } else if (std.mem.eql(u8, replace_token.lexeme, "false")) {
+                replace = false;
+            } else {
+                try self.emitUnexpectedToken("invalid replace value", replace_token, "'replace' takes 'true' or 'false'", "Write 'replace { true }' to make the macro's output replace the annotated declaration.");
+                return error.DiagnosticsEmitted;
+            }
+            _ = try self.expect(.r_brace, "expected '}' after replace value", "close the replace section here");
         } else if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "expand")) {
             const expand_token = self.advance();
             const params = try self.parseParamList();
@@ -145,7 +174,7 @@ pub fn parseProceduralMacroDecl(
                 .span = expand_token.span,
             };
         } else {
-            try self.emitUnexpectedToken("expected comptime macro section", self.peek(), "a comptime macro body has 'kind', 'appliesTo', and 'expand' sections", "Write 'kind { function }', optional 'appliesTo { ... }', and 'expand(...) -> Syntax { ... }'.");
+            try self.emitUnexpectedToken("expected comptime macro section", self.peek(), "a comptime macro body has 'kind', 'appliesTo', 'trigger', 'replace', and 'expand' sections", "Write 'kind { function }', optional 'appliesTo { ... }' / 'trigger { field }' / 'replace { true }', and 'expand(...) -> Syntax { ... }'.");
             return error.DiagnosticsEmitted;
         }
     }
@@ -164,6 +193,8 @@ pub fn parseProceduralMacroDecl(
         .expand_block = null,
         .applies_to = try applies_to.toOwnedSlice(),
         .expand_fn = expand_fn,
+        .trigger_field = trigger_field,
+        .replace = replace,
         .span = source_pkg.Span.init(macro_token.span.start, close.span.end),
     };
 }
@@ -206,7 +237,24 @@ pub fn parseQuoteExpr(self: *Parser) !*syntax.ast.Expr {
         _ = self.advance();
         if (token.kind == .l_brace) depth += 1;
         if (token.kind == .r_brace) depth -= 1;
-        try text.appendSlice(token.lexeme);
+        if (token.kind == .string) {
+            // A string token's lexeme is the UNESCAPED contents; re-render it as a source-form
+            // literal so the reconstructed quote text stays parseable.
+            try text.append('"');
+            for (token.lexeme) |c| {
+                switch (c) {
+                    '\\' => try text.appendSlice("\\\\"),
+                    '"' => try text.appendSlice("\\\""),
+                    '\n' => try text.appendSlice("\\n"),
+                    '\r' => try text.appendSlice("\\r"),
+                    '\t' => try text.appendSlice("\\t"),
+                    else => try text.append(c),
+                }
+            }
+            try text.append('"');
+        } else {
+            try text.appendSlice(token.lexeme);
+        }
         last_end = token.span.end;
     }
     if (text.items.len != 0) try parts.append(.{ .text = try text.toOwnedSlice() });

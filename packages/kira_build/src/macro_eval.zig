@@ -12,6 +12,7 @@ const std = @import("std");
 const syntax = @import("kira_syntax_model");
 const diagnostics = @import("kira_diagnostics");
 const source_pkg = @import("kira_source");
+const syntax_rewrite = @import("syntax_rewrite.zig");
 
 const ast = syntax.ast;
 const Span = source_pkg.Span;
@@ -21,6 +22,13 @@ pub const EvalError = error{ MacroEvalError, OutOfMemory };
 pub const Field = struct {
     name: []const u8,
     type_text: []const u8,
+    // Names of the annotations on the field (`@State var count` -> ["State"]).
+    annotations: []const []const u8 = &.{},
+    // Source text of the field's initial-value expression, "" when the field has none.
+    initializer_text: []const u8 = "",
+    // Source text of the whole field declaration (annotations included), "" when the enclosing
+    // declaration's source is unavailable (e.g. an enum variant surfaced through `fields`).
+    syntax_text: []const u8 = "",
 };
 
 pub const Declaration = struct {
@@ -67,6 +75,23 @@ pub const Evaluator = struct {
         const body = expand_fn.body orelse return self.fail("comptime macro expand has no body", macro.span);
         if (expand_fn.params.len >= 1) {
             try self.env.put(self.allocator, expand_fn.params[0].name, .{ .declaration = target });
+        }
+        const result = try self.evalBlock(body.statements);
+        const value = result orelse return self.fail("comptime macro expand did not return a Syntax value", macro.span);
+        return try self.renderSplice(value);
+    }
+
+    /// Run a wrapper-kind macro's `expand(target: Declaration, wrapper: Declaration) -> Syntax`.
+    /// On the validation invocation both are the wrapper template itself (`target.name ==
+    /// wrapper.name` discriminates the paths inside the macro body).
+    pub fn runOnDeclarationPair(self: *Evaluator, macro: ast.MacroDecl, target: Declaration, wrapper: Declaration) EvalError!?[]const u8 {
+        const expand_fn = macro.expand_fn orelse return self.fail("comptime macro has no expand function", macro.span);
+        const body = expand_fn.body orelse return self.fail("comptime macro expand has no body", macro.span);
+        if (expand_fn.params.len >= 1) {
+            try self.env.put(self.allocator, expand_fn.params[0].name, .{ .declaration = target });
+        }
+        if (expand_fn.params.len >= 2) {
+            try self.env.put(self.allocator, expand_fn.params[1].name, .{ .declaration = wrapper });
         }
         const result = try self.evalBlock(body.statements);
         const value = result orelse return self.fail("comptime macro expand did not return a Syntax value", macro.span);
@@ -273,6 +298,42 @@ pub const Evaluator = struct {
             },
             .syntax => |text| {
                 if (std.mem.eql(u8, method, "identifiers")) return self.syntaxIdentifiers(text);
+                if (std.mem.eql(u8, method, "replaceIdentifier")) {
+                    if (e.args.len != 2) return self.fail("replaceIdentifier expects (name, replacement)", e.span);
+                    const old_name = try self.plainString(try self.evalExpr(e.args[0].value), e.span);
+                    const new_text = try self.plainString(try self.evalExpr(e.args[1].value), e.span);
+                    return .{ .syntax = try replaceIdentifierTokens(self.allocator, text, old_name, new_text) };
+                }
+                if (std.mem.eql(u8, method, "dropField")) {
+                    if (e.args.len != 1) return self.fail("dropField expects one field-name argument", e.span);
+                    const name = try self.plainString(try self.evalExpr(e.args[0].value), e.span);
+                    const rewritten = syntax_rewrite.dropField(self.allocator, text, name, e.span, self.diags) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.RewriteFailed => return error.MacroEvalError,
+                    };
+                    return .{ .syntax = rewritten };
+                }
+                if (std.mem.eql(u8, method, "rewriteProperty")) {
+                    if (e.args.len != 3) return self.fail("rewriteProperty expects (property, read, writeCallee)", e.span);
+                    const name = try self.plainString(try self.evalExpr(e.args[0].value), e.span);
+                    const read_text = try self.plainString(try self.evalExpr(e.args[1].value), e.span);
+                    const write_callee = try self.plainString(try self.evalExpr(e.args[2].value), e.span);
+                    const rewritten = syntax_rewrite.rewriteProperty(self.allocator, text, name, read_text, write_callee, e.span, self.diags) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.RewriteFailed => return error.MacroEvalError,
+                    };
+                    return .{ .syntax = rewritten };
+                }
+            },
+            .field => |field| {
+                if (std.mem.eql(u8, method, "hasAnnotation")) {
+                    if (e.args.len != 1) return self.fail("hasAnnotation expects one name argument", e.span);
+                    const name = try self.plainString(try self.evalExpr(e.args[0].value), e.span);
+                    for (field.annotations) |annotation| {
+                        if (std.mem.eql(u8, annotation, name)) return .{ .boolean = true };
+                    }
+                    return .{ .boolean = false };
+                }
             },
             .type_ref => |text| {
                 if (std.mem.eql(u8, method, "asSyntax")) return .{ .syntax = text };
@@ -297,6 +358,8 @@ pub const Evaluator = struct {
             .field => |field| {
                 if (std.mem.eql(u8, member, "name")) return .{ .identifier = field.name };
                 if (std.mem.eql(u8, member, "type")) return .{ .type_ref = field.type_text };
+                if (std.mem.eql(u8, member, "initializer")) return .{ .syntax = field.initializer_text };
+                if (std.mem.eql(u8, member, "syntax")) return .{ .syntax = field.syntax_text };
             },
             else => {},
         }
@@ -444,6 +507,56 @@ fn gtFn(a: i64, b: i64) bool {
 }
 fn geFn(a: i64, b: i64) bool {
     return a >= b;
+}
+
+/// Whole-identifier textual substitution over Kira source, skipping string literals and `//`
+/// comments. This is how a wrapper macro monomorphizes its template: rename the struct
+/// (`State` -> `__PW_Demo_count`, including internal self-references like `nativeRecover<State>`)
+/// and substitute the placeholder value type (`Wrapped` -> `Int`).
+pub fn replaceIdentifierTokens(allocator: std.mem.Allocator, text: []const u8, old_name: []const u8, new_text: []const u8) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(allocator);
+    var i: usize = 0;
+    while (i < text.len) {
+        const c = text[i];
+        if (c == '"') {
+            // String literal: copy verbatim through the closing quote.
+            try out.append(c);
+            i += 1;
+            while (i < text.len) {
+                try out.append(text[i]);
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    try out.append(text[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if (c == '/' and i + 1 < text.len and text[i + 1] == '/') {
+            // Line comment: copy verbatim to end of line.
+            while (i < text.len and text[i] != '\n') : (i += 1) try out.append(text[i]);
+            continue;
+        }
+        if (std.ascii.isAlphabetic(c) or c == '_') {
+            const start = i;
+            while (i < text.len and (std.ascii.isAlphanumeric(text[i]) or text[i] == '_')) : (i += 1) {}
+            const word = text[start..i];
+            if (std.mem.eql(u8, word, old_name)) {
+                try out.appendSlice(new_text);
+            } else {
+                try out.appendSlice(word);
+            }
+            continue;
+        }
+        try out.append(c);
+        i += 1;
+    }
+    return out.toOwnedSlice();
 }
 
 fn stmtSpan(statement: ast.Statement) Span {
