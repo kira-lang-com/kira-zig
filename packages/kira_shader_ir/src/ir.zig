@@ -119,6 +119,13 @@ pub const Statement = union(enum) {
     expr_stmt: ExprStatement,
     return_stmt: ReturnStatement,
     if_stmt: IfStatement,
+    while_stmt: WhileStatement,
+};
+
+pub const WhileStatement = struct {
+    condition: *Expr,
+    body: Block,
+    span: source.Span,
 };
 
 pub const LetStatement = struct {
@@ -227,6 +234,7 @@ pub const Intrinsic = enum {
     normalize,
     dot,
     sample,
+    load,
     length,
     pow,
     sin,

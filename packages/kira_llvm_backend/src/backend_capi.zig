@@ -349,6 +349,15 @@ pub fn buildModule(
         const function_value = if (function_decl.is_extern) blk: {
             if (extern_symbols.get(name)) |existing| break :blk existing;
             const declared = api.LLVMAddFunction(module_ref, name.ptr, function_ty);
+            // Memory-returned struct: mark the hidden out-pointer param as sret so
+            // LLVM uses the ABI's indirect-result register (x8 on arm64).
+            if (ffi.usesSret(request.program.programPtr(), function_decl.return_type)) {
+                if (function_decl.return_type.name) |ret_name| {
+                    if (struct_types.get(ret_name)) |ret_struct_ty| {
+                        ffi.addSretAttribute(api, context, ret_struct_ty, declared, false);
+                    }
+                }
+            }
             try extern_symbols.put(allocator, try allocator.dupe(u8, name), declared);
             break :blk declared;
         } else api.LLVMAddFunction(module_ref, name.ptr, function_ty);

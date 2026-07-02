@@ -179,6 +179,36 @@ pub const FunctionCodegen = struct {
         return reg < self.register_types.len and self.register_types[reg].kind == .float;
     }
 
+    fn isString(self: *FunctionCodegen, reg: u32) bool {
+        return reg < self.register_types.len and self.register_types[reg].kind == .string;
+    }
+
+    // String concatenation: malloc(len_l + len_r), memcpy both halves, and package
+    // the buffer as a {ptr, len} string value. Matches the VM's `+` on strings.
+    // The buffer is heap-allocated and unmanaged (the native ABI has no string
+    // refcounting yet) — same lifetime story as c_string_to_string conversions.
+    fn lowerStringConcat(self: *FunctionCodegen, lhs: llvm.c.LLVMValueRef, rhs: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+        const api = self.api;
+        const b = self.builder;
+        const lhs_ptr = api.LLVMBuildExtractValue(b, lhs, 0, "scat.lp");
+        const lhs_len = api.LLVMBuildExtractValue(b, lhs, 1, "scat.ll");
+        const rhs_ptr = api.LLVMBuildExtractValue(b, rhs, 0, "scat.rp");
+        const rhs_len = api.LLVMBuildExtractValue(b, rhs, 1, "scat.rl");
+        const total = api.LLVMBuildAdd(b, lhs_len, rhs_len, "scat.total");
+        var malloc_args = [_]llvm.c.LLVMValueRef{total};
+        const buf = api.LLVMBuildCall2(b, self.runtime_decls.malloc.ty, self.runtime_decls.malloc.fn_value, &malloc_args, malloc_args.len, "scat.buf");
+        var copy_l = [_]llvm.c.LLVMValueRef{ buf, lhs_ptr, lhs_len };
+        _ = api.LLVMBuildCall2(b, self.runtime_decls.memcpy.ty, self.runtime_decls.memcpy.fn_value, &copy_l, copy_l.len, "scat.cpyl");
+        var tail_index = [_]llvm.c.LLVMValueRef{lhs_len};
+        const tail = api.LLVMBuildInBoundsGEP2(b, self.types.i8, buf, &tail_index, tail_index.len, "scat.tail");
+        var copy_r = [_]llvm.c.LLVMValueRef{ tail, rhs_ptr, rhs_len };
+        _ = api.LLVMBuildCall2(b, self.runtime_decls.memcpy.ty, self.runtime_decls.memcpy.fn_value, &copy_r, copy_r.len, "scat.cpyr");
+        var out = api.LLVMGetUndef(self.types.string_ty);
+        out = api.LLVMBuildInsertValue(b, out, buf, 0, "scat.sp");
+        out = api.LLVMBuildInsertValue(b, out, total, 1, "scat.sl");
+        return out;
+    }
+
     /// Float -> Int conversion matching the VM's `convertValue`: truncate toward
     /// zero, but saturate out-of-range magnitudes to i64 min/max and map NaN to
     /// 0. A bare `fptosi` is poison for those inputs, so VM and LLVM would
@@ -218,11 +248,11 @@ pub const FunctionCodegen = struct {
                 self.registers[v.dst] = try self.buildStringConstant(v.value);
                 self.string_counter += 1;
             },
-            .add => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd") else api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add"),
+            .add => |v| self.registers[v.dst] = if (self.isString(v.lhs)) self.lowerStringConcat(self.registers[v.lhs], self.registers[v.rhs]) else if (self.isFloat(v.lhs)) api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd") else api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add"),
             .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, self.registers[v.lhs], self.registers[v.rhs], "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
             .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, self.registers[v.lhs], self.registers[v.rhs], "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
-            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
-            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
+            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
+            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
             .convert => |v| {
                 const src_is_float = self.isFloat(v.src);
                 if (v.target == .float) {
@@ -234,9 +264,17 @@ pub const FunctionCodegen = struct {
                 }
             },
             .compare => |v| self.registers[v.dst] = try self.lowerCompare(v),
+            .bitwise => |v| self.registers[v.dst] = switch (v.op) {
+                .bit_and => api.LLVMBuildAnd(b, self.registers[v.lhs], self.registers[v.rhs], "and"),
+                .bit_or => api.LLVMBuildOr(b, self.registers[v.lhs], self.registers[v.rhs], "or"),
+                .bit_xor => api.LLVMBuildXor(b, self.registers[v.lhs], self.registers[v.rhs], "xor"),
+                .shift_left => api.LLVMBuildShl(b, self.registers[v.lhs], self.registers[v.rhs], "shl"),
+                .shift_right => if (v.unsigned) api.LLVMBuildLShr(b, self.registers[v.lhs], self.registers[v.rhs], "lshr") else api.LLVMBuildAShr(b, self.registers[v.lhs], self.registers[v.rhs], "ashr"),
+            },
             .unary => |v| self.registers[v.dst] = switch (v.op) {
                 .negate => if (self.isFloat(v.src)) api.LLVMBuildFNeg(b, self.registers[v.src], "fneg") else api.LLVMBuildNeg(b, self.registers[v.src], "neg"),
                 .not => api.LLVMBuildNot(b, self.registers[v.src], "not"),
+                .bit_not => api.LLVMBuildNot(b, self.registers[v.src], "bitnot"),
             },
             .store_local => |v| {
                 _ = api.LLVMBuildStore(b, self.registers[v.src], self.locals[v.local]);
@@ -464,10 +502,10 @@ pub const FunctionCodegen = struct {
             switch (v.op) {
                 .equal => llvm.c.LLVMIntEQ,
                 .not_equal => llvm.c.LLVMIntNE,
-                .less => llvm.c.LLVMIntSLT,
-                .less_equal => llvm.c.LLVMIntSLE,
-                .greater => llvm.c.LLVMIntSGT,
-                .greater_equal => llvm.c.LLVMIntSGE,
+                .less => if (v.unsigned) llvm.c.LLVMIntULT else llvm.c.LLVMIntSLT,
+                .less_equal => if (v.unsigned) llvm.c.LLVMIntULE else llvm.c.LLVMIntSLE,
+                .greater => if (v.unsigned) llvm.c.LLVMIntUGT else llvm.c.LLVMIntSGT,
+                .greater_equal => if (v.unsigned) llvm.c.LLVMIntUGE else llvm.c.LLVMIntSGE,
             },
             self.registers[v.lhs],
             self.registers[v.rhs],
