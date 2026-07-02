@@ -481,7 +481,12 @@ pub fn parsePostfix(self: *Parser) anyerror!*syntax.ast.Expr {
             continue;
         }
         if (self.match(.dot)) {
-            const member_token = try self.expect(.identifier, "expected member name after '.'", "write the member name here");
+            // `type` is a removed declaration keyword but stays legal as a MEMBER name so the
+            // macro reflection API's `field.type` (docs/macros.md) parses.
+            const member_token = if (self.at(.kw_type))
+                self.advance()
+            else
+                try self.expect(.identifier, "expected member name after '.'", "write the member name here");
             const node = try self.allocator.create(syntax.ast.Expr);
             node.* = .{ .member = .{
                 .object = expr,

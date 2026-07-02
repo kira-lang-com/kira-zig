@@ -1,0 +1,22 @@
+// `Syntax.dropField` on a field that does not exist is a macro-author error (KMAC025), never a
+// silent no-op — a wrapper macro that thinks it dropped a field must not ship the original.
+
+comptime macro Strip {
+    kind { attribute }
+    appliesTo { struct }
+    replace { true }
+
+    expand(target: Declaration) -> Syntax {
+        return target.syntax.dropField("missing")
+    }
+}
+
+@Strip
+struct Holder {
+    var present: Int = 0
+}
+
+@Main
+function main() {
+    print("unreachable")
+}
