@@ -184,6 +184,7 @@ fn keywordKind(lexeme: []const u8) ?syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "let")) return .kw_let;
     if (std.mem.eql(u8, lexeme, "if")) return .kw_if;
     if (std.mem.eql(u8, lexeme, "else")) return .kw_else;
+    if (std.mem.eql(u8, lexeme, "while")) return .kw_while;
     if (std.mem.eql(u8, lexeme, "return")) return .kw_return;
     if (std.mem.eql(u8, lexeme, "true")) return .kw_true;
     if (std.mem.eql(u8, lexeme, "false")) return .kw_false;

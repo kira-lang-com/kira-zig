@@ -1407,6 +1407,14 @@ pub const Lowerer = struct {
                             .op = .not,
                         } });
                     },
+                    .bit_not => {
+                        _ = try lowerExecutableIntegerType(self.program, operand_ty);
+                        try instructions.append(.{ .unary = .{
+                            .dst = dst,
+                            .src = src,
+                            .op = .bit_not,
+                        } });
+                    },
                 }
                 break :blk dst;
             },
@@ -1652,7 +1660,11 @@ pub const Lowerer = struct {
                 const dst = self.freshRegister();
                 switch (node.op) {
                     .add => {
-                        _ = try lowerExecutableNumericType(self.program, model.hir.exprType(node.lhs.*));
+                        // `+` accepts numerics and (string, string) concatenation.
+                        const add_ty = model.hir.exprType(node.lhs.*);
+                        if (add_ty.kind != .string) {
+                            _ = try lowerExecutableNumericType(self.program, add_ty);
+                        }
                         try instructions.append(.{ .add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                     },
                     .subtract => {
@@ -1664,21 +1676,44 @@ pub const Lowerer = struct {
                         try instructions.append(.{ .multiply = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                     },
                     .divide => {
-                        _ = try lowerExecutableNumericType(self.program, model.hir.exprType(node.lhs.*));
-                        try instructions.append(.{ .divide = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                        const op_ty = model.hir.exprType(node.lhs.*);
+                        _ = try lowerExecutableNumericType(self.program, op_ty);
+                        try instructions.append(.{ .divide = .{ .dst = dst, .lhs = lhs, .rhs = rhs, .unsigned = isUnsignedIntType(op_ty) } });
                     },
                     .modulo => {
-                        _ = try lowerExecutableNumericType(self.program, model.hir.exprType(node.lhs.*));
-                        try instructions.append(.{ .modulo = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                        const op_ty = model.hir.exprType(node.lhs.*);
+                        _ = try lowerExecutableNumericType(self.program, op_ty);
+                        try instructions.append(.{ .modulo = .{ .dst = dst, .lhs = lhs, .rhs = rhs, .unsigned = isUnsignedIntType(op_ty) } });
+                    },
+                    .bit_and, .bit_or, .bit_xor, .shift_left, .shift_right => {
+                        const op_ty = model.hir.exprType(node.lhs.*);
+                        _ = try lowerExecutableIntegerType(self.program, op_ty);
+                        const bit_op: ir.BitOp = switch (node.op) {
+                            .bit_and => .bit_and,
+                            .bit_or => .bit_or,
+                            .bit_xor => .bit_xor,
+                            .shift_left => .shift_left,
+                            .shift_right => .shift_right,
+                            else => unreachable,
+                        };
+                        try instructions.append(.{ .bitwise = .{
+                            .dst = dst,
+                            .lhs = lhs,
+                            .rhs = rhs,
+                            .op = bit_op,
+                            .unsigned = isUnsignedIntType(op_ty),
+                        } });
                     },
                     .equal, .not_equal, .less, .less_equal, .greater, .greater_equal => {
-                        const operand_vt = try lowerExecutableCompareOperandType(self.program, model.hir.exprType(node.lhs.*), node.op);
+                        const op_ty = model.hir.exprType(node.lhs.*);
+                        const operand_vt = try lowerExecutableCompareOperandType(self.program, op_ty, node.op);
                         const normalized = try normalizeCompareOperands(self, instructions, operand_vt, lhs, rhs);
                         try instructions.append(.{ .compare = .{
                             .dst = dst,
                             .lhs = normalized.lhs,
                             .rhs = normalized.rhs,
                             .op = lowerCompareOp(node.op),
+                            .unsigned = isUnsignedIntType(op_ty),
                         } });
                     },
                     .logical_and, .logical_or => unreachable,
@@ -1814,6 +1849,14 @@ pub const Lowerer = struct {
         }
     }
 };
+
+// An integer type is unsigned iff its spelled name begins with 'U' (U8..U64).
+// Bare `Int` and I8..I64 are signed. Non-integer types are never "unsigned" here.
+fn isUnsignedIntType(ty: model.ResolvedType) bool {
+    if (ty.kind != .integer) return false;
+    const name = ty.name orelse return false;
+    return name.len > 0 and name[0] == 'U';
+}
 
 fn lowerCompareOp(op: model.hir.BinaryOp) ir.CompareOp {
     return switch (op) {

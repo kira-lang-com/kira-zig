@@ -53,6 +53,9 @@ pub const OpCode = enum(u8) {
     // tag of any earlier instruction; old KBC modules still deserialize. New
     // modules carrying it are written as KBC7.
     convert,
+    // Bitwise/shift ops. Appended after `convert` (before the fused group) so it
+    // does not shift any earlier serialized tag. Carried by KBC8.
+    bitwise,
     // --- VM-internal fused instructions ------------------------------------
     // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
     // private per-function code copies. They never appear in compiler output
@@ -85,9 +88,9 @@ pub const Instruction = union(OpCode) {
     add: struct { dst: u32, lhs: u32, rhs: u32 },
     subtract: struct { dst: u32, lhs: u32, rhs: u32 },
     multiply: struct { dst: u32, lhs: u32, rhs: u32 },
-    divide: struct { dst: u32, lhs: u32, rhs: u32 },
-    modulo: struct { dst: u32, lhs: u32, rhs: u32 },
-    compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp },
+    divide: struct { dst: u32, lhs: u32, rhs: u32, unsigned: bool = false },
+    modulo: struct { dst: u32, lhs: u32, rhs: u32, unsigned: bool = false },
+    compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp, unsigned: bool = false },
     unary: struct { dst: u32, src: u32, op: UnaryOp },
     store_local: struct { local: u32, src: u32, borrow: bool = false },
     load_local: struct { dst: u32, local: u32, ownership: ownership_mode.OwnershipMode = .borrow_read },
@@ -126,6 +129,7 @@ pub const Instruction = union(OpCode) {
     // Float->Int, truncating/saturating). Placed after `ret` to match the
     // OpCode enum's serialization-stable ordering.
     convert: struct { dst: u32, src: u32, to_float: bool },
+    bitwise: struct { dst: u32, lhs: u32, rhs: u32, op: BitOp, unsigned: bool = false },
     // VM-internal fused forms; see the OpCode comment above.
     // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
     fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },
@@ -220,6 +224,15 @@ pub const CompareOp = enum(u8) {
 pub const UnaryOp = enum(u8) {
     negate,
     not,
+    bit_not,
+};
+
+pub const BitOp = enum(u8) {
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
 };
 
 pub const TypeRef = struct {

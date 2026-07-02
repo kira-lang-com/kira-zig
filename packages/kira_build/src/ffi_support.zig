@@ -39,6 +39,7 @@ pub const NativePreparationMode = enum {
 pub const NativeWarningKind = enum {
     artifact_out_of_date,
     bindings_out_of_date,
+    skipped_missing_environment,
 };
 
 pub const NativeWarning = struct {
@@ -47,6 +48,9 @@ pub const NativeWarning = struct {
     manifest_path: ?[]const u8 = null,
     artifact_path: ?[]const u8 = null,
     bindings_path: ?[]const u8 = null,
+    /// Extra context for the warning; for `skipped_missing_environment` this is
+    /// the name of the unset environment variable.
+    detail: ?[]const u8 = null,
 };
 
 var native_preparation_mode: NativePreparationMode = .full;
@@ -146,6 +150,9 @@ pub fn ensureDeclaredNativeBindingsForSource(
 ) ![]const native.ResolvedNativeLibrary {
     const libraries = try resolveDeclaredNativeLibrariesForSource(allocator, source_path, explicit_selector);
     for (libraries) |library| {
+        // A library whose required environment/SDK is unresolved on this machine
+        // cannot be autobound; skip it here and let the caller surface a warning.
+        if (library.unavailable != null) continue;
         try autobind.ensureGeneratedBindings(allocator, library);
     }
     return libraries;
@@ -304,6 +311,17 @@ fn collectWarningsForLibraries(
 ) ![]const NativeWarning {
     var warnings = std.array_list.Managed(NativeWarning).init(allocator);
     for (libraries) |library| {
+        if (library.unavailable) |unavailable| {
+            // Skipped libraries have unresolved (`${VAR}`) paths that would fail
+            // filesystem freshness probing; surface the skip and move on.
+            try warnings.append(.{
+                .kind = .skipped_missing_environment,
+                .library_name = library.name,
+                .manifest_path = library.manifest_path,
+                .detail = unavailable.detail,
+            });
+            continue;
+        }
         if (library.build.sources.len != 0) {
             const fingerprint = try nativeArtifactFingerprint(allocator, library);
             defer allocator.free(fingerprint);
@@ -335,6 +353,10 @@ fn collectWarningsForLibraries(
 }
 
 fn applyPreparationPolicy(allocator: std.mem.Allocator, library: *native.ResolvedNativeLibrary) !void {
+    // Unresolvable libraries (e.g. missing `${VULKAN_SDK}`) carry `${VAR}`
+    // literals instead of real paths; neither artifact compilation nor
+    // autobinding can run against them, so skip preparation entirely.
+    if (library.unavailable != null) return;
     switch (native_preparation_mode) {
         .resolve_only => {},
         .artifacts_only => {

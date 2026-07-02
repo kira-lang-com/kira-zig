@@ -19,6 +19,7 @@ pub const AssignStatement = @import("ir.zig").AssignStatement;
 pub const ExprStatement = @import("ir.zig").ExprStatement;
 pub const ReturnStatement = @import("ir.zig").ReturnStatement;
 pub const IfStatement = @import("ir.zig").IfStatement;
+pub const WhileStatement = @import("ir.zig").WhileStatement;
 pub const Expr = @import("ir.zig").Expr;
 pub const Callee = @import("ir.zig").Callee;
 pub const NameRef = @import("ir.zig").NameRef;

@@ -69,6 +69,10 @@ fn executeCommand(allocator: std.mem.Allocator, command: []const u8, args: []con
             try support.renderStandaloneDiagnostic(err, diag_messages.CliMessages.nativeExecutableFailed());
             return 1;
         }
+        if (run_err == error.ClangAutobindingFailed) {
+            try support.renderStandaloneDiagnostic(err, diag_messages.CliMessages.ffiAutobindingFailed());
+            return 1;
+        }
         if (run_err == error.MacOSSdkUnavailable) {
             try support.renderStandaloneDiagnostic(err, try diag_messages.ToolchainMessages.invalidToolchainActivation(allocator, @errorName(run_err)));
             return 1;
