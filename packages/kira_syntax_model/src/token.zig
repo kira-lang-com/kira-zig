@@ -77,6 +77,12 @@ pub const TokenKind = enum {
     less_equal,
     greater,
     greater_equal,
+    amp,
+    pipe,
+    caret,
+    tilde,
+    less_less,
+    greater_greater,
 };
 
 pub const Token = struct {

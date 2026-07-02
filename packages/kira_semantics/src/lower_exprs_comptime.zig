@@ -65,6 +65,10 @@ fn evalComptimeExpr(ctx: *shared.Context, expr: *const syntax.ast.Expr, bindings
                     .boolean => |boolean| ComptimeValue{ .boolean = !boolean },
                     else => null,
                 },
+                .bit_not => switch (operand) {
+                    .integer => |int| ComptimeValue{ .integer = ~int },
+                    else => null,
+                },
             };
         },
         .binary => |value| blk: {
@@ -146,6 +150,34 @@ fn evalComptimeBinary(lhs: ComptimeValue, op: syntax.ast.BinaryOp, rhs: Comptime
             },
             else => null,
         },
+        .bit_and => comptimeBitOp(lhs, rhs, .bit_and),
+        .bit_or => comptimeBitOp(lhs, rhs, .bit_or),
+        .bit_xor => comptimeBitOp(lhs, rhs, .bit_xor),
+        .shift_left => comptimeBitOp(lhs, rhs, .shift_left),
+        .shift_right => comptimeBitOp(lhs, rhs, .shift_right),
+    };
+}
+
+const ComptimeBitOp = enum { bit_and, bit_or, bit_xor, shift_left, shift_right };
+
+fn comptimeBitOp(lhs: ComptimeValue, rhs: ComptimeValue, op: ComptimeBitOp) ?ComptimeValue {
+    const l = switch (lhs) {
+        .integer => |v| v,
+        else => return null,
+    };
+    const r = switch (rhs) {
+        .integer => |v| v,
+        else => return null,
+    };
+    const amt: u6 = @intCast(@mod(r, 64));
+    return switch (op) {
+        .bit_and => .{ .integer = l & r },
+        .bit_or => .{ .integer = l | r },
+        .bit_xor => .{ .integer = l ^ r },
+        // Comptime `Int` is signed: `<<` bitcasts through u64 to wrap; `>>` is
+        // arithmetic. (Typed unsigned shifts are handled at runtime lowering.)
+        .shift_left => .{ .integer = @bitCast(@as(u64, @bitCast(l)) << amt) },
+        .shift_right => .{ .integer = l >> amt },
     };
 }
 

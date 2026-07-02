@@ -127,17 +127,8 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                     try tokens.append(makeToken(.amp_amp, source.text[index .. index + 2], index, index + 2));
                     index += 2;
                 } else {
-                    try diagnostics.appendOwned(allocator, out_diagnostics, .{
-                        .severity = .@"error",
-                        .code = "KLEX001",
-                        .title = "unexpected character",
-                        .message = "Kira found a character that does not belong to the current grammar.",
-                        .labels = &.{
-                            diagnostics.primaryLabel(source_pkg.Span.init(index, index + 1), "this character is not valid here"),
-                        },
-                        .help = "Remove the character or replace it with valid Kira syntax.",
-                    });
-                    return error.DiagnosticsEmitted;
+                    try tokens.append(makeToken(.amp, source.text[index .. index + 1], index, index + 1));
+                    index += 1;
                 }
             },
             '|' => {
@@ -145,18 +136,17 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                     try tokens.append(makeToken(.pipe_pipe, source.text[index .. index + 2], index, index + 2));
                     index += 2;
                 } else {
-                    try diagnostics.appendOwned(allocator, out_diagnostics, .{
-                        .severity = .@"error",
-                        .code = "KLEX001",
-                        .title = "unexpected character",
-                        .message = "Kira found a character that does not belong to the current grammar.",
-                        .labels = &.{
-                            diagnostics.primaryLabel(source_pkg.Span.init(index, index + 1), "this character is not valid here"),
-                        },
-                        .help = "Remove the character or replace it with valid Kira syntax.",
-                    });
-                    return error.DiagnosticsEmitted;
+                    try tokens.append(makeToken(.pipe, source.text[index .. index + 1], index, index + 1));
+                    index += 1;
                 }
+            },
+            '^' => {
+                try tokens.append(makeToken(.caret, source.text[index .. index + 1], index, index + 1));
+                index += 1;
+            },
+            '~' => {
+                try tokens.append(makeToken(.tilde, source.text[index .. index + 1], index, index + 1));
+                index += 1;
             },
             '%' => {
                 try tokens.append(makeToken(.percent, source.text[index .. index + 1], index, index + 1));
@@ -184,6 +174,9 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
                 if (peekByte(source.text, index + 1) == '=') {
                     try tokens.append(makeToken(.less_equal, source.text[index .. index + 2], index, index + 2));
                     index += 2;
+                } else if (peekByte(source.text, index + 1) == '<') {
+                    try tokens.append(makeToken(.less_less, source.text[index .. index + 2], index, index + 2));
+                    index += 2;
                 } else {
                     try tokens.append(makeToken(.less, source.text[index .. index + 1], index, index + 1));
                     index += 1;
@@ -192,6 +185,9 @@ pub fn tokenize(allocator: std.mem.Allocator, source: *const source_pkg.SourceFi
             '>' => {
                 if (peekByte(source.text, index + 1) == '=') {
                     try tokens.append(makeToken(.greater_equal, source.text[index .. index + 2], index, index + 2));
+                    index += 2;
+                } else if (peekByte(source.text, index + 1) == '>') {
+                    try tokens.append(makeToken(.greater_greater, source.text[index .. index + 2], index, index + 2));
                     index += 2;
                 } else {
                     try tokens.append(makeToken(.greater, source.text[index .. index + 1], index, index + 1));

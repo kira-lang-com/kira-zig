@@ -158,6 +158,7 @@ pub const Instruction = union(enum) {
     multiply: Binary,
     divide: Binary,
     modulo: Binary,
+    bitwise: Bitwise,
     convert: Convert,
     compare: Compare,
     unary: Unary,
@@ -280,6 +281,10 @@ pub const Binary = struct {
     dst: u32,
     lhs: u32,
     rhs: u32,
+    // Set on `divide`/`modulo` when operands are an unsigned integer type (U8..U64),
+    // selecting unsigned division/remainder. Add/subtract/multiply ignore it (wrap
+    // identically for both signedness). Default false = signed, preserving old behavior.
+    unsigned: bool = false,
 };
 
 // Numeric conversion between Int and Float (the `Int(x)` / `Float(x)` cast
@@ -293,11 +298,34 @@ pub const Convert = struct {
     target: ValueType.Kind,
 };
 
+pub const BitOp = enum {
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
+};
+
+pub const Bitwise = struct {
+    dst: u32,
+    lhs: u32,
+    rhs: u32,
+    op: BitOp,
+    // Only meaningful for shift_right: true = logical (unsigned) shift, false =
+    // arithmetic (sign-propagating). and/or/xor/shift_left are bit-identical
+    // regardless of signedness.
+    unsigned: bool = false,
+};
+
 pub const Compare = struct {
     dst: u32,
     lhs: u32,
     rhs: u32,
     op: CompareOp,
+    // Set when operands are an unsigned integer type, selecting unsigned ordering
+    // predicates for less/less_equal/greater/greater_equal. equal/not_equal are
+    // sign-agnostic. Default false = signed.
+    unsigned: bool = false,
 };
 
 pub const CompareOp = enum {
@@ -318,6 +346,7 @@ pub const Unary = struct {
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 pub const StoreLocal = struct {
