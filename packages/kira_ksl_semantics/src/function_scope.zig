@@ -389,6 +389,18 @@ pub const FunctionScope = struct {
                 break :blk .{ .scalar = .float };
             },
             .sample => .{ .vector = .{ .scalar = .float, .width = 4 } },
+            .atomic_add => blk: {
+                if (call_expr.args.len != 3) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd(buffer, index, value) takes a read_write uint storage buffer, an index, and a value.");
+                    return error.DiagnosticsEmitted;
+                }
+                const target = try self.lowerExpr(call_expr.args[0], null);
+                if (target.ty != .runtime_array) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd's first argument must be a storage buffer resource.");
+                    return error.DiagnosticsEmitted;
+                }
+                break :blk .{ .scalar = .uint };
+            },
             .load => blk: {
                 if (call_expr.args.len != 2) {
                     try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "load(texture, coord) takes a texture and an integer coordinate.");

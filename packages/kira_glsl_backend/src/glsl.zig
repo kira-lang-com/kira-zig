@@ -440,6 +440,15 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try emitExpr(writer, call_expr.args[1]);
                     try writer.writeAll("), 0)");
                 },
+                .atomic_add => {
+                    try writer.writeAll("atomicAdd(");
+                    try emitExpr(writer, call_expr.args[0]);
+                    try writer.writeAll("[");
+                    try emitExpr(writer, call_expr.args[1]);
+                    try writer.writeAll("], ");
+                    try emitExpr(writer, call_expr.args[2]);
+                    try writer.writeByte(')');
+                },
             },
         },
     }

@@ -344,6 +344,17 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try emitExpr(writer, call_expr.args[1]);
                     try writer.writeAll(", 0))");
                 },
+                .atomic_add => {
+                    // NOTE: HLSL InterlockedAdd is statement-form; this expression
+                    // emission is a placeholder until the D3D backend is verified.
+                    try writer.writeAll("kira_atomic_add(");
+                    try emitExpr(writer, call_expr.args[0]);
+                    try writer.writeAll(", ");
+                    try emitExpr(writer, call_expr.args[1]);
+                    try writer.writeAll(", ");
+                    try emitExpr(writer, call_expr.args[2]);
+                    try writer.writeByte(')');
+                },
             },
         },
     }
