@@ -210,6 +210,12 @@ fn emitBlockComments(allocator: std.mem.Allocator, writer: anytype, block: shade
                     try emitBlockComments(allocator, writer, else_block, indent_level + 1);
                 }
             },
+            .while_stmt => |while_stmt| {
+                try writer.writeAll("while ");
+                try emitExprComment(allocator, writer, while_stmt.condition);
+                try writer.writeByte('\n');
+                try emitBlockComments(allocator, writer, while_stmt.body, indent_level + 1);
+            },
         }
     }
 }
@@ -332,6 +338,7 @@ fn spirvScalarName(scalar: shader_model.ScalarType) ![]const u8 {
 fn spirvTextureName(texture: shader_model.TextureDimension) []const u8 {
     return switch (texture) {
         .texture_2d => "OpTypeImage f32 2D",
+        .texture_2d_uint => "OpTypeImage u32 2D",
         .texture_cube => "OpTypeImage f32 Cube",
         .depth_2d => "OpTypeImage depth 2D",
     };

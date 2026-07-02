@@ -7,6 +7,7 @@ pub const LoweredShader = struct {
     shader_name: []const u8,
     vertex_source: ?[]const u8 = null,
     fragment_source: ?[]const u8 = null,
+    compute_source: ?[]const u8 = null,
 };
 
 pub fn lowerShader(
@@ -15,25 +16,23 @@ pub fn lowerShader(
     shader_decl: shader_ir.ShaderDecl,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !LoweredShader {
-    if (shader_decl.kind == .compute) {
-        try diagnostics.appendOwned(allocator, out_diagnostics, .{
-            .severity = .@"error",
-            .code = "KSL124",
-            .title = "compute shaders are not supported by the MSL graphics backend",
-            .message = "The current MSL lowering path is scoped to graphics shaders for Metal render pipeline validation.",
-            .help = "Use a graphics shader for MSL today, or add a compute-capable lowering path before building this shader.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-
-    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
-    const fragment_stage = findStage(shader_decl.stages, .fragment);
-
+    _ = out_diagnostics;
     var lowerer = Lowerer{
         .allocator = allocator,
         .program = &program,
         .shader = &shader_decl,
     };
+
+    if (shader_decl.kind == .compute) {
+        const compute_stage = findStage(shader_decl.stages, .compute) orelse return error.InvalidArguments;
+        return .{
+            .shader_name = shader_decl.name,
+            .compute_source = try lowerer.emitStage(compute_stage),
+        };
+    }
+
+    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
+    const fragment_stage = findStage(shader_decl.stages, .fragment);
 
     return .{
         .shader_name = shader_decl.name,
@@ -59,22 +58,52 @@ const Lowerer = struct {
         return out.toOwnedSlice();
     }
 
+    fn typeHasBuiltins(type_decl: shader_ir.TypeDecl) bool {
+        for (type_decl.fields) |field_decl| {
+            if (field_decl.builtin != null) return true;
+        }
+        return false;
+    }
+
     fn emitStructs(self: *Lowerer, writer: anytype) !void {
         for (self.program.types) |type_decl| {
+            // A vertex input type that carries builtins (vertex_index/instance_index)
+            // cannot be a [[stage_in]] struct (stage_in members must be attributes).
+            // Emit it as a PLAIN struct plus a companion `{name}_attrs` stage_in
+            // struct holding only the attributed fields; the stage entry
+            // reconstructs the full input (builtins arrive as entry params).
+            const split_vertex_input = self.shader.kind != .compute and
+                isVertexInputType(self.shader.stages, type_decl.name) and
+                typeHasBuiltins(type_decl);
             try writer.print("struct {s} {{\n", .{sanitizeName(type_decl.name)});
             var location: u32 = 0;
             for (type_decl.fields) |field_decl| {
                 try writer.print("    {s} {s}", .{ try mslTypeName(self.allocator, field_decl.ty), sanitizeName(field_decl.name) });
-                if (self.interfaceFieldAttribute(type_decl.name, field_decl, location)) |attribute| {
-                    try writer.print(" {s}", .{attribute});
-                    if (field_decl.builtin == null) location += 1;
-                } else if (isInterfaceType(self.shader.stages, type_decl.name) and field_decl.builtin == null) {
-                    try writer.print(" [[user(locn{d})]]", .{location});
-                    location += 1;
+                // Compute input structs are plain containers: builtins like
+                // thread_position_in_grid are attached to the kernel's params, and are
+                // illegal inside a struct declaration. Emit no interface attributes.
+                if (self.shader.kind != .compute and !split_vertex_input) {
+                    if (self.interfaceFieldAttribute(type_decl.name, field_decl, location)) |attribute| {
+                        try writer.print(" {s}", .{attribute});
+                        if (field_decl.builtin == null) location += 1;
+                    } else if (isInterfaceType(self.shader.stages, type_decl.name) and field_decl.builtin == null) {
+                        try writer.print(" [[user(locn{d})]]", .{location});
+                        location += 1;
+                    }
                 }
                 try writer.writeAll(";\n");
             }
             try writer.writeAll("};\n\n");
+            if (split_vertex_input) {
+                try writer.print("struct {s}_attrs {{\n", .{sanitizeName(type_decl.name)});
+                var attr_location: u32 = 0;
+                for (type_decl.fields) |field_decl| {
+                    if (field_decl.builtin != null) continue;
+                    try writer.print("    {s} {s} [[attribute({d})]];\n", .{ try mslTypeName(self.allocator, field_decl.ty), sanitizeName(field_decl.name), attr_location });
+                    attr_location += 1;
+                }
+                try writer.writeAll("};\n\n");
+            }
         }
     }
 
@@ -114,24 +143,101 @@ const Lowerer = struct {
             has_param = true;
         }
         if (include_resources) {
-            try self.emitResourceParams(writer, false, &has_param);
+            try self.emitResourceParams(writer, false, &has_param, 0);
         }
         try writer.writeAll(") ");
         try emitBlock(self.allocator, writer, function_decl.body, 0);
         try writer.writeAll("\n\n");
     }
 
+    fn findType(self: *Lowerer, name: []const u8) ?shader_ir.TypeDecl {
+        for (self.program.types) |type_decl| {
+            if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+        }
+        return null;
+    }
+
+    fn emitComputeEntry(self: *Lowerer, writer: anytype, stage: shader_ir.StageDecl) !void {
+        const entry_name = stageEntryName(self.allocator, self.shader.name, stage.kind);
+        // MSL compute entry: a `kernel void` with the input struct's builtin fields as
+        // individual attributed params, reconstructed into the input struct before the
+        // call. Resources follow with [[buffer/texture(N)]] slots.
+        try writer.print("kernel void {s}(", .{entry_name});
+        var has_param = false;
+        const input_type = if (stage.input_type) |input_name| self.findType(input_name) else null;
+        if (input_type) |it| {
+            for (it.fields) |field_decl| {
+                if (has_param) try writer.writeAll(", ");
+                try writer.print("{s} {s}", .{ try mslTypeName(self.allocator, field_decl.ty), sanitizeName(field_decl.name) });
+                if (field_decl.builtin) |builtin| try writer.print(" {s}", .{mslBuiltinAttribute(builtin)});
+                has_param = true;
+            }
+        }
+        try self.emitResourceParams(writer, true, &has_param, 0);
+        try writer.writeAll(") {\n");
+        if (stage.input_type) |input_name| {
+            try writer.print("    {s} kira_input;\n", .{sanitizeName(input_name)});
+            if (input_type) |it| {
+                for (it.fields) |field_decl| {
+                    try writer.print("    kira_input.{s} = {s};\n", .{ sanitizeName(field_decl.name), sanitizeName(field_decl.name) });
+                }
+            }
+        }
+        try writer.writeAll("    ");
+        try writer.print("{s}(", .{sanitizeName(stage.entry.name)});
+        var has_arg = false;
+        if (stage.input_type != null) {
+            try writer.writeAll("kira_input");
+            has_arg = true;
+        }
+        try self.emitResourceArgs(writer, &has_arg);
+        try writer.writeAll(");\n}\n");
+    }
+
     fn emitStageEntry(self: *Lowerer, writer: anytype, stage: shader_ir.StageDecl) !void {
+        if (stage.kind == .compute) {
+            return self.emitComputeEntry(writer, stage);
+        }
         const entry_name = stageEntryName(self.allocator, self.shader.name, stage.kind);
         const return_type = if (stage.output_type) |output_type_name| sanitizeName(output_type_name) else "void";
+        // A vertex input type carrying builtins is split (see emitStructs): the
+        // attributed fields arrive as a `{name}_attrs` stage_in struct, the builtins
+        // as attributed entry params, and the full input is reconstructed here.
+        var split_input: ?shader_ir.TypeDecl = null;
+        if (stage.kind == .vertex) {
+            if (stage.input_type) |input_type_name| {
+                if (self.findType(input_type_name)) |input_decl| {
+                    if (typeHasBuiltins(input_decl)) split_input = input_decl;
+                }
+            }
+        }
         try writer.print("{s} {s} {s}(", .{ @tagName(stage.kind), return_type, entry_name });
         var has_param = false;
         if (stage.input_type) |input_type_name| {
-            try writer.print("{s} kira_input [[stage_in]]", .{sanitizeName(input_type_name)});
+            if (split_input) |input_decl| {
+                try writer.print("{s}_attrs kira_attrs [[stage_in]]", .{sanitizeName(input_type_name)});
+                for (input_decl.fields) |field_decl| {
+                    if (field_decl.builtin) |builtin| {
+                        try writer.print(", {s} {s} {s}", .{ try mslTypeName(self.allocator, field_decl.ty), sanitizeName(field_decl.name), mslBuiltinAttribute(builtin) });
+                    }
+                }
+            } else {
+                try writer.print("{s} kira_input [[stage_in]]", .{sanitizeName(input_type_name)});
+            }
             has_param = true;
         }
-        try self.emitResourceParams(writer, true, &has_param);
+        try self.emitResourceParams(writer, true, &has_param, if (stage.kind == .vertex) 1 else 0);
         try writer.writeAll(") {\n");
+        if (split_input) |input_decl| {
+            try writer.print("    {s} kira_input;\n", .{sanitizeName(stage.input_type.?)});
+            for (input_decl.fields) |field_decl| {
+                if (field_decl.builtin != null) {
+                    try writer.print("    kira_input.{s} = {s};\n", .{ sanitizeName(field_decl.name), sanitizeName(field_decl.name) });
+                } else {
+                    try writer.print("    kira_input.{s} = kira_attrs.{s};\n", .{ sanitizeName(field_decl.name), sanitizeName(field_decl.name) });
+                }
+            }
+        }
         try writer.writeAll("    ");
         if (stage.output_type != null) try writer.writeAll("return ");
         try writer.print("{s}(", .{sanitizeName(stage.entry.name)});
@@ -145,8 +251,11 @@ const Lowerer = struct {
         try writer.writeAll("}\n");
     }
 
-    fn emitResourceParams(self: *Lowerer, writer: anytype, include_attributes: bool, has_param: *bool) !void {
-        var buffer_slot: u32 = 0;
+    fn emitResourceParams(self: *Lowerer, writer: anytype, include_attributes: bool, has_param: *bool, buffer_slot_base: u32) !void {
+        // Vertex stage: the vertex descriptor owns [[buffer(0)]], so resource buffers
+        // start at 1 — matching the Metal bind-group rule (vertex uniforms bind at
+        // slot+1, fragment/compute at slot).
+        var buffer_slot: u32 = buffer_slot_base;
         var texture_slot: u32 = 0;
         var sampler_slot: u32 = 0;
         for (self.shader.groups) |group_decl| {
@@ -160,7 +269,10 @@ const Lowerer = struct {
                     },
                     .storage => {
                         const prefix = if (resource_decl.access == .read) "const device" else "device";
-                        try writer.print("{s} {s}* {s}", .{ prefix, try mslTypeName(self.allocator, resource_decl.ty), sanitizeName(resource_decl.name) });
+                        // A storage buffer is a runtime-sized array of its element type;
+                        // bind it as `<elem>*`, not `<runtime_array>*` (which double-stars).
+                        const elem_ty = if (resource_decl.ty == .runtime_array) resource_decl.ty.runtime_array.* else resource_decl.ty;
+                        try writer.print("{s} {s}* {s}", .{ prefix, try mslTypeName(self.allocator, elem_ty), sanitizeName(resource_decl.name) });
                         if (include_attributes) try writer.print(" [[buffer({d})]]", .{buffer_slot});
                         buffer_slot += 1;
                     },
@@ -239,6 +351,13 @@ fn emitStatement(allocator: std.mem.Allocator, writer: anytype, statement: shade
                 try writer.writeAll(" else ");
                 try emitBlock(allocator, writer, else_block, indent_level);
             }
+            try writer.writeAll("\n");
+        },
+        .while_stmt => |while_stmt| {
+            try writer.writeAll("while (");
+            try emitExpr(allocator, writer, while_stmt.condition);
+            try writer.writeAll(") ");
+            try emitBlock(allocator, writer, while_stmt.body, indent_level);
             try writer.writeAll("\n");
         },
     }
@@ -328,6 +447,16 @@ fn emitExpr(allocator: std.mem.Allocator, writer: anytype, expr: *const shader_i
                     try emitExpr(allocator, writer, call_expr.args[2]);
                     try writer.writeByte(')');
                 },
+                .load => {
+                    // texelFetch: read an unfiltered texel at integer pixel coords.
+                    const texture_name = switch (call_expr.args[0].node) {
+                        .name => |name_ref| name_ref.name,
+                        else => "unsupported_texture",
+                    };
+                    try writer.print("{s}.read(uint2(", .{sanitizeName(texture_name)});
+                    try emitExpr(allocator, writer, call_expr.args[1]);
+                    try writer.writeAll("))");
+                },
             },
         },
     }
@@ -390,6 +519,7 @@ fn mslScalarName(scalar: shader_model.ScalarType) ![]const u8 {
 fn mslTextureName(texture: shader_model.TextureDimension) []const u8 {
     return switch (texture) {
         .texture_2d => "texture2d<float>",
+        .texture_2d_uint => "texture2d<uint>",
         .texture_cube => "texturecube<float>",
         .depth_2d => "depth2d<float>",
     };

@@ -199,7 +199,10 @@ pub fn runPrepared(
             if (lhs == .integer and rhs == .integer) {
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = lhs.integer +% rhs.integer });
             } else {
-                setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.addValues(vm, lhs, rhs));
+                // setSlotOwned: string concatenation allocates a heap-managed result
+                // that the destination slot must own (numeric results are unmanaged,
+                // so ownership resolves to false for them exactly as before).
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.addValues(vm, lhs, rhs));
             }
             pc += 1;
             continue :dispatch code[pc];
@@ -229,14 +232,21 @@ pub fn runPrepared(
         .divide => |value| {
             const lhs = registers[value.lhs];
             const rhs = registers[value.rhs];
-            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(vm, lhs, rhs));
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(vm, lhs, rhs, value.unsigned));
             pc += 1;
             continue :dispatch code[pc];
         },
         .modulo => |value| {
             const lhs = registers[value.lhs];
             const rhs = registers[value.rhs];
-            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(vm, lhs, rhs));
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(vm, lhs, rhs, value.unsigned));
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .bitwise => |value| {
+            const lhs = registers[value.lhs];
+            const rhs = registers[value.rhs];
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.bitwiseValue(vm, lhs, rhs, value.op, value.unsigned));
             pc += 1;
             continue :dispatch code[pc];
         },
@@ -252,13 +262,15 @@ pub fn runPrepared(
             if (lhs == .integer and rhs == .integer) {
                 const lhs_int = lhs.integer;
                 const rhs_int = rhs.integer;
+                const lhs_u: u64 = @bitCast(lhs_int);
+                const rhs_u: u64 = @bitCast(rhs_int);
                 const result = switch (value.op) {
                     .equal => lhs_int == rhs_int,
                     .not_equal => lhs_int != rhs_int,
-                    .less => lhs_int < rhs_int,
-                    .less_equal => lhs_int <= rhs_int,
-                    .greater => lhs_int > rhs_int,
-                    .greater_equal => lhs_int >= rhs_int,
+                    .less => if (value.unsigned) lhs_u < rhs_u else lhs_int < rhs_int,
+                    .less_equal => if (value.unsigned) lhs_u <= rhs_u else lhs_int <= rhs_int,
+                    .greater => if (value.unsigned) lhs_u > rhs_u else lhs_int > rhs_int,
+                    .greater_equal => if (value.unsigned) lhs_u >= rhs_u else lhs_int >= rhs_int,
                 };
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = result });
             } else {
@@ -892,7 +904,9 @@ pub fn runPrepared(
                 runtime_abi.Value{ .integer = fused.arithIntegers(lhs.integer, rhs.integer, value.kind) }
             else
                 try fused.arithValues(vm, lhs, rhs, value.kind);
-            setSlotBorrowed(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
+            // setSlotOwned: string `+` allocates a heap-managed result the local must
+            // own; numeric results are unmanaged so this degrades to borrowed.
+            setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
             continue :dispatch code[pc];
         },
@@ -902,7 +916,7 @@ pub fn runPrepared(
                 runtime_abi.Value{ .integer = fused.arithIntegers(lhs.integer, value.imm, value.kind) }
             else
                 try fused.arithValues(vm, lhs, .{ .integer = value.imm }, value.kind);
-            setSlotBorrowed(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
+            setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
             continue :dispatch code[pc];
         },

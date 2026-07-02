@@ -65,6 +65,7 @@ pub const FunctionScope = struct {
             } },
             .return_stmt => |return_stmt| .{ .return_stmt = try self.lowerReturn(return_stmt) },
             .if_stmt => |if_stmt| .{ .if_stmt = try self.lowerIf(if_stmt) },
+            .while_stmt => |while_stmt| .{ .while_stmt = try self.lowerWhile(while_stmt) },
         };
     }
 
@@ -117,6 +118,19 @@ pub const FunctionScope = struct {
         return .{
             .value = value,
             .span = return_stmt.span,
+        };
+    }
+
+    fn lowerWhile(self: *FunctionScope, while_stmt: syntax.ast.WhileStatement) anyerror!shader_ir.WhileStatement {
+        const condition = try self.lowerExpr(while_stmt.condition, .{ .scalar = .bool });
+        if (condition.ty != .scalar or condition.ty.scalar != .bool) {
+            try self.analyzer.emitDiagnostic("KSL016", "while condition must be Bool", syntax.ast.exprSpan(while_stmt.condition.*), "Use a boolean expression in the `while` condition.");
+            return error.DiagnosticsEmitted;
+        }
+        return .{
+            .condition = condition,
+            .body = try self.lowerBlock(while_stmt.body),
+            .span = while_stmt.span,
         };
     }
 
@@ -375,6 +389,19 @@ pub const FunctionScope = struct {
                 break :blk .{ .scalar = .float };
             },
             .sample => .{ .vector = .{ .scalar = .float, .width = 4 } },
+            .load => blk: {
+                if (call_expr.args.len != 2) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "load(texture, coord) takes a texture and an integer coordinate.");
+                    return error.DiagnosticsEmitted;
+                }
+                const tex = try self.lowerExpr(call_expr.args[0], null);
+                if (tex.ty != .texture) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "load's first argument must be a texture resource.");
+                    return error.DiagnosticsEmitted;
+                }
+                const texel_scalar: shader_model.ScalarType = if (tex.ty.texture == .texture_2d_uint) .uint else .float;
+                break :blk .{ .vector = .{ .scalar = texel_scalar, .width = 4 } };
+            },
             .mul => blk: {
                 if (call_expr.args.len != 2) {
                     try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "Pass the expected arguments to the intrinsic.");

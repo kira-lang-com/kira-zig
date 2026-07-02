@@ -29,6 +29,7 @@ const parser = @import("kira_parser");
 const inst = @import("macro_instantiate.zig");
 const eval = @import("macro_eval.zig");
 const proc = @import("macro_procedural.zig");
+const shader_pipeline = @import("shader/pipeline.zig");
 
 const ast = syntax.ast;
 const Span = source_pkg.Span;
@@ -146,7 +147,10 @@ pub fn expandMacros(
             .proc_function => try exp.func_macros.put(allocator, macro.name, macro),
         }
     }
-    if (exp.macros.count() == 0 and exp.proc_macros.count() == 0 and exp.func_macros.count() == 0) return program;
+    // NOTE: we intentionally do NOT early-return when no user macros are declared —
+    // the builtin `ksl!(...)` shader macro needs no declaration, so the expansion
+    // walk must always run to expand it. With no macros present the walk is an
+    // identity rebuild of `decls`/`functions`.
 
     // `decls` is the source of truth semantics lowers from. A `function_decl` also appears in the
     // separate `functions` list, so we expand each function body exactly once here (walking it in
@@ -388,6 +392,13 @@ fn walkExpr(exp: *Expander, expr: *ast.Expr, pre: *StatementList) anyerror!*ast.
             if (c.is_macro) return expandCallAsExpr(exp, c, pre);
             expr.call.callee = try walkExpr(exp, c.callee, pre);
             for (expr.call.args) |*arg| arg.value = try walkExpr(exp, arg.value, pre);
+            // A trailing callback closure (`app.onFrame { f in ... }`) has its own
+            // statement body; macro calls inside it must be expanded too.
+            if (expr.call.trailing_callback) |*cb| cb.body = try walkBlock(exp, cb.body);
+            return expr;
+        },
+        .callback => {
+            expr.callback.body = try walkBlock(exp, expr.callback.body);
             return expr;
         },
         .binary => {
@@ -513,6 +524,17 @@ fn expandCallAsExpr(exp: *Expander, call: ast.CallExpr, pre: *StatementList) !*a
         try exp.err("KMAC010", "macro expansion too deep", "Macro expansion exceeded the recursion limit; this usually means a macro expands to itself.", call.span, "expansion limit reached here", "Remove the recursive macro invocation.");
         return exp.makeIntZero(call.span);
     }
+    // Builtin `ksl!("path.ksl")`: compile the KSL file at compile time and expand
+    // to a `KslArtifact { ... }` struct literal carrying the per-backend shader
+    // sources (MSL/HLSL/GLSL) inline. No runtime file IO; all backends embedded.
+    if (builtinMacroName(call)) |bname| {
+        if (std.mem.eql(u8, bname, "ksl")) {
+            exp.depth += 1;
+            defer exp.depth -= 1;
+            const expr = (try expandKslBuiltin(exp, call)) orelse return exp.makeIntZero(call.span);
+            return walkExpr(exp, expr, pre);
+        }
+    }
     const macro = lookupMacro(exp, call) orelse {
         // A procedural `kind { function }` macro can also be invoked in expression position; its
         // expansion must re-parse as a single expression, which becomes the value here.
@@ -543,6 +565,134 @@ fn expandCallAsExpr(exp: *Expander, call: ast.CallExpr, pre: *StatementList) !*a
     for (leading) |statement| try inst.instantiateStatement(exp, &env, statement, pre);
     const tail = block.statements[block.statements.len - 1].expr_stmt.expr;
     return inst.instantiateExpr(exp, &env, tail);
+}
+
+// --- Builtin `ksl!` shader macro -------------------------------------------
+// NOTE: this is a Zig-side builtin as a bootstrap. The intended end state is a
+// userland Kira `comptime macro` that calls Foundation KSL APIs — see
+// docs/adr/0004-ksl-shader-macro.md in project-matter.
+
+fn commonPrefixLen(a: []const u8, b: []const u8) usize {
+    const n = @min(a.len, b.len);
+    var i: usize = 0;
+    while (i < n and a[i] == b[i]) : (i += 1) {}
+    return i;
+}
+
+fn builtinMacroName(call: ast.CallExpr) ?[]const u8 {
+    if (call.callee.* != .identifier) return null;
+    const segments = call.callee.identifier.name.segments;
+    if (segments.len != 1) return null;
+    return segments[0].text;
+}
+
+fn stringLiteralValue(expr: *ast.Expr) ?[]const u8 {
+    if (expr.* != .string) return null;
+    var v = expr.string.value;
+    if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+    return v;
+}
+
+// Escape a raw shader source so it survives as a Kira string literal (decoded
+// back to the original bytes at codegen, same as any `"...\n..."` literal).
+fn escapeKiraString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(allocator);
+    for (s) |c| {
+        switch (c) {
+            '\\' => try out.appendSlice("\\\\"),
+            '"' => try out.appendSlice("\\\""),
+            '\n' => try out.appendSlice("\\n"),
+            '\r' => {},
+            '\t' => try out.appendSlice("\\t"),
+            else => try out.append(c),
+        }
+    }
+    return out.toOwnedSlice();
+}
+
+fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
+    if (call.args.len != 1) {
+        try exp.err("KMAC020", "ksl! expects one path argument", "The `ksl!` shader macro takes a single string-literal path to a .ksl file.", call.span, "wrong argument count", "Write `ksl!(\"Shaders/Name.ksl\")`.");
+        return null;
+    }
+    const path = stringLiteralValue(call.args[0].value) orelse {
+        try exp.err("KMAC021", "ksl! path must be a string literal", "The `ksl!` argument must be a literal path known at compile time.", call.span, "not a string literal", "Pass a string literal, e.g. `ksl!(\"Shaders/Name.ksl\")`.");
+        return null;
+    };
+
+    const msl = shader_pipeline.buildFileForTarget(exp.allocator, path, .msl) catch {
+        try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be read or compiled to MSL.", call.span, "shader compile failed", "Check the path (relative to the build working directory) and the .ksl source.");
+        return null;
+    };
+    const hlsl = shader_pipeline.buildFileForTarget(exp.allocator, path, .hlsl) catch {
+        try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be compiled to HLSL.", call.span, "shader compile failed", "Check the .ksl source for constructs unsupported by the HLSL backend.");
+        return null;
+    };
+    const glsl = shader_pipeline.buildFileForTarget(exp.allocator, path, .glsl_330) catch {
+        try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be compiled to GLSL.", call.span, "shader compile failed", "Check the .ksl source for constructs unsupported by the GLSL backend.");
+        return null;
+    };
+    if (msl.artifacts.len == 0 or hlsl.artifacts.len == 0 or glsl.artifacts.len == 0) {
+        try exp.err("KMAC023", "ksl! produced no shader artifact", "The KSL file compiled but yielded no shader; it must declare a `shader { ... }`.", call.span, "no shader artifact", "Add a `shader Name { vertex { ... } fragment { ... } }` block to the .ksl file.");
+        return null;
+    }
+    const ma = msl.artifacts[0];
+    const ha = hlsl.artifacts[0];
+    const ga = glsl.artifacts[0];
+
+    // Merge the separate vertex/fragment MSL into ONE library source for backends
+    // (like the direct Metal backend) that compile a single library holding both
+    // stages. The two sources share a byte-identical preamble + struct block and
+    // diverge only at the stage functions, so: shared-prefix + vertex-tail +
+    // fragment-tail. Entry names follow the KSL MSL convention.
+    // Compute shaders have a single `kernel` MSL source and no vertex/fragment stages;
+    // graphics shaders merge vertex+fragment into one library. combinedMsl holds the
+    // library the direct Metal backend compiles (the compute source for a compute
+    // shader), and computeEntry names the kernel.
+    const is_compute = ma.compute_msl != null;
+    const cmsl = ma.compute_msl orelse "";
+    const vmsl = ma.vertex_msl orelse "";
+    const fmsl = ma.fragment_msl orelse "";
+    const pfx = commonPrefixLen(vmsl, fmsl);
+    const graphics_combined = try std.fmt.allocPrint(exp.allocator, "{s}\n{s}", .{ vmsl, fmsl[pfx..] });
+    const combined_msl = if (is_compute) cmsl else graphics_combined;
+    const vertex_entry = if (is_compute) "" else try std.fmt.allocPrint(exp.allocator, "{s}__vertex__main", .{ma.shader_name});
+    const fragment_entry = if (is_compute) "" else try std.fmt.allocPrint(exp.allocator, "{s}__fragment__main", .{ma.shader_name});
+    const compute_entry = if (is_compute) try std.fmt.allocPrint(exp.allocator, "{s}__compute__main", .{ma.shader_name}) else "";
+
+    const text = try std.fmt.allocPrint(exp.allocator,
+        "KslArtifact {{ shaderName: \"{s}\", vertexEntry: \"{s}\", fragmentEntry: \"{s}\", computeEntry: \"{s}\", combinedMsl: \"{s}\", vertexMsl: \"{s}\", fragmentMsl: \"{s}\", computeMsl: \"{s}\", vertexHlsl: \"{s}\", fragmentHlsl: \"{s}\", vertexGlsl: \"{s}\", fragmentGlsl: \"{s}\" }}",
+        .{
+            try escapeKiraString(exp.allocator, ma.shader_name),
+            try escapeKiraString(exp.allocator, vertex_entry),
+            try escapeKiraString(exp.allocator, fragment_entry),
+            try escapeKiraString(exp.allocator, compute_entry),
+            try escapeKiraString(exp.allocator, combined_msl),
+            try escapeKiraString(exp.allocator, vmsl),
+            try escapeKiraString(exp.allocator, fmsl),
+            try escapeKiraString(exp.allocator, cmsl),
+            try escapeKiraString(exp.allocator, ha.vertex_hlsl orelse ""),
+            try escapeKiraString(exp.allocator, ha.fragment_hlsl orelse ""),
+            try escapeKiraString(exp.allocator, ga.vertex_glsl orelse ""),
+            try escapeKiraString(exp.allocator, ga.fragment_glsl orelse ""),
+        },
+    );
+
+    const wrapped = try std.fmt.allocPrint(exp.allocator, "function __kslw() {{\n{s}\n}}", .{text});
+    const program = parser.parseSource(exp.allocator, wrapped, exp.diags) catch {
+        try exp.err("KMAC024", "ksl! generated invalid expansion", "The generated KslArtifact expression failed to parse (likely an escaping bug).", call.span, "expansion did not parse", "Report this as a compiler bug.");
+        return null;
+    };
+    for (program.decls) |decl| {
+        if (decl == .function_decl and std.mem.eql(u8, decl.function_decl.name, "__kslw")) {
+            const body = decl.function_decl.body orelse continue;
+            if (body.statements.len == 1 and body.statements[0] == .expr_stmt) {
+                return body.statements[0].expr_stmt.expr;
+            }
+        }
+    }
+    try exp.err("KMAC024", "ksl! generated invalid expansion", "The generated KslArtifact expression was not a single expression.", call.span, "expansion malformed", "Report this as a compiler bug.");
+    return null;
 }
 
 fn emitUnknownMacro(exp: *Expander, call: ast.CallExpr) !void {

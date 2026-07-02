@@ -56,6 +56,9 @@ pub const LoweredShaderArtifact = struct {
     fragment_hlsl: ?[]const u8 = null,
     vertex_msl: ?[]const u8 = null,
     fragment_msl: ?[]const u8 = null,
+    compute_msl: ?[]const u8 = null,
+    compute_hlsl: ?[]const u8 = null,
+    compute_glsl: ?[]const u8 = null,
     vertex_spirv: ?[]const u8 = null,
     fragment_spirv: ?[]const u8 = null,
     reflection_json: []const u8,
@@ -203,6 +206,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .target = target,
                     .vertex_glsl = lowered.vertex_source,
                     .fragment_glsl = lowered.fragment_source,
+                    .compute_glsl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
                 });
             },
@@ -243,6 +247,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .target = target,
                     .vertex_hlsl = lowered.vertex_source,
                     .fragment_hlsl = lowered.fragment_source,
+                    .compute_hlsl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
                 });
             },
@@ -263,6 +268,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .target = target,
                     .vertex_msl = lowered.vertex_source,
                     .fragment_msl = lowered.fragment_source,
+                    .compute_msl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
                 });
             },
@@ -572,7 +578,7 @@ test "shader binding assignment is deterministic and class ordered" {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const temp_dir = std.testing.tmpDir(.{});
+    var temp_dir = std.testing.tmpDir(.{});
     defer temp_dir.cleanup();
     try temp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "main.ksl",
@@ -603,13 +609,25 @@ test "shader binding assignment is deterministic and class ordered" {
     try std.testing.expect(std.mem.indexOf(u8, result.artifacts[0].reflection_json, "\"group_index\": 0") != null);
 }
 
-test "shader lowering rejects compute on glsl 330 backend" {
+test "shader lowering emits a compute kernel across backends" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try buildFile(arena.allocator(), "tests/shaders/fail/lowering/compute_glsl/main.ksl");
-    try std.testing.expect(result.artifacts.len == 0);
-    try expectDiagnosticCode(result.diagnostics, "KSL121");
+    // MSL: a real `kernel` with the storage buffer bound.
+    const msl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .msl);
+    try std.testing.expect(msl.artifacts.len == 1);
+    try std.testing.expect(msl.artifacts[0].compute_msl != null);
+    try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "kernel void") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "[[thread_position_in_grid]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "device") != null);
+
+    // GLSL/HLSL: compute lowering succeeds (unverified backends, plausible source).
+    const glsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .glsl_330);
+    try std.testing.expect(glsl.artifacts.len == 1);
+    try std.testing.expect(glsl.artifacts[0].compute_glsl != null);
+    const hlsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .hlsl);
+    try std.testing.expect(hlsl.artifacts.len == 1);
+    try std.testing.expect(hlsl.artifacts[0].compute_hlsl != null);
 }
 
 fn expectDiagnosticCode(items: []const diagnostics.Diagnostic, code: []const u8) !void {
@@ -625,3 +643,6 @@ fn expectFileText(allocator: std.mem.Allocator, path: []const u8, actual: []cons
     const expected = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1 << 20));
     try std.testing.expectEqualStrings(expected, actual);
 }
+
+
+

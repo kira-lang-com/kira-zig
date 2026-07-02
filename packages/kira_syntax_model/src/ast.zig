@@ -766,11 +766,17 @@ pub const BinaryOp = enum {
     greater_equal,
     logical_and,
     logical_or,
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
 };
 
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 pub const TypeExpr = union(enum) {

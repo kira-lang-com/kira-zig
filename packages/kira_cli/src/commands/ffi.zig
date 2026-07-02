@@ -54,13 +54,29 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     };
 
     var generated: usize = 0;
+    var skipped: usize = 0;
     for (libraries) |library| {
+        if (library.unavailable) |unavailable| {
+            skipped += 1;
+            try stdout.print(
+                "autobind skipped {s}: required environment variable {s} is not set\n",
+                .{ library.name, unavailable.detail },
+            );
+            continue;
+        }
         if (library.autobinding) |autobinding| {
             generated += 1;
             try stdout.print("autobind wrote {s}\n", .{autobinding.output_path});
         }
     }
-    try stdout.print("ffi autobind completed for {d} native binding target(s)\n", .{generated});
+    if (skipped == 0) {
+        try stdout.print("ffi autobind completed for {d} native binding target(s)\n", .{generated});
+    } else {
+        try stdout.print(
+            "ffi autobind completed for {d} native binding target(s) ({d} skipped)\n",
+            .{ generated, skipped },
+        );
+    }
 }
 
 const ParsedArgs = struct {

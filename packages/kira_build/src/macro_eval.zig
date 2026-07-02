@@ -210,6 +210,11 @@ pub const Evaluator = struct {
             .greater_equal => return self.intCmp(lhs, rhs, e.span, geFn),
             .logical_and => return .{ .boolean = (lhs == .boolean and lhs.boolean) and (rhs == .boolean and rhs.boolean) },
             .logical_or => return .{ .boolean = (lhs == .boolean and lhs.boolean) or (rhs == .boolean and rhs.boolean) },
+            .bit_and => return self.intOp(lhs, rhs, e.span, bitAndFn),
+            .bit_or => return self.intOp(lhs, rhs, e.span, bitOrFn),
+            .bit_xor => return self.intOp(lhs, rhs, e.span, bitXorFn),
+            .shift_left => return self.intOp(lhs, rhs, e.span, shlFn),
+            .shift_right => return self.intOp(lhs, rhs, e.span, shrFn),
         }
     }
 
@@ -410,6 +415,24 @@ fn divFn(a: i64, b: i64) i64 {
 fn modFn(a: i64, b: i64) i64 {
     return @rem(a, b);
 }
+fn bitAndFn(a: i64, b: i64) i64 {
+    return a & b;
+}
+fn bitOrFn(a: i64, b: i64) i64 {
+    return a | b;
+}
+fn bitXorFn(a: i64, b: i64) i64 {
+    return a ^ b;
+}
+fn shlFn(a: i64, b: i64) i64 {
+    const amt: u6 = @intCast(@mod(b, 64));
+    return @bitCast(@as(u64, @bitCast(a)) << amt);
+}
+fn shrFn(a: i64, b: i64) i64 {
+    // Comptime `Int` is signed; use arithmetic shift right.
+    const amt: u6 = @intCast(@mod(b, 64));
+    return a >> amt;
+}
 fn ltFn(a: i64, b: i64) bool {
     return a < b;
 }
@@ -464,6 +487,11 @@ fn binaryOpText(op: ast.BinaryOp) []const u8 {
         .greater_equal => ">=",
         .logical_and => "&&",
         .logical_or => "||",
+        .bit_and => "&",
+        .bit_or => "|",
+        .bit_xor => "^",
+        .shift_left => "<<",
+        .shift_right => ">>",
     };
 }
 

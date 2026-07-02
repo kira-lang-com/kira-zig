@@ -422,6 +422,7 @@ fn fuseCmpLocalConstBranch(instructions: []const bytecode.Instruction, index: us
     const constant = instructions[index + 1].const_int;
     if (instructions[index + 2] != .compare) return null;
     const compare = instructions[index + 2].compare;
+    if (compare.unsigned) return null; // unsigned ordering stays unfused (signed-only fast path)
     if (instructions[index + 3] != .branch) return null;
     const branch = instructions[index + 3].branch;
     if (load.dst == constant.dst) return null;
@@ -524,6 +525,7 @@ fn fuseCompareConstBranch(instructions: []const bytecode.Instruction, index: usi
     const constant = instructions[index].const_int;
     if (instructions[index + 1] != .compare) return null;
     const compare = instructions[index + 1].compare;
+    if (compare.unsigned) return null; // unsigned ordering stays unfused (signed-only fast path)
     if (instructions[index + 2] != .branch) return null;
     const branch = instructions[index + 2].branch;
     if (compare.rhs != constant.dst or compare.lhs == constant.dst) return null;
@@ -545,6 +547,7 @@ fn fuseCompareConstBranch(instructions: []const bytecode.Instruction, index: usi
 fn fuseCompareBranch(instructions: []const bytecode.Instruction, index: usize, reads: []const u32) ?FuseResult {
     if (instructions[index] != .compare) return null;
     const compare = instructions[index].compare;
+    if (compare.unsigned) return null; // unsigned ordering stays unfused (signed-only fast path)
     if (instructions[index + 1] != .branch) return null;
     const branch = instructions[index + 1].branch;
     if (branch.condition != compare.dst) return null;
@@ -958,6 +961,7 @@ fn instructionReadsRegister(inst: bytecode.Instruction, register: u32) bool {
         .multiply => |value| return value.lhs == register or value.rhs == register,
         .divide => |value| return value.lhs == register or value.rhs == register,
         .modulo => |value| return value.lhs == register or value.rhs == register,
+        .bitwise => |value| return value.lhs == register or value.rhs == register,
         .convert => |value| return value.src == register,
         .compare => |value| return value.lhs == register or value.rhs == register,
         .unary => |value| return value.src == register,
@@ -1026,6 +1030,7 @@ fn registerWriteOf(inst: bytecode.Instruction) ?u32 {
         .multiply => |value| value.dst,
         .divide => |value| value.dst,
         .modulo => |value| value.dst,
+        .bitwise => |value| value.dst,
         .compare => |value| value.dst,
         .unary => |value| value.dst,
         .load_local => |value| value.dst,
@@ -1081,6 +1086,10 @@ fn countRegisterReads(allocator: std.mem.Allocator, instructions: []const byteco
                 bumpRead(reads, value.rhs);
             },
             .modulo => |value| {
+                bumpRead(reads, value.lhs);
+                bumpRead(reads, value.rhs);
+            },
+            .bitwise => |value| {
                 bumpRead(reads, value.lhs);
                 bumpRead(reads, value.rhs);
             },
