@@ -59,5 +59,11 @@ pub const ModuleMap = struct {
         module_root: []const u8,
         package_name: []const u8,
         source_root: []const u8,
+        // The owning package's declared `execution_mode` ("vm" / "hybrid" /
+        // "llvm" / ...). Hybrid builds use it as the package's execution
+        // DEFAULT: functions from packages declaring "llvm" or "native"
+        // compile native even without a per-function @Native annotation.
+        // Empty = no declaration (inherit the app's mode).
+        execution_mode: []const u8 = "",
     };
 };

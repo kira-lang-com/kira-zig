@@ -88,11 +88,13 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
         // emit a metadata-only stub instead of rejecting the program. The
         // hybrid/native paths resolve them through the native bridge and do not
         // need a bytecode entry.
-        if (function_decl.is_extern and resolved_execution == .native) {
+        if (function_decl.is_extern) {
+            // Foreign declarations carry no Kira body. The VM dispatches them
+            // through LibFFI via a metadata-only stub; hybrid/native resolve
+            // them through the native bridge and need no bytecode entry.
             if (mode == .vm) try functions.append(try externStub(allocator, function_decl));
             continue;
         }
-        if (mode == .vm and resolved_execution == .native) return error.NativeFunctionInVmBuild;
         if (resolved_execution == .native and mode == .hybrid_runtime) continue;
 
         var instructions = std.array_list.Managed(instruction.Instruction).init(allocator);
@@ -235,8 +237,15 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 .label => |value| try instructions.append(.{ .label = .{ .id = value.id } }),
                 .print => |value| try instructions.append(.{ .print = .{ .src = value.src, .ty = lowerTypeRef(value.ty) } }),
                 .call => |value| {
+                    const callee_decl = functionById(program, value.callee) orelse return error.UnknownFunction;
                     const callee_execution = functionExecutionById(program, value.callee) orelse return error.UnknownFunction;
-                    const resolved_callee_execution = resolveExecution(callee_execution, mode);
+                    // Extern callees always dispatch natively (the VM routes the
+                    // stub through LibFFI); resolveExecution's vm mapping of
+                    // @Native -> runtime applies only to Kira bodies.
+                    const resolved_callee_execution = if (callee_decl.is_extern)
+                        runtime_abi.FunctionExecution.native
+                    else
+                        resolveExecution(callee_execution, mode);
                     try instructions.append(switch (resolved_callee_execution) {
                         .runtime => .{ .call_runtime = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
                         .native => .{ .call_native = .{
@@ -366,6 +375,13 @@ fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: CompileMode)
         .inherited => switch (mode) {
             .vm => .runtime,
             .hybrid_runtime => .runtime,
+        },
+        // The VM is the reference interpreter: an @Native body is ordinary
+        // Kira (its direct FFI goes through LibFFI), so @Native acts as a
+        // native-compilation hint, not a VM-compatibility gate.
+        .native => switch (mode) {
+            .vm => .runtime,
+            .hybrid_runtime => .native,
         },
         else => execution,
     };

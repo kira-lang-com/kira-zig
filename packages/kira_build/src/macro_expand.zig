@@ -673,6 +673,38 @@ fn escapeKiraString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     return out.toOwnedSlice();
 }
 
+fn resolveKslBuiltinPath(allocator: std.mem.Allocator, source_path: []const u8, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+    if (source_path.len == 0) return allocator.dupe(u8, path);
+
+    const source_dir = std.fs.path.dirname(source_path) orelse return allocator.dupe(u8, path);
+    var current_dir = try allocator.dupe(u8, source_dir);
+    while (true) {
+        const candidate = try std.fs.path.join(allocator, &.{ current_dir, path });
+        const resolved = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, candidate, allocator) catch null;
+        allocator.free(candidate);
+        if (resolved) |value| {
+            allocator.free(current_dir);
+            return value;
+        }
+
+        const parent = std.fs.path.dirname(current_dir) orelse {
+            allocator.free(current_dir);
+            break;
+        };
+        if (parent.len == current_dir.len) {
+            allocator.free(current_dir);
+            break;
+        }
+
+        const next_dir = try allocator.dupe(u8, parent);
+        allocator.free(current_dir);
+        current_dir = next_dir;
+    }
+
+    return allocator.dupe(u8, path);
+}
+
 fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
     if (call.args.len != 1) {
         try exp.err("KMAC020", "ksl! expects one path argument", "The `ksl!` shader macro takes a single string-literal path to a .ksl file.", call.span, "wrong argument count", "Write `ksl!(\"Shaders/Name.ksl\")`.");
@@ -682,16 +714,17 @@ fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
         try exp.err("KMAC021", "ksl! path must be a string literal", "The `ksl!` argument must be a literal path known at compile time.", call.span, "not a string literal", "Pass a string literal, e.g. `ksl!(\"Shaders/Name.ksl\")`.");
         return null;
     };
+    const resolved_path = try resolveKslBuiltinPath(exp.allocator, call.span.source_path orelse "", path);
 
-    const msl = shader_pipeline.buildFileForTarget(exp.allocator, path, .msl) catch {
-        try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be read or compiled to MSL.", call.span, "shader compile failed", "Check the path (relative to the build working directory) and the .ksl source.");
+    const msl = shader_pipeline.buildFileForTarget(exp.allocator, resolved_path, .msl) catch {
+        try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be read or compiled to MSL.", call.span, "shader compile failed", "Check the path relative to the current source file or package root, and verify the .ksl source.");
         return null;
     };
-    const hlsl = shader_pipeline.buildFileForTarget(exp.allocator, path, .hlsl) catch {
+    const hlsl = shader_pipeline.buildFileForTarget(exp.allocator, resolved_path, .hlsl) catch {
         try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be compiled to HLSL.", call.span, "shader compile failed", "Check the .ksl source for constructs unsupported by the HLSL backend.");
         return null;
     };
-    const glsl = shader_pipeline.buildFileForTarget(exp.allocator, path, .glsl_330) catch {
+    const glsl = shader_pipeline.buildFileForTarget(exp.allocator, resolved_path, .glsl_330) catch {
         try exp.err("KMAC022", "ksl! failed to compile shader", "The KSL file could not be compiled to GLSL.", call.span, "shader compile failed", "Check the .ksl source for constructs unsupported by the GLSL backend.");
         return null;
     };

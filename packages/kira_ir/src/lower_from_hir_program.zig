@@ -374,6 +374,7 @@ pub fn markReachableExpr(
             try markReachableExpr(allocator, program, reachable, node.else_expr);
         },
         .unary => |node| try markReachableExpr(allocator, program, reachable, node.operand),
+        .cast => |node| try markReachableExpr(allocator, program, reachable, node.operand),
         .array => |node| for (node.elements) |element| try markReachableExpr(allocator, program, reachable, element),
         .index => |node| {
             try markReachableExpr(allocator, program, reachable, node.object);

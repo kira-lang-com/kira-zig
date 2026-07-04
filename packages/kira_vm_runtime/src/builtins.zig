@@ -60,8 +60,10 @@ fn valueMatchesTypeRef(value: runtime_abi.Value, ty: bytecode.TypeRef) bool {
 }
 
 const ArrayObject = extern struct {
+    // Mirrors ownership.zig ArrayObject (len, items, cap).
     len: usize,
     items: [*]runtime_abi.BridgeValue,
+    cap: usize,
 };
 
 fn findType(module: *const bytecode.Module, name: []const u8) ?bytecode.TypeDecl {
