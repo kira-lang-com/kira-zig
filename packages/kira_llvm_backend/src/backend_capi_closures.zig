@@ -72,6 +72,32 @@ pub fn lowerCallValue(fc: *FunctionCodegen, v: ir.CallValue) !void {
     }
     for (v.args, 0..) |arg, index| args[index + 1] = fc.registers[arg];
     const result = api.LLVMBuildCall2(b, decl.fn_ty, decl.fn_value, args.ptr, @intCast(args.len), "");
+    // HYBRID: a call-value reaching its callee marshals owned/move AGGREGATE args across the
+    // dispatcher, and the callee takes ownership of their nested heap and frees it — a VM
+    // closure frees the bridge-shared storage, and a native closure body drops its owned
+    // struct/array param at exit. The native caller must therefore relinquish these args, or
+    // the same nested storage is freed twice: once by the callee, once by native scope-exit
+    // cleanup. (Native mode already hands struct args over via moveOrCloneToHeap above.) Only
+    // ffi_struct/array carry heap contents that double-free; enums are Copy across the
+    // boundary and closure/raw args are borrow-passed by the dispatcher, so both stay tracked
+    // (escaping them would leak — nothing else frees them). This is the `Graphics { backend:
+    // GraphicsBackend.Metal }` moved into onInit/onFrame/onCleanup that aborted the Metal
+    // backend's hybrid app on exit (POINTER_BEING_FREED_WAS_NOT_ALLOCATED: the backend enum
+    // freed by the closure, then again by kira_release_contents_Graphics at scope exit).
+    if (fc.drop_enabled and fc.request.mode == .hybrid) {
+        for (v.args, 0..) |arg, i| {
+            const mode = if (i < v.param_ownership.len) v.param_ownership[i] else ir.OwnershipMode.owned;
+            switch (mode) {
+                .owned, .move => {},
+                else => continue,
+            }
+            const kind = if (arg < fc.register_types.len) fc.register_types[arg].kind else continue;
+            switch (kind) {
+                .ffi_struct, .array => drop.onEscape(fc, arg),
+                else => {},
+            }
+        }
+    }
     // Other argument kinds are intentionally NOT drop-escaped here. The call_value dispatcher
     // does not run a callee owned-param drop for them (e.g. a closure passed by value), so
     // escaping would leak — nothing would free it. The caller keeps ownership (borrow-pass);
