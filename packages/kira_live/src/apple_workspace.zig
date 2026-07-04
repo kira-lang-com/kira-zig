@@ -363,7 +363,8 @@ fn buildNativeArch(allocator: std.mem.Allocator, base_target: live.ResolvedLiveT
     // frame) defined in runtime_helpers.c. Compile them for this arch and link them in,
     // mirroring linkExecutable's whole-program native path.
     const helper_object = llvm_backend.link.buildRuntimeHelpersObject(allocator, object_path, false, selector) catch return error.LiveBundleBuildFailed;
-    const ldflags = try buildNativeLdflags(allocator, object_path, helper_object, compiled.native_libraries);
+    const dynamic_ffi_object = llvm_backend.link.buildDynamicFfiHelpersObject(allocator, object_path, false, selector) catch return error.LiveBundleBuildFailed;
+    const ldflags = try buildNativeLdflags(allocator, object_path, helper_object, dynamic_ffi_object, compiled.native_libraries);
     return .{ .bundles = null, .ldflags = ldflags, .output_root = arch_out };
 }
 
@@ -371,6 +372,7 @@ fn buildNativeLdflags(
     allocator: std.mem.Allocator,
     object_path: []const u8,
     helper_object: []const u8,
+    dynamic_ffi_object: []const u8,
     native_libraries: []const native.ResolvedNativeLibrary,
 ) ![]const u8 {
     var out = std.array_list.Managed(u8).init(allocator);
@@ -378,6 +380,8 @@ fn buildNativeLdflags(
     try out.appendSlice(object_path);
     try out.appendSlice("\", \"");
     try out.appendSlice(helper_object);
+    try out.appendSlice("\", \"");
+    try out.appendSlice(dynamic_ffi_object);
     try out.appendSlice("\"");
     for (native_libraries) |library| {
         try out.appendSlice(", \"");
@@ -404,7 +408,8 @@ fn buildArch(allocator: std.mem.Allocator, base_target: live.ResolvedLiveTarget,
     const selector = try native.TargetSelector.parse(allocator, arch.native_selector);
     const bundles = try live.buildBundles(allocator, arch_target, selector, true);
     const support_lib = try buildSupportArchive(allocator, work_root, arch);
-    const ldflags = try buildLdflags(allocator, support_lib, bundles.main_native_object_path, bundles.main_native_libraries);
+    const dynamic_ffi_object = llvm_backend.link.buildDynamicFfiHelpersObject(allocator, bundles.main_native_object_path, false, selector) catch return error.LiveBundleBuildFailed;
+    const ldflags = try buildLdflags(allocator, support_lib, bundles.main_native_object_path, dynamic_ffi_object, bundles.main_native_libraries);
     return .{ .bundles = bundles, .ldflags = ldflags, .output_root = arch_target.output_root };
 }
 
@@ -450,6 +455,7 @@ fn buildLdflags(
     allocator: std.mem.Allocator,
     support_lib: []const u8,
     native_object: []const u8,
+    dynamic_ffi_object: []const u8,
     native_libraries: []const native.ResolvedNativeLibrary,
 ) ![]const u8 {
     var out = std.array_list.Managed(u8).init(allocator);
@@ -457,6 +463,8 @@ fn buildLdflags(
     try out.appendSlice(support_lib);
     try out.appendSlice("\", \"");
     try out.appendSlice(native_object);
+    try out.appendSlice("\", \"");
+    try out.appendSlice(dynamic_ffi_object);
     try out.appendSlice("\"");
     for (native_libraries) |library| {
         try out.appendSlice(", \"");
