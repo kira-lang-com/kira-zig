@@ -56,6 +56,12 @@ typedef struct {
 typedef struct {
     size_t len;
     KiraBridgeValue *items;
+    /* Capacity of the `items` allocation, in elements. Invariant shared with the
+     * VM heap (ownership.zig): the items buffer is always exactly max(cap, 1)
+     * elements, len <= cap. Appends grow geometrically through `cap`, replacing
+     * the old grow-by-one realloc that made building an n-element array O(n^2)
+     * memcpy (the dominant native-frame cost in dense UI trees). */
+    size_t cap;
 } KiraArray;
 
 /* Native-backend native-state token. These three fields are the C-ABI prefix shared with
@@ -72,6 +78,7 @@ typedef struct {
 
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
 static void *(*kira_array_alloc_fn)(size_t) = NULL;
+static void (*kira_closure_destroy_fn)(uintptr_t) = NULL;
 static void (*kira_array_free_fn)(void *, size_t) = NULL;
 static void (*kira_live_first_frame_hook)(void) = NULL;
 static void (*kira_live_log_hook)(const char*) = NULL;
@@ -129,6 +136,7 @@ static void kira_array_repair_invalid_storage(KiraArray *array) {
         kira_trace_log("NATIVE", "ARRAY_REPAIR", "items=%p len=%llu", (void *)array->items, (unsigned long long)array->len);
         array->items = NULL;
         array->len = 0;
+        array->cap = 0;
     }
 }
 
@@ -155,6 +163,17 @@ static int kira_array_is_active(const KiraArray *array) {
 
 KIRA_BRIDGE_EXPORT void kira_set_execution_trace_enabled(uint8_t enabled) {
     kira_trace_execution_enabled = enabled != 0 ? 1 : 0;
+}
+
+/*
+ * Hybrid closure teardown: runtime-exported closure blocks are allocated by the
+ * VM allocator (exportRuntimeClosureToNative) and tracked VM-side, so a native
+ * drop must hand them back to the runtime instead of calling libc free (which
+ * traps on the smp pointer and would double-free at VM deinit). The hook
+ * receives the UNTAGGED block pointer.
+ */
+KIRA_BRIDGE_EXPORT void kira_hybrid_install_closure_destroy(void (*destroy_fn)(uintptr_t)) {
+    kira_closure_destroy_fn = destroy_fn;
 }
 
 KIRA_BRIDGE_EXPORT void kira_hybrid_install_array_allocator(void *(*alloc_fn)(size_t), void (*free_fn)(void *, size_t)) {
@@ -271,6 +290,7 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
     KiraArray *array = (KiraArray *)kira_bridge_alloc(sizeof(KiraArray));
     if (array == NULL) return NULL;
     array->len = (size_t)len;
+    array->cap = array->len;
     array->items = array->len == 0 ? NULL : (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
     return array;
 }
@@ -290,13 +310,15 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_clone(const KiraArray *array, void *(*c
     KiraArray *copy = (KiraArray *)kira_bridge_alloc(sizeof(KiraArray));
     if (copy == NULL) return NULL;
     copy->len = array->len;
+    copy->cap = array->len;
     if (array->len == 0 || array->items == NULL || kira_bridge_probably_invalid_pointer(array->items)) {
         copy->len = array->len;
+        copy->cap = 0;
         copy->items = NULL;
         return copy;
     }
     copy->items = (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
-    if (copy->items == NULL) { copy->len = 0; return copy; }
+    if (copy->items == NULL) { copy->len = 0; copy->cap = 0; return copy; }
     for (size_t i = 0; i < array->len; i++) {
         copy->items[i] = array->items[i];
         if (clone_elem != NULL && array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
@@ -406,6 +428,10 @@ KIRA_BRIDGE_EXPORT void kira_destroy_closure(uintptr_t value) {
     void *ptr = (void *)(value & 0x7FFFFFFFFFFFFFFFULL); /* clear the closure tag bit */
     uintptr_t bits = (uintptr_t)ptr;
     if (bits < 0x1000 || (bits & 0x7) != 0) return; /* not a heap-allocated block */
+    if (kira_closure_destroy_fn != NULL) {
+        kira_closure_destroy_fn(bits);
+        return;
+    }
     free(ptr);
 }
 
@@ -413,16 +439,25 @@ KIRA_BRIDGE_EXPORT void kira_array_append(KiraArray *array, const KiraBridgeValu
     if (!kira_array_is_active(array)) return;
     kira_array_repair_invalid_storage(array);
     if (array == NULL || value == NULL) return;
-    size_t next_len = array->len + 1;
-    KiraBridgeValue *next_items = (KiraBridgeValue *)kira_bridge_alloc(next_len * sizeof(KiraBridgeValue));
+    if (array->items != NULL && array->len < array->cap) {
+        array->items[array->len] = *value;
+        array->len = array->len + 1;
+        return;
+    }
+    size_t next_cap = array->cap < 4 ? 4 : array->cap * 2;
+    if (next_cap < array->len + 1) next_cap = array->len + 1;
+    KiraBridgeValue *next_items = (KiraBridgeValue *)kira_bridge_alloc(next_cap * sizeof(KiraBridgeValue));
     if (next_items == NULL) return;
     if (array->items != NULL && array->len != 0) {
         memcpy(next_items, array->items, array->len * sizeof(KiraBridgeValue));
-        kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
+    }
+    if (array->items != NULL) {
+        kira_bridge_free(array->items, (array->cap == 0 ? array->len : array->cap) * sizeof(KiraBridgeValue));
     }
     array->items = next_items;
+    array->cap = next_cap;
     array->items[array->len] = *value;
-    array->len = next_len;
+    array->len = array->len + 1;
 }
 
 KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, KiraBridgeValue *out_value) {
@@ -480,7 +515,7 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
             }
         }
     }
-    kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
+    kira_bridge_free(array->items, (array->cap == 0 ? array->len : array->cap) * sizeof(KiraBridgeValue));
     kira_bridge_free(array, sizeof(KiraArray));
     return;
 #else

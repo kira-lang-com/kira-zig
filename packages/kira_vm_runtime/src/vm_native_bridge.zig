@@ -130,6 +130,7 @@ pub fn copyArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array_
     object.* = .{
         .len = source.len,
         .items = items.ptr,
+        .cap = @max(source.len, 1),
     };
     recordNativeArrayAlloc(self);
     errdefer destroyArrayNativeLayout(self, module, array_ty, @intFromPtr(object));
@@ -162,6 +163,7 @@ pub fn copyArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, arra
     object.* = .{
         .len = source.len,
         .items = items.ptr,
+        .cap = @max(source.len, 1),
     };
     return try self.heap.registerArray(object);
 }
@@ -192,13 +194,14 @@ pub fn writeArrayToNativeLayout(self: *Vm, module: *const bytecode.Module, array
         initialized += 1;
     }
 
-    const old_items = destination.items[0..@max(destination.len, 1)];
+    const old_items = destination.items[0..@max(destination.cap, 1)];
     for (old_items[0..destination.len]) |item| {
         destroyNativeLayoutValueWithOwner(self, module, element_ty, runtime_abi.bridgeValueToValue(item), .vm);
     }
     self.allocator.free(old_items);
     destination.len = source.len;
     destination.items = items.ptr;
+    destination.cap = @max(source.len, 1);
 }
 
 pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, runtime_array_ptr: usize, native_array_ptr: usize) anyerror!void {
@@ -219,11 +222,12 @@ pub fn syncArrayFromNativeLayout(self: *Vm, module: *const bytecode.Module, arra
         initialized += 1;
     }
 
-    const old_items = destination.items[0..@max(destination.len, 1)];
+    const old_items = destination.items[0..@max(destination.cap, 1)];
     for (old_items[0..destination.len]) |item| self.heap.dropValue(runtime_abi.bridgeValueToValue(item));
     self.allocator.free(old_items);
     destination.len = source.len;
     destination.items = items.ptr;
+    destination.cap = @max(source.len, 1);
 }
 
 pub fn syncStructFromNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize, native_ptr: usize) !void {
@@ -242,7 +246,7 @@ pub fn destroyOwnedArrayNativeLayout(self: *Vm, module: *const bytecode.Module, 
 fn destroyArrayNativeLayoutWithOwner(self: *Vm, module: *const bytecode.Module, array_ty: bytecode.TypeRef, native_array_ptr: usize, owner: NativeLayoutOwner) void {
     if (native_array_ptr == 0) return;
     const object: *ArrayObject = @ptrFromInt(native_array_ptr);
-    const items = object.items[0..@max(object.len, 1)];
+    const items = object.items[0..@max(object.cap, 1)];
     const element_ty = self.arrayElementType(module, array_ty) catch .{ .kind = .raw_ptr };
     // Elements keep the per-value `owner`: a native-owned array holds native-owned
     // elements (e.g. `kira_struct_alloc`'d struct elements with their 8-byte header),

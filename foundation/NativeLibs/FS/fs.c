@@ -1,5 +1,6 @@
 #include "fs.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -320,6 +321,53 @@ bool fs_file_exists(const char* path) {
 #else
     struct stat info;
     return stat(path, &info) == 0 && S_ISREG(info.st_mode);
+#endif
+}
+
+// True when `path` exists as ANY entry (file, directory, symlink, …), unlike
+// fs_file_exists which is regular-file-only.
+bool fs_path_exists(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat info;
+    return stat(path, &info) == 0;
+#endif
+}
+
+// True when `path` exists and is a directory.
+bool fs_is_directory(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat info;
+    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+#endif
+}
+
+// Create a single directory. Succeeds if it already exists (idempotent); does
+// NOT create intermediate parents.
+bool fs_make_directory(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    if (CreateDirectoryA(path, NULL)) {
+        return true;
+    }
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+#else
+    if (mkdir(path, 0755) == 0) {
+        return true;
+    }
+    return errno == EEXIST;
 #endif
 }
 
