@@ -245,6 +245,26 @@ pub const Vm = struct {
         };
     }
 
+    // Release ONE runtime-exported closure block early (a native drop of an owned
+    // closure parameter). The block and its retained captures are VM-owned; a
+    // libc free from native code would trap on the smp pointer and the deinit
+    // sweep would then double-free. Unknown pointers are native-side closure
+    // blocks (malloc'd by generated code) and go back to libc.
+    pub fn releaseExportedNativeClosure(self: *Vm, native_ptr: usize) void {
+        for (self.exported_native_closures.items, 0..) |exported, index| {
+            if (exported.native_ptr != native_ptr) continue;
+            const byte_len = 16 + exported.captures.len * @sizeOf(runtime_abi.BridgeValue);
+            const word_count = @max(1, std.math.divCeil(usize, byte_len, @sizeOf(u64)) catch unreachable);
+            for (exported.captures) |capture| self.heap.dropValue(capture);
+            self.allocator.free(exported.captures);
+            const words: [*]u64 = @ptrFromInt(exported.native_ptr);
+            self.allocator.free(words[0..word_count]);
+            _ = self.exported_native_closures.swapRemove(index);
+            return;
+        }
+        std.c.free(@ptrFromInt(native_ptr));
+    }
+
     pub fn deinit(self: *Vm) void {
         for (self.exported_native_closures.items) |exported| {
             for (exported.captures) |capture| self.heap.dropValue(capture);
@@ -618,6 +638,7 @@ pub const Vm = struct {
         object.* = .{
             .len = len,
             .items = items.ptr,
+            .cap = if (len == 0) 1 else len,
         };
         return self.heap.registerArray(object);
     }
