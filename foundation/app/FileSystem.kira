@@ -78,6 +78,26 @@ function fileExists(path: borrow String) -> Bool {
     return fs_file_exists(path)
 }
 
+// True when `path` exists as any entry (file, directory, symlink); use over
+// fileExists when a directory should also count.
+@Native
+function pathExists(path: borrow String) -> Bool {
+    return fs_path_exists(path)
+}
+
+// True when `path` exists and is a directory.
+@Native
+function isDirectory(path: borrow String) -> Bool {
+    return fs_is_directory(path)
+}
+
+// Create a single directory (idempotent; does not create parents). Returns
+// whether the directory exists afterward.
+@Native
+function makeDirectory(path: borrow String) -> Bool {
+    return fs_make_directory(path)
+}
+
 @Native
 function fileSize(path: borrow String) -> U64 {
     return fs_file_size(path)
