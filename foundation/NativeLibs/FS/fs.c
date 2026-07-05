@@ -1,6 +1,7 @@
 #include "fs.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -397,6 +398,87 @@ void fs_free_buffer(const char* buffer) {
     if (buffer != NULL && buffer[0] != '\0') {
         free((void*)buffer);
     }
+}
+
+// Rename/move a path. On success the old path no longer exists and new_path
+// names the same file/directory. Existing new_path is replaced.
+bool fs_rename_path(const char* old_path, const char* new_path) {
+    if (old_path == NULL || new_path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    return MoveFileExA(old_path, new_path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    return rename(old_path, new_path) == 0;
+#endif
+}
+
+// Recursively delete a file or directory (directories are emptied first).
+bool fs_remove_path(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    WIN32_FIND_DATAA data;
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        size_t plen = strlen(path);
+        char* pattern = (char*)malloc(plen + 3);
+        if (pattern == NULL) {
+            return false;
+        }
+        snprintf(pattern, plen + 3, "%s\\*", path);
+        HANDLE h = FindFirstFileA(pattern, &data);
+        free(pattern);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+                    continue;
+                }
+                size_t clen = plen + 1 + strlen(data.cFileName) + 1;
+                char* child = (char*)malloc(clen);
+                if (child != NULL) {
+                    snprintf(child, clen, "%s\\%s", path, data.cFileName);
+                    fs_remove_path(child);
+                    free(child);
+                }
+            } while (FindNextFileA(h, &data));
+            FindClose(h);
+        }
+        return RemoveDirectoryA(path) != 0;
+    }
+    return DeleteFileA(path) != 0;
+#else
+    struct stat info;
+    if (lstat(path, &info) != 0) {
+        return false;
+    }
+    if (S_ISDIR(info.st_mode)) {
+        DIR* dir = opendir(path);
+        if (dir != NULL) {
+            struct dirent* entry;
+            size_t plen = strlen(path);
+            while ((entry = readdir(dir)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                    continue;
+                }
+                size_t clen = plen + 1 + strlen(entry->d_name) + 1;
+                char* child = (char*)malloc(clen);
+                if (child != NULL) {
+                    snprintf(child, clen, "%s/%s", path, entry->d_name);
+                    fs_remove_path(child);
+                    free(child);
+                }
+            }
+            closedir(dir);
+        }
+        return rmdir(path) == 0;
+    }
+    return unlink(path) == 0;
+#endif
 }
 
 static bool fs_listing_add(fs_directory_listing* listing, const char* name) {
