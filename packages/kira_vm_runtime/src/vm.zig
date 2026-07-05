@@ -466,6 +466,10 @@ pub const Vm = struct {
         return native_bridge.recoverNativeState(self, module, type_name, state_token, expected_type_id);
     }
 
+    pub fn freeNativeState(self: *Vm, state_token: usize) void {
+        native_bridge.freeNativeState(self, state_token);
+    }
+
     pub fn materializeCallbackValueFromNative(self: *Vm, module: *const bytecode.Module, ty: bytecode.TypeRef, value: runtime_abi.Value) anyerror!runtime_abi.Value {
         return native_bridge.materializeCallbackValueFromNative(self, module, ty, value);
     }
