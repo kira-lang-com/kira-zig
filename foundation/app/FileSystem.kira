@@ -99,6 +99,16 @@ function makeDirectory(path: borrow String) -> Bool {
 }
 
 @Native
+function renamePath(oldPath: borrow String, newPath: borrow String) -> Bool {
+    return fs_rename_path(oldPath, newPath)
+}
+
+@Native
+function removePath(path: borrow String) -> Bool {
+    return fs_remove_path(path)
+}
+
+@Native
 function fileSize(path: borrow String) -> U64 {
     return fs_file_size(path)
 }

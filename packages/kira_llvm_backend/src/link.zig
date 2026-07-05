@@ -51,6 +51,7 @@ fn compileHelperSource(
     // .codex/work/reports/array-registry-leak-and-promotion.md §7f/§7j. Complete
     // the clone coverage, validate the liquid-glass example under `leaks`, then
     // enable via `try argv.append("-DKIRA_ARRAY_OWNERSHIP_FREE=1")` here.
+    if (std.c.getenv("KIRA_ARRAY_OWNERSHIP_FREE_DEV") != null) try argv.append("-DKIRA_ARRAY_OWNERSHIP_FREE=1");
     try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
     try runCommand(allocator, argv.items);
 }

@@ -172,6 +172,22 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                         else => continue,
                     }
                     const pt = if (i < callee_decl.param_types.len) callee_decl.param_types[i] else continue;
+                    // A borrowed array (field read / borrow param) passed to an
+                    // owned/move array parameter: the callee owns its parameter and
+                    // frees it at exit, so hand it an independent deep clone — passing
+                    // the raw pointer would free storage the caller's field still
+                    // references (the popClip clipStack double-free). An owned source
+                    // is escaped after the call by the loop below, so it moves as-is.
+                    if (pt.kind == .array) {
+                        if (!drop.isOwned(fc, arg)) {
+                            const sptr = api.LLVMBuildIntToPtr(fc.builder, fc.registers[arg], fc.types.ptr_ty, "call.arr.src");
+                            const elem = fc.dtors.elementClone(fc.request.program.programPtr(), pt);
+                            var cargs = [_]llvm.c.LLVMValueRef{ sptr, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
+                            const clone = api.LLVMBuildCall2(fc.builder, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "call.arr.clone");
+                            fc.registers[arg] = api.LLVMBuildPtrToInt(fc.builder, clone, fc.types.i64, "call.arr.cloneint");
+                        }
+                        continue;
+                    }
                     if (pt.kind != .ffi_struct) continue;
                     const name = pt.name orelse continue;
                     if (fc.dtors.map.get(name) == null) continue;
