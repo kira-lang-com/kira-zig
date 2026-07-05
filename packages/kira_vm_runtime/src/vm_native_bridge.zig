@@ -434,6 +434,21 @@ pub fn destroyMaterializedNativeStatePayload(self: *Vm, runtime_payload_ptr: usi
     self.allocator.free(runtime_payload[0..field_count]);
 }
 
+/// Releases one VM-allocated native-state box (`nativeStateFree`). Unknown
+/// tokens are ignored: they either belong to the native backend (hybrid) or
+/// are raw payload views, and neither is this allocator's to free.
+pub fn freeNativeState(self: *Vm, state_token: usize) void {
+    if (!self.native_state_boxes.remove(state_token)) return;
+    const box: *NativeStateBox = @ptrFromInt(state_token);
+    if (box.payload != 0) {
+        destroyNativeStatePayload(self, box.module, box.typeName(), box.payload);
+    }
+    if (box.runtime_payload != 0) {
+        destroyMaterializedNativeStatePayload(self, box.runtime_payload, box.field_count);
+    }
+    self.allocator.destroy(box);
+}
+
 pub fn deinitTrackedNativeStates(self: *Vm) void {
     var iterator = self.native_state_boxes.iterator();
     while (iterator.next()) |entry| {

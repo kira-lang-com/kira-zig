@@ -8,6 +8,7 @@ pub const array_load = "kira_array_load";
 pub const native_state_alloc = "kira_native_state_alloc";
 pub const native_state_payload = "kira_native_state_payload";
 pub const native_state_recover = "kira_native_state_recover";
+pub const native_state_free = "kira_native_state_free";
 pub const struct_alloc = "kira_struct_alloc";
 pub const struct_type_id = "kira_struct_type_id";
 pub const struct_free = "kira_struct_free";

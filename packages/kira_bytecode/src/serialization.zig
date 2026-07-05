@@ -21,7 +21,7 @@ const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBC8");
+    try writer.writeAll("KBC9");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -237,6 +237,9 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writeString(writer, value.type_name);
                     try writer.writeInt(u64, value.type_id, .little);
                 },
+                .free_native_state => |value| {
+                    try writer.writeInt(u32, value.state, .little);
+                },
                 .native_state_field_get => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.state, .little);
@@ -358,8 +361,11 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // (unsigned integer division/remainder/ordering). Older containers omit it and
     // default to signed, matching their original behavior.
     const is_kbc8 = std.mem.eql(u8, &magic, "KBC8");
-    const has_unsigned_arith = is_kbc8;
-    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8;
+    // KBC9 is KBC8 plus the appended `free_native_state` opcode (`nativeStateFree`);
+    // container layout and every feature flag are otherwise identical to KBC8.
+    const is_kbc9 = std.mem.eql(u8, &magic, "KBC9");
+    const has_unsigned_arith = is_kbc8 or is_kbc9;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -656,6 +662,9 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .state = try reader.takeInt(u32, .little),
                     .type_name = try readString(allocator, reader),
                     .type_id = try reader.takeInt(u64, .little),
+                } }),
+                .free_native_state => try instructions.append(.{ .free_native_state = .{
+                    .state = try reader.takeInt(u32, .little),
                 } }),
                 .native_state_field_get => try instructions.append(.{ .native_state_field_get = .{
                     .dst = try reader.takeInt(u32, .little),

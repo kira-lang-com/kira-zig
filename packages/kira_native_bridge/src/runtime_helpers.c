@@ -562,6 +562,20 @@ KIRA_BRIDGE_EXPORT void *kira_native_state_payload(KiraNativeState *state) {
     return state->payload;
 }
 
+/* Shallow free of a native-backend native-state token (`nativeStateFree`).
+ * Frees the payload byte buffer and the token itself; interior heap values
+ * (arrays/strings copied into the payload) stay governed by the array/string
+ * ownership model. `runtime_payload` is VM-owned metadata and is never set on
+ * native-allocated tokens, so it is not touched here. Outstanding
+ * `nativeRecover` views into this state become dangling — freeing is the
+ * caller's declaration that no views survive. */
+KIRA_BRIDGE_EXPORT void kira_native_state_free(KiraNativeState *state) {
+    if (state == NULL) return;
+    free(state->payload);
+    state->payload = NULL;
+    free(state);
+}
+
 KIRA_BRIDGE_EXPORT void *kira_native_state_recover(void *user_data, uint64_t expected_type_id) {
     KiraNativeState *state = (KiraNativeState *)user_data;
     if (state == NULL) {
