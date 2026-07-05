@@ -705,6 +705,7 @@ const FunctionAnalysis = struct {
             .native_state_field_set,
             .recover_native_state,
             .alloc_native_state,
+            .free_native_state,
             .const_closure,
             => true,
             else => false,
@@ -969,6 +970,7 @@ fn instructionReadsRegister(inst: bytecode.Instruction, register: u32) bool {
         .subobject_ptr => |value| return value.base == register,
         .field_ptr => |value| return value.base == register,
         .recover_native_state => |value| return value.state == register,
+        .free_native_state => |value| return value.state == register,
         .native_state_field_get => |value| return value.state == register,
         .native_state_field_set => |value| return value.state == register or value.src == register,
         .c_string_to_string => |value| return value.src == register,
@@ -1104,6 +1106,7 @@ fn countRegisterReads(allocator: std.mem.Allocator, instructions: []const byteco
             .subobject_ptr => |value| bumpRead(reads, value.base),
             .field_ptr => |value| bumpRead(reads, value.base),
             .recover_native_state => |value| bumpRead(reads, value.state),
+            .free_native_state => |value| bumpRead(reads, value.state),
             .native_state_field_get => |value| bumpRead(reads, value.state),
             .native_state_field_set => |value| {
                 bumpRead(reads, value.state);

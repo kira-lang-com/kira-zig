@@ -89,6 +89,41 @@ test "round-trips function constants" {
     try std.testing.expectEqual(@as(u32, 42), round_tripped.functions[0].instructions[0].const_function.function_id);
 }
 
+test "round-trips free_native_state (KBC9 appended opcode)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .types = &.{},
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 2,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
+                    .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 9 } },
+                    .{ .free_native_state = .{ .state = 1 } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    var bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer bytes.deinit();
+    try serialize(&bytes.writer, module);
+
+    const round_tripped = try deserialize(allocator, bytes.written());
+    try std.testing.expect(round_tripped.functions[0].instructions[2] == .free_native_state);
+    try std.testing.expectEqual(@as(u32, 1), round_tripped.functions[0].instructions[2].free_native_state.state);
+}
+
 test "round-trips foreign FFI metadata for VM direct dispatch" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

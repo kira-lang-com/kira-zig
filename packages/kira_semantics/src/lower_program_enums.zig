@@ -299,6 +299,7 @@ fn registerExpr(ctx: *shared.Context, expr: *syntax.ast.Expr) anyerror!void {
         .struct_literal => |node| for (node.fields) |field| try registerExpr(ctx, field.value),
         .native_state => |node| try registerExpr(ctx, node.value),
         .native_user_data => |node| try registerExpr(ctx, node.state),
+        .native_state_free => |node| try registerExpr(ctx, node.state),
         .native_recover => |node| {
             try registerTypeExpr(ctx, node.state_type.*);
             try registerExpr(ctx, node.value);
@@ -417,6 +418,7 @@ fn enumDefaultSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .native_state => |node| node.span,
         .native_user_data => |node| node.span,
         .native_recover => |node| node.span,
+        .native_state_free => |node| node.span,
         .ownership => |node| node.span,
         .unary => |node| node.span,
         .binary => |node| node.span,

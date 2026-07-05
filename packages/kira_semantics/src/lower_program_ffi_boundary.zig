@@ -106,6 +106,7 @@ fn findDirectFfiUseInExpr(
         .native_state => |node| return findDirectFfiUseInExpr(node.value.*, function_headers),
         .native_user_data => |node| return findDirectFfiUseInExpr(node.state.*, function_headers),
         .native_recover => |node| return findDirectFfiUseInExpr(node.value.*, function_headers),
+        .native_state_free => |node| return findDirectFfiUseInExpr(node.state.*, function_headers),
         .binary => |node| {
             if (findDirectFfiUseInExpr(node.lhs.*, function_headers)) |use| return use;
             if (findDirectFfiUseInExpr(node.rhs.*, function_headers)) |use| return use;
