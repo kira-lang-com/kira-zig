@@ -41,10 +41,16 @@ static char* fs_strdup_local(const char* text) {
     return copy;
 }
 
+/* Shared static empty payload. Every non-heap `data` the fs API hands out is
+ * exactly this pointer, so fs_free_buffer can tell "nothing to free" apart from
+ * a heap buffer that happens to hold an empty string (an empty file reads as a
+ * malloc'd "\0" buffer that must still be freed). */
+static const char fs_empty_string[] = "";
+
 static fs_read_result fs_empty_result(void) {
     fs_read_result result;
     result.ok = false;
-    result.data = "";
+    result.data = fs_empty_string;
     result.size = 0;
     return result;
 }
@@ -52,7 +58,7 @@ static fs_read_result fs_empty_result(void) {
 static fs_read_result fs_buffer_result(char* data, uint64_t size) {
     fs_read_result result;
     result.ok = data != NULL;
-    result.data = data == NULL ? "" : data;
+    result.data = data == NULL ? fs_empty_string : data;
     result.size = data == NULL ? 0 : size;
     return result;
 }
@@ -395,7 +401,10 @@ uint64_t fs_file_size(const char* path) {
 }
 
 void fs_free_buffer(const char* buffer) {
-    if (buffer != NULL && buffer[0] != '\0') {
+    /* Compare against the shared sentinel, not buffer contents: a successful
+     * read of an empty file returns a heap-allocated "\0" buffer, and the old
+     * `buffer[0] != '\0'` guard leaked it on every empty-file read. */
+    if (buffer != NULL && buffer != fs_empty_string) {
         free((void*)buffer);
     }
 }
@@ -558,11 +567,11 @@ int fs_directory_count(void* listing_handle) {
 
 const char* fs_directory_entry(void* listing_handle, int index) {
     if (listing_handle == NULL) {
-        return "";
+        return fs_empty_string;
     }
     fs_directory_listing* listing = (fs_directory_listing*)listing_handle;
     if (index < 0 || index >= listing->count) {
-        return "";
+        return fs_empty_string;
     }
     return listing->entries[index];
 }

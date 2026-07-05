@@ -14,11 +14,13 @@ struct File {
 
     @Native
     function readAll() -> FileContents {
+        let raw = fs_read_all_text_from_handle(handle)
         let contents = FileContents {
             ok: fs_is_open(handle)
-            text: fs_read_all_text_from_handle(handle)
+            text: raw
             size: fs_file_handle_size(handle)
         }
+        fs_free_buffer(raw)
         return contents
     }
 
