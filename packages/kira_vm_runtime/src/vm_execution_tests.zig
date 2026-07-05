@@ -614,6 +614,7 @@ test "array_get materializes native construct-any elements for virtual dispatch"
     native_array.* = .{
         .len = 1,
         .items = native_items.ptr,
+        .cap = 1,
     };
 
     var discard_buffer: [1]u8 = undefined;
