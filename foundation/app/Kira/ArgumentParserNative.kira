@@ -37,11 +37,15 @@ function argumentHasInlineValue(token: borrow String) -> Bool {
 @Native
 function argumentOptionName(token: borrow String) -> String {
     let value = kap_option_name(token)
-    return value
+    let name: String = value
+    kap_free_string(value)
+    return name
 }
 
 @Native
 function argumentInlineValue(token: borrow String) -> String {
     let value = kap_inline_value(token)
-    return value
+    let inline_value: String = value
+    kap_free_string(value)
+    return inline_value
 }
