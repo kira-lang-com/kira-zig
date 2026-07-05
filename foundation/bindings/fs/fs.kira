@@ -98,15 +98,6 @@ function fs_directory_entry(listing: RawPtr, index: I32): CString;
 @FFI.Extern { library: fs; symbol: fs_file_exists; abi: c; }
 function fs_file_exists(path: CString): CBool;
 
-@FFI.Extern { library: fs; symbol: fs_path_exists; abi: c; }
-function fs_path_exists(path: CString): CBool;
-
-@FFI.Extern { library: fs; symbol: fs_is_directory; abi: c; }
-function fs_is_directory(path: CString): CBool;
-
-@FFI.Extern { library: fs; symbol: fs_make_directory; abi: c; }
-function fs_make_directory(path: CString): CBool;
-
 @FFI.Extern { library: fs; symbol: fs_file_handle_size; abi: c; }
 function fs_file_handle_size(handle: RawPtr): U64;
 
@@ -119,14 +110,23 @@ function fs_free_buffer(buffer: CString): Void;
 @FFI.Extern { library: fs; symbol: fs_free_directory_listing; abi: c; }
 function fs_free_directory_listing(listing: RawPtr): Void;
 
+@FFI.Extern { library: fs; symbol: fs_is_directory; abi: c; }
+function fs_is_directory(path: CString): CBool;
+
 @FFI.Extern { library: fs; symbol: fs_is_open; abi: c; }
 function fs_is_open(handle: RawPtr): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_list_directory; abi: c; }
 function fs_list_directory(path: CString): RawPtr;
 
+@FFI.Extern { library: fs; symbol: fs_make_directory; abi: c; }
+function fs_make_directory(path: CString): CBool;
+
 @FFI.Extern { library: fs; symbol: fs_open_read; abi: c; }
 function fs_open_read(path: CString): RawPtr;
+
+@FFI.Extern { library: fs; symbol: fs_path_exists; abi: c; }
+function fs_path_exists(path: CString): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_read_all_from_handle; abi: c; }
 function fs_read_all_from_handle(handle: RawPtr): fs_read_result;
