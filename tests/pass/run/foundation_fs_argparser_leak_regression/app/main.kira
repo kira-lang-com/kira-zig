@@ -1,0 +1,62 @@
+// Leak regressions for the foundation FS and ArgumentParser C helpers:
+// - fs_free_buffer used to skip heap buffers holding "" — every empty-file
+//   read leaked its 1-byte buffer.
+// - File.readAll never freed the fs_read_all_text_from_handle buffer — every
+//   handle read leaked the whole file contents.
+// - argumentOptionName / argumentInlineValue never called kap_free_string —
+//   every parsed option leaked its C-side copy.
+// The loops make surviving allocations obvious under `leaks --atExit`; the
+// value checks prove the frees did not turn into use-after-free.
+import Foundation
+
+@Main
+@Native
+function main() {
+    var i = 0
+    while i < 100 {
+        let emptyContents = readFile("app/empty.txt")
+        if emptyContents.ok == false {
+            print("empty read failed")
+            return
+        }
+        if emptyContents.text != "" {
+            print("empty read returned data")
+            return
+        }
+        i = i + 1
+    }
+
+    var j = 0
+    while j < 100 {
+        let file = openFile("app/sample.txt")
+        let contents = file.readAll()
+        file.close()
+        if contents.ok == false {
+            print("handle read failed")
+            return
+        }
+        if contents.text != "sample body\n" {
+            print("handle read returned wrong data")
+            return
+        }
+        j = j + 1
+    }
+
+    var k = 0
+    while k < 100 {
+        let name = argumentOptionName("--mode=fast")
+        let value = argumentInlineValue("--mode=fast")
+        if name != "mode" {
+            print("bad option name")
+            return
+        }
+        if value != "fast" {
+            print("bad inline value")
+            return
+        }
+        k = k + 1
+    }
+
+    print("fs-argparser-leak-regression-ok")
+    return
+}
