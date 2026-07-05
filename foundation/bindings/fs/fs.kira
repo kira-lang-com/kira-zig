@@ -140,6 +140,12 @@ function fs_read_file(path: CString): fs_read_result;
 @FFI.Extern { library: fs; symbol: fs_read_range; abi: c; }
 function fs_read_range(path: CString, offset: U64, size: U64, out: uint8_t_ptr): U64;
 
+@FFI.Extern { library: fs; symbol: fs_remove_path; abi: c; }
+function fs_remove_path(path: CString): CBool;
+
+@FFI.Extern { library: fs; symbol: fs_rename_path; abi: c; }
+function fs_rename_path(old_path: CString, new_path: CString): CBool;
+
 @FFI.Extern { library: fs; symbol: fs_write_bytes; abi: c; }
 function fs_write_bytes(path: CString, data: uint8_t_ptr, size: U64): CBool;
 
