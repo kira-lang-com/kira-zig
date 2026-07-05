@@ -485,6 +485,7 @@ pub const Expr = union(enum) {
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
     native_recover: NativeRecoverExpr,
+    native_state_free: NativeStateFreeExpr,
     binary: BinaryExpr,
     unary: UnaryExpr,
     cast: CastExpr,
@@ -607,6 +608,12 @@ pub const NativeUserDataExpr = struct {
 pub const NativeRecoverExpr = struct {
     value: *Expr,
     ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const NativeStateFreeExpr = struct {
+    state: *Expr,
+    ty: ResolvedType = .{ .kind = .void },
     span: source_pkg.Span,
 };
 
@@ -790,6 +797,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .native_state => |node| node.ty,
         .native_user_data => |node| node.ty,
         .native_recover => |node| node.ty,
+        .native_state_free => |node| node.ty,
         .binary => |node| node.ty,
         .unary => |node| node.ty,
         .cast => |node| node.ty,

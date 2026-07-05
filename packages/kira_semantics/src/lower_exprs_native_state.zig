@@ -98,6 +98,32 @@ pub fn lowerNativeRecoverExpr(
     } };
 }
 
+pub fn lowerNativeStateFreeExpr(
+    ctx: *shared.Context,
+    node: syntax.ast.NativeStateFreeExpr,
+    imports: []const model.Import,
+    scope: *model.Scope,
+    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
+) !model.Expr {
+    const state = try lowerExpr(ctx, node.state, imports, scope, function_headers);
+    const state_type = model.hir.exprType(state.*);
+    if (state_type.kind != .native_state and state_type.kind != .raw_ptr) {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM156",
+            .title = "nativeStateFree requires a native state token",
+            .message = "`nativeStateFree(...)` only accepts a `nativeState(...)` handle or the `RawPtr` userdata token from `nativeUserData(...)`.",
+            .labels = &.{diagnostics.primaryLabel(node.span, "this value is not a native state handle or userdata token")},
+            .help = "Pass the handle created by `nativeState(value)` or the token returned by `nativeUserData(state)`.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+    return .{ .native_state_free = .{
+        .state = state,
+        .span = node.span,
+    } };
+}
+
 fn resolveNativeStatePayloadType(
     ctx: *shared.Context,
     ty: model.ResolvedType,

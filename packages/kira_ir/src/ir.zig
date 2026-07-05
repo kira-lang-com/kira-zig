@@ -168,6 +168,7 @@ pub const Instruction = union(enum) {
     subobject_ptr: SubobjectPtr,
     field_ptr: FieldPtr,
     recover_native_state: RecoverNativeState,
+    free_native_state: FreeNativeState,
     native_state_field_get: NativeStateFieldGet,
     native_state_field_set: NativeStateFieldSet,
     c_string_to_string: CStringToString,
@@ -385,6 +386,10 @@ pub const RecoverNativeState = struct {
     state: u32,
     type_name: []const u8,
     type_id: u64,
+};
+
+pub const FreeNativeState = struct {
+    state: u32,
 };
 
 pub const NativeStateFieldGet = struct {

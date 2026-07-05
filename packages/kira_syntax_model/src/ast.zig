@@ -613,6 +613,7 @@ pub const Expr = union(enum) {
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
     native_recover: NativeRecoverExpr,
+    native_state_free: NativeStateFreeExpr,
     ownership: OwnershipExpr,
     unary: UnaryExpr,
     binary: BinaryExpr,
@@ -706,6 +707,14 @@ pub const NativeUserDataExpr = struct {
 pub const NativeRecoverExpr = struct {
     state_type: *TypeExpr,
     value: *Expr,
+    span: Span,
+};
+
+// `nativeStateFree(state)` releases a native-state box created by `nativeState(...)`.
+// Accepts the `NativeState<T>` handle or the `RawPtr` userdata token from
+// `nativeUserData(state)`. Any outstanding `nativeRecover` views become invalid.
+pub const NativeStateFreeExpr = struct {
+    state: *Expr,
     span: Span,
 };
 

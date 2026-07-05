@@ -43,6 +43,25 @@ pub fn recoverNativeState(
     setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.recoverNativeState(module, value.type_name, state_value.raw_ptr, value.type_id) });
 }
 
+pub fn freeNativeState(
+    vm: *Vm,
+    registers: []runtime_abi.Value,
+    value: anytype,
+) !void {
+    const state_value = registers[value.state];
+    if (state_value != .raw_ptr) {
+        vm.rememberError("nativeStateFree requires a native state token");
+        return error.RuntimeFailure;
+    }
+    // Null tokens are a no-op, mirroring the native backend's
+    // kira_native_state_free(NULL). Unknown tokens (not VM-allocated boxes,
+    // e.g. hybrid native-side tokens or raw payload views) are left alone:
+    // the VM cannot know their allocator, and freeing them here would corrupt
+    // the other backend's heap.
+    if (state_value.raw_ptr == 0) return;
+    vm.freeNativeState(state_value.raw_ptr);
+}
+
 pub fn nativeStateFieldGet(
     vm: *Vm,
     module: *const bytecode.Module,

@@ -387,6 +387,7 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .native_state => |node| node.span,
         .native_user_data => |node| node.span,
         .native_recover => |node| node.span,
+        .native_state_free => |node| node.span,
         .ownership => |node| node.span,
         .unary => |node| node.span,
         .binary => |node| node.span,

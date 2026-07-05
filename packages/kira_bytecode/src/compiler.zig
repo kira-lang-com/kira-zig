@@ -176,6 +176,9 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .type_name = value.type_name,
                     .type_id = value.type_id,
                 } }),
+                .free_native_state => |value| try instructions.append(.{ .free_native_state = .{
+                    .state = value.state,
+                } }),
                 .native_state_field_get => |value| try instructions.append(.{ .native_state_field_get = .{
                     .dst = value.dst,
                     .state = value.state,
@@ -511,6 +514,7 @@ test "preserves native state instructions in bytecode" {
                 .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
                 .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 123 } },
                 .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 123 } },
+                .{ .free_native_state = .{ .state = 1 } },
                 .{ .ret = .{ .src = null } },
             },
         }},
@@ -522,6 +526,8 @@ test "preserves native state instructions in bytecode" {
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[1].alloc_native_state.type_id);
     try std.testing.expect(module.functions[0].instructions[2] == .recover_native_state);
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[2].recover_native_state.type_id);
+    try std.testing.expect(module.functions[0].instructions[3] == .free_native_state);
+    try std.testing.expectEqual(@as(u32, 1), module.functions[0].instructions[3].free_native_state.state);
 }
 
 test "preserves construct metadata in bytecode" {

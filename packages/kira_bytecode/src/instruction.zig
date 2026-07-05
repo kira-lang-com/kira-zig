@@ -56,6 +56,10 @@ pub const OpCode = enum(u8) {
     // Bitwise/shift ops. Appended after `convert` (before the fused group) so it
     // does not shift any earlier serialized tag. Carried by KBC8.
     bitwise,
+    // Releases a native-state box created by `alloc_native_state`
+    // (`nativeStateFree`). Appended after `bitwise` so no earlier serialized
+    // tag shifts. Carried by KBC9.
+    free_native_state,
     // --- VM-internal fused instructions ------------------------------------
     // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
     // private per-function code copies. They never appear in compiler output
@@ -130,6 +134,7 @@ pub const Instruction = union(OpCode) {
     // OpCode enum's serialization-stable ordering.
     convert: struct { dst: u32, src: u32, to_float: bool },
     bitwise: struct { dst: u32, lhs: u32, rhs: u32, op: BitOp, unsigned: bool = false },
+    free_native_state: struct { state: u32 },
     // VM-internal fused forms; see the OpCode comment above.
     // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
     fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },
