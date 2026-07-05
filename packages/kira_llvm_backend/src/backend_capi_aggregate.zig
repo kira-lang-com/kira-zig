@@ -38,12 +38,75 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
             const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "state.enum.clone");
             field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.enum.cloneint");
         }
+        // Same aliasing hazard for array fields: the source struct is dropped after
+        // this allocation and its destructor releases the array, so copying only the
+        // pointer would leave the payload referencing freed storage (the
+        // glyphHashKeys use-after-free that crashed liquid-glass with ownership
+        // free enabled). Deep-clone so the native state owns independent storage —
+        // this also matches the VM, whose allocateNativeState deep-preserves array
+        // fields via copyArrayToNativeLayout.
+        if (field_decl.ty.kind == .array and fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid)) {
+            const sptr = api.LLVMBuildIntToPtr(b, field_value, fc.types.ptr_ty, "state.arr.src");
+            const elem = fc.dtors.elementClone(fc.request.program.programPtr(), field_decl.ty);
+            var cargs = [_]llvm.c.LLVMValueRef{ sptr, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
+            const clone = api.LLVMBuildCall2(b, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "state.arr.clone");
+            field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.arr.cloneint");
+        }
         const bv = try fc.packBridge(field_decl.ty, field_value);
         var s_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, @intCast(index), 0)};
         const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, payload, &s_idx, s_idx.len, "state.slot");
         _ = api.LLVMBuildStore(b, bv, slot);
     }
     fc.registers[v.dst] = api.LLVMBuildPtrToInt(b, box, fc.types.i64, "state.box.int");
+}
+
+// `state.field = value` on a recovered native state. Scalar fields are a plain
+// bridge-value store. Array fields follow the owned-field rules of
+// lowerStoreIndirect (the payload owns its arrays, mirroring the VM's
+// nativeStateFieldSet which destroys the replaced value and clones borrowed
+// sources): release the replaced array unless it is a self-store, deep-clone a
+// borrowed source so the state owns independent storage, and escape an owned
+// source's cleanup slot so function-exit cleanup does not free what the state
+// now owns.
+pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet) !void {
+    const api = fc.api;
+    const b = fc.builder;
+    const payload = api.LLVMBuildIntToPtr(b, fc.registers[v.state], fc.types.ptr_ty, "state.set.payload");
+    var idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, v.field_index, 0)};
+    const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, payload, &idx, idx.len, "state.set.slot");
+    const owned_modes = fc.request.mode == .llvm_native or fc.request.mode == .hybrid;
+    if (v.field_ty.kind == .array and fc.drop_enabled and owned_modes) {
+        const old_bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "state.set.oldbv");
+        const old_int = try fc.unpackBridge(v.field_ty, old_bv);
+        const old = api.LLVMBuildIntToPtr(b, old_int, fc.types.ptr_ty, "state.set.old");
+        const newp = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "state.set.newp");
+        // Self-store (`var x = state.arr; ...; state.arr = x`) must neither release
+        // nor clone: the field already holds this exact array.
+        const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, newp, "state.set.same");
+        const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.work");
+        const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.done");
+        _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+        api.LLVMPositionBuilderAtEnd(b, work_block);
+        const reldtor = fc.dtors.elementDestroy(fc.request.program.programPtr(), v.field_ty);
+        var rargs = [_]llvm.c.LLVMValueRef{ old, reldtor orelse api.LLVMConstNull(fc.types.ptr_ty) };
+        _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_release.ty, fc.runtime_decls.array_release.fn_value, &rargs, rargs.len, "");
+        var stored = fc.registers[v.src];
+        if (!drop.isOwned(fc, v.src)) {
+            const elem = fc.dtors.elementClone(fc.request.program.programPtr(), v.field_ty);
+            var cargs = [_]llvm.c.LLVMValueRef{ newp, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
+            const clone = api.LLVMBuildCall2(b, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "state.set.clone");
+            stored = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.set.cloneint");
+        } else {
+            drop.onEscape(fc, v.src);
+        }
+        const bv = try fc.packBridge(v.field_ty, stored);
+        _ = api.LLVMBuildStore(b, bv, slot);
+        _ = api.LLVMBuildBr(b, done_block);
+        api.LLVMPositionBuilderAtEnd(b, done_block);
+        return;
+    }
+    const bv = try fc.packBridge(fc.register_types[v.src], fc.registers[v.src]);
+    _ = api.LLVMBuildStore(b, bv, slot);
 }
 
 pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
