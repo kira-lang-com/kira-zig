@@ -415,6 +415,11 @@ pub const FunctionCodegen = struct {
             },
             .enum_payload => |v| self.registers[v.dst] = try aggregate.lowerEnumPayload(self, v),
             .alloc_native_state => |v| try aggregate.lowerAllocNativeState(self, v),
+            .free_native_state => |v| {
+                const state = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.free.in");
+                var args = [_]llvm.c.LLVMValueRef{state};
+                _ = api.LLVMBuildCall2(b, self.runtime_decls.state_free.ty, self.runtime_decls.state_free.fn_value, &args, args.len, "");
+            },
             .recover_native_state => |v| {
                 const state = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.recover.in");
                 var args = [_]llvm.c.LLVMValueRef{ state, api.LLVMConstInt(self.types.i64, v.type_id, 0) };

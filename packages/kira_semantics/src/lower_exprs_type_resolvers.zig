@@ -22,6 +22,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
                 .{ .kind = .unknown };
         },
         .native_user_data => .{ .kind = .raw_ptr, .name = "RawPtr" },
+        .native_state_free => .{ .kind = .void },
         .native_recover => |node| blk: {
             const recovered_ty = try shared.typeFromSyntaxChecked(ctx, node.state_type.*);
             break :blk if (recovered_ty.kind == .named and recovered_ty.name != null)

@@ -134,7 +134,7 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             try self.consumeValue(&else_state, node.else_value.*, mode);
             try self.joinState(state, &then_state, &else_state);
         },
-        .native_state, .native_user_data, .native_recover, .c_string_to_string, .array_len, .string_len => |node| try self.consumeValue(state, node.inner.*, .read),
+        .native_state, .native_user_data, .native_recover, .native_state_free, .c_string_to_string, .array_len, .string_len => |node| try self.consumeValue(state, node.inner.*, .read),
         .opaque_member => |node| try self.consumeValue(state, node.object.*, .read),
         .opaque_index => |node| {
             try self.consumeValue(state, node.object.*, .read);

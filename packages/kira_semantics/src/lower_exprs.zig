@@ -22,6 +22,7 @@ pub const lowerCallExpr = calls.lowerCallExpr;
 pub const lowerNativeStateExpr = native_state.lowerNativeStateExpr;
 pub const lowerNativeUserDataExpr = native_state.lowerNativeUserDataExpr;
 pub const lowerNativeRecoverExpr = native_state.lowerNativeRecoverExpr;
+pub const lowerNativeStateFreeExpr = native_state.lowerNativeStateFreeExpr;
 pub const lowerMatchStatement = matches.lowerMatchStatement;
 pub const rejectOutstandingMovedFields = types.rejectOutstandingMovedFields;
 
@@ -671,6 +672,9 @@ pub fn lowerExpr(
         },
         .native_recover => |node| {
             lowered.* = try lowerNativeRecoverExpr(ctx, node, imports, scope, function_headers);
+        },
+        .native_state_free => |node| {
+            lowered.* = try lowerNativeStateFreeExpr(ctx, node, imports, scope, function_headers);
         },
         .ownership => |node| {
             return try lowerOwnershipExpr(ctx, node, imports, scope, function_headers);

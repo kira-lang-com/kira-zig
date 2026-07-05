@@ -386,6 +386,11 @@ pub fn runPrepared(
             pc += 1;
             continue :dispatch code[pc];
         },
+        .free_native_state => |value| {
+            try native_state.freeNativeState(vm, registers, value);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
         .native_state_field_get => |value| {
             try native_state.nativeStateFieldGet(vm, module, registers, register_owned, value);
             pc += 1;

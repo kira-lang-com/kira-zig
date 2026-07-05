@@ -173,7 +173,7 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
             .array_get => |value| register_types[value.dst] = value.ty,
             .enum_tag => |value| register_types[value.dst] = .{ .kind = .integer, .name = "I64" },
             .enum_payload => |value| register_types[value.dst] = value.payload_ty,
-            .array_set, .array_append, .native_state_field_set => {},
+            .array_set, .array_append, .native_state_field_set, .free_native_state => {},
             .load_indirect => |value| register_types[value.dst] = value.ty,
             .store_indirect, .copy_indirect, .branch, .jump, .label => {},
             .print => {},

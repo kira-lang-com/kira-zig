@@ -458,6 +458,7 @@ fn walkExpr(ctx: *Context, expr: *ast.Expr) RewriteError!void {
         .native_state => |n| try walkExpr(ctx, n.value),
         .native_user_data => |n| try walkExpr(ctx, n.state),
         .native_recover => |n| try walkExpr(ctx, n.value),
+        .native_state_free => |n| try walkExpr(ctx, n.state),
         else => {},
     }
 }
