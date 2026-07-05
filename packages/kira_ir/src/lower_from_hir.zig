@@ -578,6 +578,7 @@ fn countCallbacksInExpr(expr: *model.Expr) u32 {
         .native_state => |node| countCallbacksInExpr(node.value),
         .native_user_data => |node| countCallbacksInExpr(node.state),
         .native_recover => |node| countCallbacksInExpr(node.value),
+        .native_state_free => |node| countCallbacksInExpr(node.state),
         .call => |node| blk: {
             var count: u32 = 0;
             for (node.args) |arg| count += countCallbacksInExpr(arg);
@@ -845,6 +846,12 @@ fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(i
         },
         .builder_array => |node| {
             _ = try lowerBuilderArrayExpr(lowerer, instructions, node);
+        },
+        .native_state_free => |node| {
+            const state = try lowerer.lowerExpr(instructions, node.state);
+            try instructions.append(.{ .free_native_state = .{
+                .state = state,
+            } });
         },
         .call_value => |call| {
             const callee = try lowerer.lowerExpr(instructions, call.callee);
@@ -1363,6 +1370,15 @@ pub const Lowerer = struct {
                     .type_name = type_name,
                     .type_id = nativeStateTypeId(type_name),
                 } });
+                break :blk dst;
+            },
+            .native_state_free => |node| blk: {
+                const state = try self.lowerExpr(instructions, node.state);
+                try instructions.append(.{ .free_native_state = .{
+                    .state = state,
+                } });
+                const dst = self.freshRegister();
+                try instructions.append(.{ .const_null_ptr = .{ .dst = dst } });
                 break :blk dst;
             },
             .c_string_to_string => |node| blk: {

@@ -57,6 +57,7 @@ The fix split the payloads so native code sees native layout while runtime retai
 - `nativeState(...)` creates Kira-managed boxed callback state.
 - `nativeUserData(...)` exports an opaque token.
 - `nativeRecover<T>(...)` re-enters the boxed state.
+- `nativeStateFree(...)` releases the box. Each backend frees only its own tokens: the VM frees `NativeStateBox`es it allocated (unknown tokens are a no-op), native code frees `KiraNativeState` via `kira_native_state_free`. Never free a token still held by the other side.
 - Hybrid callback paths must sync both directions around native calls.
 
 ## Trace/debug workflow

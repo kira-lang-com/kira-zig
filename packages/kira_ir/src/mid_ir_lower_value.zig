@@ -171,6 +171,12 @@ pub fn lowerValue(ctx: *Context, expr: *model.Expr) anyerror!mid.Value {
             .temp_id = nextTempId(ctx),
             .span = node.span,
         } },
+        .native_state_free => |node| .{ .native_state_free = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.state)),
+            .ty = node.ty,
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
         .c_string_to_string => |node| .{ .c_string_to_string = .{
             .inner = try allocValue(ctx, try lowerValue(ctx, node.value)),
             .ty = node.ty,
