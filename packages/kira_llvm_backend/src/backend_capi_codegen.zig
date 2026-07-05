@@ -433,13 +433,7 @@ pub const FunctionCodegen = struct {
                 const bv = api.LLVMBuildLoad2(b, self.types.bridge_ty, slot, "state.get.bv");
                 self.registers[v.dst] = try self.unpackBridge(v.field_ty, bv);
             },
-            .native_state_field_set => |v| {
-                const payload = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.set.payload");
-                var idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(self.types.i64, v.field_index, 0)};
-                const slot = api.LLVMBuildInBoundsGEP2(b, self.types.bridge_ty, payload, &idx, idx.len, "state.set.slot");
-                const bv = try self.packBridge(self.register_types[v.src], self.registers[v.src]);
-                _ = api.LLVMBuildStore(b, bv, slot);
-            },
+            .native_state_field_set => |v| try aggregate.lowerNativeStateFieldSet(self, v),
             .alloc_array => |v| try aggregate.lowerAllocArray(self, v),
             .array_len => |v| aggregate.lowerArrayLen(self, v),
             .array_get => |v| try aggregate.lowerArrayGet(self, v),
