@@ -32,11 +32,16 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireBackends(allocator, &failures, "tests/pass/run/ownership_enum_argument_into_field_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireBackends(allocator, &failures, "tests/pass/run/array_append_loop_no_stack_growth/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireBackends(allocator, &failures, "tests/pass/run/retained_tree_aggregate_defaults_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
-    try requireBackends(allocator, &failures, "tests/pass/run/runtime_native_newly_appended_aggregate_stress/expect.toml", &.{"hybrid"});
+    // runtime_native_newly_appended_aggregate_stress was removed in b5f8cf8 when
+    // check-time aliasing rejection (KSEM107/KSEM118) outlawed the pattern it
+    // exercised; large_graphics_descriptor_stress is its move-based successor.
+    try requireBackends(allocator, &failures, "tests/pass/run/large_graphics_descriptor_stress/expect.toml", &.{"hybrid"});
     try requireBackends(allocator, &failures, "tests/pass/run/native_runtime_struct_callback_bridge/expect.toml", &.{"hybrid"});
 
     try requireContains(allocator, &failures, "packages/kira_vm_runtime/src/vm.zig", "pub fn managedObjectCount", "VM exposes runtime heap accounting");
-    try requireContains(allocator, &failures, "packages/kira_vm_runtime/src/vm.zig", "try std.testing.expectEqual(@as(usize, 0), vm.heap.count())", "VM tests assert heap cleanup");
+    // The heap-cleanup assertions moved out of vm.zig when the oversized VM files
+    // were split (Core Law #5); they now live in the extracted test modules.
+    try requireContains(allocator, &failures, "packages/kira_vm_runtime/src/vm_execution_tests.zig", "try std.testing.expectEqual(@as(usize, 0), vm.heap.count())", "VM tests assert heap cleanup");
     try requireContains(allocator, &failures, "packages/kira_vm_runtime/src/ownership.zig", "pub fn count(self: *const Heap) usize", "heap exposes object count");
     try requireContains(allocator, &failures, "packages/kira_vm_runtime/src/ownership.zig", "try std.testing.expectEqual(@as(usize, 0), heap.count())", "heap unit tests assert cleanup");
     try requireContains(allocator, &failures, "packages/kira_hybrid_runtime/src/runtime.zig", "pending_callback_return_values", "hybrid callback return cleanup is tracked");
@@ -57,6 +62,14 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "pub fn entryAlloca", "loop-body scratch slots are hoisted to the entry block (no per-iteration stack growth)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "fc.entryAlloca(fc.types.bridge_ty, \"array.append.slot\")", "array append scratch slot uses the entry-block alloca");
     try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "Memoize the environment lookup", "trace gate caches getenv instead of calling it per runtime op");
+
+    // Foundation C-helper leak fixes (measured with macOS `leaks --atExit` on
+    // tests/pass/run/foundation_fs_argparser_leak_regression). Each guard below,
+    // if removed, reintroduces a per-call native leak.
+    try requireBackends(allocator, &failures, "tests/pass/run/foundation_fs_argparser_leak_regression/app/expect.toml", &.{ "hybrid", "llvm" });
+    try requireContains(allocator, &failures, "foundation/NativeLibs/FS/fs.c", "buffer != fs_empty_string", "fs_free_buffer frees by sentinel identity, not content (empty-file reads leaked their heap buffer)");
+    try requireContains(allocator, &failures, "foundation/app/FileSystem.kira", "fs_free_buffer(raw)", "File.readAll frees the fs_read_all_text_from_handle buffer after copying it");
+    try requireContains(allocator, &failures, "foundation/app/Kira/ArgumentParserNative.kira", "kap_free_string(value)", "argument option/inline-value wrappers free the kap_* C string after copying it");
 
     if (failures.items.len != 0) {
         for (failures.items) |failure| std.debug.print("memory validation failed: {s}\n", .{failure});
