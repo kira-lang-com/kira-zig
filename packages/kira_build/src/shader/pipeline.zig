@@ -640,6 +640,13 @@ fn expectDiagnosticCode(items: []const diagnostics.Diagnostic, code: []const u8)
 }
 
 fn expectFileText(allocator: std.mem.Allocator, path: []const u8, actual: []const u8) !void {
+    // KIRA_UPDATE_SHADER_GOLDENS=1 rewrites the golden files from the current
+    // emitter output instead of asserting. Only for intentional emitter changes;
+    // review the resulting diff before committing.
+    if (std.c.getenv("KIRA_UPDATE_SHADER_GOLDENS") != null) {
+        try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = path, .data = actual });
+        return;
+    }
     const expected = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1 << 20));
     try std.testing.expectEqualStrings(expected, actual);
 }
