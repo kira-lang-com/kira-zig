@@ -14,6 +14,7 @@ const capi = @import("backend_capi.zig");
 
 const findTypeDecl = utils.findTypeDecl;
 const allocPrintZ = utils.allocPrintZ;
+const fresh_any = @import("backend_capi_fresh_any.zig");
 pub const TypeHelpers = struct {
     release_contents: capi.RuntimeDecls.Decl,
     destroy: capi.RuntimeDecls.Decl,
@@ -79,10 +80,21 @@ pub const Destructors = struct {
     // blocks: release frees them, clone deep-copies them). Native only — hybrid
     // closure blocks may be VM-allocated and are torn down through the VM hook.
     deep_closures: bool,
+    // Functions PROVEN to return a fresh owned construct_any on every path
+    // (backend_capi_fresh_any.zig). Plain-call results of these are tracked as
+    // .struct_ptr drops; everything else keeps the untracked alias default.
+    fresh_any_returns: fresh_any.FreshAnyReturns = .{},
 
     pub fn deinit(self: *Destructors, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
         self.enum_map.deinit(allocator);
+        self.fresh_any_returns.deinit(allocator);
+    }
+
+    // Should the CALLER track `callee_id`'s construct_any result as an owned
+    // .struct_ptr drop? Native only — hybrid Any results may be VM-owned.
+    pub fn tracksFreshAnyResult(self: Destructors, callee_id: u32) bool {
+        return self.deep_closures and self.fresh_any_returns.contains(callee_id);
     }
 
     // Typed enum destroy for `ty` (frees a string-payload box + buffer with the
@@ -110,19 +122,22 @@ pub const Destructors = struct {
     // elements, and the release itself frees only values carrying the closure high
     // bit — so [Callback] element blocks are reclaimed while integer/float/FFI
     // pointer elements are untouched.
+    // kira_destroy_closure (not the dynamic dispatcher): the fallback frees
+    // TAGGED closure elements only. Type-erased ([Any]/[Widget]) elements are
+    // left untouched (conservative leak) — pairing a typed element destroy with
+    // the required deep element clone would deep-copy widget trees on every
+    // borrowed array store, a per-frame memory explosion (rolled back).
     pub fn elementDestroy(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
         if (self.structHelpers(program, array_ty)) |helpers| return helpers.destroy.fn_value;
-        // Runtime-typed fallback: the element payload is either a TAGGED closure
-        // (high bit — torn down via the destroy hook) or a struct shell whose
-        // type-id header recovers kira_destroy_<T> (the `[Widget]` /
-        // [construct_any] case). Anything else no-ops.
-        if (self.deep_closures) return self.dynamic_destroy.fn_value;
+        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_destroy.fn_value;
+        if (self.deep_closures) return self.destroy_closure.fn_value;
         return null;
     }
 
     pub fn elementClone(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
         if (self.structHelpers(program, array_ty)) |helpers| return helpers.clone.fn_value;
-        if (self.deep_closures) return self.dynamic_clone.fn_value;
+        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_clone.fn_value;
+        if (self.deep_closures) return self.closure_clone.fn_value;
         return null;
     }
 
@@ -136,6 +151,12 @@ pub const Destructors = struct {
             }
         }
         return self.map.get(type_decl.name);
+    }
+
+    fn arrayContainsDirectConstructAny(array_ty: ir.ValueType) bool {
+        if (array_ty.kind != .array) return false;
+        const name = array_ty.name orelse return false;
+        return std.mem.startsWith(u8, name, "any ");
     }
 };
 
@@ -192,6 +213,7 @@ pub fn build(
         .state_interior_release = .{ .ty = void_ptr_ty, .fn_value = state_interior_release },
         .release_strings = mode != .hybrid,
         .deep_closures = mode != .hybrid,
+        .fresh_any_returns = try fresh_any.compute(allocator, program),
     };
 
     const builder = api.LLVMCreateBuilderInContext(types.context);
@@ -289,12 +311,20 @@ pub fn build(
     // hybrid keeps the shallow pair (payload boxes may be VM-managed).
     if (mode != .hybrid) {
         for (program.enums) |enum_decl| {
-            var has_string_payload = false;
+            // An enum needs the typed pair when a payload owns heap beyond the
+            // 16-byte block itself: a String payload (box + buffer) or a nested
+            // enum payload (its block, and transitively whatever IT owns — the
+            // nested payload dispatches through enumDestroyFn/enumCloneFn, which
+            // fall back to the shallow pair for enums that own nothing more).
+            // Same variant filter as buildDestroy/buildClone in
+            // backend_capi_enum_dtors.zig, keeping the deep-cloned <=> deep-
+            // destroyed pairing invariant.
+            var needs_typed = false;
             for (enum_decl.variants) |variant| {
                 const pt = variant.payload_ty orelse continue;
-                if (pt.kind == .string) has_string_payload = true;
+                if (pt.kind == .string or pt.kind == .enum_instance) needs_typed = true;
             }
-            if (!has_string_payload) continue;
+            if (!needs_typed) continue;
             const ed_name = try allocPrintZ(allocator, "kira_destroy_enum_{s}", .{enum_decl.name});
             defer allocator.free(ed_name);
             const ecl_name = try allocPrintZ(allocator, "kira_clone_enum_{s}", .{enum_decl.name});
@@ -385,10 +415,6 @@ fn buildReleaseContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: c
                 _ = api.LLVMBuildCall2(b, dtors.destroy_closure.ty, dtors.destroy_closure.fn_value, &args, args.len, "");
             },
             .construct_any => {
-                // A type-erased field (Any / a construct value such as a Widget child)
-                // owns its shell: the runtime-typed dispatcher recovers the concrete
-                // kira_destroy_<T> from the shell's type-id header (or the closure
-                // teardown for a tagged closure). Unknown ids no-op. Native only.
                 if (!dtors.deep_closures) continue;
                 const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.anyfield");
                 const any_val = api.LLVMBuildLoad2(b, types.i64, field_ptr, "rc.any");
@@ -479,9 +505,6 @@ fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: cap
                 _ = api.LLVMBuildStore(b, new, field_ptr);
             },
             .construct_any => {
-                // Deep-copy a type-erased field via the runtime-typed dispatcher
-                // (paired with the release above; unknown ids alias — and are then
-                // also never freed by the release, same id lookup). Native only.
                 if (!dtors.deep_closures) continue;
                 const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.anyfield");
                 const old = api.LLVMBuildLoad2(b, types.i64, field_ptr, "cc.anyold");

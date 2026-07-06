@@ -202,7 +202,7 @@ fn buildStateInteriorRelease(
         var owns_any = false;
         for (type_decl.fields) |field| {
             switch (field.ty.kind) {
-                .string, .array, .ffi_struct, .raw_ptr, .construct_any => owns_any = true,
+                .string, .array, .ffi_struct, .raw_ptr, .construct_any, .enum_instance => owns_any = true,
                 else => {},
             }
         }
@@ -241,12 +241,22 @@ fn buildStateInteriorRelease(
                     var args = [_]llvm.c.LLVMValueRef{pay};
                     _ = api.LLVMBuildCall2(b, dtors.destroy_closure.ty, dtors.destroy_closure.fn_value, &args, args.len, "");
                 },
-                .construct_any => {
-                    var args = [_]llvm.c.LLVMValueRef{pay};
-                    _ = api.LLVMBuildCall2(b, dtors.dynamic_destroy.ty, dtors.dynamic_destroy.fn_value, &args, args.len, "");
+                .enum_instance => {
+                    // The slot owns its block: alloc-time stores clone in
+                    // (lowerAllocNativeState) and field sets destroy-replaced +
+                    // move-or-clone (lowerNativeStateFieldSet) — VM parity with
+                    // destroyPreservedNativeStateValue, which destroys enum
+                    // slots. Typed destroy frees nested payload chains; null
+                    // slots (moved-out fields zero the slot) no-op.
+                    const destroy_fn = dtors.enumDestroyFn(field.ty);
+                    const ptr = api.LLVMBuildIntToPtr(b, pay, types.ptr_ty, "sir.enum");
+                    var args = [_]llvm.c.LLVMValueRef{ptr};
+                    _ = api.LLVMBuildCall2(b, destroy_fn.ty, destroy_fn.fn_value, &args, args.len, "");
                 },
-                // Enum slots keep today's alias semantics on the state-set default
-                // path — freeing here could double-free a frame-owned block.
+                // Type-erased (Any) slots keep alias semantics on the state-set
+                // default path — freeing here could double-free a value another
+                // owner still holds (Any slots are not clone-in: deep-copying
+                // widget trees per set is a memory explosion).
                 else => {},
             }
         }

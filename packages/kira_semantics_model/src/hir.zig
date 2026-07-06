@@ -119,6 +119,12 @@ pub const Construct = struct {
     content_passthrough: bool = false,
     required_functions: []RequiredFunction = &.{},
     section_functions: []SectionFunction = &.{},
+    // Names of family methods declared `@Consuming`: the method takes `self`
+    // OWNED (the call consumes the receiver; the callee owns and drops the
+    // shell). Every concrete implementation inherits the owned receiver, and
+    // virtual dispatch through the family transfers ownership. The synthesized
+    // `body` accessor is implicitly consuming and is not listed here.
+    consuming_functions: []const []const u8 = &.{},
     // Fields a construct requires its concrete declarations to provide, declared as direct
     // `@Required let name: T` members (the SwiftUI-style surface).
     required_fields: []RequiredField = &.{},
@@ -748,6 +754,12 @@ pub const IndexExpr = struct {
     object: *Expr,
     index: *Expr,
     ty: ResolvedType,
+    // Checker-verified element DRAIN (`widgets[index].lower(ctx)` feeding a
+    // consuming receiver from an OWNED array): the destination takes the
+    // element's value and the slot tombstones to VOID on every backend, so
+    // the array's release skips it and a later read of the drained slot traps
+    // deterministically instead of double-freeing.
+    moved: bool = false,
     span: source_pkg.Span,
 };
 

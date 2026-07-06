@@ -200,6 +200,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .index = value.index,
                     .ty = lowerTypeRef(value.ty),
                     .borrow = value.borrow,
+                    .moved = value.moved,
                 } }),
                 .array_set => |value| try instructions.append(.{ .array_set = .{
                     .array = value.array,
@@ -220,6 +221,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .dst = value.dst,
                     .ptr = value.ptr,
                     .ty = lowerTypeRef(value.ty),
+                    .moved = value.moved,
                 } }),
                 .store_indirect => |value| try instructions.append(.{ .store_indirect = .{
                     .ptr = value.ptr,

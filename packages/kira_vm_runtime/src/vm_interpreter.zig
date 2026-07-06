@@ -440,6 +440,19 @@ pub fn runPrepared(
                 vm.rememberError("array index is out of bounds");
                 return error.RuntimeFailure;
             }
+            if (value.moved) {
+                // Checker-verified element DRAIN from an owned array: the
+                // destination takes the element's value as its owner and the
+                // slot tombstones to VOID — the array's release skips it and a
+                // later read of the drained slot fails the dispatch cleanly
+                // instead of double-freeing. Mirrors the native backend.
+                const mutable_array: *ArrayObject = @ptrFromInt(array_value.raw_ptr);
+                const drained = runtime_abi.bridgeValueToValue(mutable_array.items[index]);
+                mutable_array.items[index] = runtime_abi.bridgeValueFromValue(.void);
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], drained);
+                pc += 1;
+                continue :dispatch code[pc];
+            }
             const element = try prologue.prepareArrayElement(vm, module, value.ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]), value.borrow);
             if (element.owned) {
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], element.value);
@@ -574,7 +587,17 @@ pub fn runPrepared(
                 vm.rememberError("indirect load requires a valid pointer");
                 return error.RuntimeFailure;
             }
-            if (value.ty.kind == .ffi_struct) {
+            if (value.moved and value.ty.kind != .ffi_struct) {
+                // Checker-verified field move-out (`let x = obj.field`, Rust
+                // partial move): the destination takes the field's value AS ITS
+                // OWNER — no clone — and the field slot is VOIDED so the base
+                // drops with only its remaining fields. Mirrors the LLVM
+                // backend's moved-read storage nulling; without the void, base
+                // drop would free the value this register now owns.
+                const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], slot_ptr.*);
+                slot_ptr.* = .void;
+            } else if (value.ty.kind == .ffi_struct) {
                 const type_name = value.ty.name orelse {
                     vm.rememberError("struct load type is missing a name");
                     return error.RuntimeFailure;
