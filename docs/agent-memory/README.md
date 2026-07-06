@@ -35,5 +35,6 @@ Keep entries short, current, and specific. Remove stale facts instead of stackin
 - [cli-build-toolchain.md](cli-build-toolchain.md)
 - [shaders-ksl.md](shaders-ksl.md)
 - [testing.md](testing.md)
+- [native-leak-hunting.md](native-leak-hunting.md)
 - [refactor-guidelines.md](refactor-guidelines.md)
 - [recent-context.md](recent-context.md)
