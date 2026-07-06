@@ -80,6 +80,28 @@ A residual that does NOT grow with `KIRA_METAL_OFFSCREEN_FRAMES` is one-time
 setup; only frame-scaling leaks are per-frame bugs. All four programs above
 are now frame-flat.
 
+Late-night follow-up (2026-07-06): the post-model `apps/editor` add-entity
+19–33 GB blow-up was **not** another Any/construct ownership regression.
+The remaining growth split into two sibling-repo issues:
+
+- `kira-graphics` Metal offscreen runs were missing the per-frame autorelease
+  pool that the on-screen loop already drains; multi-pass runs (`apps/deferred`,
+  editor gizmo pass) therefore held autoreleased command-buffer / encoder
+  objects until process exit and inflated physical footprint.
+- `project-matter` editor world-save serialization bounced the growing `[U8]`
+  buffer through owned return values (`edPushLine` / `edIntLine`), which on the
+  native editor save path regressed into giant transient `kira_array_append`
+  allocations after add-entity clicks. Rewriting the serializer to mutate the
+  destination buffer in place removed that spike.
+
+Measured with the fixed sibling code paths: `apps/deferred`
+`KIRA_METAL_OFFSCREEN_FRAMES=200000` stays flat (~174 MB at 0 s and 5 s),
+editor no-click `120` frames stays flat (~72–73 MB), and editor add-entity
+click runs complete end-to-end (`120` frames returns a real readback value;
+`5000` frames samples 305 MB at 5 s and falls back to ~67 MB by 20 s instead
+of growing toward tens of GB). Re-run `leaks --atExit` separately for updated
+residual counts; the key result here is that the runaway growth path is gone.
+
 ## Remaining leak classes (the actual TODO)
 
 1. ~~Native String drop gap~~ — RESOLVED 2026-07-06 (see model above).
@@ -98,27 +120,31 @@ are now frame-flat.
    FFI pointers/CStrings. NATIVE only; hybrid keeps the VM hook + alias
    semantics. Guards: corpus `ownership_closure_*` (12 cases, all
    check_leaks) + memory_validation.
-3. ~~Native-state interiors + type-erased (Any/construct) values~~ — RESOLVED
-   2026-07-06 (evening). **Runtime-typed dynamic teardown**
-   (`backend_capi_dynamic_dtors.zig`): every `kira_struct_alloc` shell carries
-   a type-id header, so `kira_capi_dynamic_destroy`/`kira_capi_dynamic_clone`
-   switch on it to recover `kira_destroy_<T>`/`kira_clone_<T>` for
-   construct_any values (widget trees!): `[Any]` array elements
-   (elementDestroy/Clone fallback), Any struct fields, Any field stores
-   (drop-replaced; owned moves / borrowed clones), owned call args, `ret`
-   clones, tracked call results, and `.struct_ptr` slot drops. Unknown ids
-   no-op/alias — the SAME lookup decides destroy and clone, keeping the
-   deep-everywhere-or-nowhere pairing. `kira_capi_state_interior_release`
-   (installed as the `kira_native_state_free` hook by the same global ctor)
-   walks the state payload's bridge slots per declared field type (VM
-   `freeNativeState` parity); state field sets of closures/Any now clone-in +
-   drop-old like strings. Native only; hybrid unchanged.
-   TRAP FIXED ALONG THE WAY: `lowerConstructFamilyVirtualCall` recorded
-   construct_any results a SECOND time after `lowerCall` already did —
-   dropPriorOccupant destroyed the just-stored result (widget-dispatch
-   use-after-free). Guard: memory_validation "does not double-record".
-   Editor effect: per-click residual ~1,950 → **~11 leaks/click**; idle
-   11,207 → 9,270.
+3. **Type-erased (Any/construct) values — MOVE-FIRST model** (final form
+   2026-07-06 night; authoritative spec: `KIRA_MEMORY_MODEL.md`). The first
+   attempt (eac1445) made Any values full deep values — typed
+   `kira_capi_dynamic_destroy`/`kira_capi_dynamic_clone` at every edge. The
+   destroys were fine; the CLONES deep-copied whole widget trees on every
+   borrowed store/return/struct copy — a measured multi-GB-per-click memory
+   explosion in the editor. ROLLED BACK and replaced with move-first:
+   - Any values MOVE (escape) into struct fields, `[Any]` elements, enum
+     payloads, native-state slots, and owned call args; borrows alias.
+     `kira_capi_dynamic_clone` has NO call sites (memory_validation forbids
+     them per file).
+   - Runtime-typed destroy runs ONLY at single-owner points: `.struct_ptr`
+     slot drops (construct-family virtual-call results — recorded exactly
+     once in the vcall postlude, NOT in lowerCall — and owned Any params) and
+     `kira_capi_state_interior_release` for owning state-slot kinds
+     (string/array/struct/closure; enum/Any slots skipped).
+   - Any struct fields / elements / state slots are never freed: documented
+     conservative leaks (bounded per tree node per rebuild) until the checker
+     enforces move-only Any flows (KIRA_MEMORY_MODEL.md roadmap 1).
+   TRAPS PINNED: double-record of vcall results (dropPriorOccupant destroyed
+   the just-stored result — widget-dispatch use-after-free); state-set of Any
+   must ESCAPE the owned source (frame-exit free would dangle the state).
+   The remaining 19–33 GB add-entity blow-up was traced to sibling
+   `kira-graphics` / `project-matter` code, not to this Any model; only the
+   post-fix residual leak counts still need a fresh `leaks --atExit` pass.
 4. ~~Enum payload boxes~~ — RESOLVED 2026-07-06 for string payloads. **Typed
    enum teardown** (`backend_capi_enum_dtors.zig`): per-enum generated
    `kira_destroy_enum_<T>` / `kira_clone_enum_<T>` switch on the tag and
@@ -266,7 +292,7 @@ caveat above; gmalloc is what actually worked.
 K=<kira-or-copy>
 # near-zero baseline, fast, no GPU — first thing to run after a drop change:
 $K build --backend llvm ../ui-foundation/Examples/leak-harness
-(cd ../ui-foundation/Examples/leak-harness && leaks --atExit -- ./generated/leak-harness)  # expect: 80000, 2 leaks/224 B
+(cd ../ui-foundation/Examples/leak-harness && leaks --atExit -- ./generated/leak-harness)  # expect: 80000, 0 leaks/0 B (2026-07-06 evening: was 2/224 before enum-call-result tracking)
 
 # GPU apps (Metal offscreen):
 $K build ../ui-foundation/Examples/liquid-glass-app       # expect rc=0, ~628 leaks
@@ -285,6 +311,54 @@ If an example fails with "import does not resolve": its `kira.toml` may lack
 ## Definition of done for a leak fix
 
 Backend parity (vm/llvm/hybrid agree on output), full corpus green
-(`zig build test-full`), `verify-memory` green, leak-harness still
-2 leaks/224 B, the targeted app's residual reduced and frame-count-flat, and a
-corpus case + `memory_validation.zig` guard pinning the new rule.
+(`zig build test-full` — and since 2026-07-06 the stronger gate
+`KIRA_CORPUS_CHECK_LEAKS=1 zig build test-full` is fully green: 2247/0),
+`verify-memory` green, leak-harness at 0 leaks/0 B, the targeted app's
+residual reduced and frame-count-flat, and a corpus case +
+`memory_validation.zig` guard pinning the new rule.
+
+## 2026-07-06 evening status
+
+Every corpus-visible native leak class is destroyed; the forced leak sweep is
+green across all 2247 cases. Landed (uncommitted worktree): enum call-result
+tracking + nested enum typed destroy; native-state token registry + atexit
+teardown, owned enum state slots, direct (unboxed) struct slot stores;
+fresh-Any return analysis for plain-call widget-tree results; Rust-parity
+partial moves (bytecode KBCA `moved` flag, VM void + LLVM null, KSEM107/KIR003
+relaxed for array/enum/Any fields); enum struct-field drop-before-overwrite;
+moved heap-shell free. See `KIRA_MEMORY_MODEL.md` (§5 state boxes, §3
+fresh-Any, §9 roadmap).
+
+NEXT: construct `body` must consume self so `{ content }` captures are partial
+moves — KIR002 currently rejects wrapper-widget bodies (kira_ui EdFlex), which
+blocks `(cd ../project-matter && kira build apps/editor)`. Design decision:
+extension-method self is an owned existential, type-method/body self is
+`borrow`; render(borrow self) must be able to invoke body with ownership.
+Sibling fix already applied: kira_ui/WidgetModel.kira `loweredChildren`
+widgets param is now `borrow [any Widget]`, and KiraUI.kira's
+`let root = app.content` compiles via partial moves.
+
+## 2026-07-06 late: body-consumes-self (consuming receivers) landed
+
+`@Consuming` construct-family methods + implicitly-consuming `body` accessors
+take self OWNED; implementations inherit; dispatch transfers the receiver on
+every backend (VM needed zero changes — fillTransferredArgs/bindArguments
+already implement owned params; LLVM needed the moveOrCloneToHeap
+`.struct_ptr → MOVE` case, else each dispatch deep-cloned the tree). Body
+content channels (`{ content }`) partial-move out of owned self
+(applyConstructAnyFieldMove tags the read `.moved`; note construct literals
+have TWO field loops in lower_exprs_calls.zig — call_args AND
+literal_fields). Wrapper-widget pattern now leak-free by construction:
+tests/pass/run/consuming_body_wrapper_parity (0 leaks). Borrowed contains-any
+receivers → KSEM157 (+ KIR002 mid-IR backstop). Full corpus green under
+KIRA_CORPUS_CHECK_LEAKS=1.
+
+NEXT for the editor: owned-array element drain — `widgets[index].lower(ctx)`
+on an owned `[any Widget]` must move the element out (array_get `moved`,
+VOID-tombstoned slot on both backends) and owned-array args must be feedable
+by partial-moving a field out of owned self; then flip kira_ui `lower` to
+`@Consuming` and drop the `borrow [any Widget]` workaround in
+loweredChildren. Consuming-mode decision lives in methodConsumesSelf
+(lower_shared_construct_queries.zig) and MUST stay identical across the four
+registration/lowering sites (two header registrars, node-bridge accessors,
+lowerMethodFunction).
