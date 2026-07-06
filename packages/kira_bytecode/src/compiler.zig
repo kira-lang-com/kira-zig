@@ -184,6 +184,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .state = value.state,
                     .field_index = value.field_index,
                     .field_ty = lowerTypeRef(value.field_ty),
+                    .moved = value.moved,
                 } }),
                 .native_state_field_set => |value| try instructions.append(.{ .native_state_field_set = .{
                     .state = value.state,
