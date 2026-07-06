@@ -86,7 +86,7 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_drop_slots.zig", "drop.cstr.slot", "CString→String coercion buffers are tracked for scope-exit free");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "cloneStringOnRead", "aggregate string reads clone (readers never alias aggregate buffers)");
     try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "kira_bridge_clone_string_element", "kira_array_clone deep-copies STRING-tag element buffers");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "state.struct.clone", "native-state boxing deep-clones nested ffi_struct fields (FlatAcc use-after-free)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_native_state.zig", "state.struct.clone", "native-state boxing deep-clones nested ffi_struct fields (FlatAcc use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "load.move.field", "field move-outs null the source storage (collectRemoved use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "ret.arr.clone", "borrowed array returns deep-clone (editorContentPathSegments use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_semantics/src/lower_exprs_types.zig", "lowered_value.field.moved = true", "checker move facts reach HIR field reads");
@@ -120,6 +120,22 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "kira_destroy_enum_", "typed enum destructors free string-payload boxes");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "enumCloneFn", "every enum clone site dispatches typed-or-generic through the shared enum_map");
     try requireContains(allocator, &failures, "tests/pass/run/ownership_enum_string_payload_free_parity/expect.toml", "check_leaks = true", "enum payload case runs under the harness leak check");
+
+    // Runtime-typed teardown for type-erased values + native-state interiors
+    // (leak class #3: [Widget]-style arrays, Any fields, and state payload slots
+    // never freed their shells/contents — the editor's per-click residual). The
+    // type-id header on every kira_struct_alloc shell recovers kira_destroy_<T> /
+    // kira_clone_<T> at runtime; the SAME id lookup decides destroy and clone, so
+    // a value is deep-cloned everywhere iff deep-destroyed everywhere.
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_construct_any_tree_churn_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_dynamic_dtors.zig", "kira_capi_dynamic_destroy", "the runtime-typed destroy dispatcher exists");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_dynamic_dtors.zig", "kira_capi_state_interior_release", "native-state interiors release through the type-id switch (VM freeNativeState parity)");
+    try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "kira_state_interior_release_fn", "kira_native_state_free runs the interior hook before the shallow free");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.anyfield", "struct destructors free type-erased (Any) fields via the dynamic dispatcher");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.any.old", "Any field stores drop the replaced value and clone borrowed sources");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "ret.any.clone", "borrowed type-erased returns deep-clone (returned Any values are fresh owned)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "recording again here", "call_virtual does not double-record construct_any results (widget-dispatch use-after-free)");
+    try requireContains(allocator, &failures, "tests/pass/run/ownership_construct_any_tree_churn_parity/expect.toml", "check_leaks = true", "construct tree churn case runs under the harness leak check");
 
     // The corpus harness can prove leak-freedom on the native binary; these cases
     // opt in (tests/leak_check.zig, expect.toml `check_leaks = true`).

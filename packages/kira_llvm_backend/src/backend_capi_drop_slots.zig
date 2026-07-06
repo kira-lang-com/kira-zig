@@ -147,6 +147,10 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     // extern call's plain FFI pointer result is never freed. NATIVE only:
                     // a hybrid closure result may be VM-owned.
                     .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
+                    // A returned type-erased (Any) value is fresh owned too (`ret`
+                    // deep-clones untracked sources); dropped via the runtime-typed
+                    // dispatcher (unknown ids no-op). NATIVE only.
+                    .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -225,6 +229,7 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     .string => .string_buf,
                     // Fresh owned closure result (tag-safe drop; see the .call case).
                     .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
+                    .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;

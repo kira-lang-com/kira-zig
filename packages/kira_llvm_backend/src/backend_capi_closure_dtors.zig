@@ -142,7 +142,9 @@ pub fn build(
 
     try buildRelease(allocator, api, builder, types, program, runtime, dtors, shapes);
     try buildClone(allocator, api, builder, types, program, runtime, dtors, shapes);
-    if (install_hook) try emitInstallCtor(api, builder, module_ref, types, dtors.closure_release.fn_value);
+    if (install_hook) {
+        try emitInstallCtor(api, builder, module_ref, types, dtors.closure_release.fn_value, dtors.state_interior_release.fn_value);
+    }
 }
 
 fn buildRelease(
@@ -349,7 +351,8 @@ fn buildClone(
 }
 
 // A global constructor (llvm.global_ctors) that installs the generated release
-// function as the runtime's closure-destroy hook. A constructor (not host-main
+// function as the runtime's closure-destroy hook and the state-interior
+// release as the kira_native_state_free hook. A constructor (not host-main
 // code) so dylib artifacts loaded by platform runners get it too.
 fn emitInstallCtor(
     api: *const llvm.Api,
@@ -357,10 +360,12 @@ fn emitInstallCtor(
     module_ref: llvm.c.LLVMModuleRef,
     types: capi.Types,
     release_fn: llvm.c.LLVMValueRef,
+    state_release_fn: llvm.c.LLVMValueRef,
 ) !void {
     var install_param = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
     const install_ty = api.LLVMFunctionType(types.void_ty, &install_param, install_param.len, 0);
     const install_decl = api.LLVMAddFunction(module_ref, "kira_hybrid_install_closure_destroy", install_ty);
+    const install_state_decl = api.LLVMAddFunction(module_ref, "kira_capi_install_state_interior_release", install_ty);
 
     const ctor_ty = api.LLVMFunctionType(types.void_ty, null, 0, 0);
     const ctor_fn = api.LLVMAddFunction(module_ref, "kira.capi.closure.dtor.install", ctor_ty);
@@ -369,6 +374,8 @@ fn emitInstallCtor(
     api.LLVMPositionBuilderAtEnd(b, entry);
     var install_args = [_]llvm.c.LLVMValueRef{release_fn};
     _ = api.LLVMBuildCall2(b, install_ty, install_decl, &install_args, install_args.len, "");
+    var state_args = [_]llvm.c.LLVMValueRef{state_release_fn};
+    _ = api.LLVMBuildCall2(b, install_ty, install_state_decl, &state_args, state_args.len, "");
     _ = api.LLVMBuildRetVoid(b);
 
     var ctor_fields = [_]llvm.c.LLVMTypeRef{ types.i32, types.ptr_ty, types.ptr_ty };
