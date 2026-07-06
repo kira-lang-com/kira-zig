@@ -260,8 +260,19 @@ fn freeSlot(fc: *FunctionCodegen, index: u32) void {
             _ = api.LLVMBuildCall2(b, destroy.ty, destroy.fn_value, &args, args.len, "");
         },
         .struct_ptr => {
-            var args = [_]llvm.c.LLVMValueRef{ptr};
-            _ = api.LLVMBuildCall2(b, fc.dtors.destroy_struct_ptr.ty, fc.dtors.destroy_struct_ptr.fn_value, &args, args.len, "");
+            // Runtime-typed full destroy on the native path (the shell's type-id
+            // header recovers kira_destroy_<T>, so contents free too — the old
+            // shell-only kira_destroy_struct_ptr leaked every field). Unknown ids
+            // no-op (consistent with dynamic clone's alias fallback). Hybrid keeps
+            // the shell-only free.
+            if (fc.dtors.deep_closures) {
+                const as_int = api.LLVMBuildPtrToInt(b, ptr, fc.types.i64, "drop.any.int");
+                var args = [_]llvm.c.LLVMValueRef{as_int};
+                _ = api.LLVMBuildCall2(b, fc.dtors.dynamic_destroy.ty, fc.dtors.dynamic_destroy.fn_value, &args, args.len, "");
+            } else {
+                var args = [_]llvm.c.LLVMValueRef{ptr};
+                _ = api.LLVMBuildCall2(b, fc.dtors.destroy_struct_ptr.ty, fc.dtors.destroy_struct_ptr.fn_value, &args, args.len, "");
+            }
         },
         .raw => {
             // Typed enum slots (string-payload enums, native) free the payload
