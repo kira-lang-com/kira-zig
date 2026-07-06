@@ -345,15 +345,15 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try writer.writeAll(", 0))");
                 },
                 .atomic_add => {
-                    // NOTE: HLSL InterlockedAdd is statement-form; this expression
-                    // emission is a placeholder until the D3D backend is verified.
-                    try writer.writeAll("kira_atomic_add(");
-                    try emitExpr(writer, call_expr.args[0]);
-                    try writer.writeAll(", ");
-                    try emitExpr(writer, call_expr.args[1]);
-                    try writer.writeAll(", ");
-                    try emitExpr(writer, call_expr.args[2]);
-                    try writer.writeByte(')');
+                    // HLSL `InterlockedAdd` is a STATEMENT with an out-parameter for
+                    // the original value; it cannot be a valid inline expression, and
+                    // the D3D backend is unverified. Emitting an undefined
+                    // `kira_atomic_add(...)` helper produced HLSL that downstream
+                    // compilation must reject while the KSL build reported pass — a
+                    // Core Law #2 smoke surface. Fail clearly instead (Codex review):
+                    // GLSL/MSL/WGSL emit real atomic builtins; HLSL rejects until it
+                    // has real statement-form lowering.
+                    return error.UnsupportedShaderIntrinsic;
                 },
             },
         },
