@@ -17,6 +17,8 @@ pub const DirectMembers = struct {
     required_fields: []model.RequiredField,
     required_functions: []model.RequiredFunction,
     default_members: []model.ConstructDefaultMember,
+    // Family methods declared `@Consuming` (owned self; see model.Construct).
+    consuming_functions: []const []const u8,
 };
 
 pub fn isAnnotation(annotation: syntax.ast.Annotation, name: []const u8) bool {
@@ -41,6 +43,7 @@ pub fn collectConstructDirectMembers(
     var required_fields = std.array_list.Managed(model.RequiredField).init(ctx.allocator);
     var required_functions = std.array_list.Managed(model.RequiredFunction).init(ctx.allocator);
     var default_members = std.array_list.Managed(model.ConstructDefaultMember).init(ctx.allocator);
+    var consuming_functions = std.array_list.Managed([]const u8).init(ctx.allocator);
 
     // Pass 1: the set of required field names, used to resolve what a default member reads.
     var required_field_names = std.StringHashMapUnmanaged(void){};
@@ -70,6 +73,9 @@ pub fn collectConstructDirectMembers(
                 }
             },
             .function_decl => |function| {
+                if (hasAnnotation(function.annotations, "Consuming")) {
+                    try consuming_functions.append(try ctx.allocator.dupe(u8, function.name));
+                }
                 if (hasAnnotation(function.annotations, "Required")) {
                     try required_functions.append(try requiredFunctionSig(ctx, function));
                 } else if (function.body != null) {
@@ -89,6 +95,7 @@ pub fn collectConstructDirectMembers(
         .required_fields = try required_fields.toOwnedSlice(),
         .required_functions = try required_functions.toOwnedSlice(),
         .default_members = try default_members.toOwnedSlice(),
+        .consuming_functions = try consuming_functions.toOwnedSlice(),
     };
 }
 

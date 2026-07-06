@@ -498,6 +498,22 @@ KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, K
     *out_value = array->items[index];
 }
 
+/* Element DRAIN (checker-verified move out of an OWNED array): hand the
+ * element's bridge value to the caller — which now owns it — and tombstone
+ * the slot to VOID so kira_array_release skips it and a later read of the
+ * drained slot yields a zero value (deterministic dispatch failure) instead
+ * of a double free. */
+KIRA_BRIDGE_EXPORT void kira_array_take(KiraArray *array, int64_t index, KiraBridgeValue *out_value) {
+    KiraBridgeValue zero = {0};
+    if (out_value == NULL) return;
+    if (!kira_array_is_active(array) || kira_bridge_probably_invalid_pointer(array->items) || index < 0 || (size_t)index >= array->len) {
+        *out_value = zero;
+        return;
+    }
+    *out_value = array->items[index];
+    array->items[index] = zero;
+}
+
 KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *)) {
     if (!kira_array_is_active(array)) {
         kira_trace_log("NATIVE", "ARRAY_RELEASE_SKIP", "array=%p", (void *)array);
@@ -551,6 +567,65 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
     kira_bridge_free(array, sizeof(KiraArray));
 }
 
+/* Registry of live native-backend state tokens. The VM tracks every box it
+ * allocates (`native_state_boxes`) and frees survivors at teardown
+ * (deinitTrackedNativeStates); this list is the native binary's equivalent.
+ * Tokens have no scope-based lifetime — `nativeUserData` handles may alias
+ * them for the whole program — so the only sound reclamation points are an
+ * explicit `kira_native_state_free` (which unlinks) and process exit (the
+ * destructor below frees every survivor through the same typed-interior
+ * path). Registry nodes are external so the 3-field token ABI prefix shared
+ * with the VM stays untouched. */
+typedef struct KiraNativeStateNode {
+    KiraNativeState *state;
+    struct KiraNativeStateNode *next;
+} KiraNativeStateNode;
+static KiraNativeStateNode *kira_native_state_registry = NULL;
+
+#if defined(_WIN32)
+#include <windows.h>
+static SRWLOCK kira_native_state_registry_lock = SRWLOCK_INIT;
+static void kira_native_state_registry_acquire(void) { AcquireSRWLockExclusive(&kira_native_state_registry_lock); }
+static void kira_native_state_registry_release(void) { ReleaseSRWLockExclusive(&kira_native_state_registry_lock); }
+#else
+#include <pthread.h>
+static pthread_mutex_t kira_native_state_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static void kira_native_state_registry_acquire(void) { pthread_mutex_lock(&kira_native_state_registry_lock); }
+static void kira_native_state_registry_release(void) { pthread_mutex_unlock(&kira_native_state_registry_lock); }
+#endif
+
+static void kira_native_state_registry_teardown(void);
+
+static void kira_native_state_registry_add(KiraNativeState *state) {
+    static int teardown_registered = 0;
+    KiraNativeStateNode *node = (KiraNativeStateNode *)malloc(sizeof(KiraNativeStateNode));
+    if (node == NULL) return; /* untracked: survives to exit unreclaimed, never unsafe */
+    node->state = state;
+    kira_native_state_registry_acquire();
+    if (!teardown_registered) {
+        teardown_registered = 1;
+        atexit(kira_native_state_registry_teardown);
+    }
+    node->next = kira_native_state_registry;
+    kira_native_state_registry = node;
+    kira_native_state_registry_release();
+}
+
+static void kira_native_state_registry_remove(KiraNativeState *state) {
+    kira_native_state_registry_acquire();
+    KiraNativeStateNode **link = &kira_native_state_registry;
+    while (*link != NULL) {
+        if ((*link)->state == state) {
+            KiraNativeStateNode *dead = *link;
+            *link = dead->next;
+            free(dead);
+            break;
+        }
+        link = &(*link)->next;
+    }
+    kira_native_state_registry_release();
+}
+
 KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, int64_t payload_size) {
     if (payload_size < 0) return NULL;
     KiraNativeState *state = (KiraNativeState *)calloc(1, sizeof(KiraNativeState));
@@ -562,6 +637,7 @@ KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, in
         free(state);
         return NULL;
     }
+    kira_native_state_registry_add(state);
     return state;
 }
 
@@ -609,14 +685,40 @@ KIRA_BRIDGE_EXPORT void kira_capi_install_state_interior_release(void (*release_
     kira_state_interior_release_fn = release_fn;
 }
 
-KIRA_BRIDGE_EXPORT void kira_native_state_free(KiraNativeState *state) {
-    if (state == NULL) return;
+static void kira_native_state_dispose(KiraNativeState *state) {
     if (kira_state_interior_release_fn != NULL) {
         kira_state_interior_release_fn(state);
     }
     free(state->payload);
     state->payload = NULL;
     free(state);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_state_free(KiraNativeState *state) {
+    if (state == NULL) return;
+    kira_native_state_registry_remove(state);
+    kira_native_state_dispose(state);
+}
+
+/* Process-exit teardown of surviving native-state tokens — VM parity with
+ * deinitTrackedNativeStates. Registered via atexit on the first allocation
+ * (see kira_native_state_registry_add), so it runs during exit() before the
+ * final leak accounting: tokens that legitimately live for the whole program
+ * (userdata handles held by FFI callbacks) are reclaimed rather than
+ * reported as leaks. Interiors go through the typed release hook when
+ * installed (native builds); hybrid keeps the shallow free (VM-owned
+ * interiors are the VM's to drop). */
+static void kira_native_state_registry_teardown(void) {
+    kira_native_state_registry_acquire();
+    KiraNativeStateNode *node = kira_native_state_registry;
+    kira_native_state_registry = NULL;
+    kira_native_state_registry_release();
+    while (node != NULL) {
+        KiraNativeStateNode *next = node->next;
+        kira_native_state_dispose(node->state);
+        free(node);
+        node = next;
+    }
 }
 
 KIRA_BRIDGE_EXPORT void *kira_native_state_recover(void *user_data, uint64_t expected_type_id) {
