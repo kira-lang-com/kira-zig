@@ -112,12 +112,17 @@ pub const Instruction = union(OpCode) {
     // IR lowering, guarded so the array cannot be mutated/freed during that call).
     // The interpreter then aliases a managed element instead of deep-cloning it,
     // matching the native backend, which never copies a borrowed element.
-    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef, borrow: bool = false },
+    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef, borrow: bool = false, moved: bool = false },
     array_set: struct { array: u32, index: u32, src: u32 },
     array_append: struct { array: u32, src: u32 },
     enum_tag: struct { dst: u32, src: u32 },
     enum_payload: struct { dst: u32, src: u32, payload_ty: TypeRef },
-    load_indirect: struct { dst: u32, ptr: u32, ty: TypeRef },
+    // `moved` marks a checker-verified field move-out (`let x = obj.field`):
+    // the VM takes ownership of the field's value and VOIDS the field slot, so
+    // the base drops with only its remaining fields (Rust partial move) while
+    // the moved value lives on in the destination register. Mirrors the LLVM
+    // backend's moved-read storage nulling.
+    load_indirect: struct { dst: u32, ptr: u32, ty: TypeRef, moved: bool = false },
     store_indirect: struct { ptr: u32, src: u32, ty: TypeRef },
     copy_indirect: struct { dst_ptr: u32, src_ptr: u32, type_name: []const u8 },
     branch: struct { condition: u32, true_label: u32, false_label: u32 },

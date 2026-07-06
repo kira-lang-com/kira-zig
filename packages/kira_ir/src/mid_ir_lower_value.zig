@@ -417,11 +417,39 @@ fn lookupCallReturnOwnership(program: model.Program, function_id: ?u32) model.Ow
     return .owned;
 }
 
+// Receiver mode of a CONSUMING family method (self owned) — one static slice,
+// so family dispatch needs no allocation.
+const consuming_receiver_ownership = [_]model.OwnershipMode{.owned};
+
 fn lookupVirtualCallOwnership(program: model.Program, static_type_name: []const u8, method_name: []const u8) []const model.OwnershipMode {
     const function_name = fullMethodName(std.heap.page_allocator, static_type_name, method_name) catch return &.{};
     defer std.heap.page_allocator.free(function_name);
     if (lower_hir.functionIdByName(program, function_name)) |id| return lookupCallOwnership(std.heap.page_allocator, program, id, function_name) catch &.{};
+    // Construct-FAMILY dispatch: family default methods are monomorphized per
+    // concrete form, so `<Family>.<method>` has no function. Consult the family
+    // surface instead: `@Consuming` methods and `body` accessors take the
+    // receiver OWNED (every implementation was lowered with an owned self, so
+    // the mode is uniform across dispatch targets).
+    if (familyMethodConsumesReceiver(program, static_type_name, method_name, 0)) {
+        return &consuming_receiver_ownership;
+    }
     return &.{};
+}
+
+fn familyMethodConsumesReceiver(program: model.Program, family_name: []const u8, method_name: []const u8, depth: u32) bool {
+    if (depth > 16) return false;
+    for (program.constructs) |construct_decl| {
+        if (!std.mem.eql(u8, construct_decl.name, family_name)) continue;
+        if (std.mem.eql(u8, method_name, "body")) return true;
+        for (construct_decl.consuming_functions) |name| {
+            if (std.mem.eql(u8, name, method_name)) return true;
+        }
+        for (construct_decl.parents) |parent_decl| {
+            if (familyMethodConsumesReceiver(program, parent_decl.name, method_name, depth + 1)) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 fn lookupVirtualCallReturnOwnership(program: model.Program, static_type_name: []const u8, method_name: []const u8) model.OwnershipMode {

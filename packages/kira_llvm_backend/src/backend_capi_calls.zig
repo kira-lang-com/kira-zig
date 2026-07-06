@@ -108,14 +108,18 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
         args[0] = v.receiver;
         @memcpy(args[1..], v.args);
         try lowerCall(fc, .{ .callee = method_id, .args = args, .dst = v.dst });
-        // construct_any results are recorded by lowerCall itself (its result
-        // switch tracks them as owned .struct_ptr drops); recording again here
-        // would dropPriorOccupant the value that was JUST stored — destroying
-        // the live result before the caller uses it (the widget-dispatch
-        // use-after-free). Enum results are still recorded here: lowerCall's
-        // switch does not track enum destinations.
+        // Record construct_any results HERE, exactly once — UNLESS lowerCall
+        // already recorded them (fresh-Any callee): recording again here after
+        // a lowerCall record would dropPriorOccupant the value that was JUST
+        // stored, destroying the live result before the caller uses it (the
+        // widget-dispatch use-after-free). A construct-family virtual-call
+        // result is treated as single-owner: its .struct_ptr slot runs the
+        // runtime-typed destroy at scope exit (KIRA_MEMORY_MODEL.md §3). Enum
+        // results are recorded by lowerCall (native) / lowerRuntimeCall
+        // (hybrid) themselves — the same exactly-once rule, so no enum case
+        // here.
         if (v.dst) |dst| switch (v.return_ty.kind) {
-            .enum_instance => drop.onAlloc(fc, dst),
+            .construct_any => if (!fc.dtors.tracksFreshAnyResult(method_id)) drop.onAlloc(fc, dst),
             else => {},
         };
         if (return_slot) |slot| {
@@ -208,16 +212,6 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                         }
                         continue;
                     }
-                    // Same rule for a borrowed type-erased (Any) argument passed to an
-                    // owned parameter: the callee's .struct_ptr param slot destroys it
-                    // at exit, so hand over an independent runtime-typed deep clone.
-                    if (pt.kind == .construct_any) {
-                        if (!drop.isOwned(fc, arg)) {
-                            var cargs = [_]llvm.c.LLVMValueRef{fc.registers[arg]};
-                            fc.registers[arg] = api.LLVMBuildCall2(fc.builder, fc.dtors.dynamic_clone.ty, fc.dtors.dynamic_clone.fn_value, &cargs, cargs.len, "call.any.clone");
-                        }
-                        continue;
-                    }
                     if (pt.kind != .ffi_struct) continue;
                     const name = pt.name orelse continue;
                     if (fc.dtors.map.get(name) == null) continue;
@@ -261,9 +255,18 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                 // untracked closure sources, and the .closure drop is tag-safe (an extern
                 // call's plain FFI pointer result is recorded but never freed).
                 switch (callee_decl.return_type.kind) {
-                    // construct_any results are fresh owned values too: the callee's
-                    // `ret` deep-clones untracked type-erased sources.
-                    .ffi_struct, .array, .raw_ptr, .construct_any => drop.onAlloc(fc, dst),
+                    .ffi_struct, .array, .raw_ptr => drop.onAlloc(fc, dst),
+                    // A returned enum is a fresh owned heap block (the callee's `ret`
+                    // clones untracked sources — the returned-enum invariant), so the
+                    // caller tracks it and frees it at scope exit via the typed enum
+                    // destroy. Without this every enum-returning call leaked its block
+                    // plus any nested payload chain (Result -> RenderFailure -> String).
+                    .enum_instance => drop.onAlloc(fc, dst),
+                    // A construct_any result is tracked only when the callee provably
+                    // returns a fresh owned tree (fresh-Any analysis; the setup
+                    // pre-scan allocated the .struct_ptr slot under the same
+                    // condition). Alias-returning callees stay untracked (§3).
+                    .construct_any => if (fc.dtors.tracksFreshAnyResult(callee_decl.id)) drop.onAlloc(fc, dst),
                     .string => drop.trackStringRegister(fc, dst),
                     else => {},
                 }
@@ -330,10 +333,15 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
             },
             else => unpacked,
         };
-        // Track for native drop ONLY when a native-owned clone was produced. Without clone
-        // metadata the value is the VM-returned (VM-owned) pointer; tracking it would have the
-        // native epilogue free VM-owned storage.
+        // Track for native drop ONLY when the native side owns the storage: a
+        // native-owned clone produced above, or an enum block — the bridge hands
+        // enums over as fresh libc-malloc'd blocks the native caller owns and
+        // drops exactly once (lowerEnumToNativeOwned; see
+        // HybridRuntime.cleanupPendingCallbackReturns). Everything else is the
+        // VM-returned (VM-owned) pointer; tracking it would have the native
+        // epilogue free VM-owned storage.
         if (cloned_owned) drop.onAlloc(fc, dst);
         if (cloned_string) drop.trackStringRegister(fc, dst);
+        if (callee_decl.return_type.kind == .enum_instance) drop.onAlloc(fc, dst);
     }
 }

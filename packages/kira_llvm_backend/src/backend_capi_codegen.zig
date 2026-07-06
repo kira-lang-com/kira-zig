@@ -27,6 +27,7 @@ const native_state = @import("backend_capi_native_state.zig");
 const closures = @import("backend_capi_closures.zig");
 const ffi = @import("backend_capi_ffi.zig");
 const calls = @import("backend_capi_calls.zig");
+const returns = @import("backend_capi_returns.zig");
 
 pub const FunctionCodegen = struct {
     allocator: std.mem.Allocator,
@@ -87,6 +88,11 @@ pub const FunctionCodegen = struct {
     // string local clones again (the register is untracked by design — see
     // onStoreLocal's string exclusion in backend_capi_drop.zig).
     string_local_slot: []?u32 = &.{},
+    // register -> produced by a move/owned load_local of an ffi_struct local. The
+    // destination copy_indirect must treat such a source as a MOVE (no clone_contents;
+    // ownership transfers and the source local's cleanup slot is escaped) rather than
+    // as a value copy.
+    reg_move_local: []?u32 = &.{},
 
     // Build a scratch `alloca` in the function entry block regardless of where the
     // builder is currently positioned. LLVM only reclaims (and SROA/mem2reg only
@@ -129,6 +135,9 @@ pub const FunctionCodegen = struct {
         self.registers = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.register_count);
         defer self.allocator.free(self.registers);
         @memset(self.registers, null);
+        self.reg_move_local = try self.allocator.alloc(?u32, self.function_decl.register_count);
+        defer self.allocator.free(self.reg_move_local);
+        @memset(self.reg_move_local, null);
         self.locals = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.local_count);
         defer self.allocator.free(self.locals);
         @memset(self.locals, null);
@@ -284,6 +293,14 @@ pub const FunctionCodegen = struct {
             },
             .load_local => |v| {
                 self.registers[v.dst] = api.LLVMBuildLoad2(b, self.types.llvmType(self.function_decl.local_types[v.local]), self.locals[v.local], "load");
+                if (v.dst < self.reg_move_local.len and v.local < self.function_decl.local_types.len and
+                    self.function_decl.local_types[v.local].kind == .ffi_struct)
+                {
+                    self.reg_move_local[v.dst] = switch (v.ownership) {
+                        .move, .owned => v.local,
+                        else => null,
+                    };
+                }
                 drop.onLoadLocal(self, v.dst, v.local);
                 drop.recordRegLocal(self, v.dst, v.local);
             },
@@ -310,87 +327,10 @@ pub const FunctionCodegen = struct {
             },
             .print => |v| try print.lowerPrint(self, self.register_types[v.src], self.registers[v.src]),
             .call => |v| try calls.lowerCall(self, v),
-            .ret => |v| {
-                if (v.src) |src| {
-                    if (self.drop_enabled and self.function_decl.return_type.kind == .ffi_struct) {
-                        // Lower the struct result into caller-stable heap storage and
-                        // escape its source slot BEFORE exit cleanup, so the returned
-                        // struct outlives the callee frame and the callee can release all
-                        // of its own remaining temporaries. The caller receives an owned
-                        // heap struct, tracked as struct_heap at the call site (lowerCall
-                        // / setup) and freed there.
-                        const ret_val = drop.prepareStructReturn(self, src);
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else if (self.drop_enabled and self.function_decl.return_type.kind == .array and !drop.isOwned(self, src)) {
-                        // A BORROWED array returned as owned (`return session.contentPath`,
-                        // `return view.children`): the caller tracks every array-returning
-                        // call as owned and frees it, so handing back the alias lets the
-                        // caller free storage the real owner (a native-state box, a borrowed
-                        // param) still holds — the editorContentPathSegments use-after-free.
-                        // Deep-clone so the caller owns independent storage. In hybrid mode
-                        // kira_array_clone returns the array unchanged (the VM owns it).
-                        const src_ptr = api.LLVMBuildIntToPtr(b, self.registers[src], self.types.ptr_ty, "ret.arr.src");
-                        const elem = self.dtors.elementClone(self.request.program.programPtr(), self.function_decl.return_type);
-                        var cargs = [_]llvm.c.LLVMValueRef{ src_ptr, elem orelse api.LLVMConstNull(self.types.ptr_ty) };
-                        const clone = api.LLVMBuildCall2(b, self.runtime_decls.array_clone.ty, self.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "ret.arr.clone");
-                        const ret_val = api.LLVMBuildPtrToInt(b, clone, self.types.i64, "ret.arr.cloneint");
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else if (self.drop_enabled and self.function_decl.return_type.kind == .enum_instance and !drop.isOwned(self, src)) {
-                        // Same borrowed->owned promotion for a returned enum block.
-                        const src_ptr = api.LLVMBuildIntToPtr(b, self.registers[src], self.types.ptr_ty, "ret.enum.src");
-                        const clone_fn = self.dtors.enumCloneFn(self.function_decl.return_type);
-                        var cargs = [_]llvm.c.LLVMValueRef{src_ptr};
-                        const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "ret.enum.clone");
-                        const ret_val = api.LLVMBuildPtrToInt(b, clone, self.types.i64, "ret.enum.cloneint");
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else if (self.drop_enabled and self.function_decl.return_type.kind == .string and !drop.isOwned(self, src)) {
-                        // Returned-string invariant: every string a call yields is a
-                        // fresh owned buffer the caller frees. An UNTRACKED source (a
-                        // literal, a parameter, or a string local — string locals are
-                        // deliberately outside the register<->local map) is cloned
-                        // BEFORE exit cleanup so the returned buffer survives the
-                        // frame's per-local/producer slot frees. A tracked source
-                        // (a direct concat/coercion/read result) moves out through the
-                        // emitExitCleanup(src) slot-skip in the branch below.
-                        const ret_val = drop.cloneStringValue(self, self.registers[src]);
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else if (self.drop_enabled and self.request.mode == .llvm_native and self.function_decl.return_type.kind == .construct_any and !drop.isOwned(self, src)) {
-                        // Returned type-erased (Any) invariant: callers track
-                        // construct_any results as owned .struct_ptr drops, so an
-                        // UNTRACKED source (borrow param, field read, array element)
-                        // hands back a runtime-typed deep clone. Unknown ids pass
-                        // through unchanged — and are then never freed by the caller
-                        // (same id lookup on both sides).
-                        var cargs = [_]llvm.c.LLVMValueRef{self.registers[src]};
-                        const ret_val = api.LLVMBuildCall2(b, self.dtors.dynamic_clone.ty, self.dtors.dynamic_clone.fn_value, &cargs, cargs.len, "ret.any.clone");
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else if (self.drop_enabled and self.request.mode == .llvm_native and self.function_decl.return_type.kind == .raw_ptr and !drop.isOwned(self, src)) {
-                        // Returned-closure invariant (native): every raw_ptr a call
-                        // yields is a fresh owned value the caller tracks as .closure
-                        // and frees (tag-safe). An UNTRACKED source (a borrow param, an
-                        // array element, a field read) is deep-cloned before exit
-                        // cleanup; kira_capi_closure_clone passes callable values and
-                        // plain FFI pointers through unchanged. A tracked source moves
-                        // out via the emitExitCleanup(src) slot-skip below.
-                        var cargs = [_]llvm.c.LLVMValueRef{self.registers[src]};
-                        const ret_val = api.LLVMBuildCall2(b, self.dtors.closure_clone.ty, self.dtors.closure_clone.fn_value, &cargs, cargs.len, "ret.clos.clone");
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else {
-                        drop.emitExitCleanup(self, src);
-                        _ = api.LLVMBuildRet(b, self.registers[src]);
-                    }
-                } else {
-                    drop.emitExitCleanup(self, null);
-                    _ = api.LLVMBuildRetVoid(b);
-                }
-                self.terminated = true;
-            },
+            // Return-value ownership promotions live in backend_capi_returns.zig
+            // (the call-result invariants: struct/array/enum/string/closure
+            // results are always caller-owned fresh values).
+            .ret => |v| returns.lowerReturn(self, v.src),
             .alloc_struct => |v| {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
                 const size = api.LLVMSizeOf(struct_ty);
@@ -428,8 +368,12 @@ pub const FunctionCodegen = struct {
                 // Checker-verified field move-out: ownership transfers to dst.
                 // Track it for scope-exit cleanup and null the field storage so the
                 // owner's destructor / the enforced re-init overwrite cannot free
-                // the value this register now owns.
-                if (v.moved and self.drop_enabled and (v.ty.kind == .array or v.ty.kind == .enum_instance)) {
+                // the value this register now owns. construct_any fields transfer
+                // the same way (Rust partial move): the base's typed destructor
+                // frees Any fields (rc.anyfield), so the moved-out tree must leave
+                // a nulled slot behind or the base drop frees it under the new
+                // owner (the KiraUI `let root = app.content` pattern).
+                if (v.moved and self.drop_enabled and (v.ty.kind == .array or v.ty.kind == .enum_instance or v.ty.kind == .construct_any)) {
                     drop.onAlloc(self, v.dst);
                     const moved_field = api.LLVMBuildIntToPtr(b, self.registers[v.ptr], self.types.ptr_ty, "load.move.field");
                     _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.ptr_ty), moved_field);
@@ -440,6 +384,7 @@ pub const FunctionCodegen = struct {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
                 const src = api.LLVMBuildIntToPtr(b, self.registers[v.src_ptr], self.types.ptr_ty, "copy.src");
                 const dst = api.LLVMBuildIntToPtr(b, self.registers[v.dst_ptr], self.types.ptr_ty, "copy.dst");
+                const move_local = if (v.src_ptr < self.reg_move_local.len) self.reg_move_local[v.src_ptr] else null;
                 // Release any prior occupant of the destination's stack shell before the
                 // shallow store discards its array pointers (loop-body reassignment).
                 if (self.drop_enabled) drop.releasePriorCopyDest(self, v.dst_ptr, v.type_name);
@@ -456,13 +401,20 @@ pub const FunctionCodegen = struct {
                     const td = utils.findTypeDecl(self.request.program.programPtr(), v.type_name) orelse break :blk false;
                     break :blk td.ffi == null;
                 };
-                if ((self.drop_enabled or clone_default)) {
+                if (move_local == null and (self.drop_enabled or clone_default)) {
                     if (self.dtors.map.get(v.type_name)) |h| {
                         var cc = [_]llvm.c.LLVMValueRef{dst};
                         _ = api.LLVMBuildCall2(b, h.clone_contents.ty, h.clone_contents.fn_value, &cc, cc.len, "");
                     }
                 }
                 if (self.drop_enabled) drop.onCopyDest(self, v.dst_ptr, dst, v.type_name);
+                if (move_local) |local| {
+                    // The contents moved into dst; a heap-shell source (owned
+                    // param / call result) leaves an empty shell nothing owns —
+                    // free it (shell only) before the slot is nulled.
+                    drop.onMoveLocalHeapShell(self, local, src);
+                    drop.onMoveLocal(self, local);
+                }
             },
             .c_string_to_string => |v| {
                 self.registers[v.dst] = try calls.lowerCStringToString(self, v);

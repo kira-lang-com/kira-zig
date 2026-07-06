@@ -38,7 +38,7 @@ pub fn build(
 
     for (program.enums) |enum_decl| {
         const helpers = dtors.enum_map.get(enum_decl.name) orelse continue;
-        buildDestroy(api, builder, types, runtime, enum_decl, helpers.destroy.fn_value);
+        buildDestroy(api, builder, types, runtime, dtors, enum_decl, helpers.destroy.fn_value);
         buildClone(api, builder, types, runtime, dtors, enum_decl, helpers.clone.fn_value);
     }
 }
@@ -53,6 +53,7 @@ fn buildDestroy(
     b: llvm.c.LLVMBuilderRef,
     types: capi.Types,
     runtime: capi.RuntimeDecls,
+    dtors: *const destructors.Destructors,
     enum_decl: ir.EnumTypeDecl,
     fn_value: llvm.c.LLVMValueRef,
 ) void {
@@ -71,23 +72,29 @@ fn buildDestroy(
     const switch_inst = api.LLVMBuildSwitch(b, tag, free_block, @intCast(enum_decl.variants.len));
     for (enum_decl.variants) |variant| {
         const pt = variant.payload_ty orelse continue;
-        if (pt.kind != .string) continue;
+        if (pt.kind != .string and pt.kind != .enum_instance) continue;
         const case_block = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ed.case");
         api.LLVMAddCase(switch_inst, api.LLVMConstInt(types.i64, variant.discriminant, 0), case_block);
         api.LLVMPositionBuilderAtEnd(b, case_block);
         const payload = api.LLVMBuildLoad2(b, types.i64, payloadSlot(api, b, types, block), "ed.payload");
-        const box = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "ed.box");
-        const box_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, box, api.LLVMConstNull(types.ptr_ty), "ed.box.isnull");
-        const box_free = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ed.box.free");
-        _ = api.LLVMBuildCondBr(b, box_null, free_block, box_free);
-        api.LLVMPositionBuilderAtEnd(b, box_free);
-        // The box holds a %kira.string; its field 0 is the owned byte buffer.
-        const str = api.LLVMBuildLoad2(b, types.string_ty, box, "ed.str");
-        const buf = api.LLVMBuildExtractValue(b, str, 0, "ed.str.ptr");
-        var buf_args = [_]llvm.c.LLVMValueRef{buf};
-        _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &buf_args, buf_args.len, "");
-        var box_args = [_]llvm.c.LLVMValueRef{box};
-        _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &box_args, box_args.len, "");
+        const payload_ptr = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "ed.payload.ptr");
+        const payload_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, payload_ptr, api.LLVMConstNull(types.ptr_ty), "ed.payload.isnull");
+        const payload_free = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ed.payload.free");
+        _ = api.LLVMBuildCondBr(b, payload_null, free_block, payload_free);
+        api.LLVMPositionBuilderAtEnd(b, payload_free);
+        if (pt.kind == .string) {
+            // The box holds a %kira.string; its field 0 is the owned byte buffer.
+            const str = api.LLVMBuildLoad2(b, types.string_ty, payload_ptr, "ed.str");
+            const buf = api.LLVMBuildExtractValue(b, str, 0, "ed.str.ptr");
+            var buf_args = [_]llvm.c.LLVMValueRef{buf};
+            _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &buf_args, buf_args.len, "");
+            var box_args = [_]llvm.c.LLVMValueRef{payload_ptr};
+            _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &box_args, box_args.len, "");
+        } else {
+            const destroy = dtors.enumDestroyFn(pt);
+            var payload_args = [_]llvm.c.LLVMValueRef{payload_ptr};
+            _ = api.LLVMBuildCall2(b, destroy.ty, destroy.fn_value, &payload_args, payload_args.len, "");
+        }
         _ = api.LLVMBuildBr(b, free_block);
     }
 
@@ -132,27 +139,35 @@ fn buildClone(
     const switch_inst = api.LLVMBuildSwitch(b, tag, ret_block, @intCast(enum_decl.variants.len));
     for (enum_decl.variants) |variant| {
         const pt = variant.payload_ty orelse continue;
-        if (pt.kind != .string) continue;
+        if (pt.kind != .string and pt.kind != .enum_instance) continue;
         const case_block = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ecl.case");
         api.LLVMAddCase(switch_inst, api.LLVMConstInt(types.i64, variant.discriminant, 0), case_block);
         api.LLVMPositionBuilderAtEnd(b, case_block);
         const payload = api.LLVMBuildLoad2(b, types.i64, payloadSlot(api, b, types, src), "ecl.payload");
-        const old_box = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "ecl.oldbox");
-        const box_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old_box, api.LLVMConstNull(types.ptr_ty), "ecl.box.isnull");
-        const box_clone = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ecl.box.clone");
-        _ = api.LLVMBuildCondBr(b, box_null, ret_block, box_clone);
-        api.LLVMPositionBuilderAtEnd(b, box_clone);
-        const str = api.LLVMBuildLoad2(b, types.string_ty, old_box, "ecl.str");
-        const old_buf = api.LLVMBuildExtractValue(b, str, 0, "ecl.str.ptr");
-        const len = api.LLVMBuildExtractValue(b, str, 1, "ecl.str.len");
-        var sc_args = [_]llvm.c.LLVMValueRef{ old_buf, len };
-        const new_buf = api.LLVMBuildCall2(b, dtors.string_clone.ty, dtors.string_clone.fn_value, &sc_args, sc_args.len, "ecl.buf.clone");
-        const new_str = api.LLVMBuildInsertValue(b, str, new_buf, 0, "ecl.str.clone");
-        var bm_args = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(types.i64, 16, 0)};
-        const new_box = api.LLVMBuildCall2(b, runtime.malloc.ty, runtime.malloc.fn_value, &bm_args, bm_args.len, "ecl.newbox");
-        _ = api.LLVMBuildStore(b, new_str, new_box);
-        const new_box_int = api.LLVMBuildPtrToInt(b, new_box, types.i64, "ecl.newbox.int");
-        _ = api.LLVMBuildStore(b, new_box_int, payloadSlot(api, b, types, dst));
+        const old_payload_ptr = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "ecl.oldpayload");
+        const payload_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old_payload_ptr, api.LLVMConstNull(types.ptr_ty), "ecl.payload.isnull");
+        const payload_clone = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "ecl.payload.clone");
+        _ = api.LLVMBuildCondBr(b, payload_null, ret_block, payload_clone);
+        api.LLVMPositionBuilderAtEnd(b, payload_clone);
+        if (pt.kind == .string) {
+            const str = api.LLVMBuildLoad2(b, types.string_ty, old_payload_ptr, "ecl.str");
+            const old_buf = api.LLVMBuildExtractValue(b, str, 0, "ecl.str.ptr");
+            const len = api.LLVMBuildExtractValue(b, str, 1, "ecl.str.len");
+            var sc_args = [_]llvm.c.LLVMValueRef{ old_buf, len };
+            const new_buf = api.LLVMBuildCall2(b, dtors.string_clone.ty, dtors.string_clone.fn_value, &sc_args, sc_args.len, "ecl.buf.clone");
+            const new_str = api.LLVMBuildInsertValue(b, str, new_buf, 0, "ecl.str.clone");
+            var bm_args = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(types.i64, 16, 0)};
+            const new_box = api.LLVMBuildCall2(b, runtime.malloc.ty, runtime.malloc.fn_value, &bm_args, bm_args.len, "ecl.newbox");
+            _ = api.LLVMBuildStore(b, new_str, new_box);
+            const new_box_int = api.LLVMBuildPtrToInt(b, new_box, types.i64, "ecl.newbox.int");
+            _ = api.LLVMBuildStore(b, new_box_int, payloadSlot(api, b, types, dst));
+        } else {
+            const clone = dtors.enumCloneFn(pt);
+            var clone_args = [_]llvm.c.LLVMValueRef{old_payload_ptr};
+            const new_payload_ptr = api.LLVMBuildCall2(b, clone.ty, clone.fn_value, &clone_args, clone_args.len, "ecl.payload.clone.ptr");
+            const new_payload_int = api.LLVMBuildPtrToInt(b, new_payload_ptr, types.i64, "ecl.payload.clone.int");
+            _ = api.LLVMBuildStore(b, new_payload_int, payloadSlot(api, b, types, dst));
+        }
         _ = api.LLVMBuildBr(b, ret_block);
     }
 

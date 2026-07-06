@@ -165,6 +165,7 @@ pub fn lowerTypeConstruction(
             else
                 try lowerExpr(ctx, arg.value, imports, scope, function_headers);
             try rejectAliasedArrayField(ctx, field_ty, field_value, arg.span);
+            shared.markAnyFieldMovedIntoOwned(ctx, scope, field_value, arg.span);
             const field_name = if (type_header) |header| header.fields[field_index].name else imported_type.?.fields[field_index].name;
             try fields.append(.{
                 .field_name = try ctx.allocator.dupe(u8, field_name),
@@ -194,6 +195,7 @@ pub fn lowerTypeConstruction(
             else
                 try lowerExpr(ctx, field.value, imports, scope, function_headers);
             try rejectAliasedArrayField(ctx, field_ty, field_value, field.span);
+            shared.markAnyFieldMovedIntoOwned(ctx, scope, field_value, field.span);
             try fields.append(.{
                 .field_name = try ctx.allocator.dupe(u8, field.name),
                 .field_index = @as(u32, @intCast(field_index)),

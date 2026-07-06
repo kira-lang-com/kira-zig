@@ -132,6 +132,15 @@ pub fn moveOrCloneToHeap(fc: *FunctionCodegen, src_reg: u32, type_name: ?[]const
                     nullSlot(fc, idx);
                     return src_val;
                 },
+                // A tracked type-erased value (fresh-Any call result, moved-out
+                // Any field) is already an owned heap shell: MOVE it. Cloning
+                // here would deep-copy a widget tree per consuming dispatch —
+                // the exact unbounded copy the memory model forbids — and leak
+                // the interior clones (Any fields alias on struct copy).
+                .struct_ptr => {
+                    nullSlot(fc, idx);
+                    return src_val;
+                },
                 .struct_contents => {
                     const heap = moveStructToHeap(fc, src_val, fc.drop_slots.items[idx].ty.name);
                     nullSlot(fc, idx);
@@ -208,6 +217,31 @@ pub fn onLoadLocal(fc: *FunctionCodegen, dst: u32, local: u32) void {
     // See onStoreLocal: strings are excluded from the register<->local map.
     if (local < fc.function_decl.local_types.len and fc.function_decl.local_types[local].kind == .string) return;
     if (dst < fc.register_slot.len and local < fc.local_slot.len) fc.register_slot[dst] = fc.local_slot[local];
+}
+
+pub fn onMoveLocal(fc: *FunctionCodegen, local: u32) void {
+    if (!fc.drop_enabled) return;
+    if (local >= fc.local_slot.len) return;
+    const index = fc.local_slot[local] orelse return;
+    nullSlot(fc, index);
+}
+
+// A copy_indirect moved a struct local's CONTENTS out (`var next = move tree`).
+// When the source local is tracked as an owned heap shell (.struct_heap — an
+// owned param the caller normalized to heap, or an alloc/call result), the
+// shallow copy transfers the contents but leaves the empty 8-byte-header shell
+// with no owner: onMoveLocal nulls the slot (correct — exit cleanup must not
+// deep-destroy the moved contents) and nothing else references the shell — one
+// leaked shell per move (the rebuild(move tree) loop). Free the SHELL ONLY
+// (kira_struct_free, no contents destroy) before the slot is nulled. A
+// .struct_contents source is stack-backed — nothing to free.
+pub fn onMoveLocalHeapShell(fc: *FunctionCodegen, local: u32, src_ptr: llvm.c.LLVMValueRef) void {
+    if (!fc.drop_enabled) return;
+    if (local >= fc.local_slot.len) return;
+    const index = fc.local_slot[local] orelse return;
+    if (fc.drop_slots.items[index].kind != .struct_heap) return;
+    var args = [_]llvm.c.LLVMValueRef{src_ptr};
+    _ = fc.api.LLVMBuildCall2(fc.builder, fc.runtime_decls.struct_free.ty, fc.runtime_decls.struct_free.fn_value, &args, args.len, "");
 }
 
 // Is `reg` a tracked, owned (freshly allocated, not borrowed) value?

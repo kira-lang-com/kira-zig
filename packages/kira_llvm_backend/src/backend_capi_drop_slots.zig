@@ -129,6 +129,15 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 const kind: OwnedKind = switch (callee.return_type.kind) {
                     .ffi_struct => .struct_heap,
                     .array => .array,
+                    // A construct_any result is tracked ONLY when the callee is
+                    // PROVEN to return a fresh owned tree on every path
+                    // (backend_capi_fresh_any.zig): the .struct_ptr slot then runs
+                    // the runtime-typed destroy at scope exit — this reclaims
+                    // `body`/factory widget trees. Alias-returning callees keep
+                    // the untracked default (KIRA_MEMORY_MODEL.md §3): tracking
+                    // them would free storage the real owner still holds, and
+                    // `ret` never deep-clones Any values.
+                    .construct_any => if (fc.dtors.tracksFreshAnyResult(callee.id)) .struct_ptr else continue,
                     // A returned enum is a fresh heap block the callee (or, for a hybrid
                     // call into the VM, `lowerEnumToNativeOwned`) handed over as a libc-
                     // allocated `{tag,payload}`; the caller owns it and frees it at scope
@@ -147,10 +156,6 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     // extern call's plain FFI pointer result is never freed. NATIVE only:
                     // a hybrid closure result may be VM-owned.
                     .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
-                    // A returned type-erased (Any) value is fresh owned too (`ret`
-                    // deep-clones untracked sources); dropped via the runtime-typed
-                    // dispatcher (unknown ids no-op). NATIVE only.
-                    .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -169,11 +174,14 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 }
                 // A checker-verified field move-out transfers ownership to dst: the
                 // codegen nulls the field storage after the read, so dst is the sole
-                // owner and needs a cleanup slot for scope exit.
+                // owner and needs a cleanup slot for scope exit. A moved-out Any
+                // field is single-owner for the same reason (.struct_ptr runs the
+                // runtime-typed destroy).
                 if (!v.moved) continue;
                 const kind: OwnedKind = switch (v.ty.kind) {
                     .array => .array,
                     .enum_instance => .raw,
+                    .construct_any => .struct_ptr,
                     else => continue,
                 };
                 if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
@@ -213,7 +221,27 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 }
             },
             .array_get => |v| {
-                if (v.ty.kind == .string) try allocStringSlot(fc, v.dst, "drop.strelem.slot");
+                if (v.ty.kind == .string) {
+                    try allocStringSlot(fc, v.dst, "drop.strelem.slot");
+                    continue;
+                }
+                // A drained element (checker-verified move out of an owned
+                // array) transfers ownership to dst; the slot was tombstoned,
+                // so dst is the sole owner and needs a cleanup slot.
+                if (!v.moved) continue;
+                const kind: OwnedKind = switch (v.ty.kind) {
+                    .construct_any => .struct_ptr,
+                    .array => .array,
+                    .enum_instance => .raw,
+                    .raw_ptr => .closure,
+                    else => continue,
+                };
+                if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
+                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.elemmove.slot");
+                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
+                const index: u32 = @intCast(fc.drop_slots.items.len);
+                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.ty });
+                fc.register_slot[v.dst] = index;
             },
             .enum_payload => |v| {
                 if (v.payload_ty.kind == .string) try allocStringSlot(fc, v.dst, "drop.strpayload.slot");
@@ -229,7 +257,6 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     .string => .string_buf,
                     // Fresh owned closure result (tag-safe drop; see the .call case).
                     .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
-                    .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;

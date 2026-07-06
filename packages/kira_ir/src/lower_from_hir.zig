@@ -539,6 +539,7 @@ pub const Lowerer = struct {
                     .array = array_reg,
                     .index = index_reg,
                     .ty = try lowerResolvedType(self.program, node.ty),
+                    .moved = node.moved,
                 } });
                 break :blk dst;
             },

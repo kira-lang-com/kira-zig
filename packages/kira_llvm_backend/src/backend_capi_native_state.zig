@@ -48,12 +48,18 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
         // next field access/replace is a use-after-free/double-free (the
         // FoundationRetainedFlatAcc crash in leak-harness/liquid-glass with
         // ownership free enabled). Deep-clone the sub-struct so the box owns an
-        // independent heap struct, mirroring the enum and array cases below.
+        // independent heap struct, mirroring the enum and array cases below. The
+        // clone is already an owned heap shell, so it is stored DIRECTLY
+        // (box_struct=false below) — the default boxing pack would shallow-copy
+        // the clone into yet another shell and orphan the clone (one leaked
+        // shell per state allocation).
+        var struct_field_owned = false;
         if (field_decl.ty.kind == .ffi_struct and fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid)) {
             if (field_decl.ty.name) |field_type_name| {
                 if (fc.dtors.map.get(field_type_name)) |helpers| {
                     var cargs = [_]llvm.c.LLVMValueRef{field_value};
                     field_value = api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &cargs, cargs.len, "state.struct.clone");
+                    struct_field_owned = true;
                 }
             }
         }
@@ -77,7 +83,10 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
         if (field_decl.ty.kind == .string and fc.drop_enabled) {
             field_value = drop.cloneStringValue(fc, field_value);
         }
-        const bv = try fc.packBridge(field_decl.ty, field_value);
+        // A deep-cloned struct field is stored by pointer (the slot owns the
+        // clone); an unowned inline pointer keeps the boxing pack so the slot
+        // never aliases the source struct's storage.
+        const bv = try fc.packBridgeBoxed(field_decl.ty, field_value, !struct_field_owned);
         var s_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, @intCast(index), 0)};
         const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, payload, &s_idx, s_idx.len, "state.slot");
         _ = api.LLVMBuildStore(b, bv, slot);
@@ -153,15 +162,14 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
         // zeroed payload slot is a safe no-op destroy.
         var dargs = [_]llvm.c.LLVMValueRef{old};
         _ = api.LLVMBuildCall2(b, helpers.destroy.ty, helpers.destroy.fn_value, &dargs, dargs.len, "");
-        var stored = fc.registers[v.src];
-        if (!drop.isOwned(fc, v.src)) {
-            var cargs = [_]llvm.c.LLVMValueRef{newp};
-            const clone = api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &cargs, cargs.len, "state.set.sclone");
-            stored = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.set.scloneint");
-        } else {
-            drop.onEscape(fc, v.src);
-        }
-        const bv = try fc.packBridge(v.field_ty, stored);
+        // Normalize the source to an owned caller-stable heap shell (owned heap
+        // moves as-is, a stack-backed local moves into fresh heap, a borrow
+        // deep-clones) and store THAT POINTER (box_struct=false): the slot owns
+        // the shell, so interior release / drop-replaced can kira_destroy it.
+        // The default boxing pack would shallow-copy the shell and orphan it —
+        // one leaked shell per heap-owned source stored into a state field.
+        const stored = drop.moveOrCloneToHeap(fc, v.src, v.field_ty.name);
+        const bv = try fc.packBridgeBoxed(v.field_ty, stored, false);
         _ = api.LLVMBuildStore(b, bv, slot);
         _ = api.LLVMBuildBr(b, done_block);
         api.LLVMPositionBuilderAtEnd(b, done_block);
@@ -185,20 +193,19 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
         _ = api.LLVMBuildStore(b, bv, slot);
         return;
     }
-    // A closure / type-erased (Any) payload slot owns an independent DEEP CLONE,
+    // A closure payload slot owns an independent DEEP CLONE (blocks are small),
     // and the replaced value is destroyed first (self-store guarded) — the same
-    // deep-value rule as strings above. Both primitives are tag-/id-safe: plain
-    // FFI pointers and unknown shells pass through and are never freed. This is
-    // what lets kira_capi_state_interior_release reclaim these slots when the
-    // state token is freed. Native only.
+    // deep-value rule as strings above. Both primitives are tag-safe: plain FFI
+    // pointers pass through and are never freed. This is what lets
+    // kira_capi_state_interior_release reclaim closure slots when the state
+    // token is freed. Type-erased (Any) slots keep alias semantics — cloning
+    // widget trees per state set is a per-frame memory explosion. Native only.
     const heap_src_kind = if (v.src < fc.register_types.len) fc.register_types[v.src].kind else ir.ValueType.Kind.integer;
-    if ((v.field_ty.kind == .raw_ptr or v.field_ty.kind == .construct_any) and
-        (heap_src_kind == .raw_ptr or heap_src_kind == .construct_any) and
+    if (v.field_ty.kind == .raw_ptr and heap_src_kind == .raw_ptr and
         fc.drop_enabled and fc.request.mode == .llvm_native)
     {
-        const is_any = v.field_ty.kind == .construct_any;
-        const destroy_fn = if (is_any) fc.dtors.dynamic_destroy else fc.dtors.destroy_closure;
-        const clone_fn = if (is_any) fc.dtors.dynamic_clone else fc.dtors.closure_clone;
+        const destroy_fn = fc.dtors.destroy_closure;
+        const clone_fn = fc.dtors.closure_clone;
         var pay_idx = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(fc.types.i32, 0, 0), api.LLVMConstInt(fc.types.i32, 2, 0) };
         const pay_ptr = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, slot, &pay_idx, pay_idx.len, "state.set.heappay");
         const old = api.LLVMBuildLoad2(b, fc.types.i64, pay_ptr, "state.set.heapold");
@@ -217,6 +224,52 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
         api.LLVMPositionBuilderAtEnd(b, done_block);
         return;
     }
+    // An enum payload slot owns its heap block, matching the VM's
+    // nativeStateFieldSet (vm_helpers stores a fresh owned native enum via
+    // lowerEnumToNativeOwned) and the alloc-time clone-in above: destroy the
+    // replaced block (typed — string boxes/nested payloads free with it),
+    // deep-clone a borrowed source, escape an owned source's cleanup slot.
+    // Self-store guarded. NATIVE only: a hybrid slot's replaced value may be
+    // VM-written and stays on the pre-existing alias path (conservative leak,
+    // never a cross-owner free — the hybrid interior hook is uninstalled).
+    if (v.field_ty.kind == .enum_instance and fc.drop_enabled and fc.request.mode == .llvm_native) {
+        const old_bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "state.set.enumoldbv");
+        const old_int = try fc.unpackBridge(v.field_ty, old_bv);
+        const old = api.LLVMBuildIntToPtr(b, old_int, fc.types.ptr_ty, "state.set.enumold");
+        const newp = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "state.set.enumnew");
+        const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, newp, "state.set.enumsame");
+        const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.ework");
+        const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.edone");
+        _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+        api.LLVMPositionBuilderAtEnd(b, work_block);
+        // Typed destroy null-checks, so the first set into a zeroed slot no-ops.
+        const destroy_fn = fc.dtors.enumDestroyFn(v.field_ty);
+        var dargs = [_]llvm.c.LLVMValueRef{old};
+        _ = api.LLVMBuildCall2(b, destroy_fn.ty, destroy_fn.fn_value, &dargs, dargs.len, "");
+        var stored = fc.registers[v.src];
+        if (!drop.isOwned(fc, v.src)) {
+            const clone_fn = fc.dtors.enumCloneFn(v.field_ty);
+            var cargs = [_]llvm.c.LLVMValueRef{newp};
+            const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "state.set.enumclone");
+            stored = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.set.enumcloneint");
+        } else {
+            drop.onEscape(fc, v.src);
+        }
+        const bv = try fc.packBridge(v.field_ty, stored);
+        _ = api.LLVMBuildStore(b, bv, slot);
+        _ = api.LLVMBuildBr(b, done_block);
+        api.LLVMPositionBuilderAtEnd(b, done_block);
+        return;
+    }
+    // A type-erased (Any) payload slot takes its value by MOVE: the pointer is
+    // stored as-is (never cloned — deep-copying a widget tree per state set is
+    // a per-frame memory explosion) and an owned source ESCAPES so scope-exit
+    // cleanup cannot free the tree the state now references (state.any.escape).
+    // The slot itself is a documented conservative leak — the interior release
+    // skips Any slots — until move-only Any flows are checker-enforced
+    // (KIRA_MEMORY_MODEL.md §5). Enum slots keep their pre-existing alias
+    // semantics on this default path.
+    if (v.field_ty.kind == .construct_any) drop.onEscape(fc, v.src);
     const bv = try fc.packBridge(fc.register_types[v.src], fc.registers[v.src]);
     _ = api.LLVMBuildStore(b, bv, slot);
 }
