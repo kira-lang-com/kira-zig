@@ -34,8 +34,9 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
         // matching the borrowed-enum rule in lowerStoreIndirect.
         if (field_decl.ty.kind == .enum_instance and fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid)) {
             const sptr = api.LLVMBuildIntToPtr(b, field_value, fc.types.ptr_ty, "state.enum.src");
+            const clone_fn = fc.dtors.enumCloneFn(field_decl.ty);
             var cargs = [_]llvm.c.LLVMValueRef{sptr};
-            const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "state.enum.clone");
+            const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "state.enum.clone");
             field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.enum.cloneint");
         }
         // Same aliasing hazard for a nested ffi_struct field: it is embedded INLINE
@@ -282,8 +283,9 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             // free that crashed the Metal backend's first hybrid run).
             if (fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid) and !drop.isOwned(fc, v.src)) {
                 const sptr = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.src");
+                const clone_fn = fc.dtors.enumCloneFn(v.ty);
                 var cargs = [_]llvm.c.LLVMValueRef{sptr};
-                const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "store.enum.clone");
+                const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "store.enum.clone");
                 _ = api.LLVMBuildStore(b, clone, ptr);
             } else {
                 const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.move");
@@ -324,11 +326,34 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                     const data_ptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr");
                     _ = api.LLVMBuildStore(b, data_ptr, ptr);
                 }
+            } else if (fc.drop_enabled and fc.request.mode == .llvm_native and v.ty.kind == .raw_ptr and src_kind == .raw_ptr) {
+                // Closure field store (deep-value model, mirrors strings): the field
+                // owns an independent DEEP CLONE and the replaced closure is destroyed
+                // first; the source register keeps its own block (its slot frees it at
+                // scope exit). Both primitives are tag-safe, so a plain FFI pointer
+                // stored through this path passes through unchanged and the old value
+                // is only freed when it is a real closure. Self-store guard: storing
+                // the value the field already holds must neither destroy nor clone.
+                const old = api.LLVMBuildLoad2(b, fc.types.i64, ptr, "store.clos.old");
+                const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, src, "store.clos.same");
+                const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.clos.work");
+                const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.clos.done");
+                _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+                api.LLVMPositionBuilderAtEnd(b, work_block);
+                var dargs = [_]llvm.c.LLVMValueRef{old};
+                _ = api.LLVMBuildCall2(b, fc.dtors.destroy_closure.ty, fc.dtors.destroy_closure.fn_value, &dargs, dargs.len, "");
+                var cargs = [_]llvm.c.LLVMValueRef{src};
+                const clone = api.LLVMBuildCall2(b, fc.dtors.closure_clone.ty, fc.dtors.closure_clone.fn_value, &cargs, cargs.len, "store.clos.clone");
+                const clone_ptr = api.LLVMBuildIntToPtr(b, clone, fc.types.ptr_ty, "store.clos.cloneptr");
+                _ = api.LLVMBuildStore(b, clone_ptr, ptr);
+                _ = api.LLVMBuildBr(b, done_block);
+                api.LLVMPositionBuilderAtEnd(b, done_block);
             } else {
                 const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
                 _ = api.LLVMBuildStore(b, value, ptr);
-                // A closure/enum moved into a struct field is no longer ours to free
-                // (the struct has no destructor for it, so it leaks rather than double-frees).
+                // A closure/enum moved into a struct field on the non-deep paths is no
+                // longer ours to free (no destructor for it there, so it leaks rather
+                // than double-frees).
                 drop.onEscape(fc, v.src);
             }
         },
@@ -467,8 +492,9 @@ pub fn lowerAllocEnum(fc: *FunctionCodegen, v: ir.AllocEnum) !void {
         // rule in lowerStoreAggregate.
         if (src_ty.kind == .enum_instance and fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid) and !drop.isOwned(fc, src)) {
             const sptr = api.LLVMBuildIntToPtr(b, fc.registers[src], fc.types.ptr_ty, "enum.payload.clonesrc");
+            const clone_fn = fc.dtors.enumCloneFn(src_ty);
             var cargs = [_]llvm.c.LLVMValueRef{sptr};
-            const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "enum.payload.clone");
+            const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "enum.payload.clone");
             break :blk api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "enum.payload.cloneint");
         }
         const widened = try enumPayloadAsI64(fc, src_ty, fc.registers[src]);

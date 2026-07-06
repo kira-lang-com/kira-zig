@@ -1,0 +1,35 @@
+// Closure array elements are owned by the array: kira_array_release frees
+// RAW_PTR elements through the tag-safe kira_destroy_closure fallback, an
+// array_set overwrite drops the replaced element (kira_array_store_release),
+// and reading an element back is a borrow (calling it must not double-free).
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+@Main
+function main() {
+    var cbs: [(Int) -> Int] = []
+    var i = 0
+    while i < 1000 {
+        cbs.append(makeAdder(i))
+        i = i + 1
+    }
+    // Overwrite: each store must release the replaced closure block.
+    var j = 0
+    while j < 1000 {
+        cbs[j] = makeAdder(j + 1)
+        j = j + 1
+    }
+    var total = 0
+    var k = 0
+    while k < 1000 {
+        let f = cbs[k]
+        total = total + f(1)
+        k = k + 1
+    }
+    print(total)
+    return
+}

@@ -94,6 +94,39 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "foundation/app/FileSystem.kira", "fs_free_buffer(raw)", "File.readAll frees the fs_read_all_text_from_handle buffer after copying it");
     try requireContains(allocator, &failures, "foundation/app/Kira/ArgumentParserNative.kira", "kap_free_string(value)", "argument option/inline-value wrappers free the kap_* C string after copying it");
 
+    // Closures-are-deep-values ownership model (leak class #2: closure blocks and
+    // their captures never freed — kira_destroy_closure used to free nothing but
+    // the block, and struct fields / array elements never released blocks at all).
+    // Each guard pins one rule whose removal reintroduces a per-rebuild leak or a
+    // double free (see backend_capi_closure_dtors.zig for the model).
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_block_churn_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_struct_field_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_array_elements_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_struct_array_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_closure_dtors.zig", "kira_capi_closure_release", "the per-closure typed capture teardown dispatcher exists");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.closfield", "struct destructors free owned closure fields (tag-safe, native)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "cc.closfield", "struct clones deep-copy closure fields");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.clos.old", "closure field stores drop the replaced block before the clone (self-store guarded)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "ret.clos.clone", "borrowed closure returns deep-clone (returned closures are always fresh owned blocks)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "call.clos.clone", "borrowed closures passed to owned params deep-clone (array-element double-free)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_closure_dtors.zig", "llvm.global_ctors", "the release hook is installed by a global constructor (dylib artifacts included)");
+
+    // Typed enum payload teardown (leak class #4: the string-payload box and its
+    // buffer were shared by the shallow kira_enum_clone and never freed). Typed
+    // destroy is sound only because every clone site selects typed-or-generic
+    // through the same enum_map (deep-cloned everywhere iff deep-destroyed
+    // everywhere) — see backend_capi_enum_dtors.zig.
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_enum_string_payload_free_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "kira_destroy_enum_", "typed enum destructors free string-payload boxes");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "enumCloneFn", "every enum clone site dispatches typed-or-generic through the shared enum_map");
+    try requireContains(allocator, &failures, "tests/pass/run/ownership_enum_string_payload_free_parity/expect.toml", "check_leaks = true", "enum payload case runs under the harness leak check");
+
+    // The corpus harness can prove leak-freedom on the native binary; these cases
+    // opt in (tests/leak_check.zig, expect.toml `check_leaks = true`).
+    try requireContains(allocator, &failures, "tests/pass/run/ownership_closure_block_churn_parity/expect.toml", "check_leaks = true", "closure churn case runs under the harness leak check");
+    try requireContains(allocator, &failures, "tests/pass/run/ownership_string_deep_value_parity/expect.toml", "check_leaks = true", "string deep-value case runs under the harness leak check");
+    try requireContains(allocator, &failures, "tests/leak_check.zig", "leaks", "the harness leak checker exists");
+
     if (failures.items.len != 0) {
         for (failures.items) |failure| std.debug.print("memory validation failed: {s}\n", .{failure});
         return error.MemoryValidationFailed;

@@ -25,6 +25,8 @@ const runtime_symbols = @import("runtime_symbols.zig");
 const codegen = @import("backend_capi_codegen.zig");
 const dispatch = @import("backend_capi_dispatch.zig");
 const drop = @import("backend_capi_drop.zig");
+const closure_dtors = @import("backend_capi_closure_dtors.zig");
+const enum_dtors = @import("backend_capi_enum_dtors.zig");
 const ffi = @import("backend_capi_ffi.zig");
 
 const functionExecutionById = utils.functionExecutionById;
@@ -301,6 +303,30 @@ pub fn buildModule(
     const drop_enabled = dropEnabled();
     var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode);
     defer dtors.deinit(allocator);
+
+    // Per-closure typed capture teardown/clone: build the kira_capi_closure_release /
+    // kira_capi_closure_clone bodies (their declarations live in dtors) and, on the
+    // native path with drop on, install the release as the kira_destroy_closure hook
+    // via a global constructor so every owned-closure drop point frees captures too.
+    {
+        const shapes = try closure_dtors.collectShapes(allocator, request.program.programPtr());
+        defer closure_dtors.freeShapes(allocator, shapes);
+        try closure_dtors.build(
+            allocator,
+            api,
+            module_ref,
+            types,
+            request.program.programPtr(),
+            runtime_decls,
+            &dtors,
+            shapes,
+            request.mode == .llvm_native and drop_enabled,
+        );
+    }
+
+    // Typed enum destroy/clone bodies (string-payload boxes; declarations live
+    // in dtors.enum_map, empty in hybrid).
+    try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
     // generated after the concrete functions are declared.

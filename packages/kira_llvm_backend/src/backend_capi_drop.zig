@@ -264,8 +264,11 @@ fn freeSlot(fc: *FunctionCodegen, index: u32) void {
             _ = api.LLVMBuildCall2(b, fc.dtors.destroy_struct_ptr.ty, fc.dtors.destroy_struct_ptr.fn_value, &args, args.len, "");
         },
         .raw => {
+            // Typed enum slots (string-payload enums, native) free the payload
+            // box + buffer with the block; everything else keeps plain free.
+            const destroy = if (owned.ty.kind == .enum_instance) fc.dtors.enumDestroyFn(owned.ty) else fc.dtors.destroy_raw_ptr;
             var args = [_]llvm.c.LLVMValueRef{ptr};
-            _ = api.LLVMBuildCall2(b, fc.dtors.destroy_raw_ptr.ty, fc.dtors.destroy_raw_ptr.fn_value, &args, args.len, "");
+            _ = api.LLVMBuildCall2(b, destroy.ty, destroy.fn_value, &args, args.len, "");
         },
         .closure => {
             // The slot holds the (possibly tag-bit-set) closure value as a pointer;

@@ -1,9 +1,10 @@
 # Native Leak Hunting
 
 Internal memory for diagnosing and fixing native (LLVM backend) memory leaks.
-State as of 2026-07-06, after the strings-are-deep-values ownership model
-landed (leak class #1 resolved; previous milestone was unconditional
-array-ownership free, commits `88db4a1`, `a0b2b08`; history in
+State as of 2026-07-06 (evening), after closures-are-deep-values (class #2)
+and typed enum payload teardown (class #4) landed on top of the
+strings-are-deep-values model (class #1) and unconditional array-ownership
+free (commits `88db4a1`, `a0b2b08`, `fce1d66`; history in
 `.codex/work/reports/array-registry-leak-and-promotion.md`).
 
 ## Current state
@@ -51,15 +52,22 @@ Proof of the model: a 20k-iteration struct-field/concat/array string churn
 program measures **0 leaks / 0 bytes** under `leaks --atExit` (previously
 every concat/coercion buffer leaked).
 
-Measured baselines (`leaks --atExit`, offscreen frames, 2026-07-06 after the
-string model):
+Measured baselines (`leaks --atExit`, offscreen frames, 2026-07-06 evening
+after the closure + enum-payload models):
 
 | Program | Residual | Notes |
 |---|---|---|
 | ui-foundation `Examples/leak-harness` (10k frames) | 2 leaks / 224 B | unchanged, checksum 80000 |
-| ui-foundation `Examples/liquid-glass-app` (120 frames) | 647 leaks / ~372 KB | was 628/~360 KB; delta is one-time CString dup/enum-box clones |
-| ui-foundation `Examples/basic-foundation-app` (120 and 600 frames) | 2,029–2,030 leaks / ~483 KB | frame-flat; was 1,951/~470 KB |
-| project-matter `apps/editor` (60 and 300 frames) | 11,118 leaks / ~1.30 MB | frame-flat (identical at 60 and 300); was 10,968/1.25 MB at 60 |
+| ui-foundation `Examples/liquid-glass-app` (120 frames) | 648 leaks / ~372 KB | ~unchanged |
+| ui-foundation `Examples/basic-foundation-app` (120 and 600 frames) | 2,014 leaks / ~480 KB | frame-flat; was 2,029/~483 KB |
+| project-matter `apps/editor` (120 and 300 frames) | 11,207 leaks / ~1.30 MB | frame-flat (identical at 120 and 300) |
+| editor + 10 scripted clicks (120 frames) | 30,688 leaks / 2.39 MB | still ~1,930/click, but now ALL class #3 (state-slot trees); `EdTap.body` closure-block roots are gone |
+
+Closure-model proof: 20k-iteration returned-closure churn, struct-field +
+array-of-closure churn (8k each), and all 12 `ownership_closure_*` corpus
+cases measure **0 leaks / 0 bytes**; `ownership_string_deep_value_parity` and
+`ownership_enum_string_payload_free_parity` are 0-leak too (the string case's
+old 2-leak enum-box residual was class #4, now freed).
 
 The small count increases are one-time conservative clones into structures
 that are themselves still leaked (closure capture blocks, enum payload boxes,
@@ -75,32 +83,43 @@ are now frame-flat.
 ## Remaining leak classes (the actual TODO)
 
 1. ~~Native String drop gap~~ — RESOLVED 2026-07-06 (see model above).
-2. **Closure capture leaks** — `kira_destroy_closure`
-   (`runtime_helpers.c`) deliberately does not free captured heap values (no
-   per-capture type info; conservative leak instead of double-free). Now the
-   dominant `kira_fn_*` ROOT class in the editor (e.g. 49× `EdTap.body`
-   closure blocks + the struct shells their captures reference). Fix needs
-   per-closure generated destructors (capture types are known at codegen
-   time) or typed capture metadata in the block header.
-   **Interaction-scaling** (measured 2026-07-06): the editor is frame-flat
-   but NOT click-flat — every tap rebuilds the scene and leaks a fresh
-   closure/capture set, ~1,950 leaks / ~109 KB per click (120 offscreen
-   frames + 10 scripted clicks = 30,613 leaks / 2.39 MB vs 11,120 / 1.30 MB
-   without clicks; every origin scales ~11× = initial build + 10 rebuilds:
-   `EdTap.body` 49→539, `kira_struct_alloc` 183→2,331). A live interactive
-   session therefore shows far more than the 11.1k baseline — that is this
-   class, not a string regression (zero `kira_capi_string_clone` frames in
-   leaked stacks).
+2. ~~Closure capture leaks~~ — RESOLVED 2026-07-06. **Closures are deep
+   values** (`backend_capi_closure_dtors.zig`): per-program generated
+   `kira_capi_closure_release` (fn_id switch, typed capture teardown per the
+   IR capture_ownership — owned/move transferred in, copy deep-cloned in,
+   borrows never touched; strings always cloned/owned) installed as the
+   `kira_destroy_closure` hook by an `llvm.global_ctors` constructor (covers
+   dylib artifacts), and tag-safe `kira_capi_closure_clone` used by every
+   consumer: struct field stores (drop-replaced, self-store guarded), struct
+   clone_contents, array elements (elementDestroy/elementClone fall back to
+   the tag-safe closure pair), owned call args (borrowed sources clone),
+   `ret` of untracked closure sources, and raw_ptr call results tracked as
+   `.closure` drops. Tag-safety (high bit) makes all of it a no-op for plain
+   FFI pointers/CStrings. NATIVE only; hybrid keeps the VM hook + alias
+   semantics. Guards: corpus `ownership_closure_*` (12 cases, all
+   check_leaks) + memory_validation.
 3. **Native-state interior teardown** — `kira_native_state_free` frees the
    payload buffer and token only; interior arrays/strings/structs/enums the
    box owns are not destroyed. Fine for app-lifetime ambient state, a leak
    for short-lived boxes. The VM's `freeNativeState` destroys interiors —
-   parity gap.
-4. **Enum payload boxes** — an enum's 16-byte block is freed
-   (`kira_destroy_raw_ptr`) but a string/heap payload box it references is
-   not (kira_enum_clone shares the box between clones, so freeing it naively
-   double-frees). Needs per-enum-type generated destructors switching on the
-   tag. One box + one cloned buffer leak per string-payload enum.
+   parity gap. **Now the dominant editor class**: the per-click residual
+   (~1,930 leaks/click, composition `kira_struct_alloc` shells ×2,334 +
+   stranded `kira_capi_closure_clone` blocks ×892 per 10 clicks) is widget
+   structs escaped into state-slot retained trees that are replaced without
+   interior destruction. The `kira_fn_*` closure-block ROOT leaks
+   (`EdTap.body` ×539 etc.) are GONE; what remains leaks because the OWNING
+   tree is never destroyed, not because the fields would not free.
+4. ~~Enum payload boxes~~ — RESOLVED 2026-07-06 for string payloads. **Typed
+   enum teardown** (`backend_capi_enum_dtors.zig`): per-enum generated
+   `kira_destroy_enum_<T>` / `kira_clone_enum_<T>` switch on the tag and
+   free/deep-copy the string-payload box + buffer. Sound because every
+   destroy AND clone site dispatches typed-or-generic through the same
+   `Destructors.enum_map` (`enumDestroyFn`/`enumCloneFn`) — a type is
+   deep-cloned everywhere iff deep-destroyed everywhere, so the box is never
+   shared into a typed free. Native only (hybrid map empty → shallow pair).
+   Non-string heap payloads (nested enum/array/struct) still leak the payload
+   — extend the same switch when they show up in measurements. Guard:
+   corpus `ownership_enum_string_payload_free_parity` (check_leaks).
 5. **Font-engine setup** (`ft_add_renderer` etc.) in ui-foundation — one-time,
    low priority.
 6. **`[U8]` storage amplification** (perf, not a leak): every byte element is a
@@ -192,6 +211,14 @@ MallocStackLogging=1 leaks --atExit -- ./generated/<app> # adds allocation stack
 # summarize distinct origins:
 grep -E "INSTANCES OF" report.txt | sed 's/.*<malloc in \([^>]*\)>.*/\1/' | sort | uniq -c | sort -rn
 ```
+
+Corpus-harness leak checking (tests/leak_check.zig, macOS only): a case opts
+in with top-level `check_leaks = true` in expect.toml — after its llvm run
+passes, the binary is re-run under `leaks --atExit` and ANY leak fails the
+case. `KIRA_CORPUS_CHECK_LEAKS=1 zig build test-full` forces the pass for
+every runnable llvm case (useful as a sweep to find the next class). Negative
+sanity: `KIRA_CAPI_DROP=0` + a check_leaks case must FAIL (proves the check
+fires).
 
 Compare a 120-frame vs 600-frame run: identical totals = one-time setup;
 scaling totals = per-frame leak.
