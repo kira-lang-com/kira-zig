@@ -359,7 +359,6 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
     kira_array_repair_invalid_storage(array);
     if (array == NULL || index < 0 || (size_t)index >= array->len) return;
     if (value == NULL) return;
-#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
     /*
      * Defer on the hybrid/VM path exactly as kira_array_release does: the VM owns
      * and reclaims array memory through its own native-layout destructors.
@@ -370,9 +369,6 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
         void *incoming = value->tag == KIRA_BRIDGE_VALUE_RAW_PTR ? (void *)value->payload.raw_ptr : NULL;
         if (old != NULL && old != incoming) release_raw_ptr(old);
     }
-#else
-    (void)release_raw_ptr;
-#endif
     array->items[index] = *value;
 }
 
@@ -382,9 +378,9 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
  * The backend emits this with the old and incoming array pointers and the element
  * destructor; it releases the old array unless it is null (moved-out/uninitialised
  * field) or the same pointer being stored back. Delegates to kira_array_release, so
- * it inherits the KIRA_ARRAY_OWNERSHIP_FREE gate and the hybrid/VM deferral. Only
- * sound because aggregate reads now deep-clone (value semantics) — the old field
- * value is independently owned and not aliased by the incoming value.
+ * it inherits the hybrid/VM deferral. Only sound because aggregate reads deep-clone
+ * (value semantics) — the old field value is independently owned and not aliased by
+ * the incoming value.
  */
 KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *));
 
@@ -493,18 +489,17 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
      * checker, emits exactly one release at each owned array's drop point; moves
      * transfer ownership (the source is not dropped) and borrows are never dropped,
      * while owned values produced from borrowed data are deep-cloned (kira_array_clone)
-     * so they own independent storage. A release here is then the sole owner going
-     * away: run the element destructor on RAW_PTR elements, then free the items
-     * buffer and the struct.
+     * so they own independent storage — at struct copies, native-state boxing,
+     * borrowed element/field stores, and borrowed-array returns. Checker-verified
+     * field move-outs null the source storage so the old owner cannot re-release.
+     * A release here is then the sole owner going away: run the element destructor
+     * on RAW_PTR elements, then free the items buffer and the struct.
      *
-     * Gated behind KIRA_ARRAY_OWNERSHIP_FREE (default OFF = defer = stable, the
-     * committed no-crash behavior). Turning it on requires the backend to (a) deep
-     * clone at EVERY borrow->owned boundary (currently only return-struct copies) and
-     * (b) emit drops for orphaned owned arrays (field move-outs). Until both are
-     * complete and DEVICE-validated, freeing risks the use-after-free that crashed on
-     * device. See .codex/work/reports/array-registry-leak-and-promotion.md §7f.
+     * This used to be gated behind KIRA_ARRAY_OWNERSHIP_FREE (defer-by-default)
+     * while clone/drop coverage was incomplete; the gate is gone and the free path
+     * is the only behavior. History: .codex/work/reports/
+     * array-registry-leak-and-promotion.md §7b–§7j.
      */
-#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
     kira_trace_log("NATIVE", "ARRAY_RELEASE_FREE", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
     if (release_raw_ptr != NULL && array->items != NULL &&
         !kira_bridge_probably_invalid_pointer(array->items)) {
@@ -517,11 +512,6 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
     }
     kira_bridge_free(array->items, (array->cap == 0 ? array->len : array->cap) * sizeof(KiraBridgeValue));
     kira_bridge_free(array, sizeof(KiraArray));
-    return;
-#else
-    (void)release_raw_ptr;
-    kira_trace_log("NATIVE", "ARRAY_RELEASE_DEFERRED", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
-#endif
 }
 
 KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, int64_t payload_size) {
