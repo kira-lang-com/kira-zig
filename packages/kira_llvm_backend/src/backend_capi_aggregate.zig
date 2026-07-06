@@ -69,6 +69,12 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
             const clone = api.LLVMBuildCall2(b, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "state.arr.clone");
             field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.arr.cloneint");
         }
+        // Same aliasing hazard for string fields: the source struct's destructor
+        // frees its string buffers (release_contents), so the payload must own an
+        // independent clone (strings are deep values).
+        if (field_decl.ty.kind == .string and fc.drop_enabled) {
+            field_value = drop.cloneStringValue(fc, field_value);
+        }
         const bv = try fc.packBridge(field_decl.ty, field_value);
         var s_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, @intCast(index), 0)};
         const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, payload, &s_idx, s_idx.len, "state.slot");
@@ -159,6 +165,24 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
         api.LLVMPositionBuilderAtEnd(b, done_block);
         return;
     }
+    // A string payload slot owns a deep clone of every stored value. Free the
+    // replaced buffer first (pure-native only — a hybrid payload slot may hold a
+    // VM-written buffer), then store a fresh clone; the source register keeps
+    // ownership of its own buffer. calloc'd payloads start as tag VOID with a
+    // null string pointer, so the first set frees null (a no-op).
+    if (v.field_ty.kind == .string and fc.drop_enabled) {
+        if (fc.request.mode == .llvm_native) {
+            const old_bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "state.set.stroldbv");
+            const old_val = try fc.unpackBridge(v.field_ty, old_bv);
+            const old_buf = api.LLVMBuildExtractValue(b, old_val, 0, "state.set.stroldbuf");
+            var fargs = [_]llvm.c.LLVMValueRef{old_buf};
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.free.ty, fc.runtime_decls.free.fn_value, &fargs, fargs.len, "");
+        }
+        const cloned = drop.cloneStringValue(fc, fc.registers[v.src]);
+        const bv = try fc.packBridge(v.field_ty, cloned);
+        _ = api.LLVMBuildStore(b, bv, slot);
+        return;
+    }
     const bv = try fc.packBridge(fc.register_types[v.src], fc.registers[v.src]);
     _ = api.LLVMBuildStore(b, bv, slot);
 }
@@ -174,7 +198,31 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             const value = if (storage == fc.types.i64) src else api.LLVMBuildTrunc(b, src, storage, "store.trunc");
             _ = api.LLVMBuildStore(b, value, ptr);
         },
-        .float, .string => _ = api.LLVMBuildStore(b, src, ptr),
+        .float => _ = api.LLVMBuildStore(b, src, ptr),
+        .string => {
+            if (!fc.drop_enabled) {
+                _ = api.LLVMBuildStore(b, src, ptr);
+                break :sw;
+            }
+            // A string field owns a deep clone of every stored value (strings are
+            // deep values; release_contents/kira_array_release free field buffers).
+            // Drop the field's prior buffer first — only when the target is known
+            // OWNED field storage (a field_ptr/subobject_ptr result): a borrow-mut
+            // pointer to a caller's string local must not free the prior buffer the
+            // caller's per-local slot still owns (double free). Pure-native only:
+            // in hybrid the old buffer may be VM-owned (written through the
+            // borrow-mut bridge) and must not be freed with libc. The clone itself
+            // runs in both modes and is always a fresh native buffer, so no
+            // self-store aliasing is possible.
+            if (fc.request.mode == .llvm_native and v.ptr < fc.reg_field_ptr.len and fc.reg_field_ptr[v.ptr]) {
+                const old = api.LLVMBuildLoad2(b, fc.types.string_ty, ptr, "store.str.old");
+                const old_buf = api.LLVMBuildExtractValue(b, old, 0, "store.str.oldbuf");
+                var fargs = [_]llvm.c.LLVMValueRef{old_buf};
+                _ = api.LLVMBuildCall2(b, fc.runtime_decls.free.ty, fc.runtime_decls.free.fn_value, &fargs, fargs.len, "");
+            }
+            const cloned = drop.cloneStringValue(fc, src);
+            _ = api.LLVMBuildStore(b, cloned, ptr);
+        },
         .boolean => {
             const value = api.LLVMBuildZExt(b, src, fc.types.i8, "store.bool");
             _ = api.LLVMBuildStore(b, value, ptr);
@@ -249,8 +297,33 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             // literals are NUL-terminated globals, so the pointer is a valid C string.
             const src_kind = if (v.src < fc.register_types.len) fc.register_types[v.src].kind else ir.ValueType.Kind.raw_ptr;
             if (v.ty.name != null and std.mem.eql(u8, v.ty.name.?, "CString") and src_kind == .string) {
-                const data_ptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr");
-                _ = api.LLVMBuildStore(b, data_ptr, ptr);
+                const literal_src = v.src < fc.reg_string_literal.len and fc.reg_string_literal[v.src];
+                if (fc.drop_enabled and !literal_src) {
+                    // Any non-literal string is a view of a buffer some slot frees at
+                    // scope exit (a producer slot, a string local's clone, or a caller
+                    // frame's clone); aliasing it into a CString field would dangle.
+                    // Copy into a fresh NUL-terminated buffer the field keeps (owned
+                    // buffers are exact-length, no NUL — literals are the
+                    // NUL-terminated ones). The copy is deliberately unmanaged:
+                    // C-side lifetime is unknowable here (conservative leak, mirrors
+                    // kira_dynamic_cstring_dup).
+                    const sptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr.src");
+                    const slen = api.LLVMBuildExtractValue(b, src, 1, "store.cstr.len");
+                    const total = api.LLVMBuildAdd(b, slen, api.LLVMConstInt(fc.types.i64, 1, 0), "store.cstr.total");
+                    var margs = [_]llvm.c.LLVMValueRef{total};
+                    const buf = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "store.cstr.buf");
+                    var cargs = [_]llvm.c.LLVMValueRef{ buf, sptr, slen };
+                    _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &cargs, cargs.len, "");
+                    var nul_idx = [_]llvm.c.LLVMValueRef{slen};
+                    const nul_ptr = api.LLVMBuildInBoundsGEP2(b, fc.types.i8, buf, &nul_idx, nul_idx.len, "store.cstr.nul");
+                    _ = api.LLVMBuildStore(b, api.LLVMConstInt(fc.types.i8, 0, 0), nul_ptr);
+                    _ = api.LLVMBuildStore(b, buf, ptr);
+                } else {
+                    // Literal source (or drop disabled): the pointer is a
+                    // NUL-terminated global that nothing frees; alias it.
+                    const data_ptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr");
+                    _ = api.LLVMBuildStore(b, data_ptr, ptr);
+                }
             } else {
                 const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
                 _ = api.LLVMBuildStore(b, value, ptr);
@@ -314,6 +387,15 @@ fn buildElementBridge(fc: *FunctionCodegen, src_reg: u32) !llvm.c.LLVMValueRef {
             }
         }
     }
+    // A string element owns a deep clone of its buffer (strings are deep values):
+    // kira_array_release / kira_array_store_release free STRING-tag element
+    // buffers, and kira_array_clone deep-copies them, so the element must never
+    // alias a register's buffer. The source register stays tracked by its own
+    // producer slot (no escape).
+    if (fc.drop_enabled and vt.kind == .string) {
+        const cloned = drop.cloneStringValue(fc, fc.registers[src_reg]);
+        return fc.packBridge(vt, cloned);
+    }
     return fc.packBridge(vt, fc.registers[src_reg]);
 }
 
@@ -339,8 +421,10 @@ pub fn lowerArraySet(fc: *FunctionCodegen, v: ir.ArraySet) !void {
     }
     // The element copy now owns (shares) the value's nested storage; stop tracking the
     // source so its slot can't free storage the array still references (conservative:
-    // leaks the source shell, never double-frees).
-    drop.onEscape(fc, v.src);
+    // leaks the source shell, never double-frees). A string source is exempt: the
+    // element received a CLONE (buildElementBridge), so the source register keeps
+    // ownership of its own buffer and its slot frees it at exit.
+    if (v.src >= fc.register_types.len or fc.register_types[v.src].kind != .string) drop.onEscape(fc, v.src);
 }
 
 pub fn lowerArrayAppend(fc: *FunctionCodegen, v: ir.ArrayAppend) !void {
@@ -353,8 +437,9 @@ pub fn lowerArrayAppend(fc: *FunctionCodegen, v: ir.ArrayAppend) !void {
     var args = [_]llvm.c.LLVMValueRef{ arr, slot };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_append.ty, fc.runtime_decls.array_append.fn_value, &args, args.len, "");
     // See lowerArraySet: the appended element copy shares the value's nested storage,
-    // so the source must stop being tracked for drop.
-    drop.onEscape(fc, v.src);
+    // so the source must stop being tracked for drop — except strings, whose element
+    // received a clone and whose source keeps its own buffer.
+    if (v.src >= fc.register_types.len or fc.register_types[v.src].kind != .string) drop.onEscape(fc, v.src);
 }
 
 // An enum value is a heap 16-byte block: { i64 tag, i64 payload }. The payload
@@ -413,10 +498,16 @@ pub fn enumPayloadAsI64(fc: *FunctionCodegen, value_type: ir.ValueType, value: l
             break :blk api.LLVMBuildBitCast(b, as_double, fc.types.i64, "enum.fbits");
         },
         .string => blk: {
-            // Box the %kira.string on the heap and store its address.
+            // Box the %kira.string on the heap and store its address. The box owns
+            // a deep CLONE of the buffer (strings are deep values; the source's
+            // producer/local slot frees the original at scope exit, and a payload
+            // read clones back out). The box and its clone are reclaimed with the
+            // enum's known leak class (kira_destroy_raw_ptr frees only the 16-byte
+            // block — phase-2 per-enum destructors will free string payloads).
+            const boxed_value = if (fc.drop_enabled) drop.cloneStringValue(fc, value) else value;
             var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 16, 0)};
             const box = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "enum.str.box");
-            _ = api.LLVMBuildStore(b, value, box);
+            _ = api.LLVMBuildStore(b, boxed_value, box);
             break :blk api.LLVMBuildPtrToInt(b, box, fc.types.i64, "enum.str.int");
         },
         .void => api.LLVMConstInt(fc.types.i64, 0, 0),
