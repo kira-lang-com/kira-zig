@@ -91,6 +91,12 @@ fn applyBindingMove(ctx: *shared.Context, scope: *model.Scope, value_expr: *synt
     if (target.field) |field_name| {
         try binding.markFieldMoved(ctx.allocator, field_name);
         if (binding.move_span == null) binding.move_span = exprSpan(value_expr.*);
+        // Thread the move fact into HIR so codegen transfers ownership: the read
+        // must null the field's storage, or the enforced re-init
+        // (`obj.field = ...`) drop-before-overwrite frees the value this binding
+        // now owns (the foundationRetainedUpdate `let previous = next.nodes;
+        // next.nodes = []` use-after-free).
+        if (lowered_value.* == .field) lowered_value.field.moved = true;
     } else {
         if (lowered_value.* == .local) lowered_value.local.ownership = .move;
         binding.moved = true;

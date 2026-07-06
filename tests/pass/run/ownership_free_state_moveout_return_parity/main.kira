@@ -1,0 +1,93 @@
+// Regressions for the three crash classes fixed when the array ownership free
+// path (kira_array_release reclaiming on native) became unconditional:
+//
+// 1. A nested ffi_struct field boxed into nativeState aliased the source
+//    struct's inline storage; dropping the source left the box dangling and the
+//    next field replacement double-freed (the FoundationRetainedFlatAcc crash).
+//    The box now deep-clones struct fields, and a field set destroys the
+//    replaced copy safely.
+// 2. A checker-verified field move-out (`let previous = next.nodes`) lowered as
+//    an alias, so the enforced re-init (`next.nodes = []`) drop-before-overwrite
+//    freed the moved value mid-use (the foundationRetainedCollectRemoved
+//    use-after-free). The move now nulls the field storage and transfers
+//    ownership to the binding.
+// 3. A borrowed array returned as owned (`return t.nodes`) handed the caller an
+//    alias it then freed (the editorContentPathSegments use-after-free). The
+//    return now deep-clones a non-owned array/enum source.
+//
+// The loops make any surviving alias/double-free deterministic under churn; the
+// value checks prove clones/moves carry the right data on every backend.
+
+struct Acc {
+    var ids: [Int] = []
+    var total: Int = 0
+}
+
+struct Scratch {
+    var acc: Acc = Acc {}
+}
+
+struct Tree {
+    var nodes: [Int] = []
+    var generation: Int = 0
+}
+
+function borrowedSegments(t: borrow Tree) -> [Int] {
+    return t.nodes
+}
+
+function rebuild(tree: Tree) -> Tree {
+    var next = move tree
+    let previous = next.nodes
+    next.nodes = []
+    var i = 0
+    while i < previous.count {
+        next.nodes.append(previous[i] + 1)
+        i = i + 1
+    }
+    next.generation = next.generation + 1
+    return next
+}
+
+@Main
+function main() {
+    let state = nativeState(Scratch {})
+    let handle = nativeUserData(state)
+    var frame = 0
+    while frame < 100 {
+        var scratch = nativeRecover<Scratch>(handle)
+        var fresh = Acc {}
+        fresh.total = frame
+        fresh.ids.append(frame)
+        scratch.acc = move fresh
+        let acc = scratch.acc
+        if acc.total != frame {
+            print("acc total mismatch")
+            return
+        }
+        frame = frame + 1
+    }
+
+    var tree = Tree {}
+    tree.nodes.append(1)
+    tree.nodes.append(2)
+    var r = 0
+    while r < 100 {
+        tree = rebuild(move tree)
+        r = r + 1
+    }
+    print(tree.nodes[0])
+    print(tree.nodes[1])
+    print(tree.generation)
+
+    var sum = 0
+    var k = 0
+    while k < 100 {
+        let segs = borrowedSegments(tree)
+        sum = sum + segs.count
+        k = k + 1
+    }
+    print(sum)
+    print(tree.nodes.count)
+    return
+}

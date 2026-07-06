@@ -67,6 +67,16 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     // tests/pass/run/foundation_fs_argparser_leak_regression). Each guard below,
     // if removed, reintroduces a per-call native leak.
     try requireBackends(allocator, &failures, "tests/pass/run/foundation_fs_argparser_leak_regression/app/expect.toml", &.{ "hybrid", "llvm" });
+
+    // Unconditional array-ownership free (the KIRA_ARRAY_OWNERSHIP_FREE gate is
+    // gone). Each guard below pins one clone/move rule whose removal reintroduces
+    // a measured native crash with kira_array_release freeing:
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_free_state_moveout_return_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "ARRAY_RELEASE_FREE", "kira_array_release frees unconditionally on the native path");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "state.struct.clone", "native-state boxing deep-clones nested ffi_struct fields (FlatAcc use-after-free)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "load.move.field", "field move-outs null the source storage (collectRemoved use-after-free)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "ret.arr.clone", "borrowed array returns deep-clone (editorContentPathSegments use-after-free)");
+    try requireContains(allocator, &failures, "packages/kira_semantics/src/lower_exprs_types.zig", "lowered_value.field.moved = true", "checker move facts reach HIR field reads");
     try requireContains(allocator, &failures, "foundation/NativeLibs/FS/fs.c", "buffer != fs_empty_string", "fs_free_buffer frees by sentinel identity, not content (empty-file reads leaked their heap buffer)");
     try requireContains(allocator, &failures, "foundation/app/FileSystem.kira", "fs_free_buffer(raw)", "File.readAll frees the fs_read_all_text_from_handle buffer after copying it");
     try requireContains(allocator, &failures, "foundation/app/Kira/ArgumentParserNative.kira", "kap_free_string(value)", "argument option/inline-value wrappers free the kap_* C string after copying it");
