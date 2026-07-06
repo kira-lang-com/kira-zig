@@ -102,7 +102,12 @@ pub const Instruction = union(OpCode) {
     subobject_ptr: struct { dst: u32, base: u32, offset: u32 },
     field_ptr: struct { dst: u32, base: u32, base_type_name: []const u8, field_index: u32, field_ty: TypeRef },
     recover_native_state: struct { dst: u32, state: u32, type_name: []const u8, type_id: u64 },
-    native_state_field_get: struct { dst: u32, state: u32, field_index: u32, field_ty: TypeRef },
+    // `moved` marks a checker-verified move-out of an array/enum/Any field from
+    // a recovered native state (`let n = view.nodes; view.nodes = []`): the VM
+    // takes ownership into dst and VOIDS the payload slot, so a later set/free
+    // does not destroy the same payload again. Mirrors the LLVM backend's
+    // native-state moved-read slot nulling. Carried by KBCA.
+    native_state_field_get: struct { dst: u32, state: u32, field_index: u32, field_ty: TypeRef, moved: bool = false },
     native_state_field_set: struct { state: u32, field_index: u32, src: u32, field_ty: TypeRef },
     c_string_to_string: struct { dst: u32, src: u32 },
     array_len: struct { dst: u32, array: u32 },
