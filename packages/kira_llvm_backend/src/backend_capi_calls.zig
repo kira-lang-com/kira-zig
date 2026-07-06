@@ -188,6 +188,20 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                         }
                         continue;
                     }
+                    // A borrowed closure (array element read / borrow param) passed to
+                    // an owned/move closure parameter: the callee's .closure param slot
+                    // frees it at exit, so hand over an independent deep clone or the
+                    // real owner (the array / field) frees the same block again.
+                    // kira_capi_closure_clone is tag-safe — callable values and plain
+                    // FFI pointers pass through. An owned source moves as-is (escaped
+                    // by the loop below).
+                    if (pt.kind == .raw_ptr) {
+                        if (!drop.isOwned(fc, arg)) {
+                            var cargs = [_]llvm.c.LLVMValueRef{fc.registers[arg]};
+                            fc.registers[arg] = api.LLVMBuildCall2(fc.builder, fc.dtors.closure_clone.ty, fc.dtors.closure_clone.fn_value, &cargs, cargs.len, "call.clos.clone");
+                        }
+                        continue;
+                    }
                     if (pt.kind != .ffi_struct) continue;
                     const name = pt.name orelse continue;
                     if (fc.dtors.map.get(name) == null) continue;
@@ -226,9 +240,12 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                 fc.registers[dst] = result;
                 // An ffi_struct or array result is fresh caller-stable owned heap storage;
                 // track it so the caller frees it at scope exit. A string result is always
-                // a fresh owned buffer (the callee's `ret` clones untracked sources).
+                // a fresh owned buffer (the callee's `ret` clones untracked sources). A
+                // raw_ptr result is tracked as an owned closure: the callee's `ret` clones
+                // untracked closure sources, and the .closure drop is tag-safe (an extern
+                // call's plain FFI pointer result is recorded but never freed).
                 switch (callee_decl.return_type.kind) {
-                    .ffi_struct, .array => drop.onAlloc(fc, dst),
+                    .ffi_struct, .array, .raw_ptr => drop.onAlloc(fc, dst),
                     .string => drop.trackStringRegister(fc, dst),
                     else => {},
                 }

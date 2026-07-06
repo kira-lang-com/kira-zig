@@ -1,10 +1,10 @@
 const std = @import("std");
 const build = @import("kira_build");
 const diagnostics = @import("kira_diagnostics");
-const vm_runtime = @import("kira_vm_runtime");
 const compare = @import("compare.zig");
 const discovery = @import("discovery.zig");
 const reporting = @import("reporting.zig");
+const run_phases = @import("execute_run_phases.zig");
 const support = @import("execute_support.zig");
 pub const Options = struct {
     hybrid_runner_path: ?[]const u8 = null,
@@ -14,9 +14,6 @@ pub const Options = struct {
 pub const JobReport = reporting.JobReport;
 const PhaseProfile = reporting.PhaseProfile;
 pub const PhaseSet = support.PhaseSet;
-
-// any number of build/check jobs may run concurrently — they take the shared (read)
-var process_state_lock: support.RwLock = .{};
 
 pub fn runBackendJob(
     allocator: std.mem.Allocator,
@@ -137,15 +134,8 @@ fn runExpectedPhase(
     };
 }
 
-const PhaseActual = struct {
-    result: discovery.ExpectedResult,
-    stdout: ?[]const u8 = null,
-    stderr: ?[]const u8 = null,
-    trace: ?[]const u8 = null,
-    diagnostics: []const diagnostics.Diagnostic = &.{},
-    stage: ?discovery.Stage = null,
-    profile: PhaseProfile = .{},
-};
+const PhaseActual = run_phases.PhaseActual;
+const actualFromBuildOutcome = run_phases.actualFromBuildOutcome;
 
 fn runPhase(
     allocator: std.mem.Allocator,
@@ -168,8 +158,8 @@ fn runCheckPhase(
     case: discovery.Case,
     backend: discovery.Backend,
 ) !PhaseActual {
-    process_state_lock.lockShared();
-    defer process_state_lock.unlockShared();
+    support.process_state_lock.lockShared();
+    defer support.process_state_lock.unlockShared();
 
     const start = support.nowTimestamp();
     const result = try system.checkForBackend(case.source_path, support.executionTarget(backend));
@@ -193,8 +183,8 @@ fn runBuildPhase(
     case: discovery.Case,
     backend: discovery.Backend,
 ) !PhaseActual {
-    process_state_lock.lockShared();
-    defer process_state_lock.unlockShared();
+    support.process_state_lock.lockShared();
+    defer support.process_state_lock.unlockShared();
 
     var tmp = try support.makeTmpDir(allocator);
     defer tmp.cleanup();
@@ -217,9 +207,9 @@ fn runRunPhase(
     options: Options,
 ) !PhaseActual {
     return switch (backend) {
-        .vm => runVmPhase(allocator, system, case),
-        .llvm => runLlvmPhase(allocator, system, case),
-        .hybrid => runHybridPhase(allocator, system, case, options),
+        .vm => run_phases.runVmPhase(allocator, system, case),
+        .llvm => run_phases.runLlvmPhase(allocator, system, case),
+        .hybrid => run_phases.runHybridPhase(allocator, system, case, options.hybrid_runner_path),
     };
 }
 
@@ -322,227 +312,6 @@ fn comparePhase(
         .blocked => unreachable,
     }
     reporter.pass(label);
-}
-
-fn runVmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
-    process_state_lock.lock();
-    defer process_state_lock.unlock();
-
-    var tmp = try support.makeTmpDir(allocator);
-    defer tmp.cleanup();
-
-    const start = support.nowTimestamp();
-    const output_path = try support.buildOutputPath(allocator, tmp, .vm);
-    const result = try system.build(.{
-        .source_path = case.source_path,
-        .output_path = output_path,
-        .target = .{ .execution = .vm },
-    });
-    if (result.failed() or result.diagnostics.len != 0) {
-        return actualFromBuildOutcome(result, support.elapsedNs(start));
-    }
-
-    const module = try system.readBytecode(output_path);
-    var output: std.Io.Writer.Allocating = .init(allocator);
-    const run_cwd = try support.runtimeCwdForCase(allocator, case);
-    defer allocator.free(run_cwd);
-
-    var vm = vm_runtime.Vm.init(allocator);
-    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
-    defer {
-        std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
-        original_cwd.close(std.Options.debug_io);
-    }
-    var run_dir = try std.Io.Dir.cwd().openDir(std.Options.debug_io, run_cwd, .{});
-    defer run_dir.close(std.Options.debug_io);
-    try std.process.setCurrentDir(std.Options.debug_io, run_dir);
-
-    var ffi_dispatcher = vm_runtime.FfiDispatcher.init(allocator, &module);
-    defer ffi_dispatcher.deinit();
-    for (result.native_libraries) |library| {
-        try ffi_dispatcher.registerLibrary(library.name, library.artifact_path);
-    }
-    try vm.runMainWithHooks(&module, &output.writer, .{
-        .context = &ffi_dispatcher,
-        .call_native = vm_runtime.FfiDispatcher.hook,
-    });
-    return .{
-        .result = .pass,
-        .stdout = try output.toOwnedSlice(),
-        .profile = .{
-            .kind = .executed,
-            .duration_ns = support.elapsedNs(start),
-            .cache_status = result.cache_status,
-            .cache_restore_ns = result.cache_restore_ns,
-            .cache_store_ns = result.cache_store_ns,
-        },
-    };
-}
-
-fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
-    process_state_lock.lockShared();
-    defer process_state_lock.unlockShared();
-
-    var tmp = try support.makeTmpDir(allocator);
-    defer tmp.cleanup();
-
-    const start = support.nowTimestamp();
-    const output_path = try support.makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension());
-    const result = try system.build(.{
-        .source_path = case.source_path,
-        .output_path = output_path,
-        .target = .{ .execution = .llvm_native },
-    });
-    if (result.failed() or result.diagnostics.len != 0) {
-        return actualFromBuildOutcome(result, support.elapsedNs(start));
-    }
-
-    const executable = support.findExecutable(result.artifacts) orelse return error.MissingExecutableArtifact;
-    const run_cwd = try support.runtimeCwdForCase(allocator, case);
-    defer allocator.free(run_cwd);
-    const process_environ = support.inheritedProcessEnviron();
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
-    defer io_impl.deinit();
-    const child = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{executable.path},
-        .cwd = .{ .path = run_cwd },
-    });
-    defer allocator.free(child.stderr);
-    if (support.expectExitedZero(child.term)) |_| {} else |_| {
-        return .{
-            .result = .fail,
-            .stdout = child.stdout,
-            .stderr = child.stderr,
-            .trace = try reporting.childTrace(allocator, "llvm", child.term, child.stdout, child.stderr),
-            .profile = .{
-                .kind = .executed,
-                .duration_ns = support.elapsedNs(start),
-                .cache_status = result.cache_status,
-                .cache_restore_ns = result.cache_restore_ns,
-                .cache_store_ns = result.cache_store_ns,
-            },
-        };
-    }
-    compare.expectEmptyText(allocator, child.stderr) catch {
-        return .{
-            .result = .fail,
-            .stdout = child.stdout,
-            .stderr = child.stderr,
-            .trace = try reporting.childTrace(allocator, "llvm", child.term, child.stdout, child.stderr),
-            .profile = .{
-                .kind = .executed,
-                .duration_ns = support.elapsedNs(start),
-                .cache_status = result.cache_status,
-                .cache_restore_ns = result.cache_restore_ns,
-                .cache_store_ns = result.cache_store_ns,
-            },
-        };
-    };
-    return .{
-        .result = .pass,
-        .stdout = child.stdout,
-        .profile = .{
-            .kind = .executed,
-            .duration_ns = support.elapsedNs(start),
-            .cache_status = result.cache_status,
-            .cache_restore_ns = result.cache_restore_ns,
-            .cache_store_ns = result.cache_store_ns,
-        },
-    };
-}
-
-fn runHybridPhase(
-    allocator: std.mem.Allocator,
-    system: *build.BuildSystem,
-    case: discovery.Case,
-    options: Options,
-) !PhaseActual {
-    process_state_lock.lockShared();
-    defer process_state_lock.unlockShared();
-
-    var tmp = try support.makeTmpDir(allocator);
-    defer tmp.cleanup();
-
-    const start = support.nowTimestamp();
-    const manifest_path = try support.makeBackendOutputPath(allocator, tmp, "hybrid", ".khm");
-    const result = try system.build(.{
-        .source_path = case.source_path,
-        .output_path = manifest_path,
-        .target = .{ .execution = .hybrid },
-    });
-    if (result.failed() or result.diagnostics.len != 0) {
-        return actualFromBuildOutcome(result, support.elapsedNs(start));
-    }
-
-    const runner = options.hybrid_runner_path orelse return error.MissingHybridRunner;
-    const runner_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, runner, allocator);
-    defer allocator.free(runner_path);
-    const run_cwd = try support.runtimeCwdForCase(allocator, case);
-    defer allocator.free(run_cwd);
-    const process_environ = support.inheritedProcessEnviron();
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
-    defer io_impl.deinit();
-    const child = try std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ runner_path, manifest_path },
-        .cwd = .{ .path = run_cwd },
-    });
-    defer allocator.free(child.stderr);
-    if (support.expectExitedZero(child.term)) |_| {} else |_| {
-        return .{
-            .result = .fail,
-            .stdout = child.stdout,
-            .stderr = child.stderr,
-            .trace = try reporting.hybridFailureTrace(allocator, child, manifest_path, runner_path, run_cwd),
-            .profile = .{
-                .kind = .executed,
-                .duration_ns = support.elapsedNs(start),
-                .cache_status = result.cache_status,
-                .cache_restore_ns = result.cache_restore_ns,
-                .cache_store_ns = result.cache_store_ns,
-            },
-        };
-    }
-    compare.expectEmptyText(allocator, child.stderr) catch {
-        return .{
-            .result = .fail,
-            .stdout = child.stdout,
-            .stderr = child.stderr,
-            .trace = try reporting.hybridFailureTrace(allocator, child, manifest_path, runner_path, run_cwd),
-            .profile = .{
-                .kind = .executed,
-                .duration_ns = support.elapsedNs(start),
-                .cache_status = result.cache_status,
-                .cache_restore_ns = result.cache_restore_ns,
-                .cache_store_ns = result.cache_store_ns,
-            },
-        };
-    };
-    return .{
-        .result = .pass,
-        .stdout = child.stdout,
-        .profile = .{
-            .kind = .executed,
-            .duration_ns = support.elapsedNs(start),
-            .cache_status = result.cache_status,
-            .cache_restore_ns = result.cache_restore_ns,
-            .cache_store_ns = result.cache_store_ns,
-        },
-    };
-}
-
-fn actualFromBuildOutcome(result: build.BuildArtifactOutcome, duration_ns: u64) PhaseActual {
-    return .{
-        .result = if (result.failed()) .fail else .pass,
-        .diagnostics = result.diagnostics,
-        .stage = if (result.failure_stage) |stage| support.fromBuildStage(stage) else null,
-        .profile = .{
-            .kind = .executed,
-            .duration_ns = duration_ns,
-            .cache_status = result.cache_status,
-            .cache_restore_ns = result.cache_restore_ns,
-            .cache_store_ns = result.cache_store_ns,
-        },
-    };
 }
 
 fn reportFailure(reporter: anytype, label: []const u8, err: anyerror, detail: reporting.FailureDetail) void {

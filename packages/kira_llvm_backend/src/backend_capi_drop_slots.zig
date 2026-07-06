@@ -142,6 +142,11 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     // clones an untracked (literal/borrowed) source before returning, and
                     // a hybrid runtime call clones the VM-owned result (lowerRuntimeCall).
                     .string => .string_buf,
+                    // A returned closure is a fresh owned block (a callee's `ret` clones
+                    // untracked closure sources); the .closure drop is tag-safe, so an
+                    // extern call's plain FFI pointer result is never freed. NATIVE only:
+                    // a hybrid closure result may be VM-owned.
+                    .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -218,6 +223,8 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     .array => .array,
                     .enum_instance => .raw,
                     .string => .string_buf,
+                    // Fresh owned closure result (tag-safe drop; see the .call case).
+                    .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -235,6 +242,8 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     .array => .array,
                     .enum_instance => .raw,
                     .string => .string_buf,
+                    // Fresh owned closure result (tag-safe drop; see the .call case).
+                    .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
                     else => continue,
                 };
                 if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
@@ -247,7 +256,13 @@ pub fn setup(fc: *FunctionCodegen) !void {
             else => {},
         }
         const producer = ownedProducer(instruction) orelse continue;
-        const kind = ownedKindFor(producer.ty) orelse continue;
+        var kind = ownedKindFor(producer.ty) orelse continue;
+        // A const_closure register (raw_ptr producer) is dropped with the typed
+        // capture teardown on the native path: the slot records the TAGGED value
+        // (see lowerConstClosure) and kira_destroy_closure untags and dispatches
+        // to kira_capi_closure_release. Hybrid keeps the plain block free (.raw,
+        // untagged pointer) — captures there may be VM-managed.
+        if (producer.ty.kind == .raw_ptr and fc.request.mode != .hybrid) kind = .closure;
         const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.slot");
         _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
         const index: u32 = @intCast(fc.drop_slots.items.len);
