@@ -73,6 +73,19 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     // a measured native crash with kira_array_release freeing:
     try requireBackends(allocator, &failures, "tests/pass/run/ownership_free_state_moveout_return_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "ARRAY_RELEASE_FREE", "kira_array_release frees unconditionally on the native path");
+
+    // Strings-are-deep-values ownership model (leak class #1: CString→String
+    // coercions, concat results, and aggregate-held strings never dropped). Each
+    // guard pins one rule whose removal reintroduces a leak or a use-after-free /
+    // double free (see backend_capi_drop.zig's string_buf comment for the model).
+    try requireBackends(allocator, &failures, "tests/pass/run/ownership_string_deep_value_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "kira_capi_string_clone", "the string buffer deep-copy primitive exists");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.strfield", "struct destructors free owned string field buffers (native)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "cc.strfield", "struct clones deep-copy string field buffers");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.str.old", "string field stores drop the replaced buffer before the clone");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_drop_slots.zig", "drop.cstr.slot", "CString→String coercion buffers are tracked for scope-exit free");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "cloneStringOnRead", "aggregate string reads clone (readers never alias aggregate buffers)");
+    try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "kira_bridge_clone_string_element", "kira_array_clone deep-copies STRING-tag element buffers");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "state.struct.clone", "native-state boxing deep-clones nested ffi_struct fields (FlatAcc use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "load.move.field", "field move-outs null the source storage (collectRemoved use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "ret.arr.clone", "borrowed array returns deep-clone (editorContentPathSegments use-after-free)");

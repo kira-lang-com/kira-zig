@@ -299,7 +299,7 @@ pub fn buildModule(
     // KIRA_CAPI_DROP while it is validated; with drop off, the destroy helpers are simply
     // never called, so generating them is free of behavior change or double-free risk.
     const drop_enabled = dropEnabled();
-    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls);
+    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode);
     defer dtors.deinit(allocator);
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
