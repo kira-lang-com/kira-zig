@@ -397,6 +397,9 @@ pub const NativeStateFieldGet = struct {
     state: u32,
     field_index: u32,
     field_ty: ValueType,
+    // Field move-out (see LoadIndirect.moved): the payload slot must be nulled
+    // after the read and the destination becomes the owner.
+    moved: bool = false,
 };
 
 pub const NativeStateFieldSet = struct {
@@ -459,6 +462,11 @@ pub const LoadIndirect = struct {
     dst: u32,
     ptr: u32,
     ty: ValueType,
+    // True for a checker-verified field MOVE-OUT (`let previous = obj.nodes`):
+    // ownership transfers to `dst`, and the backend nulls the field storage so
+    // the owner's destructor / a later field overwrite cannot double-free the
+    // moved value. False for plain borrowed reads (`obj.ids[i]`).
+    moved: bool = false,
 };
 
 pub const StoreIndirect = struct {

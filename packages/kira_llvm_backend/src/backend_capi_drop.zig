@@ -151,6 +151,38 @@ pub fn setup(fc: *FunctionCodegen) !void {
                 try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = callee.return_type });
                 fc.register_slot[dst] = index;
             },
+            .load_indirect => |v| {
+                // A checker-verified field move-out transfers ownership to dst: the
+                // codegen nulls the field storage after the read, so dst is the sole
+                // owner and needs a cleanup slot for scope exit.
+                if (!v.moved) continue;
+                const kind: OwnedKind = switch (v.ty.kind) {
+                    .array => .array,
+                    .enum_instance => .raw,
+                    else => continue,
+                };
+                if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
+                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.fieldmove.slot");
+                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
+                const index: u32 = @intCast(fc.drop_slots.items.len);
+                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.ty });
+                fc.register_slot[v.dst] = index;
+            },
+            .native_state_field_get => |v| {
+                // Same field move-out rule for a native-state payload slot.
+                if (!v.moved) continue;
+                const kind: OwnedKind = switch (v.field_ty.kind) {
+                    .array => .array,
+                    .enum_instance => .raw,
+                    else => continue,
+                };
+                if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
+                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.statemove.slot");
+                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
+                const index: u32 = @intCast(fc.drop_slots.items.len);
+                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.field_ty });
+                fc.register_slot[v.dst] = index;
+            },
             .call_value => |v| {
                 // A closure call returning an owned aggregate yields caller-stable heap
                 // storage, same as a direct call; track it for drop.
