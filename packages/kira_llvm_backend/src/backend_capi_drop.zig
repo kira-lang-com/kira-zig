@@ -7,15 +7,9 @@
 // Cleanup slots are entry-block allocas, so they dominate every basic block — this
 // is what lets the C-API backend free owned values without the "instruction does not
 // dominate all uses" problem that defeated the textual writer's clone attempts.
-const std = @import("std");
 const ir = @import("kira_ir");
 const llvm = @import("llvm_c.zig");
-const utils = @import("backend_utils.zig");
-const capi = @import("backend_capi.zig");
-const runtime_utils = @import("backend_runtime_utils.zig");
 const destructors = @import("backend_capi_destructors.zig");
-
-const findTypeDecl = utils.findTypeDecl;
 
 // Per-type destructor/clone generation lives in backend_capi_destructors.zig; re-export
 // the public surface so callers (and this driver) keep using `drop.Destructors`/`drop.build`.
@@ -30,279 +24,28 @@ pub const build = destructors.build;
 // problem; moves/escapes null the slot so each value is freed at most once.
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
-pub const OwnedKind = enum { array, struct_heap, struct_ptr, raw, struct_contents, closure };
+// string_buf: the slot holds a string's malloc'd BYTE BUFFER (field 0 of the
+// {ptr,len} register value), freed with plain free(). Strings are deep values:
+// every producer (CString coercion, concat, aggregate read, call result) owns a
+// fresh buffer tracked by its own slot; every consumer (aggregate store, capture,
+// enum payload) clones; there are no string moves and no aliasing. Strings are
+// deliberately EXCLUDED from the local_slot register<->local mapping — with
+// clone-always consumers a producer slot is the buffer's sole owner, and mapping
+// through locals would re-create the branch-reassignment F1 bug (exit cleanup
+// freeing the buffer of whichever branch's slot was lowered last).
+pub const OwnedKind = enum { array, struct_heap, struct_ptr, raw, struct_contents, closure, string_buf };
 pub const OwnedSlot = struct {
     alloca: llvm.c.LLVMValueRef,
     kind: OwnedKind,
     ty: ir.ValueType,
 };
 
-fn ownedKindFor(value_type: ir.ValueType) ?OwnedKind {
-    return switch (value_type.kind) {
-        .array => .array,
-        .ffi_struct => .struct_heap,
-        .construct_any => .struct_ptr,
-        // closures/enums are raw heap blocks freed with plain free().
-        .raw_ptr, .enum_instance => .raw,
-        else => null,
-    };
-}
-
-fn ownedProducer(instruction: ir.Instruction) ?struct { dst: u32, ty: ir.ValueType } {
-    return switch (instruction) {
-        .alloc_array => |v| .{ .dst = v.dst, .ty = v.ty },
-        .alloc_struct => |v| .{ .dst = v.dst, .ty = .{ .kind = .ffi_struct, .name = v.type_name } },
-        .alloc_enum => |v| .{ .dst = v.dst, .ty = .{ .kind = .enum_instance, .name = v.enum_type_name } },
-        .const_closure => |v| .{ .dst = v.dst, .ty = .{ .kind = .raw_ptr } },
-        else => null,
-    };
-}
-
-// Pre-scan owned-producing instructions and allocate one cleanup slot per result
-// in the entry block (so every slot dominates all exits), seeding register_slot.
-// Call with the builder positioned at the entry block.
-pub fn setup(fc: *FunctionCodegen) !void {
-    fc.register_slot = try fc.allocator.alloc(?u32, fc.function_decl.register_count);
-    @memset(fc.register_slot, null);
-    fc.local_slot = try fc.allocator.alloc(?u32, fc.function_decl.local_count);
-    @memset(fc.local_slot, null);
-    fc.reg_local = try fc.allocator.alloc(?u32, fc.function_decl.register_count);
-    @memset(fc.reg_local, null);
-    fc.copy_dest_slot = try fc.allocator.alloc(?u32, fc.function_decl.local_count);
-    @memset(fc.copy_dest_slot, null);
-    fc.enum_local_slot = try fc.allocator.alloc(?u32, fc.function_decl.local_count);
-    @memset(fc.enum_local_slot, null);
-    if (!fc.drop_enabled) return;
-    const api = fc.api;
-
-    // Pre-scan: a register->local map (load_local/local_ptr) lets us see, for each
-    // copy_indirect, which local backs its destination.
-    const scan_reg_local = try fc.allocator.alloc(?u32, fc.function_decl.register_count);
-    defer fc.allocator.free(scan_reg_local);
-    @memset(scan_reg_local, null);
-
-    for (fc.function_decl.instructions) |instruction| {
-        switch (instruction) {
-            .load_local => |v| if (v.dst < scan_reg_local.len) {
-                scan_reg_local[v.dst] = v.local;
-            },
-            .local_ptr => |v| if (v.dst < scan_reg_local.len) {
-                scan_reg_local[v.dst] = v.local;
-            },
-            .store_local => |v| {
-                // One per-local cleanup slot for an owned enum local, reused across
-                // reassignments. An enum value is a heap block (alloc_enum mallocs a
-                // 16-byte { tag, payload }); a `var s: Enum` reassigned in branches would
-                // otherwise leave its live value in whichever branch's per-producer slot
-                // ran, and the return frees the wrong (last-lowered) slot — freeing the
-                // live returned enum (the F1 use-after-free). A per-local slot tracks the
-                // local's current value at runtime, so reassignment drops the dead value
-                // and the live one is escaped on return regardless of which branch ran.
-                // A reborrow store (`var r = <borrow>`) is a non-owning alias and must not
-                // be tracked here; onStoreLocal also guards on borrow and on the source
-                // being a tracked owned value before it routes through this slot.
-                if (v.borrow) continue;
-                if (v.local >= fc.function_decl.local_types.len) continue;
-                if (fc.function_decl.local_types[v.local].kind != .enum_instance) continue;
-                if (v.local >= fc.enum_local_slot.len or fc.enum_local_slot[v.local] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.enumlocal.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = .raw, .ty = fc.function_decl.local_types[v.local] });
-                fc.enum_local_slot[v.local] = index;
-            },
-            .copy_indirect => |v| {
-                // One struct_contents cleanup slot per destination local (reused across
-                // reassignments so the same backing is released at most once).
-                if (fc.dtors.map.get(v.type_name) == null) continue;
-                const local = if (v.dst_ptr < scan_reg_local.len) scan_reg_local[v.dst_ptr] orelse continue else continue;
-                if (local >= fc.copy_dest_slot.len or fc.copy_dest_slot[local] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.contents.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = .struct_contents, .ty = .{ .kind = .ffi_struct, .name = v.type_name } });
-                fc.copy_dest_slot[local] = index;
-            },
-            .call => |v| {
-                // A native call returning an owned aggregate yields fresh caller-stable
-                // heap storage (an ffi_struct the callee moved/cloned out, or a heap
-                // array). Track it so the caller frees it at scope exit unless it is
-                // consumed/moved first (onEscape nulls the slot; a direct return skips it).
-                const dst = v.dst orelse continue;
-                const callee = runtime_utils.functionById(fc.request.program.programPtr().*, v.callee) orelse continue;
-                const kind: OwnedKind = switch (callee.return_type.kind) {
-                    .ffi_struct => .struct_heap,
-                    .array => .array,
-                    // A returned enum is a fresh heap block the callee (or, for a hybrid
-                    // call into the VM, `lowerEnumToNativeOwned`) handed over as a libc-
-                    // allocated `{tag,payload}`; the caller owns it and frees it at scope
-                    // exit unless it is moved on (a store into a field moves it; a borrow-
-                    // arg pass keeps it). Tracked in hybrid too: the runtime no longer
-                    // double-frees these (see HybridRuntime.cleanupPendingCallbackReturns),
-                    // which also reclaims the per-frame `graphicsEventKindFromRaw`/
-                    // `...ButtonFromRaw` enum that previously leaked.
-                    .enum_instance => .raw,
-                    else => continue,
-                };
-                if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.callret.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = callee.return_type });
-                fc.register_slot[dst] = index;
-            },
-            .load_indirect => |v| {
-                // A checker-verified field move-out transfers ownership to dst: the
-                // codegen nulls the field storage after the read, so dst is the sole
-                // owner and needs a cleanup slot for scope exit.
-                if (!v.moved) continue;
-                const kind: OwnedKind = switch (v.ty.kind) {
-                    .array => .array,
-                    .enum_instance => .raw,
-                    else => continue,
-                };
-                if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.fieldmove.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.ty });
-                fc.register_slot[v.dst] = index;
-            },
-            .native_state_field_get => |v| {
-                // Same field move-out rule for a native-state payload slot.
-                if (!v.moved) continue;
-                const kind: OwnedKind = switch (v.field_ty.kind) {
-                    .array => .array,
-                    .enum_instance => .raw,
-                    else => continue,
-                };
-                if (v.dst >= fc.register_slot.len or fc.register_slot[v.dst] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.statemove.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.field_ty });
-                fc.register_slot[v.dst] = index;
-            },
-            .call_value => |v| {
-                // A closure call returning an owned aggregate yields caller-stable heap
-                // storage, same as a direct call; track it for drop.
-                const dst = v.dst orelse continue;
-                const kind: OwnedKind = switch (v.return_type.kind) {
-                    .ffi_struct => .struct_heap,
-                    .array => .array,
-                    .enum_instance => .raw,
-                    else => continue,
-                };
-                if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.cvret.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.return_type });
-                fc.register_slot[dst] = index;
-            },
-            .call_virtual => |v| {
-                const dst = v.dst orelse continue;
-                const kind: OwnedKind = switch (v.return_ty.kind) {
-                    .ffi_struct => .struct_heap,
-                    .construct_any => .struct_ptr,
-                    .array => .array,
-                    .enum_instance => .raw,
-                    else => continue,
-                };
-                if (dst >= fc.register_slot.len or fc.register_slot[dst] != null) continue;
-                const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.vret.slot");
-                _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-                const index: u32 = @intCast(fc.drop_slots.items.len);
-                try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = v.return_ty });
-                fc.register_slot[dst] = index;
-            },
-            else => {},
-        }
-        const producer = ownedProducer(instruction) orelse continue;
-        const kind = ownedKindFor(producer.ty) orelse continue;
-        const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.slot");
-        _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-        const index: u32 = @intCast(fc.drop_slots.items.len);
-        try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = producer.ty });
-        if (producer.dst < fc.register_slot.len) fc.register_slot[producer.dst] = index;
-    }
-
-    // Owned aggregate parameters: a moved-in struct/array is owned by the callee, which
-    // must drop it at scope exit unless it is moved out (returned/stored — which nulls
-    // the slot through the param's local_slot). Allocate a cleanup slot per owned
-    // ffi_struct/array param now; seedOwnedParams fills it once the params are bound.
-    // A struct param releases only its contents (the shell is the caller's storage).
-    for (fc.function_decl.param_types, 0..) |pt, i| {
-        if (i >= fc.function_decl.param_ownership.len) break;
-        switch (fc.function_decl.param_ownership[i]) {
-            .owned, .move => {},
-            else => continue,
-        }
-        const kind: OwnedKind = switch (pt.kind) {
-            // A moved-in struct is fully owned by the callee (Rust move semantics): the
-            // caller hands over a caller-stable heap shell (lowerCall normalizes any stack
-            // source to heap) and relinquishes it, so the callee drops shell + contents at
-            // exit (kira_destroy) unless it moves the value onward. This replaces the older
-            // split model (callee releases only contents, caller keeps the shell) which
-            // leaked every owned struct argument — neither side freed the shell.
-            // HYBRID EXCEPTION: a struct value crossing the VM bridge is VM-managed, so the
-            // native callee must not free its shell; keep the contents-only model there.
-            .ffi_struct => if (pt.name != null and fc.dtors.map.get(pt.name.?) != null)
-                (if (fc.request.mode == .hybrid) .struct_contents else .struct_heap)
-            else
-                continue,
-            .array => .array,
-            // A moved-in closure / heap value: the callee owns it and frees it at exit
-            // (tag-safe so callable-values are a no-op). This reclaims owned closure
-            // parameters whose blocks would otherwise leak after the caller escapes them.
-            // HYBRID EXCEPTION: a closure/raw_ptr parameter of a native function may be a
-            // VM-OWNED value the VM passed across the bridge (a VM closure is tagged for ABI
-            // compat but its block is VM-managed). Freeing it here corrupts the VM heap, so
-            // do not take ownership of closure/raw_ptr params in hybrid mode.
-            .construct_any => if (fc.request.mode == .hybrid) continue else .struct_ptr,
-            .raw_ptr => if (fc.request.mode == .hybrid) continue else .closure,
-            else => continue,
-        };
-        const slot = api.LLVMBuildAlloca(fc.builder, fc.types.ptr_ty, "drop.param.slot");
-        _ = api.LLVMBuildStore(fc.builder, api.LLVMConstNull(fc.types.ptr_ty), slot);
-        const index: u32 = @intCast(fc.drop_slots.items.len);
-        try fc.drop_slots.append(fc.allocator, .{ .alloca = slot, .kind = kind, .ty = pt });
-        if (i < fc.local_slot.len) fc.local_slot[@intCast(i)] = index;
-    }
-}
-
-// Seed each owned-aggregate param's cleanup slot with the param's runtime pointer.
-// Must run after the params are bound to locals (still in the entry block, so the
-// stores dominate every exit). Pairs with the owned-param slots allocated in setup.
-pub fn seedOwnedParams(fc: *FunctionCodegen) void {
-    if (!fc.drop_enabled) return;
-    const api = fc.api;
-    for (fc.function_decl.param_types, 0..) |pt, i| {
-        if (i >= fc.function_decl.param_ownership.len) break;
-        switch (fc.function_decl.param_ownership[i]) {
-            .owned, .move => {},
-            else => continue,
-        }
-        switch (pt.kind) {
-            .ffi_struct, .array, .construct_any, .raw_ptr => {},
-            else => continue,
-        }
-        if (i >= fc.local_slot.len) continue;
-        const idx = fc.local_slot[@intCast(i)] orelse continue;
-        const param = api.LLVMGetParam(fc.function_value, @intCast(i));
-        const ptr = api.LLVMBuildIntToPtr(fc.builder, param, fc.types.ptr_ty, "param.own.ptr");
-        _ = api.LLVMBuildStore(fc.builder, ptr, fc.drop_slots.items[idx].alloca);
-    }
-}
-
-pub fn teardown(fc: *FunctionCodegen) void {
-    fc.drop_slots.deinit(fc.allocator);
-    fc.allocator.free(fc.register_slot);
-    fc.allocator.free(fc.local_slot);
-    fc.allocator.free(fc.reg_local);
-    fc.allocator.free(fc.copy_dest_slot);
-    fc.allocator.free(fc.enum_local_slot);
-}
+// The entry-block cleanup-slot pre-scan lives in backend_capi_drop_slots.zig
+// (Core Law #5); re-export its surface so callers keep using `drop.setup(...)`.
+const slots = @import("backend_capi_drop_slots.zig");
+pub const setup = slots.setup;
+pub const seedOwnedParams = slots.seedOwnedParams;
+pub const teardown = slots.teardown;
 
 // Record the runtime pointer of a freshly heap-allocated owned value into its
 // pre-allocated cleanup slot (slot index was seeded in setup).
@@ -430,17 +173,70 @@ pub fn onStoreLocal(fc: *FunctionCodegen, local: u32, src: u32, borrow: bool) vo
             }
         }
     }
+    // Strings never flow through the register<->local map. The map is COMPILE-TIME
+    // state: a `var s` reassigned in two branches would leave local_slot pointing at
+    // whichever branch was lowered last, and exit cleanup would free the OTHER
+    // branch's live buffer when `s` is returned (the enum F1 bug, re-created).
+    // Strings don't need the map — consumers always clone and `ret` clones any
+    // untracked source, so a producer slot freeing its own buffer at exit is
+    // always correct.
+    if (local < fc.function_decl.local_types.len and fc.function_decl.local_types[local].kind == .string) return;
     if (src < fc.register_slot.len and local < fc.local_slot.len) fc.local_slot[local] = fc.register_slot[src];
+}
+
+// A string local was just assigned `cloned` (a fresh deep copy made at the
+// store_local site): drop the local's prior clone (reassignment / loop re-entry;
+// free(null) no-ops the first store) and record the new buffer in the per-local
+// slot. Does NOT touch the register<->local map — string registers stay tracked
+// by their own producer slots.
+pub fn onStoreLocalString(fc: *FunctionCodegen, local: u32, cloned: llvm.c.LLVMValueRef) void {
+    if (!fc.drop_enabled) return;
+    if (local >= fc.string_local_slot.len) return;
+    const index = fc.string_local_slot[local] orelse return;
+    dropPriorOccupant(fc, index);
+    const buf = fc.api.LLVMBuildExtractValue(fc.builder, cloned, 0, "drop.strlocal");
+    _ = fc.api.LLVMBuildStore(fc.builder, buf, fc.drop_slots.items[index].alloca);
+}
+
+// Does this string local own its stored clones (i.e. was a per-local slot created)?
+pub fn hasStringLocalSlot(fc: *FunctionCodegen, local: u32) bool {
+    return fc.drop_enabled and local < fc.string_local_slot.len and fc.string_local_slot[local] != null;
 }
 
 pub fn onLoadLocal(fc: *FunctionCodegen, dst: u32, local: u32) void {
     if (!fc.drop_enabled) return;
+    // See onStoreLocal: strings are excluded from the register<->local map.
+    if (local < fc.function_decl.local_types.len and fc.function_decl.local_types[local].kind == .string) return;
     if (dst < fc.register_slot.len and local < fc.local_slot.len) fc.register_slot[dst] = fc.local_slot[local];
 }
 
 // Is `reg` a tracked, owned (freshly allocated, not borrowed) value?
 pub fn isOwned(fc: *FunctionCodegen, reg: u32) bool {
     return fc.drop_enabled and reg < fc.register_slot.len and fc.register_slot[reg] != null;
+}
+
+// Deep-copy a {ptr,len} string register value via kira_capi_string_clone; the
+// result carries a fresh malloc'd buffer (null buffer clones to null). This is
+// the one primitive every string consumer uses: aggregate stores, closure
+// captures, enum payload boxing, borrowed returns, and clone-on-read.
+pub fn cloneStringValue(fc: *FunctionCodegen, value: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+    const api = fc.api;
+    const b = fc.builder;
+    const buf = api.LLVMBuildExtractValue(b, value, 0, "str.clone.src");
+    const len = api.LLVMBuildExtractValue(b, value, 1, "str.clone.len");
+    var args = [_]llvm.c.LLVMValueRef{ buf, len };
+    const clone = api.LLVMBuildCall2(b, fc.dtors.string_clone.ty, fc.dtors.string_clone.fn_value, &args, args.len, "str.clone");
+    return api.LLVMBuildInsertValue(b, value, clone, 0, "str.clone.val");
+}
+
+// Record dst's string buffer (field 0 of the {ptr,len} value) into its
+// pre-allocated string_buf cleanup slot. No-op when dst has no slot (drop off,
+// or the instruction was not a string producer).
+pub fn trackStringRegister(fc: *FunctionCodegen, dst: u32) void {
+    if (!fc.drop_enabled) return;
+    if (dst >= fc.register_slot.len or fc.register_slot[dst] == null) return;
+    const buf = fc.api.LLVMBuildExtractValue(fc.builder, fc.registers[dst], 0, "str.own");
+    onAllocPointer(fc, dst, buf);
 }
 
 // Free every still-live owned value. Emitted at each function return + fallthrough.
@@ -487,6 +283,12 @@ fn freeSlot(fc: *FunctionCodegen, index: u32) void {
                     _ = api.LLVMBuildCall2(b, h.release_contents.ty, h.release_contents.fn_value, &args, args.len, "");
                 }
             }
+        },
+        .string_buf => {
+            // The slot holds the string's malloc'd byte buffer; plain free
+            // (free(null) no-ops an unproduced/escaped slot).
+            var args = [_]llvm.c.LLVMValueRef{ptr};
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.free.ty, fc.runtime_decls.free.fn_value, &args, args.len, "");
         },
     }
 }

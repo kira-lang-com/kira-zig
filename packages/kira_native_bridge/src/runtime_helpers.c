@@ -304,6 +304,25 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
  * `clone_elem` copies elements byte-for-byte (primitive/leaf element types).
  * Ownership model only — no reference counts.
  */
+/*
+ * Deep-copy a string element's byte buffer so the clone owns independent storage.
+ * String buffers inside owned arrays follow the same ownership model as RAW_PTR
+ * elements: the backend clones every string INTO an array element, so the element
+ * always owns its buffer, kira_array_release frees it, and a clone must therefore
+ * duplicate it (aliasing would double-free). Plain malloc — string buffers are
+ * libc-owned on the native path even in hybrid builds.
+ */
+static void kira_bridge_clone_string_element(KiraBridgeValue *value) {
+    if (value->tag != KIRA_BRIDGE_VALUE_STRING) return;
+    const unsigned char *src = value->payload.string.ptr;
+    size_t len = value->payload.string.len;
+    if (src == NULL) return;
+    unsigned char *buf = (unsigned char *)malloc(len == 0 ? 1 : len);
+    if (buf == NULL) { value->payload.string.ptr = NULL; value->payload.string.len = 0; return; }
+    memcpy(buf, src, len);
+    value->payload.string.ptr = buf;
+}
+
 KIRA_BRIDGE_EXPORT KiraArray *kira_array_clone(const KiraArray *array, void *(*clone_elem)(void *)) {
     if (kira_array_alloc_fn != NULL) return (KiraArray *)array; /* hybrid: VM owns; no native clone */
     if (array == NULL || kira_bridge_probably_invalid_pointer(array)) return NULL;
@@ -325,6 +344,7 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_clone(const KiraArray *array, void *(*c
             void *element = (void *)array->items[i].payload.raw_ptr;
             if (element != NULL) copy->items[i].payload.raw_ptr = (uintptr_t)clone_elem(element);
         }
+        kira_bridge_clone_string_element(&copy->items[i]);
     }
     return copy;
 }
@@ -368,6 +388,18 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
         void *old = (void *)array->items[index].payload.raw_ptr;
         void *incoming = value->tag == KIRA_BRIDGE_VALUE_RAW_PTR ? (void *)value->payload.raw_ptr : NULL;
         if (old != NULL && old != incoming) release_raw_ptr(old);
+    }
+    /*
+     * String elements own their byte buffer (the backend clones every string into
+     * an element), so overwriting one must free the old buffer regardless of
+     * whether a RAW_PTR element destructor was supplied. Same old!=incoming guard
+     * as above so a self-store is a no-op.
+     */
+    if (kira_array_alloc_fn == NULL && array->items[index].tag == KIRA_BRIDGE_VALUE_STRING) {
+        unsigned char *old = (unsigned char *)array->items[index].payload.string.ptr;
+        const unsigned char *incoming =
+            value->tag == KIRA_BRIDGE_VALUE_STRING ? value->payload.string.ptr : NULL;
+        if (old != NULL && old != incoming) free(old);
     }
     array->items[index] = *value;
 }
@@ -501,12 +533,17 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
      * array-registry-leak-and-promotion.md §7b–§7j.
      */
     kira_trace_log("NATIVE", "ARRAY_RELEASE_FREE", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
-    if (release_raw_ptr != NULL && array->items != NULL &&
-        !kira_bridge_probably_invalid_pointer(array->items)) {
+    if (array->items != NULL && !kira_bridge_probably_invalid_pointer(array->items)) {
         for (size_t i = 0; i < array->len; i++) {
-            if (array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
+            if (release_raw_ptr != NULL && array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
                 void *element = (void *)array->items[i].payload.raw_ptr;
                 if (element != NULL) release_raw_ptr(element);
+            }
+            /* String elements own their buffer (cloned in by the backend); free it
+             * with the array regardless of the RAW_PTR element destructor. */
+            if (array->items[i].tag == KIRA_BRIDGE_VALUE_STRING &&
+                array->items[i].payload.string.ptr != NULL) {
+                free((void *)array->items[i].payload.string.ptr);
             }
         }
     }
