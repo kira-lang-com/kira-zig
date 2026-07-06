@@ -339,8 +339,9 @@ pub const FunctionCodegen = struct {
                     } else if (self.drop_enabled and self.function_decl.return_type.kind == .enum_instance and !drop.isOwned(self, src)) {
                         // Same borrowed->owned promotion for a returned enum block.
                         const src_ptr = api.LLVMBuildIntToPtr(b, self.registers[src], self.types.ptr_ty, "ret.enum.src");
+                        const clone_fn = self.dtors.enumCloneFn(self.function_decl.return_type);
                         var cargs = [_]llvm.c.LLVMValueRef{src_ptr};
-                        const clone = api.LLVMBuildCall2(b, self.dtors.enum_clone.ty, self.dtors.enum_clone.fn_value, &cargs, cargs.len, "ret.enum.clone");
+                        const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "ret.enum.clone");
                         const ret_val = api.LLVMBuildPtrToInt(b, clone, self.types.i64, "ret.enum.cloneint");
                         drop.emitExitCleanup(self, null);
                         _ = api.LLVMBuildRet(b, ret_val);
@@ -354,6 +355,18 @@ pub const FunctionCodegen = struct {
                         // (a direct concat/coercion/read result) moves out through the
                         // emitExitCleanup(src) slot-skip in the branch below.
                         const ret_val = drop.cloneStringValue(self, self.registers[src]);
+                        drop.emitExitCleanup(self, null);
+                        _ = api.LLVMBuildRet(b, ret_val);
+                    } else if (self.drop_enabled and self.request.mode == .llvm_native and self.function_decl.return_type.kind == .raw_ptr and !drop.isOwned(self, src)) {
+                        // Returned-closure invariant (native): every raw_ptr a call
+                        // yields is a fresh owned value the caller tracks as .closure
+                        // and frees (tag-safe). An UNTRACKED source (a borrow param, an
+                        // array element, a field read) is deep-cloned before exit
+                        // cleanup; kira_capi_closure_clone passes callable values and
+                        // plain FFI pointers through unchanged. A tracked source moves
+                        // out via the emitExitCleanup(src) slot-skip below.
+                        var cargs = [_]llvm.c.LLVMValueRef{self.registers[src]};
+                        const ret_val = api.LLVMBuildCall2(b, self.dtors.closure_clone.ty, self.dtors.closure_clone.fn_value, &cargs, cargs.len, "ret.clos.clone");
                         drop.emitExitCleanup(self, null);
                         _ = api.LLVMBuildRet(b, ret_val);
                     } else {
