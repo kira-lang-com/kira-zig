@@ -213,16 +213,23 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                     // into a struct field clones it), so the caller must KEEP ownership and
                     // free its own enum at scope exit. Escaping it would orphan the value the
                     // caller allocated — a per-call leak (every SizeMode/Alignment view arg).
-                    .owned, .move => if (arg >= fc.register_types.len or fc.register_types[arg].kind != .enum_instance) drop.onEscape(fc, arg),
+                    // Strings are Copy too: the callee has no string param slot (it clones
+                    // anything it keeps), so the caller keeps ownership of the buffer.
+                    .owned, .move => {
+                        const k = if (arg < fc.register_types.len) fc.register_types[arg].kind else ir.ValueType.Kind.integer;
+                        if (k != .enum_instance and k != .string) drop.onEscape(fc, arg);
+                    },
                     else => {},
                 }
             }
             if (call.dst) |dst| {
                 fc.registers[dst] = result;
                 // An ffi_struct or array result is fresh caller-stable owned heap storage;
-                // track it so the caller frees it at scope exit.
+                // track it so the caller frees it at scope exit. A string result is always
+                // a fresh owned buffer (the callee's `ret` clones untracked sources).
                 switch (callee_decl.return_type.kind) {
                     .ffi_struct, .array => drop.onAlloc(fc, dst),
+                    .string => drop.trackStringRegister(fc, dst),
                     else => {},
                 }
             }
@@ -268,6 +275,7 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
         const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, result_slot, "rt.result.bv");
         const unpacked = try fc.unpackBridge(callee_decl.return_type, bv);
         var cloned_owned = false;
+        var cloned_string = false;
         fc.registers[dst] = switch (callee_decl.return_type.kind) {
             .ffi_struct => blk: {
                 const type_name = callee_decl.return_type.name orelse break :blk unpacked;
@@ -277,11 +285,20 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
                 cloned_owned = true;
                 break :blk cloned;
             },
+            // A VM-returned string is a view of VM-owned bytes; deep-clone so the
+            // native caller owns an independent buffer (keeps the strings-always-
+            // owned call-result invariant in hybrid too).
+            .string => blk: {
+                if (!fc.drop_enabled) break :blk unpacked;
+                cloned_string = true;
+                break :blk drop.cloneStringValue(fc, unpacked);
+            },
             else => unpacked,
         };
         // Track for native drop ONLY when a native-owned clone was produced. Without clone
         // metadata the value is the VM-returned (VM-owned) pointer; tracking it would have the
         // native epilogue free VM-owned storage.
         if (cloned_owned) drop.onAlloc(fc, dst);
+        if (cloned_string) drop.trackStringRegister(fc, dst);
     }
 }

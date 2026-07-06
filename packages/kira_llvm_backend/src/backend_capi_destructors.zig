@@ -7,6 +7,7 @@
 // driver that consumes these helpers stays in backend_capi_drop.zig.
 const std = @import("std");
 const ir = @import("kira_ir");
+const backend_api = @import("kira_backend_api");
 const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
@@ -31,6 +32,19 @@ pub const Destructors = struct {
     // malloc+memcpy. An owned enum field is cloned on struct copy and freed on struct
     // destroy, so each struct copy owns an independent enum (no aliasing/double-free).
     enum_clone: capi.RuntimeDecls.Decl,
+    // Deep-copy a string byte buffer (kira_capi_string_clone(ptr, len) -> ptr):
+    // null->null, else malloc+memcpy. Strings are deep values in the native
+    // ownership model: every string entering an aggregate (struct field, array
+    // element, native-state slot, enum payload, closure capture) is cloned so the
+    // aggregate owns an independent buffer, and every string read out of an
+    // aggregate is cloned so the reader owns one too. There are no string moves
+    // and no aliasing — each buffer has exactly one owner.
+    string_clone: capi.RuntimeDecls.Decl,
+    // Whether string struct fields are freed by kira_release_contents_<T>. True on
+    // the pure-native path. In HYBRID a native struct's string field may have been
+    // written by the VM bridge with a VM-owned buffer, so release must not free it
+    // (conservative: leak, never a cross-allocator free).
+    release_strings: bool,
 
     pub fn deinit(self: *Destructors, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
@@ -73,6 +87,7 @@ pub fn build(
     struct_types: *const std.StringHashMapUnmanaged(llvm.c.LLVMTypeRef),
     program: *const ir.Program,
     runtime: capi.RuntimeDecls,
+    mode: backend_api.BackendMode,
 ) !Destructors {
     var ptr_param = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
     const void_ptr_ty = api.LLVMFunctionType(types.void_ty, &ptr_param, ptr_param.len, 0);
@@ -84,11 +99,16 @@ pub fn build(
     const destroy_closure = api.LLVMAddFunction(module_ref, "kira_destroy_closure", void_i64_ty);
     const ptr_ptr_ty = api.LLVMFunctionType(types.ptr_ty, &ptr_param, ptr_param.len, 0);
     const enum_clone = api.LLVMAddFunction(module_ref, "kira_enum_clone", ptr_ptr_ty);
+    var sclone_params = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64 };
+    const sclone_ty = api.LLVMFunctionType(types.ptr_ty, &sclone_params, sclone_params.len, 0);
+    const string_clone = api.LLVMAddFunction(module_ref, "kira_capi_string_clone", sclone_ty);
     var result = Destructors{
         .destroy_raw_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_raw },
         .destroy_struct_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_struct },
         .destroy_closure = .{ .ty = void_i64_ty, .fn_value = destroy_closure },
         .enum_clone = .{ .ty = ptr_ptr_ty, .fn_value = enum_clone },
+        .string_clone = .{ .ty = sclone_ty, .fn_value = string_clone },
+        .release_strings = mode != .hybrid,
     };
 
     const builder = api.LLVMCreateBuilderInContext(types.context);
@@ -127,6 +147,31 @@ pub fn build(
         var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(types.i64, 16, 0)};
         const dst = api.LLVMBuildCall2(builder, runtime.malloc.ty, runtime.malloc.fn_value, &margs, margs.len, "ec.dst");
         var cargs = [_]llvm.c.LLVMValueRef{ dst, src, api.LLVMConstInt(types.i64, 16, 0) };
+        _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
+        _ = api.LLVMBuildRet(builder, dst);
+    }
+
+    // kira_capi_string_clone(ptr, len) -> ptr: heap-duplicate a string byte buffer.
+    // null -> null (an unset field); len 0 -> malloc(1) so the result is a real
+    // allocation that free() accepts. The single deep-copy primitive behind the
+    // strings-are-deep-values ownership model.
+    {
+        const entry = api.LLVMAppendBasicBlockInContext(types.context, string_clone, "entry");
+        const copy_block = api.LLVMAppendBasicBlockInContext(types.context, string_clone, "copy");
+        const null_block = api.LLVMAppendBasicBlockInContext(types.context, string_clone, "nullret");
+        api.LLVMPositionBuilderAtEnd(builder, entry);
+        const src = api.LLVMGetParam(string_clone, 0);
+        const len = api.LLVMGetParam(string_clone, 1);
+        const is_null = api.LLVMBuildICmp(builder, llvm.c.LLVMIntEQ, src, api.LLVMConstNull(types.ptr_ty), "sc.isnull");
+        _ = api.LLVMBuildCondBr(builder, is_null, null_block, copy_block);
+        api.LLVMPositionBuilderAtEnd(builder, null_block);
+        _ = api.LLVMBuildRet(builder, api.LLVMConstNull(types.ptr_ty));
+        api.LLVMPositionBuilderAtEnd(builder, copy_block);
+        const is_zero = api.LLVMBuildICmp(builder, llvm.c.LLVMIntEQ, len, api.LLVMConstInt(types.i64, 0, 0), "sc.zero");
+        const alloc_len = api.LLVMBuildSelect(builder, is_zero, api.LLVMConstInt(types.i64, 1, 0), len, "sc.alloclen");
+        var margs = [_]llvm.c.LLVMValueRef{alloc_len};
+        const dst = api.LLVMBuildCall2(builder, runtime.malloc.ty, runtime.malloc.fn_value, &margs, margs.len, "sc.dst");
+        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, len };
         _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
         _ = api.LLVMBuildRet(builder, dst);
     }
@@ -206,6 +251,19 @@ fn buildReleaseContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: c
                 var args = [_]llvm.c.LLVMValueRef{enum_ptr};
                 _ = api.LLVMBuildCall2(b, dtors.destroy_raw_ptr.ty, dtors.destroy_raw_ptr.fn_value, &args, args.len, "");
             },
+            .string => {
+                // A string field owns its byte buffer (every store into the field clones,
+                // see the strings-are-deep-values model in backend_capi_drop.zig); free it
+                // with the struct. free(null) covers a zero-initialized field. Native path
+                // only: in hybrid the VM may have written a VM-owned buffer into this field
+                // through the borrow-mut bridge, which must not be freed with libc.
+                if (!dtors.release_strings) continue;
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.strfield");
+                const str = api.LLVMBuildLoad2(b, types.string_ty, field_ptr, "rc.str");
+                const buf = api.LLVMBuildExtractValue(b, str, 0, "rc.str.ptr");
+                var args = [_]llvm.c.LLVMValueRef{buf};
+                _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &args, args.len, "");
+            },
             else => {},
         }
     }
@@ -261,6 +319,19 @@ fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: cap
                 const old = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "cc.enumold");
                 var args = [_]llvm.c.LLVMValueRef{old};
                 const new = api.LLVMBuildCall2(b, dtors.enum_clone.ty, dtors.enum_clone.fn_value, &args, args.len, "cc.enumnew");
+                _ = api.LLVMBuildStore(b, new, field_ptr);
+            },
+            .string => {
+                // Deep-copy the string buffer so the struct copy owns it independently
+                // (paired with the free in release_contents). Runs in hybrid too: the
+                // clone is a fresh native buffer, safe regardless of who owned the source.
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.strfield");
+                const old = api.LLVMBuildLoad2(b, types.string_ty, field_ptr, "cc.strold");
+                const old_buf = api.LLVMBuildExtractValue(b, old, 0, "cc.strold.ptr");
+                const len = api.LLVMBuildExtractValue(b, old, 1, "cc.strold.len");
+                var args = [_]llvm.c.LLVMValueRef{ old_buf, len };
+                const new_buf = api.LLVMBuildCall2(b, dtors.string_clone.ty, dtors.string_clone.fn_value, &args, args.len, "cc.strnew");
+                const new = api.LLVMBuildInsertValue(b, old, new_buf, 0, "cc.strval");
                 _ = api.LLVMBuildStore(b, new, field_ptr);
             },
             else => {},
