@@ -96,7 +96,7 @@ const Lowerer = struct {
     }
 
     fn emitResources(self: *Lowerer, writer: anytype, stage: shader_model.Stage) !void {
-        _ = stage;
+        var storage_binding: u32 = 0;
         for (self.shader.groups) |group_decl| {
             for (group_decl.resources) |resource_decl| {
                 switch (resource_decl.kind) {
@@ -115,7 +115,25 @@ const Lowerer = struct {
                     .texture => {},
                     .sampler => {},
                     .storage => {
-                        // Storage resources stay in reflection for now; GLSL 330 graphics lowering does not emit them.
+                        // GLSL 430 compute emits the storage buffer as a real SSBO so
+                        // the compute body references a DECLARED buffer. GLSL 330
+                        // graphics has no SSBO, so storage stays reflection-only there
+                        // (graphics shaders do not carry storage). Previously the
+                        // compute source referenced an undeclared buffer yet reported
+                        // pass — a Core Law #2 fake-parity smoke surface (Codex review).
+                        if (stage == .compute) {
+                            const elem_ty = switch (resource_decl.ty) {
+                                .runtime_array => |elem| elem.*,
+                                else => resource_decl.ty,
+                            };
+                            try writer.print("layout(std430, binding = {d}) buffer {s}_Buffer {{\n    {s} {s}[];\n}};\n\n", .{
+                                storage_binding,
+                                sanitizeName(resource_decl.name),
+                                glslTypeName(elem_ty),
+                                sanitizeName(resource_decl.name),
+                            });
+                            storage_binding += 1;
+                        }
                     },
                 }
             }

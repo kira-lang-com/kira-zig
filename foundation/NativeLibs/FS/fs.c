@@ -365,16 +365,21 @@ bool fs_make_directory(const char* path) {
     if (path == NULL) {
         return false;
     }
+    // "Already exists" is only success when what exists is a DIRECTORY. An
+    // existing regular file also raises EEXIST / ERROR_ALREADY_EXISTS; reporting
+    // success there would let callers assume a directory and fail later, so
+    // verify it is actually a directory before claiming idempotent success
+    // (Codex review).
 #ifdef _WIN32
     if (CreateDirectoryA(path, NULL)) {
         return true;
     }
-    return GetLastError() == ERROR_ALREADY_EXISTS;
+    return GetLastError() == ERROR_ALREADY_EXISTS && fs_is_directory(path);
 #else
     if (mkdir(path, 0755) == 0) {
         return true;
     }
-    return errno == EEXIST;
+    return errno == EEXIST && fs_is_directory(path);
 #endif
 }
 
