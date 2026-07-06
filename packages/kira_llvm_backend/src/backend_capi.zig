@@ -27,6 +27,7 @@ const dispatch = @import("backend_capi_dispatch.zig");
 const drop = @import("backend_capi_drop.zig");
 const closure_dtors = @import("backend_capi_closure_dtors.zig");
 const enum_dtors = @import("backend_capi_enum_dtors.zig");
+const dynamic_dtors = @import("backend_capi_dynamic_dtors.zig");
 const ffi = @import("backend_capi_ffi.zig");
 
 const functionExecutionById = utils.functionExecutionById;
@@ -327,6 +328,10 @@ pub fn buildModule(
     // Typed enum destroy/clone bodies (string-payload boxes; declarations live
     // in dtors.enum_map, empty in hybrid).
     try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
+
+    // Runtime-typed dynamic dispatchers for type-erased values and native-state
+    // interiors (declarations live in dtors; referenced only on the native path).
+    try dynamic_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
     // generated after the concrete functions are declared.
