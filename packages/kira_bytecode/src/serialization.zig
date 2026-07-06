@@ -245,6 +245,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.state, .little);
                     try writer.writeInt(u32, value.field_index, .little);
                     try writeTypeRef(writer, value.field_ty);
+                    try writer.writeByte(@intFromBool(value.moved));
                 },
                 .native_state_field_set => |value| {
                     try writer.writeInt(u32, value.state, .little);
@@ -678,6 +679,9 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .state = try reader.takeInt(u32, .little),
                     .field_index = try reader.takeInt(u32, .little),
                     .field_ty = try readTypeRef(allocator, reader),
+                    // KBCA carries the native-state move flag (same version as
+                    // the load_indirect / array_get moved bytes).
+                    .moved = if (has_load_indirect_moved) (try reader.takeByte()) != 0 else false,
                 } }),
                 .native_state_field_set => try instructions.append(.{ .native_state_field_set = .{
                     .state = try reader.takeInt(u32, .little),

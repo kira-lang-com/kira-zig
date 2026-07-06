@@ -131,11 +131,19 @@ pub fn applyConsumingReceiver(
             // (the borrow does not own it) — reject when it carries Any
             // storage, same rule as the other receiver shapes.
             if (index_node.ty.kind != .construct_any and !shared.containsConstructAnyStorage(ctx, index_node.ty)) return;
-            const root = arrayRootLocal(index_node.object) orelse return;
-            const binding = scope.entries.getPtr(root) orelse return;
-            if (binding.ownership == .borrow_read or binding.ownership == .borrow_mut) {
-                try emitConsumingBorrowedReceiver(ctx, root, span);
-                return error.DiagnosticsEmitted;
+            // Reject only when the drained array roots in a BORROWED local — the
+            // borrow does not own the element the callee frees. An owned-local
+            // root (`self.children[i]`, `outer.inner.children[i]`) or a temporary
+            // array (a call result) is drainable: void the element slot. Walk
+            // through nested fields AND indexes so a deep receiver is handled,
+            // not just `arr[i]` / `self.children[i]` (Codex P1).
+            if (arrayRootLocal(index_node.object)) |root| {
+                if (scope.entries.getPtr(root)) |binding| {
+                    if (binding.ownership == .borrow_read or binding.ownership == .borrow_mut) {
+                        try emitConsumingBorrowedReceiver(ctx, root, span);
+                        return error.DiagnosticsEmitted;
+                    }
+                }
             }
             index_node.moved = true;
         },
@@ -143,15 +151,20 @@ pub fn applyConsumingReceiver(
     }
 }
 
-// The local binding an indexed receiver's array roots in: `arr[i]` -> arr,
-// `self.children[i]` -> self. Anything else (call results, nested indexing)
-// has no binding to consult.
+// The root local a (possibly NESTED) indexed/field receiver bottoms out in:
+// `arr[i]` -> arr, `self.children[i]` -> self, `outer.inner.children[i]` ->
+// outer. Null when it roots in a temporary (call result, another index of a
+// temporary) — those have no binding to consult and are drainable as-is.
 fn arrayRootLocal(object: *const model.Expr) ?[]const u8 {
-    return switch (object.*) {
-        .local => |node| node.name,
-        .field => |node| if (node.object.* == .local) node.object.local.name else null,
-        else => null,
-    };
+    var obj = object;
+    while (true) {
+        switch (obj.*) {
+            .local => |node| return node.name,
+            .field => |node| obj = node.object,
+            .index => |node| obj = node.object,
+            else => return null,
+        }
+    }
 }
 
 fn emitConsumingBorrowedReceiver(ctx: *shared.Context, name: []const u8, span: source_pkg.Span) !void {
