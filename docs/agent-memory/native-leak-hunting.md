@@ -82,6 +82,15 @@ are now frame-flat.
    closure blocks + the struct shells their captures reference). Fix needs
    per-closure generated destructors (capture types are known at codegen
    time) or typed capture metadata in the block header.
+   **Interaction-scaling** (measured 2026-07-06): the editor is frame-flat
+   but NOT click-flat — every tap rebuilds the scene and leaks a fresh
+   closure/capture set, ~1,950 leaks / ~109 KB per click (120 offscreen
+   frames + 10 scripted clicks = 30,613 leaks / 2.39 MB vs 11,120 / 1.30 MB
+   without clicks; every origin scales ~11× = initial build + 10 rebuilds:
+   `EdTap.body` 49→539, `kira_struct_alloc` 183→2,331). A live interactive
+   session therefore shows far more than the 11.1k baseline — that is this
+   class, not a string regression (zero `kira_capi_string_clone` frames in
+   leaked stacks).
 3. **Native-state interior teardown** — `kira_native_state_free` frees the
    payload buffer and token only; interior arrays/strings/structs/enums the
    box owns are not destroyed. Fine for app-lifetime ambient state, a leak
