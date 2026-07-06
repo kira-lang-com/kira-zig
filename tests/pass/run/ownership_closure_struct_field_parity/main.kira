@@ -1,0 +1,30 @@
+// A closure stored in a struct field is a deep value: the field owns an
+// independent clone (store path), kira_release_contents_<T> destroys it with
+// the struct (tag-safe kira_destroy_closure), and the source register keeps
+// its own block for scope-exit free. Before the fix every widget-style
+// `onPress` field leaked its closure block per scene rebuild.
+
+struct Slot {
+    let tag: Int
+    let cb: (Int) -> Int
+}
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+@Main
+function main() {
+    var total = 0
+    var i = 0
+    while i < 2000 {
+        let slot = Slot { tag: i, cb: makeAdder(i) }
+        let f = slot.cb
+        total = total + f(1) + slot.tag
+        i = i + 1
+    }
+    print(total)
+    return
+}

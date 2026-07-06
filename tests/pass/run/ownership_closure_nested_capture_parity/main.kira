@@ -1,0 +1,30 @@
+// A closure captured inside another closure (callback capture — a trivial
+// capture kind) is deep-cloned into the outer block, and the outer block's
+// typed teardown recursively destroys the nested closure
+// (kira_capi_closure_release -> kira_destroy_closure -> release).
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+function callIt(f: (Int) -> Int, v: Int) -> Int {
+    return f(v)
+}
+
+@Main
+function main() {
+    var total = 0
+    var i = 0
+    while i < 1500 {
+        let inner = makeAdder(i)
+        let outer: (Int) -> Int = { n in
+            return callIt(inner, n) + 1
+        }
+        total = total + outer(1)
+        i = i + 1
+    }
+    print(total)
+    return
+}
