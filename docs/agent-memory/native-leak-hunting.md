@@ -58,10 +58,10 @@ after the closure + enum-payload models):
 | Program | Residual | Notes |
 |---|---|---|
 | ui-foundation `Examples/leak-harness` (10k frames) | 2 leaks / 224 B | unchanged, checksum 80000 |
-| ui-foundation `Examples/liquid-glass-app` (120 frames) | 648 leaks / ~372 KB | ~unchanged |
-| ui-foundation `Examples/basic-foundation-app` (120 and 600 frames) | 2,014 leaks / ~480 KB | frame-flat; was 2,029/~483 KB |
-| project-matter `apps/editor` (120 and 300 frames) | 11,207 leaks / ~1.30 MB | frame-flat (identical at 120 and 300) |
-| editor + 10 scripted clicks (120 frames) | 30,688 leaks / 2.39 MB | still ~1,930/click, but now ALL class #3 (state-slot trees); `EdTap.body` closure-block roots are gone |
+| ui-foundation `Examples/liquid-glass-app` (120 frames) | 647 leaks / ~372 KB | ~unchanged |
+| ui-foundation `Examples/basic-foundation-app` (120 frames) | 2,030 leaks / ~483 KB | ~unchanged |
+| project-matter `apps/editor` (120 and 300 frames) | 9,270 leaks / ~1.19 MB | frame-flat (identical at 120 and 300); was 11,207/1.30 MB |
+| editor + 10 scripted clicks (120 frames) | 9,381 leaks / 1.17 MB | **click-flat to ~11 leaks/click** (was ~1,950/click); classes #2/#3 resolved |
 
 Closure-model proof: 20k-iteration returned-closure churn, struct-field +
 array-of-closure churn (8k each), and all 12 `ownership_closure_*` corpus
@@ -98,17 +98,27 @@ are now frame-flat.
    FFI pointers/CStrings. NATIVE only; hybrid keeps the VM hook + alias
    semantics. Guards: corpus `ownership_closure_*` (12 cases, all
    check_leaks) + memory_validation.
-3. **Native-state interior teardown** — `kira_native_state_free` frees the
-   payload buffer and token only; interior arrays/strings/structs/enums the
-   box owns are not destroyed. Fine for app-lifetime ambient state, a leak
-   for short-lived boxes. The VM's `freeNativeState` destroys interiors —
-   parity gap. **Now the dominant editor class**: the per-click residual
-   (~1,930 leaks/click, composition `kira_struct_alloc` shells ×2,334 +
-   stranded `kira_capi_closure_clone` blocks ×892 per 10 clicks) is widget
-   structs escaped into state-slot retained trees that are replaced without
-   interior destruction. The `kira_fn_*` closure-block ROOT leaks
-   (`EdTap.body` ×539 etc.) are GONE; what remains leaks because the OWNING
-   tree is never destroyed, not because the fields would not free.
+3. ~~Native-state interiors + type-erased (Any/construct) values~~ — RESOLVED
+   2026-07-06 (evening). **Runtime-typed dynamic teardown**
+   (`backend_capi_dynamic_dtors.zig`): every `kira_struct_alloc` shell carries
+   a type-id header, so `kira_capi_dynamic_destroy`/`kira_capi_dynamic_clone`
+   switch on it to recover `kira_destroy_<T>`/`kira_clone_<T>` for
+   construct_any values (widget trees!): `[Any]` array elements
+   (elementDestroy/Clone fallback), Any struct fields, Any field stores
+   (drop-replaced; owned moves / borrowed clones), owned call args, `ret`
+   clones, tracked call results, and `.struct_ptr` slot drops. Unknown ids
+   no-op/alias — the SAME lookup decides destroy and clone, keeping the
+   deep-everywhere-or-nowhere pairing. `kira_capi_state_interior_release`
+   (installed as the `kira_native_state_free` hook by the same global ctor)
+   walks the state payload's bridge slots per declared field type (VM
+   `freeNativeState` parity); state field sets of closures/Any now clone-in +
+   drop-old like strings. Native only; hybrid unchanged.
+   TRAP FIXED ALONG THE WAY: `lowerConstructFamilyVirtualCall` recorded
+   construct_any results a SECOND time after `lowerCall` already did —
+   dropPriorOccupant destroyed the just-stored result (widget-dispatch
+   use-after-free). Guard: memory_validation "does not double-record".
+   Editor effect: per-click residual ~1,950 → **~11 leaks/click**; idle
+   11,207 → 9,270.
 4. ~~Enum payload boxes~~ — RESOLVED 2026-07-06 for string payloads. **Typed
    enum teardown** (`backend_capi_enum_dtors.zig`): per-enum generated
    `kira_destroy_enum_<T>` / `kira_clone_enum_<T>` switch on the tag and

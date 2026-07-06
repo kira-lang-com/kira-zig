@@ -108,8 +108,14 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
         args[0] = v.receiver;
         @memcpy(args[1..], v.args);
         try lowerCall(fc, .{ .callee = method_id, .args = args, .dst = v.dst });
+        // construct_any results are recorded by lowerCall itself (its result
+        // switch tracks them as owned .struct_ptr drops); recording again here
+        // would dropPriorOccupant the value that was JUST stored — destroying
+        // the live result before the caller uses it (the widget-dispatch
+        // use-after-free). Enum results are still recorded here: lowerCall's
+        // switch does not track enum destinations.
         if (v.dst) |dst| switch (v.return_ty.kind) {
-            .construct_any, .enum_instance => drop.onAlloc(fc, dst),
+            .enum_instance => drop.onAlloc(fc, dst),
             else => {},
         };
         if (return_slot) |slot| {
@@ -202,6 +208,16 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                         }
                         continue;
                     }
+                    // Same rule for a borrowed type-erased (Any) argument passed to an
+                    // owned parameter: the callee's .struct_ptr param slot destroys it
+                    // at exit, so hand over an independent runtime-typed deep clone.
+                    if (pt.kind == .construct_any) {
+                        if (!drop.isOwned(fc, arg)) {
+                            var cargs = [_]llvm.c.LLVMValueRef{fc.registers[arg]};
+                            fc.registers[arg] = api.LLVMBuildCall2(fc.builder, fc.dtors.dynamic_clone.ty, fc.dtors.dynamic_clone.fn_value, &cargs, cargs.len, "call.any.clone");
+                        }
+                        continue;
+                    }
                     if (pt.kind != .ffi_struct) continue;
                     const name = pt.name orelse continue;
                     if (fc.dtors.map.get(name) == null) continue;
@@ -245,7 +261,9 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                 // untracked closure sources, and the .closure drop is tag-safe (an extern
                 // call's plain FFI pointer result is recorded but never freed).
                 switch (callee_decl.return_type.kind) {
-                    .ffi_struct, .array, .raw_ptr => drop.onAlloc(fc, dst),
+                    // construct_any results are fresh owned values too: the callee's
+                    // `ret` deep-clones untracked type-erased sources.
+                    .ffi_struct, .array, .raw_ptr, .construct_any => drop.onAlloc(fc, dst),
                     .string => drop.trackStringRegister(fc, dst),
                     else => {},
                 }

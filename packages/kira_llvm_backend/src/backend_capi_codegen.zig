@@ -23,6 +23,7 @@ const print = @import("backend_capi_print.zig");
 const value_repr = @import("backend_capi_value_repr.zig");
 const drop = @import("backend_capi_drop.zig");
 const aggregate = @import("backend_capi_aggregate.zig");
+const native_state = @import("backend_capi_native_state.zig");
 const closures = @import("backend_capi_closures.zig");
 const ffi = @import("backend_capi_ffi.zig");
 const calls = @import("backend_capi_calls.zig");
@@ -357,6 +358,17 @@ pub const FunctionCodegen = struct {
                         const ret_val = drop.cloneStringValue(self, self.registers[src]);
                         drop.emitExitCleanup(self, null);
                         _ = api.LLVMBuildRet(b, ret_val);
+                    } else if (self.drop_enabled and self.request.mode == .llvm_native and self.function_decl.return_type.kind == .construct_any and !drop.isOwned(self, src)) {
+                        // Returned type-erased (Any) invariant: callers track
+                        // construct_any results as owned .struct_ptr drops, so an
+                        // UNTRACKED source (borrow param, field read, array element)
+                        // hands back a runtime-typed deep clone. Unknown ids pass
+                        // through unchanged — and are then never freed by the caller
+                        // (same id lookup on both sides).
+                        var cargs = [_]llvm.c.LLVMValueRef{self.registers[src]};
+                        const ret_val = api.LLVMBuildCall2(b, self.dtors.dynamic_clone.ty, self.dtors.dynamic_clone.fn_value, &cargs, cargs.len, "ret.any.clone");
+                        drop.emitExitCleanup(self, null);
+                        _ = api.LLVMBuildRet(b, ret_val);
                     } else if (self.drop_enabled and self.request.mode == .llvm_native and self.function_decl.return_type.kind == .raw_ptr and !drop.isOwned(self, src)) {
                         // Returned-closure invariant (native): every raw_ptr a call
                         // yields is a fresh owned value the caller tracks as .closure
@@ -489,7 +501,7 @@ pub const FunctionCodegen = struct {
                 // buffer, the reader owns an independent copy.
                 if (v.payload_ty.kind == .string) self.cloneStringOnRead(v.dst);
             },
-            .alloc_native_state => |v| try aggregate.lowerAllocNativeState(self, v),
+            .alloc_native_state => |v| try native_state.lowerAllocNativeState(self, v),
             .free_native_state => |v| {
                 const state = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.free.in");
                 var args = [_]llvm.c.LLVMValueRef{state};
@@ -518,7 +530,7 @@ pub const FunctionCodegen = struct {
                     _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.bridge_ty), slot);
                 }
             },
-            .native_state_field_set => |v| try aggregate.lowerNativeStateFieldSet(self, v),
+            .native_state_field_set => |v| try native_state.lowerNativeStateFieldSet(self, v),
             .alloc_array => |v| try aggregate.lowerAllocArray(self, v),
             .array_len => |v| aggregate.lowerArrayLen(self, v),
             .array_get => |v| {

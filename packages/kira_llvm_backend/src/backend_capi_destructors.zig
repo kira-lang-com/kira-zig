@@ -61,6 +61,15 @@ pub const Destructors = struct {
     // on a plain FFI raw pointer (CString, userdata handle) is a no-op/pass-through.
     closure_release: capi.RuntimeDecls.Decl,
     closure_clone: capi.RuntimeDecls.Decl,
+    // Runtime-typed dispatchers for type-erased values (construct_any / Any) and
+    // native-state interiors, switching on the kira_struct_alloc type-id header /
+    // KiraNativeState.type_id (bodies in backend_capi_dynamic_dtors.zig). Unknown
+    // ids no-op (destroy) / alias (clone) — the SAME id lookup decides both, so a
+    // value is deep-cloned everywhere iff it is deep-destroyed everywhere.
+    struct_type_id: capi.RuntimeDecls.Decl,
+    dynamic_destroy: capi.RuntimeDecls.Decl,
+    dynamic_clone: capi.RuntimeDecls.Decl,
+    state_interior_release: capi.RuntimeDecls.Decl,
     // Whether string struct fields are freed by kira_release_contents_<T>. True on
     // the pure-native path. In HYBRID a native struct's string field may have been
     // written by the VM bridge with a VM-owned buffer, so release must not free it
@@ -103,15 +112,17 @@ pub const Destructors = struct {
     // pointer elements are untouched.
     pub fn elementDestroy(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
         if (self.structHelpers(program, array_ty)) |helpers| return helpers.destroy.fn_value;
-        // kira_destroy_closure (not closure_release): the element payload is the
-        // TAGGED closure value; destroy_closure untags and dispatches to the hook.
-        if (self.deep_closures) return self.destroy_closure.fn_value;
+        // Runtime-typed fallback: the element payload is either a TAGGED closure
+        // (high bit — torn down via the destroy hook) or a struct shell whose
+        // type-id header recovers kira_destroy_<T> (the `[Widget]` /
+        // [construct_any] case). Anything else no-ops.
+        if (self.deep_closures) return self.dynamic_destroy.fn_value;
         return null;
     }
 
     pub fn elementClone(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
         if (self.structHelpers(program, array_ty)) |helpers| return helpers.clone.fn_value;
-        if (self.deep_closures) return self.closure_clone.fn_value;
+        if (self.deep_closures) return self.dynamic_clone.fn_value;
         return null;
     }
 
@@ -159,6 +170,14 @@ pub fn build(
     var cclone_param = [_]llvm.c.LLVMTypeRef{types.i64};
     const cclone_ty = api.LLVMFunctionType(types.i64, &cclone_param, cclone_param.len, 0);
     const closure_clone = api.LLVMAddFunction(module_ref, "kira_capi_closure_clone", cclone_ty);
+    // Runtime-typed dynamic dispatchers (bodies in backend_capi_dynamic_dtors.zig).
+    // kira_struct_type_id reuses the RuntimeDecls declaration (re-declaring the
+    // symbol would make LLVM rename it and break the link).
+    var ddestroy_param = [_]llvm.c.LLVMTypeRef{types.i64};
+    const ddestroy_ty = api.LLVMFunctionType(types.void_ty, &ddestroy_param, ddestroy_param.len, 0);
+    const dynamic_destroy = api.LLVMAddFunction(module_ref, "kira_capi_dynamic_destroy", ddestroy_ty);
+    const dynamic_clone = api.LLVMAddFunction(module_ref, "kira_capi_dynamic_clone", cclone_ty);
+    const state_interior_release = api.LLVMAddFunction(module_ref, "kira_capi_state_interior_release", void_ptr_ty);
     var result = Destructors{
         .destroy_raw_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_raw },
         .destroy_struct_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_struct },
@@ -167,6 +186,10 @@ pub fn build(
         .string_clone = .{ .ty = sclone_ty, .fn_value = string_clone },
         .closure_release = .{ .ty = void_ptr_ty, .fn_value = closure_release },
         .closure_clone = .{ .ty = cclone_ty, .fn_value = closure_clone },
+        .struct_type_id = runtime.struct_type_id,
+        .dynamic_destroy = .{ .ty = ddestroy_ty, .fn_value = dynamic_destroy },
+        .dynamic_clone = .{ .ty = cclone_ty, .fn_value = dynamic_clone },
+        .state_interior_release = .{ .ty = void_ptr_ty, .fn_value = state_interior_release },
         .release_strings = mode != .hybrid,
         .deep_closures = mode != .hybrid,
     };
@@ -361,6 +384,17 @@ fn buildReleaseContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: c
                 var args = [_]llvm.c.LLVMValueRef{closure_val};
                 _ = api.LLVMBuildCall2(b, dtors.destroy_closure.ty, dtors.destroy_closure.fn_value, &args, args.len, "");
             },
+            .construct_any => {
+                // A type-erased field (Any / a construct value such as a Widget child)
+                // owns its shell: the runtime-typed dispatcher recovers the concrete
+                // kira_destroy_<T> from the shell's type-id header (or the closure
+                // teardown for a tagged closure). Unknown ids no-op. Native only.
+                if (!dtors.deep_closures) continue;
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.anyfield");
+                const any_val = api.LLVMBuildLoad2(b, types.i64, field_ptr, "rc.any");
+                var args = [_]llvm.c.LLVMValueRef{any_val};
+                _ = api.LLVMBuildCall2(b, dtors.dynamic_destroy.ty, dtors.dynamic_destroy.fn_value, &args, args.len, "");
+            },
             else => {},
         }
     }
@@ -442,6 +476,17 @@ fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: cap
                 const old = api.LLVMBuildLoad2(b, types.i64, field_ptr, "cc.closold");
                 var args = [_]llvm.c.LLVMValueRef{old};
                 const new = api.LLVMBuildCall2(b, dtors.closure_clone.ty, dtors.closure_clone.fn_value, &args, args.len, "cc.closnew");
+                _ = api.LLVMBuildStore(b, new, field_ptr);
+            },
+            .construct_any => {
+                // Deep-copy a type-erased field via the runtime-typed dispatcher
+                // (paired with the release above; unknown ids alias — and are then
+                // also never freed by the release, same id lookup). Native only.
+                if (!dtors.deep_closures) continue;
+                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.anyfield");
+                const old = api.LLVMBuildLoad2(b, types.i64, field_ptr, "cc.anyold");
+                var args = [_]llvm.c.LLVMValueRef{old};
+                const new = api.LLVMBuildCall2(b, dtors.dynamic_clone.ty, dtors.dynamic_clone.fn_value, &args, args.len, "cc.anynew");
                 _ = api.LLVMBuildStore(b, new, field_ptr);
             },
             else => {},
