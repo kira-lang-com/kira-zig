@@ -40,6 +40,51 @@ fn buildScopeExitLocals(lowerer: anytype, body: []const model.Statement, extra_b
     return locals.toOwnedSlice();
 }
 
+fn containsConstructAnyStorage(program: model.Program, ty: model.ResolvedType, depth: u32) bool {
+    if (depth >= 64) return false;
+    return switch (ty.kind) {
+        .construct_any => true,
+        .array => if (ty.name) |name|
+            containsConstructAnyStorage(program, resolvedTypeFromStorageText(name) orelse return false, depth + 1)
+        else
+            false,
+        .named => if (type_impl.findTypeDeclByName(program, ty.name orelse "")) |type_decl| blk: {
+            for (type_decl.fields) |field| {
+                if (containsConstructAnyStorage(program, field.ty, depth + 1)) break :blk true;
+            }
+            break :blk false;
+        } else false,
+        .enum_instance => blk: {
+            const name = ty.name orelse return false;
+            for (program.enums) |enum_decl| {
+                if (!std.mem.eql(u8, enum_decl.name, name)) continue;
+                for (enum_decl.variants) |variant| {
+                    if (variant.payload_ty) |payload| {
+                        if (containsConstructAnyStorage(program, payload, depth + 1)) break :blk true;
+                    }
+                }
+                break;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn resolvedTypeFromStorageText(text: []const u8) ?model.ResolvedType {
+    if (std.mem.startsWith(u8, text, "any ")) {
+        return .{
+            .kind = .construct_any,
+            .name = text,
+            .construct_constraint = .{ .construct_name = text[4..] },
+        };
+    }
+    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
+        return .{ .kind = .array, .name = text[1 .. text.len - 1] };
+    }
+    return .{ .kind = .named, .name = text };
+}
+
 pub fn lowerIfStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.IfStatement) !bool {
     const condition_reg = try lowerer.lowerExpr(instructions, node.condition);
     const then_label = lowerer.freshLabel();
@@ -220,9 +265,14 @@ pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed
         .array => |iterator| {
             if (iterator.elements.len == 0) return false;
             const binding_ty = try type_impl.lowerResolvedType(lowerer.program, node.binding_ty);
+            const binding_borrow = containsConstructAnyStorage(lowerer.program, node.binding_ty, 0);
             for (iterator.elements) |element| {
                 const element_reg = try lowerer.lowerExpr(instructions, element);
-                try lowerer.storeValueToLocal(instructions, node.binding_local_id, binding_ty, element_reg);
+                if (binding_borrow) {
+                    try instructions.append(.{ .store_local = .{ .local = node.binding_local_id, .src = element_reg, .borrow = true } });
+                } else {
+                    try lowerer.storeValueToLocal(instructions, node.binding_local_id, binding_ty, element_reg);
+                }
                 const end_label = lowerer.freshLabel();
                 try lowerer.loop_stack.append(.{ .break_label = end_label, .continue_label = end_label });
                 const body_terminated = try lowerer.lowerStatements(instructions, node.body);
@@ -234,6 +284,7 @@ pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed
         },
         else => {
             const binding_ty = try type_impl.lowerResolvedType(lowerer.program, node.binding_ty);
+            const binding_borrow = containsConstructAnyStorage(lowerer.program, node.binding_ty, 0);
             const array_reg = try lowerer.lowerExpr(instructions, node.iterator);
             const len_reg = lowerer.freshRegister();
             try instructions.append(.{ .array_len = .{ .dst = len_reg, .array = array_reg } });
@@ -271,7 +322,11 @@ pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed
                 .index = index_reg,
                 .ty = binding_ty,
             } });
-            try lowerer.storeValueToLocal(instructions, node.binding_local_id, binding_ty, item_reg);
+            if (binding_borrow) {
+                try instructions.append(.{ .store_local = .{ .local = node.binding_local_id, .src = item_reg, .borrow = true } });
+            } else {
+                try lowerer.storeValueToLocal(instructions, node.binding_local_id, binding_ty, item_reg);
+            }
             try instructions.append(.{ .scope_enter = .{} });
             try lowerer.loop_stack.append(.{ .break_label = end_label, .continue_label = loop_label });
             const body_terminated = try lowerer.lowerStatements(instructions, node.body);

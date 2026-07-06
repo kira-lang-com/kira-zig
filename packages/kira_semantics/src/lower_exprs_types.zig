@@ -79,6 +79,10 @@ fn bindingMoveTarget(value_expr: *syntax.ast.Expr) ?BindingMoveTarget {
 /// Structs already deep-copy via `copy_indirect`, so struct-valued bindings stay safe and
 /// are left untouched. Code that wants an independent value must say `copy`.
 fn applyBindingMove(ctx: *shared.Context, scope: *model.Scope, value_expr: *syntax.ast.Expr, lowered_value: *model.Expr) !void {
+    switch (lowered_value.*) {
+        .local, .field => {},
+        else => return,
+    }
     const target = bindingMoveTarget(value_expr) orelse return;
     const binding = scope.entries.getPtr(target.root) orelse return;
     if (binding.moved) return;
@@ -87,7 +91,8 @@ fn applyBindingMove(ctx: *shared.Context, scope: *model.Scope, value_expr: *synt
     // value's own type (the field type for a field read, the local type for a bare read)
     // is what decides this, so a trivially-copyable field like `obj.count` never moves `obj`.
     const bound_ty = model.hir.exprType(lowered_value.*);
-    if (bound_ty.kind != .array and bound_ty.kind != .enum_instance) return;
+    if (bound_ty.kind != .array and bound_ty.kind != .enum_instance and
+        bound_ty.kind != .construct_any and !shared.containsConstructAnyStorage(ctx, bound_ty)) return;
     if (target.field) |field_name| {
         try binding.markFieldMoved(ctx.allocator, field_name);
         if (binding.move_span == null) binding.move_span = exprSpan(value_expr.*);

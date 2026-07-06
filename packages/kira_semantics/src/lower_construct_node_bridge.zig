@@ -29,7 +29,8 @@ pub fn registerFormAccessorHeaders(
         var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
         var ownership = std.array_list.Managed(model.OwnershipMode).init(ctx.allocator);
         try params.append(.{ .kind = .named, .name = form_decl.name });
-        try ownership.append(.borrow_read);
+        // `body` accessors consume self (must match lowerMethodFunction).
+        try ownership.append(if (shared.methodConsumesSelf(ctx, form_decl.name, field.name, field.annotations)) .owned else .borrow_read);
 
         const key = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ form_decl.name, field.name });
         try function_headers.put(ctx.allocator, key, .{

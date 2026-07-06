@@ -434,6 +434,11 @@ pub const ArrayGet = struct {
     // element instead of deep-cloning it (matching the native backend, which never
     // copies a borrowed element). Set by the IR peepholes for `arr[i].scalar`.
     borrow: bool = false,
+    // Checker-verified element DRAIN from an OWNED array: dst takes the
+    // element's value as its owner and the slot tombstones to VOID (array
+    // release skips it; a later read of the drained slot traps). Used by
+    // consuming-receiver dispatch over `[some T]` children.
+    moved: bool = false,
 };
 
 pub const ArraySet = struct {
