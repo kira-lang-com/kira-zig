@@ -591,6 +591,11 @@ pub const FieldExpr = struct {
     ty: ResolvedType,
     storage: FieldStorage,
     span: source_pkg.Span,
+    // True when the move checker classified this read as a field MOVE-OUT
+    // (`let previous = obj.nodes` on a non-copyable field; KSEM107 enforces the
+    // re-init). Codegen must transfer ownership — null the field's storage after
+    // the read — so a later field overwrite cannot drop the moved-out value.
+    moved: bool = false,
 };
 
 pub const NativeStateExpr = struct {
