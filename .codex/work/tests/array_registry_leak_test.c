@@ -161,12 +161,11 @@ int main(void) {
     CHECK(got.tag == 1 && got.payload.integer == 7);
 
     /* ---- 4. ownership-model release reclaims (free at the owner's drop) ----
-     * No VM allocator installed => pure-native path with KIRA_ARRAY_OWNERSHIP_FREE.
-     * Allocating M arrays of length 3 then releasing them must return live
-     * allocations to baseline (struct + items freed). The element destructor runs
-     * once per RAW_PTR element. (When the ownership-free build flag is off, release
-     * defers and this section is skipped.) */
-#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
+     * No VM allocator installed => pure-native path; release frees unconditionally
+     * (the old KIRA_ARRAY_OWNERSHIP_FREE gate is gone). Allocating M arrays of
+     * length 3 then releasing them must return live allocations to baseline
+     * (struct + items freed). The element destructor runs once per RAW_PTR
+     * element. */
     enum { M = 4096 };
     counting = 1;
     long live_before = alloc_count - free_count;
@@ -191,21 +190,5 @@ int main(void) {
     kira_array_release(holder, test_destroy_element);
     CHECK(g_destroyed == 2);
     fprintf(stderr, "PASS: registry leak removed, behavior preserved, ownership release reclaims\n");
-#else
-    /* Free gated off: release must defer (no free, no crash, storage intact). */
-    counting = 1;
-    long live_after_alloc = alloc_count - free_count;
-    KiraArray *r = kira_array_alloc(3);
-    kira_array_store(r, 0, &v);
-    kira_array_release(r, test_destroy_element);
-    long live_after_release = alloc_count - free_count;
-    counting = 0;
-    CHECK(live_after_release >= live_after_alloc);  /* no reclamation */
-    CHECK(g_destroyed == 0);
-    CHECK(kira_array_len(r) == 3);
-    kira_array_load(r, 0, &got);
-    CHECK(got.tag == 1 && got.payload.integer == 42);
-    fprintf(stderr, "PASS: registry leak removed, behavior preserved, release is a safe no-op\n");
-#endif
     return 0;
 }

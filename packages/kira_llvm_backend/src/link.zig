@@ -44,14 +44,12 @@ fn compileHelperSource(
     try argv.append(driver_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
     if (pic and !isWindowsTarget(selector)) try argv.append("-fPIC");
-    // KIRA_ARRAY_OWNERSHIP_FREE stays OFF: enabling it crashes real UI apps with
-    // malloc freelist corruption (kira_array_alloc under uiBatchEmitQuad in
-    // ui-foundation's liquid-glass example) because clone coverage at
-    // borrow->owned promotions is still incomplete — see
-    // .codex/work/reports/array-registry-leak-and-promotion.md §7f/§7j. Complete
-    // the clone coverage, validate the liquid-glass example under `leaks`, then
-    // enable via `try argv.append("-DKIRA_ARRAY_OWNERSHIP_FREE=1")` here.
-    if (std.c.getenv("KIRA_ARRAY_OWNERSHIP_FREE_DEV") != null) try argv.append("-DKIRA_ARRAY_OWNERSHIP_FREE=1");
+    // Array ownership free is unconditional: kira_array_release reclaims owned
+    // arrays on the pure-native path (the hybrid/VM path still defers to the VM's
+    // destructors). The old KIRA_ARRAY_OWNERSHIP_FREE gate is gone — the clone
+    // coverage it waited on (native-state boxing, field move-outs, borrowed-array
+    // returns) is complete and validated under `leaks` on leak-harness,
+    // liquid-glass, basic-foundation-app, and the project-matter editor.
     try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
     try runCommand(allocator, argv.items);
 }
