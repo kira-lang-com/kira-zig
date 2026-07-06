@@ -17,6 +17,6 @@ function leak(value: Int, bag: Bag) -> Int {
 @Main
 function main() {
     let bag = Bag { items: [1, 2, 3] }
-    print(leak(0, bag))
+    print(leak(0, move bag))
     return
 }

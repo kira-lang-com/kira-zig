@@ -1,13 +1,12 @@
-backends = ["hybrid", "vm", "llvm"]
+backends = ["vm", "llvm", "hybrid"]
+check_leaks = true
 
 [phases.check]
-result = "fail"
-diagnostic_code = "KSEM107"
-diagnostic_title = "local was moved"
-stage = "semantics"
+result = "pass"
 
 [phases.build]
-result = "blocked"
+result = "pass"
 
 [phases.run]
-result = "blocked"
+result = "pass"
+stdout = "3\n"
