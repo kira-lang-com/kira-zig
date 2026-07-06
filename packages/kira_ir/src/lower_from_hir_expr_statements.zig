@@ -14,6 +14,51 @@ const lowerResolvedType = type_impl.lowerResolvedType;
 const lowerResolvedTypeSlice = type_impl.lowerResolvedTypeSlice;
 const lowerExecutableBooleanType = type_impl.lowerExecutableBooleanType;
 
+fn containsConstructAnyStorage(program: model.Program, ty: model.ResolvedType, depth: u32) bool {
+    if (depth >= 64) return false;
+    return switch (ty.kind) {
+        .construct_any => true,
+        .array => if (ty.name) |name|
+            containsConstructAnyStorage(program, resolvedTypeFromStorageText(name) orelse return false, depth + 1)
+        else
+            false,
+        .named => if (type_impl.findTypeDeclByName(program, ty.name orelse "")) |type_decl| blk: {
+            for (type_decl.fields) |field| {
+                if (containsConstructAnyStorage(program, field.ty, depth + 1)) break :blk true;
+            }
+            break :blk false;
+        } else false,
+        .enum_instance => blk: {
+            const name = ty.name orelse return false;
+            for (program.enums) |enum_decl| {
+                if (!std.mem.eql(u8, enum_decl.name, name)) continue;
+                for (enum_decl.variants) |variant| {
+                    if (variant.payload_ty) |payload| {
+                        if (containsConstructAnyStorage(program, payload, depth + 1)) break :blk true;
+                    }
+                }
+                break;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn resolvedTypeFromStorageText(text: []const u8) ?model.ResolvedType {
+    if (std.mem.startsWith(u8, text, "any ")) {
+        return .{
+            .kind = .construct_any,
+            .name = text,
+            .construct_constraint = .{ .construct_name = text[4..] },
+        };
+    }
+    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
+        return .{ .kind = .array, .name = text[1 .. text.len - 1] };
+    }
+    return .{ .kind = .named, .name = text };
+}
+
 pub fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
     switch (expr.*) {
         .call => |call| {
@@ -150,14 +195,29 @@ fn emitBuilderArrayItems(
                 switch (for_item.iterator.*) {
                     .array => |iterator| {
                         const binding_ty = try type_impl.lowerResolvedType(lowerer.program, for_item.binding_ty);
+                        const binding_borrow = containsConstructAnyStorage(lowerer.program, for_item.binding_ty, 0);
                         for (iterator.elements) |element| {
                             const element_reg = try lowerer.lowerExpr(instructions, element);
-                            try lowerer.storeValueToLocal(instructions, for_item.binding_local_id, binding_ty, element_reg);
+                            if (binding_borrow) {
+                                try instructions.append(.{ .store_local = .{ .local = for_item.binding_local_id, .src = element_reg, .borrow = true } });
+                            } else {
+                                try lowerer.storeValueToLocal(instructions, for_item.binding_local_id, binding_ty, element_reg);
+                            }
                             try emitBuilderArrayItems(lowerer, instructions, array_reg, for_item.body);
                         }
                     },
                     else => {
                         const binding_ty = try type_impl.lowerResolvedType(lowerer.program, for_item.binding_ty);
+                        // An Any (move-only) element is DRAINED out of the source array:
+                        // `For(child in children) { child }` moves each element into the
+                        // builder array (the EdOpenMenuTap content-forward shape). The
+                        // read tombstones the source slot to VOID (array_get moved), so
+                        // the source array's owner frees only the shell — not elements now
+                        // owned by the destination. Without this the element aliases into
+                        // two arrays and double-frees once Any teardown is enabled. The
+                        // mid-IR checker rejects draining a borrowed source (move-out of a
+                        // borrow), so this is only reachable for owned iterators.
+                        const binding_borrow = containsConstructAnyStorage(lowerer.program, for_item.binding_ty, 0);
                         const iterator_reg = try lowerer.lowerExpr(instructions, for_item.iterator);
                         const len_reg = lowerer.freshRegister();
                         try instructions.append(.{ .array_len = .{ .dst = len_reg, .array = iterator_reg } });
@@ -177,7 +237,10 @@ fn emitBuilderArrayItems(
                         try instructions.append(.{ .branch = .{ .condition = cmp_reg, .true_label = body_label, .false_label = end_label } });
                         try instructions.append(.{ .label = .{ .id = body_label } });
                         const item_reg = lowerer.freshRegister();
-                        try instructions.append(.{ .array_get = .{ .dst = item_reg, .array = iterator_reg, .index = index_reg, .ty = binding_ty } });
+                        // Any elements DRAIN (moved read, VOID the source slot) and are
+                        // OWNED by the binding; everything else is a plain owned store of
+                        // a borrowed/copied element (pre-existing behavior).
+                        try instructions.append(.{ .array_get = .{ .dst = item_reg, .array = iterator_reg, .index = index_reg, .ty = binding_ty, .moved = binding_borrow } });
                         try lowerer.storeValueToLocal(instructions, for_item.binding_local_id, binding_ty, item_reg);
                         try instructions.append(.{ .scope_enter = .{} });
                         try emitBuilderArrayItems(lowerer, instructions, array_reg, for_item.body);

@@ -31,7 +31,16 @@ pub fn registerDefaultFunctionHeaders(
         var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
         var ownership = std.array_list.Managed(model.OwnershipMode).init(ctx.allocator);
         try params.append(.{ .kind = .named, .name = form_decl.name });
-        try ownership.append(.borrow_read);
+        // Consuming methods (`@Consuming` family methods, `body` accessors) take
+        // self OWNED; must match lowerMethodFunction's self parameter exactly.
+        const default_annotations: []const syntax.ast.Annotation = switch (default.kind) {
+            .field => &.{},
+            .function => |function| function.annotations,
+        };
+        try ownership.append(if (shared.methodConsumesSelf(ctx, form_decl.name, default.name, default_annotations))
+            .owned
+        else
+            .borrow_read);
 
         switch (default.kind) {
             .field => |field| {
