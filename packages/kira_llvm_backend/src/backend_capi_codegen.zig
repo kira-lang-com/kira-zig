@@ -269,8 +269,17 @@ pub const FunctionCodegen = struct {
                 .bit_and => api.LLVMBuildAnd(b, self.registers[v.lhs], self.registers[v.rhs], "and"),
                 .bit_or => api.LLVMBuildOr(b, self.registers[v.lhs], self.registers[v.rhs], "or"),
                 .bit_xor => api.LLVMBuildXor(b, self.registers[v.lhs], self.registers[v.rhs], "xor"),
-                .shift_left => api.LLVMBuildShl(b, self.registers[v.lhs], self.registers[v.rhs], "shl"),
-                .shift_right => if (v.unsigned) api.LLVMBuildLShr(b, self.registers[v.lhs], self.registers[v.rhs], "lshr") else api.LLVMBuildAShr(b, self.registers[v.lhs], self.registers[v.rhs], "ashr"),
+                .shift_left, .shift_right => shift_blk: {
+                    // Kira shift amount is taken mod 64 (vm_values.zig); an LLVM
+                    // shift with a count >= the bit width is poison/UB, so mask the
+                    // RHS to match the VM before emitting the shift (Codex review).
+                    const amt = api.LLVMBuildAnd(b, self.registers[v.rhs], api.LLVMConstInt(self.types.i64, 63, 0), "shamt");
+                    break :shift_blk switch (v.op) {
+                        .shift_left => api.LLVMBuildShl(b, self.registers[v.lhs], amt, "shl"),
+                        .shift_right => if (v.unsigned) api.LLVMBuildLShr(b, self.registers[v.lhs], amt, "lshr") else api.LLVMBuildAShr(b, self.registers[v.lhs], amt, "ashr"),
+                        else => unreachable,
+                    };
+                },
             },
             .unary => |v| self.registers[v.dst] = switch (v.op) {
                 .negate => if (self.isFloat(v.src)) api.LLVMBuildFNeg(b, self.registers[v.src], "fneg") else api.LLVMBuildNeg(b, self.registers[v.src], "neg"),
