@@ -76,8 +76,28 @@ pub fn applyConsumingReceiver(
             binding.move_span = span;
         },
         .field => |*field_node| {
-            if (field_node.object.* != .local) return;
-            const root_name = field_node.object.local.name;
+            // Walk the (possibly NESTED) field chain to its root, tracking the
+            // outermost field so `outer.inner.leaf.render()` is handled, not just
+            // `self.field.render()`. Without this a nested field receiver skipped
+            // both the borrow rejection and the moved-read tag: the callee freed
+            // the leaf's Any/array payload while the root later dropped the same
+            // sub-field — a double free (Codex P2).
+            var obj = field_node.object;
+            var outermost_field = field_node.field_name;
+            while (obj.* == .field) {
+                outermost_field = obj.field.field_name;
+                obj = obj.field.object;
+            }
+            const transferable = field_node.ty.kind == .array or field_node.ty.kind == .enum_instance or
+                field_node.ty.kind == .construct_any or shared.containsConstructAnyStorage(ctx, field_node.ty);
+            if (obj.* != .local) {
+                // Rooted in a temporary (call result / index): no other binding
+                // owns it, but the callee takes the leaf — tag the read so its
+                // slot is voided and exclusive ownership holds.
+                if (transferable) field_node.moved = true;
+                return;
+            }
+            const root_name = obj.local.name;
             const binding = scope.entries.getPtr(root_name) orelse return;
             if (binding.ownership == .borrow_read or binding.ownership == .borrow_mut) {
                 if (shared.containsConstructAnyStorage(ctx, field_node.ty)) {
@@ -88,10 +108,17 @@ pub fn applyConsumingReceiver(
             }
             // Only pointer-transferable field kinds need the moved-read tag;
             // matches applyBindingMove's partial-move rule.
-            if (field_node.ty.kind != .array and field_node.ty.kind != .enum_instance and
-                field_node.ty.kind != .construct_any and !shared.containsConstructAnyStorage(ctx, field_node.ty)) return;
-            try binding.markFieldMoved(ctx.allocator, field_node.field_name);
-            if (binding.move_span == null) binding.move_span = span;
+            if (!transferable) return;
+            // A DIRECT field of the root (`self.content`) records the partial
+            // move so whole-base reuse is rejected. A NESTED path
+            // (`outer.inner.child`) only voids the leaf slot: the single-field
+            // move bookkeeping cannot represent a deep path, and marking the
+            // outermost field (a struct) would wrongly reject the base at scope
+            // exit — the leaf `moved` tag already prevents the double free.
+            if (field_node.object.* == .local) {
+                try binding.markFieldMoved(ctx.allocator, outermost_field);
+                if (binding.move_span == null) binding.move_span = span;
+            }
             field_node.moved = true;
         },
         .index => |*index_node| {
