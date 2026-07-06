@@ -596,8 +596,24 @@ KIRA_BRIDGE_EXPORT void *kira_native_state_payload(KiraNativeState *state) {
  * native-allocated tokens, so it is not touched here. Outstanding
  * `nativeRecover` views into this state become dangling — freeing is the
  * caller's declaration that no views survive. */
+/* Typed interior teardown hook for native-state tokens. The LLVM backend's
+ * generated kira_capi_state_interior_release (installed by the same global
+ * constructor as the closure-destroy hook, native builds only) switches on
+ * state->type_id and frees the heap values the payload's bridge slots own
+ * (string buffers, arrays, boxed structs, closures, type-erased shells) —
+ * VM parity with freeNativeState, which destroys interiors. NULL (hybrid /
+ * drop-disabled builds) keeps the historical shallow free. */
+static void (*kira_state_interior_release_fn)(KiraNativeState *) = NULL;
+
+KIRA_BRIDGE_EXPORT void kira_capi_install_state_interior_release(void (*release_fn)(KiraNativeState *)) {
+    kira_state_interior_release_fn = release_fn;
+}
+
 KIRA_BRIDGE_EXPORT void kira_native_state_free(KiraNativeState *state) {
     if (state == NULL) return;
+    if (kira_state_interior_release_fn != NULL) {
+        kira_state_interior_release_fn(state);
+    }
     free(state->payload);
     state->payload = NULL;
     free(state);
