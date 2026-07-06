@@ -31,7 +31,15 @@ pub fn lowerConstClosure(fc: *FunctionCodegen, v: ir.ConstClosure) !void {
     for (v.captures, 0..) |capture_reg, index| {
         var slot_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, index, 0)};
         const slot = api.LLVMBuildInBoundsGEP2(b, fc.types.bridge_ty, slots, &slot_idx, slot_idx.len, "closure.slot");
-        const bv = try fc.packBridgeBoxed(fc.register_types[capture_reg], fc.registers[capture_reg], false);
+        // A captured string gets a deep CLONE: the closure may outlive the frame,
+        // whose producer/local slots free the source buffer at scope exit. The
+        // clone shares the capture block's known leak class (kira_destroy_closure
+        // leaves captures untouched — phase-2 typed capture teardown).
+        const capture_value = if (fc.drop_enabled and capture_reg < fc.register_types.len and fc.register_types[capture_reg].kind == .string)
+            drop.cloneStringValue(fc, fc.registers[capture_reg])
+        else
+            fc.registers[capture_reg];
+        const bv = try fc.packBridgeBoxed(fc.register_types[capture_reg], capture_value, false);
         _ = api.LLVMBuildStore(b, bv, slot);
     }
     const raw = api.LLVMBuildPtrToInt(b, ptr, fc.types.i64, "closure.raw");
@@ -112,6 +120,9 @@ pub fn lowerCallValue(fc: *FunctionCodegen, v: ir.CallValue) !void {
         if (fc.request.mode != .hybrid) {
             switch (v.return_type.kind) {
                 .ffi_struct, .array => drop.onAlloc(fc, dst),
+                // A returned string is always a fresh owned buffer (the callee's
+                // `ret` clones untracked sources); record it for scope-exit free.
+                .string => drop.trackStringRegister(fc, dst),
                 else => {},
             }
         }

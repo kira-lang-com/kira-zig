@@ -1,8 +1,9 @@
 # Native Leak Hunting
 
 Internal memory for diagnosing and fixing native (LLVM backend) memory leaks.
-State as of 2026-07-06, after array-ownership free became unconditional
-(commits `88db4a1`, `a0b2b08`; history in
+State as of 2026-07-06, after the strings-are-deep-values ownership model
+landed (leak class #1 resolved; previous milestone was unconditional
+array-ownership free, commits `88db4a1`, `a0b2b08`; history in
 `.codex/work/reports/array-registry-leak-and-promotion.md`).
 
 ## Current state
@@ -15,50 +16,111 @@ move/drop elaboration, NO refcounts: one release per owned value at its drop
 point, moves transfer, borrows never dropped, borrow→owned promotions
 deep-clone.
 
-Measured baselines (`leaks --atExit`, offscreen frames):
+**Strings are deep values** (added 2026-07-06). Native `String` is a
+`{ptr,len}` LLVM value; the malloc'd byte buffer is what leaked. The model,
+implemented in `backend_capi_drop.zig` / `backend_capi_drop_slots.zig`:
+
+- Producers OWN: `c_string_to_string`, concat (`.add` on strings), every
+  aggregate read (struct field, native-state slot, array element, enum
+  payload — all CLONE-on-read), and every call result (a `ret` of an
+  untracked source clones first; hybrid runtime-call results are cloned in
+  `lowerRuntimeCall`). Each producer register gets a `string_buf` cleanup
+  slot; loop overwrite drops the prior occupant; exit frees the rest.
+- Consumers CLONE, never move: struct field stores (drop old buffer first,
+  native only, and only through a `field_ptr`/`subobject_ptr` — `reg_field_ptr`
+  provenance), native-state field sets, array set/append elements, enum
+  payload boxes, closure captures, string locals (`store_local` clones into a
+  per-local slot; strings are EXCLUDED from the compile-time
+  register<->local map — routing them through it re-creates the enum F1
+  branch-reassignment UAF).
+- Aggregates own their string contents: `kira_release_contents_<T>` frees
+  string fields (native only — hybrid may hold VM-written buffers),
+  `kira_clone_contents_<T>` deep-copies them, `kira_array_release` /
+  `kira_array_store_release` free STRING-tag element buffers, and
+  `kira_array_clone` deep-copies them.
+- A string aliased into a `CString` field is copied to a fresh NUL-terminated
+  unmanaged buffer unless the source is a `const_string` literal
+  (`reg_string_literal` provenance) — every non-literal buffer is freed by
+  some slot at scope exit.
+
+The deep-copy primitive is the generated `kira_capi_string_clone(ptr,len)`
+(backend_capi_destructors.zig). Guards: `tests/memory_validation.zig` +
+corpus `tests/pass/run/ownership_string_deep_value_parity/` (vm/llvm/hybrid).
+
+Proof of the model: a 20k-iteration struct-field/concat/array string churn
+program measures **0 leaks / 0 bytes** under `leaks --atExit` (previously
+every concat/coercion buffer leaked).
+
+Measured baselines (`leaks --atExit`, offscreen frames, 2026-07-06 after the
+string model):
 
 | Program | Residual | Notes |
 |---|---|---|
-| ui-foundation `Examples/leak-harness` (10k frames) | 2 leaks / 224 B | effectively clean |
-| ui-foundation `Examples/liquid-glass-app` (120 and 600 frames) | 628 leaks / ~360 KB | identical at both frame counts → one-time setup only |
-| ui-foundation `Examples/basic-foundation-app` (120 frames) | 1,951 leaks / ~470 KB | `ft_add_renderer` (font engine) visible in stacks |
-| project-matter `apps/editor` (60 frames) | 10,968 leaks / ~1.25 MB | was 1.0 GB before the free path |
+| ui-foundation `Examples/leak-harness` (10k frames) | 2 leaks / 224 B | unchanged, checksum 80000 |
+| ui-foundation `Examples/liquid-glass-app` (120 frames) | 647 leaks / ~372 KB | was 628/~360 KB; delta is one-time CString dup/enum-box clones |
+| ui-foundation `Examples/basic-foundation-app` (120 and 600 frames) | 2,029–2,030 leaks / ~483 KB | frame-flat; was 1,951/~470 KB |
+| project-matter `apps/editor` (60 and 300 frames) | 11,118 leaks / ~1.30 MB | frame-flat (identical at 60 and 300); was 10,968/1.25 MB at 60 |
+
+The small count increases are one-time conservative clones into structures
+that are themselves still leaked (closure capture blocks, enum payload boxes,
+CString field dups) — they replace aliases into buffers that also leaked
+before, and they remove the use-after-free risk. ROOT `malloc in kira_fn_*`
+leaks with readable string content are GONE; remaining `kira_fn_*.body` roots
+are closure blocks (class #2 below).
 
 A residual that does NOT grow with `KIRA_METAL_OFFSCREEN_FRAMES` is one-time
-setup; only frame-scaling leaks are per-frame bugs.
+setup; only frame-scaling leaks are per-frame bugs. All four programs above
+are now frame-flat.
 
 ## Remaining leak classes (the actual TODO)
 
-1. **Native String drop gap** — `c_string_to_string` lowers to
-   `strlen+malloc+memcpy` (`backend_capi_calls.zig:lowerCStringToString`) but
-   no drop is ever emitted for owned Strings. Every CString→String coercion
-   leaks its copy. `leaks` shows them as ROOT LEAKs with `malloc in kira_fn_*`
-   frames whose content is readable string data. Fix belongs in drop
-   elaboration (track string registers like arrays), not in C.
+1. ~~Native String drop gap~~ — RESOLVED 2026-07-06 (see model above).
 2. **Closure capture leaks** — `kira_destroy_closure`
    (`runtime_helpers.c`) deliberately does not free captured heap values (no
-   per-capture type info; conservative leak instead of double-free).
+   per-capture type info; conservative leak instead of double-free). Now the
+   dominant `kira_fn_*` ROOT class in the editor (e.g. 49× `EdTap.body`
+   closure blocks + the struct shells their captures reference). Fix needs
+   per-closure generated destructors (capture types are known at codegen
+   time) or typed capture metadata in the block header.
 3. **Native-state interior teardown** — `kira_native_state_free` frees the
-   payload buffer and token only; interior arrays/structs/enums the box owns
-   are not destroyed. Fine for app-lifetime ambient state, a leak for
-   short-lived boxes. The VM's `freeNativeState` destroys interiors — parity
-   gap.
-4. **Font-engine setup** (`ft_add_renderer` etc.) in ui-foundation — one-time,
+   payload buffer and token only; interior arrays/strings/structs/enums the
+   box owns are not destroyed. Fine for app-lifetime ambient state, a leak
+   for short-lived boxes. The VM's `freeNativeState` destroys interiors —
+   parity gap.
+4. **Enum payload boxes** — an enum's 16-byte block is freed
+   (`kira_destroy_raw_ptr`) but a string/heap payload box it references is
+   not (kira_enum_clone shares the box between clones, so freeing it naively
+   double-frees). Needs per-enum-type generated destructors switching on the
+   tag. One box + one cloned buffer leak per string-payload enum.
+5. **Font-engine setup** (`ft_add_renderer` etc.) in ui-foundation — one-time,
    low priority.
-5. **`[U8]` storage amplification** (perf, not a leak): every byte element is a
+6. **`[U8]` storage amplification** (perf, not a leak): every byte element is a
    24-byte `KiraBridgeValue`, so `readFileRange` on a 32 MB file allocates
    768 MB transiently. Needs a packed byte-array representation.
 
+Perf note: clone-on-read means every string read out of an aggregate is a
+malloc+memcpy (+free at scope exit). If profiling shows hot compare/print
+loops over aggregate strings, add a borrow-only-use peephole (skip the clone
+when a read's only consumers are compare/print/string_len) — do NOT skip the
+clone for values that escape.
+
 Triage rule: a leak stack rooted in `kira_fn_<id>_<KiraName>` = backend drop
-gap (fix in `kira_llvm_backend`). A stack rooted in a C helper
-(`fs_*`, `kap_*`, `kira_dynamic_*`) = helper or call-site bug (those were all
-fixed 2026-07-05; regressions are corpus-guarded).
+gap (fix in `kira_llvm_backend`) — since 2026-07-06 these are closure blocks,
+not strings. A stack rooted in a C helper (`fs_*`, `kap_*`, `kira_dynamic_*`)
+= helper or call-site bug (those were all fixed 2026-07-05; regressions are
+corpus-guarded).
 
 ## Where the machinery lives
 
-- `packages/kira_llvm_backend/src/backend_capi_drop.zig` — drop slots,
-  owned-register tracking (`setup` pre-scan, `onAlloc`/`onEscape`,
-  `emitExitCleanup`, `moveOrCloneToHeap`, `prepareStructReturn`).
+- `packages/kira_llvm_backend/src/backend_capi_drop.zig` — the runtime drop
+  driver (`onAlloc`/`onEscape`, `emitExitCleanup`, `moveOrCloneToHeap`,
+  `prepareStructReturn`, `cloneStringValue`/`trackStringRegister`,
+  `onStoreLocalString`).
+- `backend_capi_drop_slots.zig` — the `setup` entry-block pre-scan that
+  allocates every cleanup slot (producers, per-local enum/string slots,
+  owned params) plus `seedOwnedParams`/`teardown`.
+- `backend_capi_value_repr.zig` — register<->storage conversion, bridge-value
+  packing, string constants/concat, compare/convert (split from codegen).
 - `backend_capi_codegen.zig` — `.ret` borrowed-return clones
   (`ret.arr.clone`/`ret.enum.clone`), moved field loads (`load.move.field`),
   native-state field get/set dispatch.

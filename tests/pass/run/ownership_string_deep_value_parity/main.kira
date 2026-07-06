@@ -1,0 +1,120 @@
+// Regressions for the strings-are-deep-values native ownership model (leak
+// class #1: every CString→String coercion / concat / aggregate-held string
+// leaked its buffer on the LLVM backend because no drop was ever emitted).
+//
+// The model: every string producer (concat, coercion, aggregate read, call
+// result) owns a fresh buffer freed at scope exit; every consumer (struct
+// field, array element, native-state slot, enum payload, string local) stores
+// a deep clone; struct destructors and kira_array_release free the buffers
+// their aggregates own. There are no runtime string moves — a `ret` of an
+// untracked source clones before frame cleanup, and a checker-verified field
+// move-out is satisfied by the clone (the field keeps its buffer until the
+// enforced re-init frees it).
+//
+// The loops make any surviving alias/double-free/use-after-free deterministic
+// under churn; the value checks prove clones carry the right bytes on every
+// backend.
+
+struct Label {
+    var text: String = ""
+    var hits: Int = 0
+}
+
+struct Panel {
+    var title: String = ""
+    var label: Label = Label {}
+}
+
+enum Message {
+    Note(String)
+    Empty
+}
+
+function describe(name: String) -> String {
+    // Returned concat is a tracked producer; the buffer moves to the caller.
+    return "name:" + name
+}
+
+function pickBranch(flag: Bool) -> String {
+    // Branch-reassigned string local returned: exit cleanup must free the
+    // local's final clone while the returned value survives (ret clones an
+    // untracked local read). Each reassignment drops the prior clone.
+    var s = "init"
+    if flag {
+        s = "left-" + "branch"
+    } else {
+        s = "right-" + "branch"
+    }
+    return s
+}
+
+function labelText(l: borrow Label) -> String {
+    // Borrowed field read returned as owned: clone-on-read + owned return.
+    return l.text
+}
+
+function unwrap(m: Message) -> String {
+    match m {
+        Note(text) -> { return text }
+        Empty -> { return "empty" }
+    }
+    return "unreachable"
+}
+
+@Main
+function main() {
+    // Struct field store/overwrite churn: each store clones, each overwrite
+    // frees the prior clone, the struct's destructor frees the final one.
+    var panel = Panel {}
+    var i = 0
+    while i < 50 {
+        panel.title = "frame-" + "title"
+        panel.label.text = describe("inner")
+        panel.label.hits = panel.label.hits + 1
+        i = i + 1
+    }
+    print(panel.title)                    // frame-title
+    print(panel.label.text)               // name:inner
+    print(labelText(panel.label))         // name:inner
+
+    // Field move-out + enforced re-init: the binding owns an independent copy,
+    // so the re-init (which frees the field's old buffer) must not disturb it.
+    let snapshot = panel.title
+    panel.title = "replaced"
+    print(snapshot)                       // frame-title
+    print(panel.title)                    // replaced
+
+    // Array of strings: append/overwrite churn. Elements own clones freed by
+    // kira_array_release; overwriting a slot frees the prior element buffer.
+    var names: [String] = []
+    var j = 0
+    while j < 25 {
+        names.append("n" + "x")
+        j = j + 1
+    }
+    names[0] = "first-" + "slot"
+    print(names[0])                       // first-slot
+    names[0] = "overwritten"
+    print(names[0])                       // overwritten
+    print(names[1])                       // nx
+    print(names.count)                    // 25
+
+    // Enum string payloads: the box owns a clone; a payload match clones out
+    // and survives the enum's drop.
+    let m = Message.Note("payload-" + "text")
+    print(unwrap(move m))                 // payload-text
+
+    // Branch-reassigned local returns.
+    print(pickBranch(true))               // left-branch
+    print(pickBranch(false))              // right-branch
+
+    // Concat-of-reads churn: every intermediate buffer is reclaimed at exit.
+    var acc = ""
+    var k = 0
+    while k < 20 {
+        acc = acc + names[0] + "-" + panel.title
+        k = k + 1
+    }
+    print(acc == "")                      // false
+    return
+}
