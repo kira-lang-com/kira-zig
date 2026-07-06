@@ -320,6 +320,29 @@ pub const FunctionCodegen = struct {
                         const ret_val = drop.prepareStructReturn(self, src);
                         drop.emitExitCleanup(self, null);
                         _ = api.LLVMBuildRet(b, ret_val);
+                    } else if (self.drop_enabled and self.function_decl.return_type.kind == .array and !drop.isOwned(self, src)) {
+                        // A BORROWED array returned as owned (`return session.contentPath`,
+                        // `return view.children`): the caller tracks every array-returning
+                        // call as owned and frees it, so handing back the alias lets the
+                        // caller free storage the real owner (a native-state box, a borrowed
+                        // param) still holds — the editorContentPathSegments use-after-free.
+                        // Deep-clone so the caller owns independent storage. In hybrid mode
+                        // kira_array_clone returns the array unchanged (the VM owns it).
+                        const src_ptr = api.LLVMBuildIntToPtr(b, self.registers[src], self.types.ptr_ty, "ret.arr.src");
+                        const elem = self.dtors.elementClone(self.request.program.programPtr(), self.function_decl.return_type);
+                        var cargs = [_]llvm.c.LLVMValueRef{ src_ptr, elem orelse api.LLVMConstNull(self.types.ptr_ty) };
+                        const clone = api.LLVMBuildCall2(b, self.runtime_decls.array_clone.ty, self.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "ret.arr.clone");
+                        const ret_val = api.LLVMBuildPtrToInt(b, clone, self.types.i64, "ret.arr.cloneint");
+                        drop.emitExitCleanup(self, null);
+                        _ = api.LLVMBuildRet(b, ret_val);
+                    } else if (self.drop_enabled and self.function_decl.return_type.kind == .enum_instance and !drop.isOwned(self, src)) {
+                        // Same borrowed->owned promotion for a returned enum block.
+                        const src_ptr = api.LLVMBuildIntToPtr(b, self.registers[src], self.types.ptr_ty, "ret.enum.src");
+                        var cargs = [_]llvm.c.LLVMValueRef{src_ptr};
+                        const clone = api.LLVMBuildCall2(b, self.dtors.enum_clone.ty, self.dtors.enum_clone.fn_value, &cargs, cargs.len, "ret.enum.clone");
+                        const ret_val = api.LLVMBuildPtrToInt(b, clone, self.types.i64, "ret.enum.cloneint");
+                        drop.emitExitCleanup(self, null);
+                        _ = api.LLVMBuildRet(b, ret_val);
                     } else {
                         drop.emitExitCleanup(self, src);
                         _ = api.LLVMBuildRet(b, self.registers[src]);
@@ -357,7 +380,18 @@ pub const FunctionCodegen = struct {
                 const sub_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, base, &indices, indices.len, "sub.ptr");
                 self.registers[v.dst] = api.LLVMBuildPtrToInt(b, sub_ptr, self.types.i64, "sub.ptrint");
             },
-            .load_indirect => |v| self.registers[v.dst] = try self.lowerLoadIndirect(v),
+            .load_indirect => |v| {
+                self.registers[v.dst] = try self.lowerLoadIndirect(v);
+                // Checker-verified field move-out: ownership transfers to dst.
+                // Track it for scope-exit cleanup and null the field storage so the
+                // owner's destructor / the enforced re-init overwrite cannot free
+                // the value this register now owns.
+                if (v.moved and self.drop_enabled and (v.ty.kind == .array or v.ty.kind == .enum_instance)) {
+                    drop.onAlloc(self, v.dst);
+                    const moved_field = api.LLVMBuildIntToPtr(b, self.registers[v.ptr], self.types.ptr_ty, "load.move.field");
+                    _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.ptr_ty), moved_field);
+                }
+            },
             .store_indirect => |v| try aggregate.lowerStoreIndirect(self, v),
             .copy_indirect => |v| {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
@@ -432,6 +466,13 @@ pub const FunctionCodegen = struct {
                 const slot = api.LLVMBuildInBoundsGEP2(b, self.types.bridge_ty, payload, &idx, idx.len, "state.get.slot");
                 const bv = api.LLVMBuildLoad2(b, self.types.bridge_ty, slot, "state.get.bv");
                 self.registers[v.dst] = try self.unpackBridge(v.field_ty, bv);
+                // Field move-out from a native-state payload: dst owns the value now;
+                // zero the slot so a later field set's drop-before-overwrite (or the
+                // state's teardown) cannot free it again.
+                if (v.moved and self.drop_enabled and (v.field_ty.kind == .array or v.field_ty.kind == .enum_instance)) {
+                    drop.onAlloc(self, v.dst);
+                    _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.bridge_ty), slot);
+                }
             },
             .native_state_field_set => |v| try aggregate.lowerNativeStateFieldSet(self, v),
             .alloc_array => |v| try aggregate.lowerAllocArray(self, v),
