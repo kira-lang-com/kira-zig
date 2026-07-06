@@ -4,11 +4,11 @@ struct Bag {
 
 function leak(value: Int, bag: Bag) -> Int {
     switch value {
-        0 => {
+        case 0 {
             let alias = bag.items
             return alias.count
         }
-        default => {
+        default {
             return 0
         }
     }
