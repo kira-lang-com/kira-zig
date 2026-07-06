@@ -11,7 +11,7 @@ construct Widget {
     }
 }
 
-function joinChildren(children: [some Widget]) -> [String] {
+function joinChildren(children: borrow [some Widget]) -> [String] {
     var labels: [String] = []
     var childIndex = 0
     while childIndex < children.count {
