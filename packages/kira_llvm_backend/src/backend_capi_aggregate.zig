@@ -38,6 +38,23 @@ pub fn lowerAllocNativeState(fc: *FunctionCodegen, v: ir.AllocNativeState) !void
             const clone = api.LLVMBuildCall2(b, fc.dtors.enum_clone.ty, fc.dtors.enum_clone.fn_value, &cargs, cargs.len, "state.enum.clone");
             field_value = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.enum.cloneint");
         }
+        // Same aliasing hazard for a nested ffi_struct field: it is embedded INLINE
+        // in the source struct's heap block, so storing `ptrtoint(field_ptr)` makes
+        // the payload point INTO the source allocation. The source temp (e.g.
+        // `nativeState(FoundationRetainedScratch {})`) is dropped at scope exit,
+        // freeing that block — the box's field pointer dangles from birth, and the
+        // next field access/replace is a use-after-free/double-free (the
+        // FoundationRetainedFlatAcc crash in leak-harness/liquid-glass with
+        // ownership free enabled). Deep-clone the sub-struct so the box owns an
+        // independent heap struct, mirroring the enum and array cases below.
+        if (field_decl.ty.kind == .ffi_struct and fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid)) {
+            if (field_decl.ty.name) |field_type_name| {
+                if (fc.dtors.map.get(field_type_name)) |helpers| {
+                    var cargs = [_]llvm.c.LLVMValueRef{field_value};
+                    field_value = api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &cargs, cargs.len, "state.struct.clone");
+                }
+            }
+        }
         // Same aliasing hazard for array fields: the source struct is dropped after
         // this allocation and its destructor releases the array, so copying only the
         // pointer would leave the payload referencing freed storage (the
@@ -96,6 +113,43 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
             var cargs = [_]llvm.c.LLVMValueRef{ newp, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
             const clone = api.LLVMBuildCall2(b, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "state.set.clone");
             stored = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.set.cloneint");
+        } else {
+            drop.onEscape(fc, v.src);
+        }
+        const bv = try fc.packBridge(v.field_ty, stored);
+        _ = api.LLVMBuildStore(b, bv, slot);
+        _ = api.LLVMBuildBr(b, done_block);
+        api.LLVMPositionBuilderAtEnd(b, done_block);
+        return;
+    }
+    // An ffi_struct field follows the same owned-field rules: the payload owns
+    // its struct (heap shell + contents). Destroy the replaced struct unless it
+    // is a self-store, deep-clone a borrowed source, and escape an owned
+    // source's cleanup slot so exit cleanup does not destroy the tree the state
+    // now holds (the cachedLayoutTree use-after-free: `state.cachedLayoutTree =
+    // run(...)` left the owned call result slot-tracked, so function exit freed
+    // the LayoutTree the state still referenced).
+    if (v.field_ty.kind == .ffi_struct and fc.drop_enabled and owned_modes) blk: {
+        const name = v.field_ty.name orelse break :blk;
+        const helpers = fc.dtors.map.get(name) orelse break :blk;
+        const old_bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "state.set.oldbv");
+        const old_int = try fc.unpackBridge(v.field_ty, old_bv);
+        const old = api.LLVMBuildIntToPtr(b, old_int, fc.types.ptr_ty, "state.set.old");
+        const newp = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "state.set.newp");
+        const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, newp, "state.set.same");
+        const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.swork");
+        const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "state.set.sdone");
+        _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+        api.LLVMPositionBuilderAtEnd(b, work_block);
+        // kira_destroy_<T> null-checks its argument, so the first store into a
+        // zeroed payload slot is a safe no-op destroy.
+        var dargs = [_]llvm.c.LLVMValueRef{old};
+        _ = api.LLVMBuildCall2(b, helpers.destroy.ty, helpers.destroy.fn_value, &dargs, dargs.len, "");
+        var stored = fc.registers[v.src];
+        if (!drop.isOwned(fc, v.src)) {
+            var cargs = [_]llvm.c.LLVMValueRef{newp};
+            const clone = api.LLVMBuildCall2(b, helpers.clone.ty, helpers.clone.fn_value, &cargs, cargs.len, "state.set.sclone");
+            stored = api.LLVMBuildPtrToInt(b, clone, fc.types.i64, "state.set.scloneint");
         } else {
             drop.onEscape(fc, v.src);
         }

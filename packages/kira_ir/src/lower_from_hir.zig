@@ -785,6 +785,7 @@ pub const Lowerer = struct {
                         .state = object_reg,
                         .field_index = node.field_index,
                         .field_ty = field_ty,
+                        .moved = node.moved,
                     } });
                     break :blk dst;
                 }
@@ -802,6 +803,7 @@ pub const Lowerer = struct {
                     .dst = dst,
                     .ptr = field_ptr,
                     .ty = field_ty,
+                    .moved = node.moved,
                 } });
                 break :blk dst;
             },
