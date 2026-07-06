@@ -196,12 +196,16 @@ pub fn lowerCallValue(fc: *FunctionCodegen, v: ir.CallValue) !void {
         if (fc.request.mode != .hybrid) {
             switch (v.return_type.kind) {
                 .ffi_struct, .array => drop.onAlloc(fc, dst),
+                // A returned enum is a fresh owned heap block (the callee's `ret`
+                // clones untracked sources — the returned-enum invariant); the
+                // caller frees it at scope exit via the typed enum destroy.
+                .enum_instance => drop.onAlloc(fc, dst),
                 // A returned string is always a fresh owned buffer (the callee's
                 // `ret` clones untracked sources); record it for scope-exit free.
                 .string => drop.trackStringRegister(fc, dst),
-                // A returned closure / type-erased value is a fresh owned block
-                // (the callee's `ret` clones untracked sources); tag-/id-safe drop.
-                .raw_ptr, .construct_any => drop.onAlloc(fc, dst),
+                // A returned closure is a fresh owned block (the callee's `ret`
+                // clones untracked closure sources); tag-safe .closure drop.
+                .raw_ptr => drop.onAlloc(fc, dst),
                 else => {},
             }
         }

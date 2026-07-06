@@ -322,6 +322,7 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
         .content_passthrough = content_passthrough,
         .required_functions = try required_functions.toOwnedSlice(),
         .section_functions = try section_functions.toOwnedSlice(),
+        .consuming_functions = direct.consuming_functions,
         .required_fields = direct.required_fields,
         .default_members = direct.default_members,
         .allowed_annotations = try allowed_annotations.toOwnedSlice(),
@@ -1484,18 +1485,28 @@ pub fn lowerMethodFunction(
         .segments = self_segments,
         .span = function_decl.span,
     } };
-    const borrowed_self_type_expr = try ctx.allocator.create(syntax.ast.TypeExpr);
-    borrowed_self_type_expr.* = .{ .ownership = .{
-        .mode = .borrow_read,
-        .target = self_type_expr,
-        .span = function_decl.span,
-    } };
+    // A consuming method (`@Consuming`, or a `body` accessor, or an
+    // implementation of a consuming family method) takes `self` OWNED — the
+    // call transfers the receiver, the callee owns and drops the shell, and
+    // content fields may partial-move out (`{ content }` in body blocks).
+    // Everything else keeps the borrowed receiver.
+    const self_param_type_expr = if (shared.methodConsumesSelf(ctx, owner_type_name, function_decl.name, function_decl.annotations))
+        self_type_expr
+    else blk: {
+        const borrowed_self_type_expr = try ctx.allocator.create(syntax.ast.TypeExpr);
+        borrowed_self_type_expr.* = .{ .ownership = .{
+            .mode = .borrow_read,
+            .target = self_type_expr,
+            .span = function_decl.span,
+        } };
+        break :blk borrowed_self_type_expr;
+    };
 
     var params = std.array_list.Managed(syntax.ast.ParamDecl).init(ctx.allocator);
     try params.append(.{
         .annotations = &.{},
         .name = "self",
-        .type_expr = borrowed_self_type_expr,
+        .type_expr = self_param_type_expr,
         .span = function_decl.span,
     });
     try params.appendSlice(function_decl.params);

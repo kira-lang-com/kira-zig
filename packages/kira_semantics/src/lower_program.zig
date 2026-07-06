@@ -375,6 +375,9 @@ pub fn lowerProgramWithOptions(
     defer form_families.deinit(allocator);
     try form_lowering.buildFormFamilies(allocator, program, constructs.items, &construct_headers, &form_parent, &form_families);
     ctx.form_families = &form_families;
+    // Construct declarations are all lowered above; expose the family surfaces so
+    // method lowering can resolve @Consuming (owned-self) methods.
+    ctx.constructs = constructs.items;
 
     try registerImportedFunctionHeaders(&ctx, &function_headers);
     for (program.decls) |decl| {

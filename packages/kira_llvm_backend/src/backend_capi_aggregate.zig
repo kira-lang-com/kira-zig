@@ -102,12 +102,35 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             // the VM is not party to this store, so without the clone the borrowed enum aliases
             // into two owners and is freed twice (the `Frame { backend: self.backend }` double
             // free that crashed the Metal backend's first hybrid run).
-            if (fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid) and !drop.isOwned(fc, v.src)) {
-                const sptr = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.src");
-                const clone_fn = fc.dtors.enumCloneFn(v.ty);
-                var cargs = [_]llvm.c.LLVMValueRef{sptr};
-                const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "store.enum.clone");
-                _ = api.LLVMBuildStore(b, clone, ptr);
+            // Drop-before-overwrite (self-store guarded): a reassigned enum field
+            // (`holder.status = ...` after literal init) discards the block the
+            // field already owns — destroy it first or every overwrite leaks the
+            // replaced block plus its payload chain. The typed destroy null-checks,
+            // so the first store into a zeroed field no-ops. Guard on old == src:
+            // a self-store (`x.status = x.status`) must neither destroy nor clone
+            // the block it is about to keep.
+            if (fc.drop_enabled and (fc.request.mode == .llvm_native or fc.request.mode == .hybrid)) {
+                const sptr = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.srcptr");
+                const old = api.LLVMBuildLoad2(b, fc.types.ptr_ty, ptr, "store.enum.old");
+                const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, sptr, "store.enum.same");
+                const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.enum.work");
+                const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.enum.done");
+                _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
+                api.LLVMPositionBuilderAtEnd(b, work_block);
+                const destroy_fn = fc.dtors.enumDestroyFn(v.ty);
+                var dargs = [_]llvm.c.LLVMValueRef{old};
+                _ = api.LLVMBuildCall2(b, destroy_fn.ty, destroy_fn.fn_value, &dargs, dargs.len, "");
+                if (!drop.isOwned(fc, v.src)) {
+                    const clone_fn = fc.dtors.enumCloneFn(v.ty);
+                    var cargs = [_]llvm.c.LLVMValueRef{sptr};
+                    const clone = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "store.enum.clone");
+                    _ = api.LLVMBuildStore(b, clone, ptr);
+                } else {
+                    _ = api.LLVMBuildStore(b, sptr, ptr);
+                    drop.onEscape(fc, v.src);
+                }
+                _ = api.LLVMBuildBr(b, done_block);
+                api.LLVMPositionBuilderAtEnd(b, done_block);
             } else {
                 const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.enum.move");
                 _ = api.LLVMBuildStore(b, value, ptr);
@@ -147,33 +170,6 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                     const data_ptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr");
                     _ = api.LLVMBuildStore(b, data_ptr, ptr);
                 }
-            } else if (fc.drop_enabled and fc.request.mode == .llvm_native and v.ty.kind == .construct_any and src_kind == .construct_any) {
-                // Type-erased (Any / construct) field store: the field owns the
-                // value. Destroy the replaced occupant via the runtime-typed
-                // dispatcher (self-store guarded), then MOVE an owned source in
-                // (escape — no tree-sized copy) or deep-clone a borrowed one so
-                // the field never aliases storage another owner frees.
-                const src_owned = drop.isOwned(fc, v.src);
-                // Escape an owned source unconditionally (even on a self-store the
-                // register must stop being frame-tracked once the field owns it).
-                if (src_owned) drop.onEscape(fc, v.src);
-                const old = api.LLVMBuildLoad2(b, fc.types.i64, ptr, "store.any.old");
-                const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, src, "store.any.same");
-                const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.any.work");
-                const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.any.done");
-                _ = api.LLVMBuildCondBr(b, same, done_block, work_block);
-                api.LLVMPositionBuilderAtEnd(b, work_block);
-                var dargs = [_]llvm.c.LLVMValueRef{old};
-                _ = api.LLVMBuildCall2(b, fc.dtors.dynamic_destroy.ty, fc.dtors.dynamic_destroy.fn_value, &dargs, dargs.len, "");
-                var stored = src;
-                if (!src_owned) {
-                    var cargs = [_]llvm.c.LLVMValueRef{src};
-                    stored = api.LLVMBuildCall2(b, fc.dtors.dynamic_clone.ty, fc.dtors.dynamic_clone.fn_value, &cargs, cargs.len, "store.any.clone");
-                }
-                const stored_ptr = api.LLVMBuildIntToPtr(b, stored, fc.types.ptr_ty, "store.any.ptr");
-                _ = api.LLVMBuildStore(b, stored_ptr, ptr);
-                _ = api.LLVMBuildBr(b, done_block);
-                api.LLVMPositionBuilderAtEnd(b, done_block);
             } else if (fc.drop_enabled and fc.request.mode == .llvm_native and v.ty.kind == .raw_ptr and src_kind == .raw_ptr) {
                 // Closure field store (deep-value model, mirrors strings): the field
                 // owns an independent DEEP CLONE and the replaced closure is destroyed
@@ -232,9 +228,16 @@ pub fn lowerArrayGet(fc: *FunctionCodegen, v: ir.ArrayGet) !void {
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.getptr");
     const slot = fc.entryAlloca(fc.types.bridge_ty, "array.get.slot");
     var args = [_]llvm.c.LLVMValueRef{ arr, fc.registers[v.index], slot };
-    _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_load.ty, fc.runtime_decls.array_load.fn_value, &args, args.len, "");
+    // A checker-verified element DRAIN takes the element's value (dst owns it —
+    // tracked via the .array_get pre-scan slot) and VOID-tombstones the array
+    // slot, so kira_array_release skips it and a later read of the drained
+    // slot yields a zero value (deterministic dispatch failure, no double
+    // free). Plain reads keep the borrow/copy semantics of kira_array_load.
+    const load = if (v.moved) fc.runtime_decls.array_take else fc.runtime_decls.array_load;
+    _ = api.LLVMBuildCall2(b, load.ty, load.fn_value, &args, args.len, "");
     const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, slot, "array.get.bv");
     fc.registers[v.dst] = try fc.unpackBridge(v.ty, bv);
+    if (v.moved) drop.onAlloc(fc, v.dst);
 }
 
 // Build the bridge value to store into an array element, applying Rust-style ownership
@@ -269,16 +272,17 @@ fn buildElementBridge(fc: *FunctionCodegen, src_reg: u32) !llvm.c.LLVMValueRef {
         const cloned = drop.cloneStringValue(fc, fc.registers[src_reg]);
         return fc.packBridge(vt, cloned);
     }
-    // A BORROWED closure / type-erased element deep-clones in (tag-/id-safe): the
-    // element destructor fallback now frees RAW_PTR elements through the dynamic
-    // dispatcher, so an aliased borrow would be freed under its real owner. An
-    // owned source moves in as-is (lowerArraySet/Append escape it afterwards).
+    // A BORROWED closure element deep-clones in (tag-safe, blocks are small):
+    // the element destructor fallback frees closure elements, so an aliased
+    // borrow would be freed under its real owner. An owned source moves in
+    // as-is (lowerArraySet/Append escape it afterwards). Type-erased (Any)
+    // elements are NOT cloned — construct values move (deep-cloning widget
+    // trees per store is a per-frame memory explosion).
     if (fc.drop_enabled and fc.request.mode == .llvm_native and
-        (vt.kind == .raw_ptr or vt.kind == .construct_any) and !drop.isOwned(fc, src_reg))
+        vt.kind == .raw_ptr and !drop.isOwned(fc, src_reg))
     {
-        const clone_fn = if (vt.kind == .construct_any) fc.dtors.dynamic_clone else fc.dtors.closure_clone;
         var cargs = [_]llvm.c.LLVMValueRef{fc.registers[src_reg]};
-        const cloned = fc.api.LLVMBuildCall2(fc.builder, clone_fn.ty, clone_fn.fn_value, &cargs, cargs.len, "element.heap.clone");
+        const cloned = fc.api.LLVMBuildCall2(fc.builder, fc.dtors.closure_clone.ty, fc.dtors.closure_clone.fn_value, &cargs, cargs.len, "element.heap.clone");
         return fc.packBridge(vt, cloned);
     }
     return fc.packBridge(vt, fc.registers[src_reg]);

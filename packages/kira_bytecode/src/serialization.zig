@@ -21,7 +21,7 @@ const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBC9");
+    try writer.writeAll("KBCA");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -270,6 +270,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.index, .little);
                     try writeTypeRef(writer, value.ty);
                     try writer.writeByte(if (value.borrow) 1 else 0);
+                    try writer.writeByte(@intFromBool(value.moved));
                 },
                 .array_set => |value| {
                     try writer.writeInt(u32, value.array, .little);
@@ -293,6 +294,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.ptr, .little);
                     try writeTypeRef(writer, value.ty);
+                    try writer.writeByte(@intFromBool(value.moved));
                 },
                 .store_indirect => |value| {
                     try writer.writeInt(u32, value.ptr, .little);
@@ -364,8 +366,13 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // KBC9 is KBC8 plus the appended `free_native_state` opcode (`nativeStateFree`);
     // container layout and every feature flag are otherwise identical to KBC8.
     const is_kbc9 = std.mem.eql(u8, &magic, "KBC9");
-    const has_unsigned_arith = is_kbc8 or is_kbc9;
-    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9;
+    // KBCA is KBC9 plus a trailing `moved` flag byte on load_indirect (checker-
+    // verified field move-out: the VM takes the field's value and voids the
+    // slot — Rust partial move). Older containers omit it (plain borrow read).
+    const is_kbca = std.mem.eql(u8, &magic, "KBCA");
+    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca;
+    const has_load_indirect_moved = is_kbca;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -696,6 +703,9 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .index = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
                     .borrow = (try reader.takeByte()) != 0,
+                    // KBCA also carries the element-drain flag (same version as
+                    // load_indirect's moved byte — both landed together).
+                    .moved = if (has_load_indirect_moved) (try reader.takeByte()) != 0 else false,
                 } }),
                 .array_set => try instructions.append(.{ .array_set = .{
                     .array = try reader.takeInt(u32, .little),
@@ -719,6 +729,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.takeInt(u32, .little),
                     .ptr = try reader.takeInt(u32, .little),
                     .ty = try readTypeRef(allocator, reader),
+                    .moved = if (has_load_indirect_moved) (try reader.takeByte()) != 0 else false,
                 } }),
                 .store_indirect => try instructions.append(.{ .store_indirect = .{
                     .ptr = try reader.takeInt(u32, .little),

@@ -285,6 +285,7 @@ pub fn lowerStatement(
             }
             const iterator = try lowerExpr(ctx, node.iterator, imports, scope, function_headers);
             const binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), node.span);
+            const binding_ownership: model.OwnershipMode = if (shared.containsConstructAnyStorage(ctx, binding_ty)) .borrow_read else .owned;
             if (iterator.* == .array and iterator.array.elements.len == 0 and binding_ty.kind == .unknown) {
                 var empty_body_scope = try scope_flow.cloneScope(ctx.allocator, scope.*);
                 defer empty_body_scope.deinit(ctx.allocator);
@@ -306,6 +307,7 @@ pub fn lowerStatement(
                 .id = local_id,
                 .ty = binding_ty,
                 .storage = .immutable,
+                .ownership = binding_ownership,
                 .initialized = true,
                 .decl_span = node.span,
             });
@@ -313,7 +315,7 @@ pub fn lowerStatement(
                 .id = local_id,
                 .name = try ctx.allocator.dupe(u8, node.binding_name),
                 .ty = binding_ty,
-                .ownership = .owned,
+                .ownership = binding_ownership,
                 .span = node.span,
             });
             const lowered: model.Statement = .{ .for_stmt = .{
@@ -502,7 +504,14 @@ pub fn lowerExpr(
         .bool => |node| lowered.* = .{ .boolean = .{ .value = node.value, .span = node.span } },
         .array => |node| {
             var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.elements) |element| try elements.append(try lowerExpr(ctx, element, imports, scope, function_headers));
+            for (node.elements) |element| {
+                const lowered_element = try lowerExpr(ctx, element, imports, scope, function_headers);
+                // An Any field read as an array element is a partial move out of
+                // its owner (`[content]` forwarding a single content field into an
+                // array-content widget — the editor SurfaceBox case).
+                shared.markAnyFieldMovedIntoOwned(ctx, scope, lowered_element, exprSpan(element.*));
+                try elements.append(lowered_element);
+            }
             const array_ty = try resolveArrayLiteralType(ctx, elements.items, node.span);
             lowered.* = .{ .array = .{
                 .elements = try elements.toOwnedSlice(),
@@ -718,7 +727,7 @@ pub fn lowerExpr(
                 return lowered;
             }
             // A computed-property accessor (`widget.node`) runs the Widget->Node bridge.
-            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span)) |accessor| {
+            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span, scope)) |accessor| {
                 lowered.* = accessor.*;
                 return lowered;
             }
