@@ -13,6 +13,6 @@ function leak(flag: Bool, bag: Bag) -> Int {
 @Main
 function main() {
     let bag = Bag { items: [1, 2, 3] }
-    print(leak(true, bag))
+    print(leak(true, move bag))
     return
 }
