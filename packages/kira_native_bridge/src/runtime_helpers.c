@@ -291,7 +291,17 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
     if (array == NULL) return NULL;
     array->len = (size_t)len;
     array->cap = array->len;
-    array->items = array->len == 0 ? NULL : (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
+    /* Invariant (shared with ownership.zig): the items allocation is always
+     * exactly max(cap, 1) elements — never NULL, even for an empty array. The
+     * VM destroy path reconstructs the slice as items[0..max(cap,1)] and would
+     * otherwise free a one-element slice at address 0 for an empty array
+     * returned across the bridge (Codex review). */
+    const size_t item_count = array->len == 0 ? 1 : array->len;
+    array->items = (KiraBridgeValue *)kira_bridge_calloc(item_count, sizeof(KiraBridgeValue));
+    if (array->items == NULL) {
+        kira_bridge_free(array, sizeof(KiraArray));
+        return NULL;
+    }
     return array;
 }
 
@@ -480,7 +490,7 @@ KIRA_BRIDGE_EXPORT void kira_array_append(KiraArray *array, const KiraBridgeValu
         memcpy(next_items, array->items, array->len * sizeof(KiraBridgeValue));
     }
     if (array->items != NULL) {
-        kira_bridge_free(array->items, (array->cap == 0 ? array->len : array->cap) * sizeof(KiraBridgeValue));
+        kira_bridge_free(array->items, (array->cap == 0 ? 1 : array->cap) * sizeof(KiraBridgeValue));
     }
     array->items = next_items;
     array->cap = next_cap;
@@ -563,7 +573,7 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
             }
         }
     }
-    kira_bridge_free(array->items, (array->cap == 0 ? array->len : array->cap) * sizeof(KiraBridgeValue));
+    kira_bridge_free(array->items, (array->cap == 0 ? 1 : array->cap) * sizeof(KiraBridgeValue));
     kira_bridge_free(array, sizeof(KiraArray));
 }
 

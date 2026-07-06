@@ -324,7 +324,13 @@ fn packageWantsNative(module_map: anytype, source_path: ?[]const u8) bool {
             best_mode = owner.execution_mode;
         }
     }
-    return std.mem.eql(u8, best_mode, "llvm") or std.mem.eql(u8, best_mode, "native");
+    // Accept every manifest spelling of the native mode. `llvm_native` is the
+    // canonical name (it maps to the `.llvm_native` build mode); a dependency
+    // using it must still have its `.inherited` functions compiled native in
+    // hybrid, not left runtime-inherited (Codex review).
+    return std.mem.eql(u8, best_mode, "llvm") or
+        std.mem.eql(u8, best_mode, "native") or
+        std.mem.eql(u8, best_mode, "llvm_native");
 }
 
 pub fn compileFileToBytecode(allocator: std.mem.Allocator, path: []const u8) !VmPipelineResult {

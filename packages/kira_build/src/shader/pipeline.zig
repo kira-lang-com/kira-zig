@@ -240,6 +240,24 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                             .failure_stage = .lowering,
                         };
                     },
+                    // The HLSL backend rejects intrinsics it cannot lower to valid
+                    // source (atomicAdd -> statement-form InterlockedAdd) rather than
+                    // emitting an undefined helper that fake-passes (Core Law #2).
+                    error.UnsupportedShaderIntrinsic => {
+                        try diagnostics.appendOwned(allocator, &diags, .{
+                            .severity = .@"error",
+                            .code = "KSL072",
+                            .title = "unsupported shader intrinsic",
+                            .message = "The HLSL backend does not support the atomicAdd intrinsic: HLSL InterlockedAdd is statement-form (writes the original value to an out-parameter) and cannot be a valid inline expression, and the D3D backend is unverified.",
+                            .help = "Target Metal, WGSL, or GLSL for atomic compute shaders, or add real InterlockedAdd statement-form lowering to the HLSL backend.",
+                        });
+                        return .{
+                            .source = checked.source,
+                            .diagnostics = try diags.toOwnedSlice(),
+                            .program = checked.program,
+                            .failure_stage = .lowering,
+                        };
+                    },
                     else => return err,
                 };
                 try artifacts.append(.{
