@@ -1,0 +1,28 @@
+// An owned/move closure parameter is dropped by the callee at scope exit
+// (tag-safe .closure param slot) with full capture teardown; the caller
+// relinquishes the moved argument. A borrowed source passed to an owned
+// parameter is deep-cloned at the call site so the real owner never
+// double-frees.
+
+function consume(f: (Int) -> Int, v: Int) -> Int {
+    return f(v)
+}
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+@Main
+function main() {
+    var total = 0
+    var i = 0
+    while i < 2000 {
+        let add = makeAdder(i)
+        total = total + consume(move add, 3)
+        i = i + 1
+    }
+    print(total)
+    return
+}
