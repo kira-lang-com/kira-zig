@@ -361,6 +361,7 @@ const Parser = struct {
         if (self.at(.kw_let)) return .{ .let_stmt = try self.parseLetStatement() };
         if (self.at(.kw_return)) return .{ .return_stmt = try self.parseReturnStatement() };
         if (self.at(.kw_if)) return .{ .if_stmt = try self.parseIfStatement() };
+        if (self.at(.kw_while)) return .{ .while_stmt = try self.parseWhileStatement() };
 
         const expr = try self.parseExpression();
         if (self.match(.equal)) {
@@ -411,6 +412,17 @@ const Parser = struct {
         return .{
             .value = value,
             .span = source.Span.init(start, end),
+        };
+    }
+
+    fn parseWhileStatement(self: *Parser) anyerror!syntax.ast.WhileStatement {
+        const start = (try self.expect(.kw_while, "expected `while`")).span.start;
+        const condition = try self.parseExpression();
+        const body = try self.parseBlock();
+        return .{
+            .condition = condition,
+            .body = body,
+            .span = source.Span.init(start, body.span.end),
         };
     }
 

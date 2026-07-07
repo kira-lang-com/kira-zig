@@ -4,6 +4,11 @@ const runtime_abi = @import("kira_runtime_abi");
 pub const ArrayObject = extern struct {
     len: usize,
     items: [*]runtime_abi.BridgeValue,
+    // Capacity of the items allocation in elements. Invariant (shared with the
+    // C bridge's KiraArray): the allocation is always exactly max(cap, 1)
+    // elements and len <= cap. Appends grow geometrically; every free site
+    // reconstructs the slice from `cap`, not `len`.
+    cap: usize,
 };
 
 pub const ClosureObject = struct {
@@ -508,24 +513,30 @@ pub const Heap = struct {
     }
 
     pub fn appendArrayItem(self: *Heap, object: *ArrayObject, value: runtime_abi.Value) !void {
-        const old_items = object.items[0..@max(object.len, 1)];
-        const new_len = object.len + 1;
-        // Invariant: the items allocation is always exactly max(len, 1) elements
-        // (every alloc/free site in the VM relies on it). Growing in place keeps
-        // that invariant while skipping the copy+free; size-class allocators
-        // (smp) accept most of these, so repeated appends amortize without
-        // changing the ArrayObject ABI shared with native code.
-        if (self.allocator.resize(old_items, new_len)) {
+        // Invariant: the items allocation is always exactly max(cap, 1) elements
+        // with len <= cap (shared with the C bridge). Space within capacity is a
+        // plain store; growth is geometric, trying an in-place resize first.
+        if (object.len < object.cap) {
             object.items[object.len] = runtime_abi.bridgeValueFromValue(value);
-            object.len = new_len;
+            object.len = object.len + 1;
             return;
         }
-        const new_items = try self.allocBridgeSlice(new_len);
+        const old_items = object.items[0..@max(object.cap, 1)];
+        var new_cap = if (object.cap < 4) 4 else object.cap * 2;
+        if (new_cap < object.len + 1) new_cap = object.len + 1;
+        if (self.allocator.resize(old_items, new_cap)) {
+            object.cap = new_cap;
+            object.items[object.len] = runtime_abi.bridgeValueFromValue(value);
+            object.len = object.len + 1;
+            return;
+        }
+        const new_items = try self.allocBridgeSlice(new_cap);
         @memcpy(new_items[0..object.len], old_items[0..object.len]);
         new_items[object.len] = runtime_abi.bridgeValueFromValue(value);
         self.freeBridgeSlice(old_items);
         object.items = new_items.ptr;
-        object.len = new_len;
+        object.cap = new_cap;
+        object.len = object.len + 1;
     }
 
     fn dropPtr(self: *Heap, ptr: usize) void {
@@ -615,7 +626,7 @@ pub const Heap = struct {
     fn destroy(self: *Heap, kind: ObjectKind) void {
         switch (kind) {
             .array => |object| {
-                const items = object.items[0..@max(object.len, 1)];
+                const items = object.items[0..@max(object.cap, 1)];
                 for (items[0..object.len]) |item| self.dropValue(runtime_abi.bridgeValueToValue(item));
                 self.freeBridgeSlice(items);
                 self.freeArrayObject(object);

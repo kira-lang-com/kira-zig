@@ -27,6 +27,7 @@ pub const StoreIndirect = ir.StoreIndirect;
 pub const ConstClosure = ir.ConstClosure;
 pub const AllocNativeState = ir.AllocNativeState;
 pub const RecoverNativeState = ir.RecoverNativeState;
+pub const FreeNativeState = ir.FreeNativeState;
 pub const NativeStateFieldGet = ir.NativeStateFieldGet;
 pub const NativeStateFieldSet = ir.NativeStateFieldSet;
 pub const AllocArray = ir.AllocArray;

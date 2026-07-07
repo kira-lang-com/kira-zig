@@ -177,6 +177,17 @@ pub fn nativeExecutableFailed() diagnostics.Diagnostic {
     });
 }
 
+pub fn ffiAutobindingFailed() diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KCL090_FfiAutobindingFailed,
+        .domain = .cli,
+        .phase = .backend_prepare,
+        .title = "native FFI autobinding failed",
+        .message = "Kira could not generate native FFI bindings because clang failed to parse a native library header. See the clang output above for the underlying error.",
+        .help = "Check the native library manifest headers/include paths, ensure any required SDK is installed, then re-run `kira ffi autobind <target>`.",
+    });
+}
+
 pub fn liveBundleBuildFailed(allocator: std.mem.Allocator, target: []const u8) !diagnostics.Diagnostic {
     return message.build(.{
         .code = .KCL028_LiveBundleBuildFailed,

@@ -53,6 +53,19 @@ pub fn dumpAst(
 
     if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
+        // Surface clang's own diagnostics so the failure is actionable instead
+        // of collapsing into an opaque internal-compiler-error at the boundary.
+        const header = if (library.headers.entrypoint) |entrypoint|
+            entrypoint
+        else if (headers.len > 0)
+            headers[0]
+        else
+            "<unknown header>";
+        std.debug.print(
+            "kira: FFI autobinding failed for native library `{s}` while running clang on `{s}`\n",
+            .{ library.name, header },
+        );
+        if (result.stderr.len != 0) std.debug.print("{s}\n", .{result.stderr});
         return error.ClangAutobindingFailed;
     }
 

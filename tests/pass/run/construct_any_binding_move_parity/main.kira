@@ -1,0 +1,26 @@
+construct Node {
+    @Required let label: String
+}
+
+Node Leaf {
+    let text: String = ""
+
+    let label: String {
+        text
+    }
+}
+
+function size(node: some Node) -> Int {
+    return node.label.count
+}
+
+function good(node: some Node) -> Int {
+    let alias = node
+    return size(move alias)
+}
+
+@Main
+function main() {
+    print(good(Leaf(text: "leaf")))
+    return
+}

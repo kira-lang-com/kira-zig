@@ -1,0 +1,55 @@
+// Leak class #4 regression: a string-payload enum's 16-byte payload box and
+// its cloned buffer are freed by the typed kira_destroy_enum_<T>, and every
+// enum clone (struct copy, borrowed store, borrowed return) deep-copies the
+// box (kira_clone_enum_<T>) so no two owners share payload storage.
+
+enum Message {
+    Note(String)
+    Count(Int)
+    Empty
+}
+
+struct Envelope {
+    var label: String
+    var message: Message
+}
+
+function describe(message: borrow Message) -> String {
+    match message {
+        Note(text) -> { return "note:" + text }
+        Count(value) -> {
+            if value > 0 {
+                return "count-positive"
+            }
+            return "count-other"
+        }
+        Empty -> { return "empty" }
+    }
+    return "unreachable"
+}
+
+// Returns a BORROWED enum as owned: the return path must hand back a typed
+// deep clone (fresh box + buffer), not an alias into the envelope.
+function pickMessage(envelope: borrow Envelope) -> Message {
+    return envelope.message
+}
+
+@Main
+function main() {
+    var hits = 0
+    var i = 0
+    while i < 1500 {
+        var envelope = Envelope { label: "env-" + "x", message: Message.Note("payload-" + "text") }
+        // Overwrite: the replaced Note's box + buffer must drop with the old block.
+        envelope.message = Message.Count(i)
+        envelope.message = Message.Note("second-" + "note")
+        let copy = envelope
+        let picked = pickMessage(copy)
+        if describe(picked) == "note:second-note" {
+            hits = hits + 1
+        }
+        i = i + 1
+    }
+    print(hits)
+    return
+}

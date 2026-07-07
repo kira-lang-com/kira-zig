@@ -1,0 +1,46 @@
+// The widget-tree shape that leaked in real apps: structs with closure fields
+// collected into an array, rebuilt every iteration. Releasing the array runs
+// the struct destructor on each element, which destroys the closure field —
+// the per-rebuild leak of every `onPress`-style callback block.
+
+struct Row {
+    let tag: Int
+    let onPress: (Int) -> Int
+}
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+function buildRows(count: Int) -> [Row] {
+    var rows: [Row] = []
+    var i = 0
+    while i < count {
+        rows.append(Row { tag: i, onPress: makeAdder(i) })
+        i = i + 1
+    }
+    return move rows
+}
+
+@Main
+function main() {
+    var total = 0
+    var rebuild = 0
+    // Rebuild the "scene" many times; every rebuild must fully reclaim the
+    // previous rows including their closure fields.
+    while rebuild < 200 {
+        let rows = buildRows(20)
+        var i = 0
+        while i < 20 {
+            let row = rows[i]
+            let f = row.onPress
+            total = total + f(1)
+            i = i + 1
+        }
+        rebuild = rebuild + 1
+    }
+    print(total)
+    return
+}

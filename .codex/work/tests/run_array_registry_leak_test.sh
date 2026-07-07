@@ -8,10 +8,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 helper="$here/../../../packages/kira_native_bridge/src/runtime_helpers.c"
 out="$here/leak_test"
 trap 'rm -f "$out"' EXIT
-# Match the helper's ownership-free setting so the test asserts the right contract.
-flags=""
-if grep -q "define KIRA_ARRAY_OWNERSHIP_FREE" "$helper"; then
-    flags="-DKIRA_ARRAY_OWNERSHIP_FREE=1"
-fi
-cc -O2 -Wall $flags "$here/array_registry_leak_test.c" "$helper" -o "$out"
+# The ownership free path is unconditional (the KIRA_ARRAY_OWNERSHIP_FREE gate
+# was removed once clone/drop coverage was complete); no extra flags needed.
+cc -O2 -Wall "$here/array_registry_leak_test.c" "$helper" -o "$out"
 "$out"
