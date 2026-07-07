@@ -159,6 +159,15 @@ pub const MacroKind = enum {
     proc_function,
     proc_attribute,
     proc_derive,
+    // `kind { wrapper }`: the property-wrapper protocol macro. Annotating a struct with the
+    // macro's name (`@PropertyWrapper struct State { ... }`) validates it and registers it as a
+    // wrapper TEMPLATE (the struct itself is removed from the program — it may carry placeholder
+    // types). A field annotated with a registered template's name (`@State var count: Int = 0`)
+    // then summons the macro over the enclosing declaration with BOTH declarations bound:
+    // `expand(target: Declaration, wrapper: Declaration)`; the output replaces the target.
+    // On the validation invocation the macro receives (template, template) — `target.name ==
+    // wrapper.name` discriminates the two paths.
+    proc_wrapper,
 };
 
 // Fragment kind for a declarative macro parameter.
@@ -180,6 +189,8 @@ pub const MacroTargetKind = enum {
     struct_target,
     class_target,
     enum_target,
+    // A construct-backed declaration form (`Widget Counter(...) { ... }`).
+    form_target,
 };
 
 pub const MacroDecl = struct {
@@ -193,6 +204,13 @@ pub const MacroDecl = struct {
     // function carrying the compile-time body.
     applies_to: []MacroTargetKind = &.{},
     expand_fn: ?FunctionDecl = null,
+    // `trigger { field }`: this attribute macro auto-applies to a whole declaration whenever one
+    // of the declaration's FIELDS carries an annotation matching the macro's name — the
+    // property-wrapper shape (`@State var count: Int = 0` summons macro `State` over the form).
+    trigger_field: bool = false,
+    // `replace { true }`: the macro's output REPLACES the annotated declaration instead of being
+    // appended alongside it. Required for rewriting macros (property wrappers).
+    replace: bool = false,
     span: Span,
 };
 
@@ -595,6 +613,7 @@ pub const Expr = union(enum) {
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
     native_recover: NativeRecoverExpr,
+    native_state_free: NativeStateFreeExpr,
     ownership: OwnershipExpr,
     unary: UnaryExpr,
     binary: BinaryExpr,
@@ -691,6 +710,14 @@ pub const NativeRecoverExpr = struct {
     span: Span,
 };
 
+// `nativeStateFree(state)` releases a native-state box created by `nativeState(...)`.
+// Accepts the `NativeState<T>` handle or the `RawPtr` userdata token from
+// `nativeUserData(state)`. Any outstanding `nativeRecover` views become invalid.
+pub const NativeStateFreeExpr = struct {
+    state: *Expr,
+    span: Span,
+};
+
 pub const OwnershipExpr = struct {
     op: OwnershipExprOp,
     operand: *Expr,
@@ -766,11 +793,17 @@ pub const BinaryOp = enum {
     greater_equal,
     logical_and,
     logical_or,
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
 };
 
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 pub const TypeExpr = union(enum) {

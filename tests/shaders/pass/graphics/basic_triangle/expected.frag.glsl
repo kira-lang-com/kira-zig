@@ -16,9 +16,9 @@ struct VertexOut {
 in vec4 kira_varying_color;
 layout(location = 0) out vec4 kira_frag_color;
 
-FragmentOut BasicTriangle__fragment__entry(VertexOut input) {
+FragmentOut BasicTriangle__fragment__entry(VertexOut kira_input_param) {
     FragmentOut kira_out;
-    kira_out.color = input.color;
+    kira_out.color = kira_input_param.color;
     return kira_out;
 }
 

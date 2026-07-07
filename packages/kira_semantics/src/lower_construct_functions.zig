@@ -70,7 +70,8 @@ fn registerCallableHeader(
     var param_ownership = std.array_list.Managed(model.OwnershipMode).init(ctx.allocator);
     var param_defaults = std.array_list.Managed(?*syntax.ast.Expr).init(ctx.allocator);
     try param_types.append(.{ .kind = .named, .name = form_name });
-    try param_ownership.append(.borrow_read);
+    // Consuming methods take self OWNED (must match lowerMethodFunction).
+    try param_ownership.append(if (shared.methodConsumesSelf(ctx, form_name, member, annotations)) .owned else .borrow_read);
     try param_defaults.append(null);
     for (params) |param| {
         try param_ownership.append(shared.ownershipModeFromSyntax(param.type_expr));

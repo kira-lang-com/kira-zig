@@ -15,14 +15,37 @@ const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 const typeRefName = utils.typeRefName;
 
-// A struct return uses an sret out-parameter only on Windows for structs larger than a
-// register (matches externReturnUsesSRet). Elsewhere a small/medium struct comes back in
-// integer registers, modeled as i{size*8}.
+// A struct return uses an sret out-parameter when the C ABI returns the composite in
+// memory: Windows x64 for structs larger than a register, and SysV x86-64 / AAPCS64
+// (macOS, Linux) for composites larger than 16 bytes. Smaller structs come back in
+// integer registers, modeled as i{size*8}. Getting this wrong reads garbage registers:
+// e.g. foundation's 24-byte `fs_read_result` was modeled as i192 on macOS and
+// segfaulted on first use (arm64 returns it via the x8 indirect-result pointer).
 pub fn usesSret(program: *const ir.Program, value_type: ir.ValueType) bool {
-    if (builtin.os.tag != .windows) return false;
     if (value_type.kind != .ffi_struct) return false;
     const size = utils.valueAbiSize(program, value_type) catch return false;
-    return size > 8;
+    if (builtin.os.tag == .windows) return size > 8;
+    return size > 16;
+}
+
+// Attach the `sret(struct_ty)` attribute to parameter 1 of an extern declaration or a
+// call site. Mandatory on arm64: the indirect-result pointer travels in x8, and only
+// the sret attribute makes LLVM place it there (a plain leading ptr param would use x0
+// and the C callee would write through whatever x8 happens to hold).
+pub fn addSretAttribute(
+    api: *const llvm.Api,
+    context: llvm.c.LLVMContextRef,
+    struct_ty: llvm.c.LLVMTypeRef,
+    target: llvm.c.LLVMValueRef,
+    is_call_site: bool,
+) void {
+    const kind = api.LLVMGetEnumAttributeKindForName("sret", 4);
+    const attr = api.LLVMCreateTypeAttribute(context, kind, struct_ty);
+    if (is_call_site) {
+        api.LLVMAddCallSiteAttribute(target, 1, attr);
+    } else {
+        api.LLVMAddAttributeAtIndex(target, 1, attr);
+    }
 }
 
 fn intAbiType(types: capi.Types, name: ?[]const u8) llvm.c.LLVMTypeRef {
@@ -237,6 +260,10 @@ pub fn lowerExternCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Func
     }
 
     const result = api.LLVMBuildCall2(b, fn_ty, callee_fn, args.ptr, @intCast(args.len), "");
+    if (sret) {
+        const ret_struct_ty = fc.struct_types.get(callee_decl.return_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
+        addSretAttribute(api, fc.types.context, ret_struct_ty, result, true);
+    }
 
     // Free each transient String->CString buffer now that the call has consumed it. A C
     // `const char*` parameter is borrowed for the call's duration only; leaving these

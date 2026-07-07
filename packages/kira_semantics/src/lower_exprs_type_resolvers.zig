@@ -22,6 +22,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
                 .{ .kind = .unknown };
         },
         .native_user_data => .{ .kind = .raw_ptr, .name = "RawPtr" },
+        .native_state_free => .{ .kind = .void },
         .native_recover => |node| blk: {
             const recovered_ty = try shared.typeFromSyntaxChecked(ctx, node.state_type.*);
             break :blk if (recovered_ty.kind == .named and recovered_ty.name != null)
@@ -35,6 +36,7 @@ pub fn resolveSyntaxExprType(ctx: *shared.Context, expr: *syntax.ast.Expr, span:
             break :blk switch (node.op) {
                 .negate => if (operand_ty.kind == .integer or operand_ty.kind == .float) operand_ty else model.ResolvedType{ .kind = .unknown },
                 .not => .{ .kind = .boolean },
+                .bit_not => if (operand_ty.kind == .integer) operand_ty else model.ResolvedType{ .kind = .unknown },
             };
         },
         .binary => |node| try resolveSyntaxBinaryExprType(ctx, node, span),
@@ -80,8 +82,13 @@ fn resolveSyntaxBinaryExprType(ctx: *shared.Context, node: syntax.ast.BinaryExpr
     const rhs_ty = try resolveSyntaxExprType(ctx, node.rhs, span);
     return switch (node.op) {
         .add, .subtract, .multiply, .divide, .modulo => blk: {
+            if (node.op == .add and lhs_ty.kind == .string and rhs_ty.kind == .string) break :blk .{ .kind = .string };
             if (lhs_ty.kind == .float or rhs_ty.kind == .float) break :blk .{ .kind = .float };
             if (lhs_ty.kind == .integer and rhs_ty.kind == .integer) break :blk .{ .kind = .integer };
+            break :blk .{ .kind = .unknown };
+        },
+        .bit_and, .bit_or, .bit_xor, .shift_left, .shift_right => blk: {
+            if (lhs_ty.kind == .integer and rhs_ty.kind == .integer) break :blk lhs_ty;
             break :blk .{ .kind = .unknown };
         },
         .equal, .not_equal, .less, .less_equal, .greater, .greater_equal, .logical_and, .logical_or => .{ .kind = .boolean },
@@ -94,13 +101,15 @@ pub fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *mo
     return switch (op) {
         .add, .subtract, .multiply, .divide, .modulo => blk: {
             if (lhs_ty.eql(rhs_ty) and (lhs_ty.kind == .integer or lhs_ty.kind == .float)) break :blk lhs_ty;
+            // String concatenation: `+` (and only `+`) joins two strings.
+            if (op == .add and lhs_ty.kind == .string and rhs_ty.kind == .string) break :blk .{ .kind = .string };
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM013",
                 .title = "invalid binary operator types",
-                .message = "Arithmetic operators require both operands to use the same numeric type.",
+                .message = "Arithmetic operators require both operands to use the same numeric type (or, for `+`, two strings).",
                 .labels = &.{diagnostics.primaryLabel(span, "operands do not use compatible numeric types")},
-                .help = "Make both operands integers or both operands floats, or add an explicit type declaration where coercion is allowed.",
+                .help = "Make both operands integers or both operands floats (or both strings for `+`), or add an explicit type declaration where coercion is allowed.",
             });
             return error.DiagnosticsEmitted;
         },
@@ -125,6 +134,33 @@ pub fn resolveBinaryType(ctx: *shared.Context, op: syntax.ast.BinaryOp, lhs: *mo
                 .message = "Logical `&&` and `||` require both operands to be boolean values.",
                 .labels = &.{diagnostics.primaryLabel(span, "logical operands are not both booleans")},
                 .help = "Ensure both sides resolve to `Bool` before using a logical operator.",
+            });
+            return error.DiagnosticsEmitted;
+        },
+        // Bitwise AND/OR/XOR require matching integer operands; result is that type.
+        .bit_and, .bit_or, .bit_xor => blk: {
+            if (lhs_ty.eql(rhs_ty) and lhs_ty.kind == .integer) break :blk lhs_ty;
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM013",
+                .title = "invalid binary operator types",
+                .message = "Bitwise operators (`&`, `|`, `^`) require both operands to use the same integer type.",
+                .labels = &.{diagnostics.primaryLabel(span, "operands are not matching integer types")},
+                .help = "Make both operands the same integer type (I8..I64 / U8..U64).",
+            });
+            return error.DiagnosticsEmitted;
+        },
+        // Shifts require integer operands; the result takes the left operand's type.
+        // The shift amount may be any integer type.
+        .shift_left, .shift_right => blk: {
+            if (lhs_ty.kind == .integer and rhs_ty.kind == .integer) break :blk lhs_ty;
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM013",
+                .title = "invalid binary operator types",
+                .message = "Shift operators (`<<`, `>>`) require integer operands.",
+                .labels = &.{diagnostics.primaryLabel(span, "shift operands are not integers")},
+                .help = "Use integer values on both sides of a shift.",
             });
             return error.DiagnosticsEmitted;
         },

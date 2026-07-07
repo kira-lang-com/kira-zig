@@ -1,0 +1,41 @@
+// A consuming (`@Consuming`) family method frees its receiver; calling it on a
+// BORROWED receiver whose type carries type-erased storage is rejected: the
+// borrow does not own the value, and Any contents are move-only (no clone
+// repair). KSEM157.
+
+construct Widget {
+    @Required let body: Widget
+
+    @Consuming
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Widget Leaf(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget Wrap() {
+    @Content let content: Widget
+
+    body {
+        content
+    }
+}
+
+function bad(w: borrow Wrap) -> Int {
+    let rendered = w.render()
+    return rendered.count
+}
+
+@Main
+function main() {
+    let wrapped = Wrap() {
+        Leaf(text = "hi")
+    }
+    print(bad(wrapped))
+    return
+}

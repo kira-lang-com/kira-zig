@@ -21,6 +21,12 @@ const captures = @import("lower_shared_captures.zig");
 pub const CaptureResolution = captures.CaptureResolution;
 pub const resolveLocalOrCapture = captures.resolveLocalOrCapture;
 pub const emitUnsupportedMutableCapture = captures.emitUnsupportedMutableCapture;
+// Construct-surface ownership queries (consuming receivers, Any-storage
+// containment) live in lower_shared_construct_queries.zig (Core Law #5).
+const construct_queries = @import("lower_shared_construct_queries.zig");
+pub const methodConsumesSelf = construct_queries.methodConsumesSelf;
+pub const containsConstructAnyStorage = construct_queries.containsConstructAnyStorage;
+pub const markAnyFieldMovedIntoOwned = construct_queries.markAnyFieldMovedIntoOwned;
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -35,6 +41,10 @@ pub const Context = struct {
     // satisfies (its family plus that family's `extends` ancestors), so a concrete widget value
     // coerces to `any Widget`. Populated before function bodies are lowered.
     form_families: ?*const std.StringHashMapUnmanaged([]const []const u8) = null,
+    // The lowered construct declarations (family surfaces), so method lowering can
+    // resolve `@Consuming` family methods for concrete implementations. Set after
+    // every construct declaration has been lowered; stable for the rest of lowering.
+    constructs: ?[]const model.Construct = null,
     // Maps a declaration's type name to its `@Content` fields, so a trailing `{ ... }` block at a
     // construction site is routed into them (single `Widget` vs `[Widget]` arity, named fills).
     form_content_fields: ?*const std.StringHashMapUnmanaged([]const ContentFieldRef) = null,
@@ -201,6 +211,12 @@ pub fn registerBuiltinAnnotationHeaders(
     // marks caller-provided child fields on concrete declarations.
     try putBuiltinAnnotation(allocator, headers, "Required", false);
     try putBuiltinAnnotation(allocator, headers, "Content", false);
+    // `@Consuming` on a construct-declaration method: the method takes `self`
+    // OWNED (Rust `self` receiver) — the call consumes the receiver, the callee
+    // owns and drops the shell, content fields may partial-move out. Every
+    // concrete implementation of a consuming family method inherits the owned
+    // receiver. `body` accessors are implicitly consuming.
+    try putBuiltinAnnotation(allocator, headers, "Consuming", false);
     try putBuiltinAnnotation(allocator, headers, "FFI.Extern", true);
     try putBuiltinAnnotation(allocator, headers, "FFI.Struct", true);
     try putBuiltinAnnotation(allocator, headers, "FFI.Pointer", true);
@@ -696,6 +712,7 @@ pub fn commonClassType(
 
     return null;
 }
+
 
 fn classNameMatchesOrInherits(ctx: *const Context, actual_name: []const u8, target_name: []const u8) bool {
     if (std.mem.eql(u8, actual_name, target_name)) return true;

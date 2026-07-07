@@ -20,11 +20,14 @@ const inferRegisterTypes = utils.inferRegisterTypes;
 const allocPrintZ = utils.allocPrintZ;
 const findEnumDecl = utils.findEnumDecl;
 const print = @import("backend_capi_print.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const drop = @import("backend_capi_drop.zig");
 const aggregate = @import("backend_capi_aggregate.zig");
+const native_state = @import("backend_capi_native_state.zig");
 const closures = @import("backend_capi_closures.zig");
 const ffi = @import("backend_capi_ffi.zig");
 const calls = @import("backend_capi_calls.zig");
+const returns = @import("backend_capi_returns.zig");
 
 pub const FunctionCodegen = struct {
     allocator: std.mem.Allocator,
@@ -59,6 +62,17 @@ pub const FunctionCodegen = struct {
     reg_local: []?u32 = &.{},
     // local -> struct_contents cleanup slot index for copy_indirect destinations.
     copy_dest_slot: []?u32 = &.{},
+    // register -> was produced by field_ptr/subobject_ptr (addresses OWNED struct
+    // field storage). A store_indirect of a string frees the field's prior buffer
+    // only through such a pointer; any other target (e.g. a borrow-mut pointer to
+    // a caller's local) gets clone-in without free-old (the caller's per-local
+    // slot still owns the prior buffer — freeing it here would double-free).
+    reg_field_ptr: []bool = &.{},
+    // register -> holds a const_string literal ({static ptr, len}, NUL-terminated
+    // global). The only string provenance that may be ALIASED into a CString field:
+    // every other untracked string register is a view of a buffer some slot frees
+    // at scope exit (a string local's clone, a parameter owned by the caller).
+    reg_string_literal: []bool = &.{},
     // local -> per-local cleanup slot index for owned enum locals (`var`/`let` of enum
     // type). Mirrors copy_dest_slot for structs: one slot per enum local holding the
     // local's current live heap enum block, reused across reassignments (drop-before-
@@ -66,6 +80,19 @@ pub const FunctionCodegen = struct {
     // its own slot and a branch-reassigned enum var's return frees the wrong (last-
     // lowered) branch's slot, freeing the live returned enum (use-after-free).
     enum_local_slot: []?u32 = &.{},
+    // local -> per-local cleanup slot index for string locals. A string local owns a
+    // deep CLONE of every value assigned to it (strings are deep values, Copy in the
+    // language): the store_local site clones the source buffer into the local, the
+    // slot drops the prior clone on reassignment (loop re-entry), and exit cleanup
+    // frees the final one. Registers keep their own producer slots; a `ret` of a
+    // string local clones again (the register is untracked by design — see
+    // onStoreLocal's string exclusion in backend_capi_drop.zig).
+    string_local_slot: []?u32 = &.{},
+    // register -> produced by a move/owned load_local of an ffi_struct local. The
+    // destination copy_indirect must treat such a source as a MOVE (no clone_contents;
+    // ownership transfers and the source local's cleanup slot is escaped) rather than
+    // as a value copy.
+    reg_move_local: []?u32 = &.{},
 
     // Build a scratch `alloca` in the function entry block regardless of where the
     // builder is currently positioned. LLVM only reclaims (and SROA/mem2reg only
@@ -97,14 +124,20 @@ pub const FunctionCodegen = struct {
         const entry_block = api.LLVMAppendBasicBlockInContext(self.types.context, self.function_value, "entry");
         api.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
-        try drop.setup(self);
-        defer drop.teardown(self);
-
+        // Register types must be inferred BEFORE drop.setup: the pre-scan needs them
+        // to recognize string concatenation (`.add` with a string dst) as an owned
+        // string-buffer producer.
         self.register_types = try inferRegisterTypes(self.allocator, self.request.program.programPtr().*, self.function_decl);
         defer self.allocator.free(self.register_types);
+
+        try drop.setup(self);
+        defer drop.teardown(self);
         self.registers = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.register_count);
         defer self.allocator.free(self.registers);
         @memset(self.registers, null);
+        self.reg_move_local = try self.allocator.alloc(?u32, self.function_decl.register_count);
+        defer self.allocator.free(self.reg_move_local);
+        @memset(self.reg_move_local, null);
         self.locals = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.local_count);
         defer self.allocator.free(self.locals);
         @memset(self.locals, null);
@@ -166,44 +199,29 @@ pub const FunctionCodegen = struct {
     }
 
     fn zeroValue(self: *FunctionCodegen, value_type: ir.ValueType) llvm.c.LLVMValueRef {
-        const api = self.api;
-        return switch (value_type.kind) {
-            .float => api.LLVMConstReal(self.types.llvmType(value_type), 0.0),
-            .string => api.LLVMGetUndef(self.types.string_ty),
-            .boolean => api.LLVMConstInt(self.types.bool_ty, 0, 0),
-            else => api.LLVMConstInt(self.types.i64, 0, 0),
-        };
+        return value_repr.zeroValue(self, value_type);
     }
 
     fn isFloat(self: *FunctionCodegen, reg: u32) bool {
         return reg < self.register_types.len and self.register_types[reg].kind == .float;
     }
 
-    /// Float -> Int conversion matching the VM's `convertValue`: truncate toward
-    /// zero, but saturate out-of-range magnitudes to i64 min/max and map NaN to
-    /// 0. A bare `fptosi` is poison for those inputs, so VM and LLVM would
-    /// otherwise diverge (Core Law #1). `raw` is only selected when the source
-    /// is in range and non-NaN, so its poison value never reaches the result.
-    fn lowerFloatToIntSaturating(self: *FunctionCodegen, src: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
-        const api = self.api;
-        const b = self.builder;
-        const i64_ty = self.types.i64;
-        const f64_ty = self.types.double_ty;
-        const raw = api.LLVMBuildFPToSI(b, src, i64_ty, "fptosi");
-        // i64 bounds as doubles (these round to +/-2^63, matching the VM's
-        // `@floatFromInt(maxInt/minInt)` comparison thresholds).
-        const max_f = api.LLVMConstReal(f64_ty, @as(f64, @floatFromInt(std.math.maxInt(i64))));
-        const min_f = api.LLVMConstReal(f64_ty, @as(f64, @floatFromInt(std.math.minInt(i64))));
-        const max_i = api.LLVMConstInt(i64_ty, @bitCast(@as(i64, std.math.maxInt(i64))), 1);
-        const min_i = api.LLVMConstInt(i64_ty, @bitCast(@as(i64, std.math.minInt(i64))), 1);
-        const zero_i = api.LLVMConstInt(i64_ty, 0, 1);
-        const ge_max = api.LLVMBuildFCmp(b, llvm.c.LLVMRealOGE, src, max_f, "sat.ge");
-        const le_min = api.LLVMBuildFCmp(b, llvm.c.LLVMRealOLE, src, min_f, "sat.le");
-        const is_nan = api.LLVMBuildFCmp(b, llvm.c.LLVMRealUNO, src, src, "sat.nan");
-        var result = api.LLVMBuildSelect(b, ge_max, max_i, raw, "sat.hi");
-        result = api.LLVMBuildSelect(b, le_min, min_i, result, "sat.lo");
-        result = api.LLVMBuildSelect(b, is_nan, zero_i, result, "sat.nan.sel");
-        return result;
+    fn isString(self: *FunctionCodegen, reg: u32) bool {
+        return reg < self.register_types.len and self.register_types[reg].kind == .string;
+    }
+
+    // Clone-on-read for a string produced from an aggregate (struct field,
+    // native-state slot, array element, enum payload): replace the borrowed
+    // {ptr,len} view in dst with a deep copy and record it in dst's string_buf
+    // cleanup slot. The aggregate keeps sole ownership of its buffer; the reader
+    // owns an independent one (strings are Copy in the language, so a read must
+    // outlive any later mutation/destruction of the aggregate). No-op when drop
+    // is disabled — dst then keeps the borrowed view, the pre-drop model.
+    fn cloneStringOnRead(self: *FunctionCodegen, dst: u32) void {
+        if (!self.drop_enabled) return;
+        if (dst >= self.register_slot.len or self.register_slot[dst] == null) return;
+        self.registers[dst] = drop.cloneStringValue(self, self.registers[dst]);
+        drop.trackStringRegister(self, dst);
     }
 
     fn lowerInstruction(self: *FunctionCodegen, instruction: ir.Instruction) !void {
@@ -217,12 +235,25 @@ pub const FunctionCodegen = struct {
             .const_string => |v| {
                 self.registers[v.dst] = try self.buildStringConstant(v.value);
                 self.string_counter += 1;
+                if (v.dst < self.reg_string_literal.len) self.reg_string_literal[v.dst] = true;
             },
-            .add => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd") else api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add"),
+            .add => |v| {
+                if (self.isString(v.lhs)) {
+                    self.registers[v.dst] = value_repr.lowerStringConcat(self, self.registers[v.lhs], self.registers[v.rhs]);
+                    // The concat buffer is a fresh malloc; record it in the dst's
+                    // string_buf cleanup slot (drop-before-overwrite reclaims the
+                    // previous iteration's buffer in loops).
+                    drop.trackStringRegister(self, v.dst);
+                } else if (self.isFloat(v.lhs)) {
+                    self.registers[v.dst] = api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd");
+                } else {
+                    self.registers[v.dst] = api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add");
+                }
+            },
             .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, self.registers[v.lhs], self.registers[v.rhs], "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
             .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, self.registers[v.lhs], self.registers[v.rhs], "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
-            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
-            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
+            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
+            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
             .convert => |v| {
                 const src_is_float = self.isFloat(v.src);
                 if (v.target == .float) {
@@ -230,20 +261,55 @@ pub const FunctionCodegen = struct {
                     self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
                 } else {
                     // Float -> Int truncates toward zero; Int -> Int is identity.
-                    self.registers[v.dst] = if (src_is_float) self.lowerFloatToIntSaturating(self.registers[v.src]) else self.registers[v.src];
+                    self.registers[v.dst] = if (src_is_float) value_repr.lowerFloatToIntSaturating(self, self.registers[v.src]) else self.registers[v.src];
                 }
             },
-            .compare => |v| self.registers[v.dst] = try self.lowerCompare(v),
+            .compare => |v| self.registers[v.dst] = try value_repr.lowerCompare(self, v),
+            .bitwise => |v| self.registers[v.dst] = switch (v.op) {
+                .bit_and => api.LLVMBuildAnd(b, self.registers[v.lhs], self.registers[v.rhs], "and"),
+                .bit_or => api.LLVMBuildOr(b, self.registers[v.lhs], self.registers[v.rhs], "or"),
+                .bit_xor => api.LLVMBuildXor(b, self.registers[v.lhs], self.registers[v.rhs], "xor"),
+                .shift_left, .shift_right => shift_blk: {
+                    // Kira shift amount is taken mod 64 (vm_values.zig); an LLVM
+                    // shift with a count >= the bit width is poison/UB, so mask the
+                    // RHS to match the VM before emitting the shift (Codex review).
+                    const amt = api.LLVMBuildAnd(b, self.registers[v.rhs], api.LLVMConstInt(self.types.i64, 63, 0), "shamt");
+                    break :shift_blk switch (v.op) {
+                        .shift_left => api.LLVMBuildShl(b, self.registers[v.lhs], amt, "shl"),
+                        .shift_right => if (v.unsigned) api.LLVMBuildLShr(b, self.registers[v.lhs], amt, "lshr") else api.LLVMBuildAShr(b, self.registers[v.lhs], amt, "ashr"),
+                        else => unreachable,
+                    };
+                },
+            },
             .unary => |v| self.registers[v.dst] = switch (v.op) {
                 .negate => if (self.isFloat(v.src)) api.LLVMBuildFNeg(b, self.registers[v.src], "fneg") else api.LLVMBuildNeg(b, self.registers[v.src], "neg"),
                 .not => api.LLVMBuildNot(b, self.registers[v.src], "not"),
+                .bit_not => api.LLVMBuildNot(b, self.registers[v.src], "bitnot"),
             },
             .store_local => |v| {
-                _ = api.LLVMBuildStore(b, self.registers[v.src], self.locals[v.local]);
-                drop.onStoreLocal(self, v.local, v.src, v.borrow);
+                // A string local owns a deep CLONE of every assigned value (strings are
+                // Copy in the language; aliasing the source buffer would dangle when the
+                // source's producer slot drops it on loop overwrite or scope exit). The
+                // per-local slot frees the prior clone on reassignment.
+                if (!v.borrow and drop.hasStringLocalSlot(self, v.local)) {
+                    const cloned = drop.cloneStringValue(self, self.registers[v.src]);
+                    _ = api.LLVMBuildStore(b, cloned, self.locals[v.local]);
+                    drop.onStoreLocalString(self, v.local, cloned);
+                } else {
+                    _ = api.LLVMBuildStore(b, self.registers[v.src], self.locals[v.local]);
+                    drop.onStoreLocal(self, v.local, v.src, v.borrow);
+                }
             },
             .load_local => |v| {
                 self.registers[v.dst] = api.LLVMBuildLoad2(b, self.types.llvmType(self.function_decl.local_types[v.local]), self.locals[v.local], "load");
+                if (v.dst < self.reg_move_local.len and v.local < self.function_decl.local_types.len and
+                    self.function_decl.local_types[v.local].kind == .ffi_struct)
+                {
+                    self.reg_move_local[v.dst] = switch (v.ownership) {
+                        .move, .owned => v.local,
+                        else => null,
+                    };
+                }
                 drop.onLoadLocal(self, v.dst, v.local);
                 drop.recordRegLocal(self, v.dst, v.local);
             },
@@ -270,28 +336,10 @@ pub const FunctionCodegen = struct {
             },
             .print => |v| try print.lowerPrint(self, self.register_types[v.src], self.registers[v.src]),
             .call => |v| try calls.lowerCall(self, v),
-            .ret => |v| {
-                if (v.src) |src| {
-                    if (self.drop_enabled and self.function_decl.return_type.kind == .ffi_struct) {
-                        // Lower the struct result into caller-stable heap storage and
-                        // escape its source slot BEFORE exit cleanup, so the returned
-                        // struct outlives the callee frame and the callee can release all
-                        // of its own remaining temporaries. The caller receives an owned
-                        // heap struct, tracked as struct_heap at the call site (lowerCall
-                        // / setup) and freed there.
-                        const ret_val = drop.prepareStructReturn(self, src);
-                        drop.emitExitCleanup(self, null);
-                        _ = api.LLVMBuildRet(b, ret_val);
-                    } else {
-                        drop.emitExitCleanup(self, src);
-                        _ = api.LLVMBuildRet(b, self.registers[src]);
-                    }
-                } else {
-                    drop.emitExitCleanup(self, null);
-                    _ = api.LLVMBuildRetVoid(b);
-                }
-                self.terminated = true;
-            },
+            // Return-value ownership promotions live in backend_capi_returns.zig
+            // (the call-result invariants: struct/array/enum/string/closure
+            // results are always caller-owned fresh values).
+            .ret => |v| returns.lowerReturn(self, v.src),
             .alloc_struct => |v| {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
                 const size = api.LLVMSizeOf(struct_ty);
@@ -310,6 +358,7 @@ pub const FunctionCodegen = struct {
                 var indices = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(self.types.i32, 0, 0), api.LLVMConstInt(self.types.i32, v.field_index, 0) };
                 const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, base, &indices, indices.len, "field.ptr");
                 self.registers[v.dst] = api.LLVMBuildPtrToInt(b, field_ptr, self.types.i64, "field.ptrint");
+                if (v.dst < self.reg_field_ptr.len) self.reg_field_ptr[v.dst] = true;
             },
             .subobject_ptr => |v| {
                 const base_name = self.register_types[v.base].name orelse return error.UnsupportedExecutableFeature;
@@ -318,13 +367,33 @@ pub const FunctionCodegen = struct {
                 var indices = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(self.types.i32, 0, 0), api.LLVMConstInt(self.types.i32, v.offset, 0) };
                 const sub_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, base, &indices, indices.len, "sub.ptr");
                 self.registers[v.dst] = api.LLVMBuildPtrToInt(b, sub_ptr, self.types.i64, "sub.ptrint");
+                if (v.dst < self.reg_field_ptr.len) self.reg_field_ptr[v.dst] = true;
             },
-            .load_indirect => |v| self.registers[v.dst] = try self.lowerLoadIndirect(v),
+            .load_indirect => |v| {
+                self.registers[v.dst] = try self.lowerLoadIndirect(v);
+                // A string field read clones (strings are deep values; the field keeps
+                // sole ownership of its buffer, the reader owns an independent copy).
+                if (v.ty.kind == .string) self.cloneStringOnRead(v.dst);
+                // Checker-verified field move-out: ownership transfers to dst.
+                // Track it for scope-exit cleanup and null the field storage so the
+                // owner's destructor / the enforced re-init overwrite cannot free
+                // the value this register now owns. construct_any fields transfer
+                // the same way (Rust partial move): the base's typed destructor
+                // frees Any fields (rc.anyfield), so the moved-out tree must leave
+                // a nulled slot behind or the base drop frees it under the new
+                // owner (the KiraUI `let root = app.content` pattern).
+                if (v.moved and self.drop_enabled and (v.ty.kind == .array or v.ty.kind == .enum_instance or v.ty.kind == .construct_any)) {
+                    drop.onAlloc(self, v.dst);
+                    const moved_field = api.LLVMBuildIntToPtr(b, self.registers[v.ptr], self.types.ptr_ty, "load.move.field");
+                    _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.ptr_ty), moved_field);
+                }
+            },
             .store_indirect => |v| try aggregate.lowerStoreIndirect(self, v),
             .copy_indirect => |v| {
                 const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
                 const src = api.LLVMBuildIntToPtr(b, self.registers[v.src_ptr], self.types.ptr_ty, "copy.src");
                 const dst = api.LLVMBuildIntToPtr(b, self.registers[v.dst_ptr], self.types.ptr_ty, "copy.dst");
+                const move_local = if (v.src_ptr < self.reg_move_local.len) self.reg_move_local[v.src_ptr] else null;
                 // Release any prior occupant of the destination's stack shell before the
                 // shallow store discards its array pointers (loop-body reassignment).
                 if (self.drop_enabled) drop.releasePriorCopyDest(self, v.dst_ptr, v.type_name);
@@ -341,15 +410,27 @@ pub const FunctionCodegen = struct {
                     const td = utils.findTypeDecl(self.request.program.programPtr(), v.type_name) orelse break :blk false;
                     break :blk td.ffi == null;
                 };
-                if ((self.drop_enabled or clone_default)) {
+                if (move_local == null and (self.drop_enabled or clone_default)) {
                     if (self.dtors.map.get(v.type_name)) |h| {
                         var cc = [_]llvm.c.LLVMValueRef{dst};
                         _ = api.LLVMBuildCall2(b, h.clone_contents.ty, h.clone_contents.fn_value, &cc, cc.len, "");
                     }
                 }
                 if (self.drop_enabled) drop.onCopyDest(self, v.dst_ptr, dst, v.type_name);
+                if (move_local) |local| {
+                    // The contents moved into dst; a heap-shell source (owned
+                    // param / call result) leaves an empty shell nothing owns —
+                    // free it (shell only) before the slot is nulled.
+                    drop.onMoveLocalHeapShell(self, local, src);
+                    drop.onMoveLocal(self, local);
+                }
             },
-            .c_string_to_string => |v| self.registers[v.dst] = try calls.lowerCStringToString(self, v),
+            .c_string_to_string => |v| {
+                self.registers[v.dst] = try calls.lowerCStringToString(self, v);
+                // The coercion malloc'd an independent copy; dst's string_buf slot
+                // owns it (this was leak class #1: every CString→String coercion).
+                drop.trackStringRegister(self, v.dst);
+            },
             .call_virtual => |v| try calls.lowerCallVirtual(self, v),
             .const_function => |v| {
                 self.registers[v.dst] = switch (v.representation) {
@@ -375,8 +456,18 @@ pub const FunctionCodegen = struct {
                 const slot = api.LLVMBuildInBoundsGEP2(b, self.types.i64, base, &idx, idx.len, "enum.tag.slot");
                 self.registers[v.dst] = api.LLVMBuildLoad2(b, self.types.i64, slot, "enum.tag");
             },
-            .enum_payload => |v| self.registers[v.dst] = try aggregate.lowerEnumPayload(self, v),
-            .alloc_native_state => |v| try aggregate.lowerAllocNativeState(self, v),
+            .enum_payload => |v| {
+                self.registers[v.dst] = try aggregate.lowerEnumPayload(self, v);
+                // A string payload read clones — the enum's heap box keeps its
+                // buffer, the reader owns an independent copy.
+                if (v.payload_ty.kind == .string) self.cloneStringOnRead(v.dst);
+            },
+            .alloc_native_state => |v| try native_state.lowerAllocNativeState(self, v),
+            .free_native_state => |v| {
+                const state = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.free.in");
+                var args = [_]llvm.c.LLVMValueRef{state};
+                _ = api.LLVMBuildCall2(b, self.runtime_decls.state_free.ty, self.runtime_decls.state_free.fn_value, &args, args.len, "");
+            },
             .recover_native_state => |v| {
                 const state = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.recover.in");
                 var args = [_]llvm.c.LLVMValueRef{ state, api.LLVMConstInt(self.types.i64, v.type_id, 0) };
@@ -389,17 +480,26 @@ pub const FunctionCodegen = struct {
                 const slot = api.LLVMBuildInBoundsGEP2(b, self.types.bridge_ty, payload, &idx, idx.len, "state.get.slot");
                 const bv = api.LLVMBuildLoad2(b, self.types.bridge_ty, slot, "state.get.bv");
                 self.registers[v.dst] = try self.unpackBridge(v.field_ty, bv);
+                // A string payload read clones — the state keeps its buffer, the
+                // reader owns an independent copy.
+                if (v.field_ty.kind == .string) self.cloneStringOnRead(v.dst);
+                // Field move-out from a native-state payload: dst owns the value now;
+                // zero the slot so a later field set's drop-before-overwrite (or the
+                // state's teardown) cannot free it again.
+                if (v.moved and self.drop_enabled and (v.field_ty.kind == .array or v.field_ty.kind == .enum_instance)) {
+                    drop.onAlloc(self, v.dst);
+                    _ = api.LLVMBuildStore(b, api.LLVMConstNull(self.types.bridge_ty), slot);
+                }
             },
-            .native_state_field_set => |v| {
-                const payload = api.LLVMBuildIntToPtr(b, self.registers[v.state], self.types.ptr_ty, "state.set.payload");
-                var idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(self.types.i64, v.field_index, 0)};
-                const slot = api.LLVMBuildInBoundsGEP2(b, self.types.bridge_ty, payload, &idx, idx.len, "state.set.slot");
-                const bv = try self.packBridge(self.register_types[v.src], self.registers[v.src]);
-                _ = api.LLVMBuildStore(b, bv, slot);
-            },
+            .native_state_field_set => |v| try native_state.lowerNativeStateFieldSet(self, v),
             .alloc_array => |v| try aggregate.lowerAllocArray(self, v),
             .array_len => |v| aggregate.lowerArrayLen(self, v),
-            .array_get => |v| try aggregate.lowerArrayGet(self, v),
+            .array_get => |v| {
+                try aggregate.lowerArrayGet(self, v);
+                // A string element read clones — the array element keeps its buffer
+                // (freed by kira_array_release), the reader owns an independent copy.
+                if (v.ty.kind == .string) self.cloneStringOnRead(v.dst);
+            },
             .array_set => |v| try aggregate.lowerArraySet(self, v),
             .array_append => |v| try aggregate.lowerArrayAppend(self, v),
             // Drop elaboration / ownership scopes are no-ops for the C-API core
@@ -411,72 +511,8 @@ pub const FunctionCodegen = struct {
         }
     }
 
-    fn lowerCompare(self: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
-        const api = self.api;
-        const operand_kind = if (v.lhs < self.register_types.len) self.register_types[v.lhs].kind else ir.ValueType.Kind.integer;
-        if (operand_kind == .string) {
-            // String content equality: a `{ptr,len}` value equals another iff the
-            // lengths match and the first `min(len)` bytes compare equal. memcmp
-            // over min(len) is always in-bounds for both buffers; the length check
-            // distinguishes a string from its own prefix.
-            const b = self.builder;
-            const lhs = self.registers[v.lhs];
-            const rhs = self.registers[v.rhs];
-            const len_a = api.LLVMBuildExtractValue(b, lhs, 1, "streq.alen");
-            const len_b = api.LLVMBuildExtractValue(b, rhs, 1, "streq.blen");
-            const ptr_a = api.LLVMBuildExtractValue(b, lhs, 0, "streq.aptr");
-            const ptr_b = api.LLVMBuildExtractValue(b, rhs, 0, "streq.bptr");
-            const len_eq = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, len_a, len_b, "streq.leneq");
-            const a_shorter = api.LLVMBuildICmp(b, llvm.c.LLVMIntULT, len_a, len_b, "streq.ashorter");
-            const min_len = api.LLVMBuildSelect(b, a_shorter, len_a, len_b, "streq.min");
-            var args = [_]llvm.c.LLVMValueRef{ ptr_a, ptr_b, min_len };
-            const cmp = api.LLVMBuildCall2(b, self.runtime_decls.memcmp.ty, self.runtime_decls.memcmp.fn_value, &args, args.len, "streq.memcmp");
-            const zero = api.LLVMConstInt(self.types.i32, 0, 0);
-            const bytes_eq = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, cmp, zero, "streq.byteseq");
-            const equal = api.LLVMBuildAnd(b, len_eq, bytes_eq, "streq.eq");
-            return switch (v.op) {
-                .equal => equal,
-                .not_equal => api.LLVMBuildNot(b, equal, "streq.ne"),
-                // The compare-operand gate rejects ordered string comparisons.
-                else => equal,
-            };
-        }
-        if (operand_kind == .float) {
-            return api.LLVMBuildFCmp(
-                self.builder,
-                switch (v.op) {
-                    .equal => llvm.c.LLVMRealOEQ,
-                    .not_equal => llvm.c.LLVMRealONE,
-                    .less => llvm.c.LLVMRealOLT,
-                    .less_equal => llvm.c.LLVMRealOLE,
-                    .greater => llvm.c.LLVMRealOGT,
-                    .greater_equal => llvm.c.LLVMRealOGE,
-                },
-                self.registers[v.lhs],
-                self.registers[v.rhs],
-                "fcmp",
-            );
-        }
-        // Integer / boolean / pointer comparison. Equality is valid for all;
-        // ordering uses signed predicates (Kira Int is signed).
-        return api.LLVMBuildICmp(
-            self.builder,
-            switch (v.op) {
-                .equal => llvm.c.LLVMIntEQ,
-                .not_equal => llvm.c.LLVMIntNE,
-                .less => llvm.c.LLVMIntSLT,
-                .less_equal => llvm.c.LLVMIntSLE,
-                .greater => llvm.c.LLVMIntSGT,
-                .greater_equal => llvm.c.LLVMIntSGE,
-            },
-            self.registers[v.lhs],
-            self.registers[v.rhs],
-            "icmp",
-        );
-    }
-
     pub fn storageType(self: *FunctionCodegen, value_type: ir.ValueType) !llvm.c.LLVMTypeRef {
-        return capi.fieldStorageType(self.types, self.struct_types.*, self.request.program.programPtr(), value_type);
+        return value_repr.storageType(self, value_type);
     }
 
     // Read a value through a pointer (register i64), converting the in-memory
@@ -489,91 +525,18 @@ pub const FunctionCodegen = struct {
         return self.loadConverted(ptr, v.ty);
     }
 
-    // Load a value from an LLVM pointer and convert storage→register representation
-    // (does not handle ffi_struct, whose "value" is the pointer itself).
     pub fn loadConverted(self: *FunctionCodegen, ptr: llvm.c.LLVMValueRef, value_type: ir.ValueType) !llvm.c.LLVMValueRef {
-        const api = self.api;
-        const b = self.builder;
-        // Pointer-like values live in registers as an i64 pointer. Load a pointer-sized
-        // word regardless of the field's storage type: an inline fixed FFI array field is
-        // laid out as `[N x elem]` in the struct, but reading it as a value yields the
-        // pointer in its first word (matching the text backend's degenerate array-field
-        // load), so do not load the whole aggregate (ptrtoint of an aggregate is invalid).
-        switch (value_type.kind) {
-            .array, .construct_any, .raw_ptr, .enum_instance => {
-                const raw = api.LLVMBuildLoad2(b, self.types.ptr_ty, ptr, "load");
-                return api.LLVMBuildPtrToInt(b, raw, self.types.i64, "load.ptrint");
-            },
-            else => {},
-        }
-        const storage = try self.storageType(value_type);
-        const raw = api.LLVMBuildLoad2(b, storage, ptr, "load");
-        return switch (value_type.kind) {
-            .integer => if (storage == self.types.i64) raw else api.LLVMBuildSExt(b, raw, self.types.i64, "load.sext"),
-            .float, .string => raw,
-            // Boolean fields are stored as i8 but live in registers as i1.
-            .boolean => api.LLVMBuildTrunc(b, raw, self.types.bool_ty, "load.bool"),
-            else => error.UnsupportedExecutableFeature,
-        };
+        return value_repr.loadConverted(self, ptr, value_type);
     }
 
-    // Allocate a native-state box and copy a struct's fields into its bridge-value
-    // payload (one slot per field). Mirrors backend_text_ir_core alloc_native_state.
+    // Pack a register value into a %kira.bridge.value with the default boxing
+    // (array elements own an independent heap copy of an ffi_struct).
     pub fn packBridge(self: *FunctionCodegen, value_type: ir.ValueType, value: llvm.c.LLVMValueRef) !llvm.c.LLVMValueRef {
-        return self.packBridgeBoxed(value_type, value, true);
+        return value_repr.packBridgeBoxed(self, value_type, value, true);
     }
 
-    // box_struct: array elements own an independent heap copy of an ffi_struct;
-    // closure captures store the struct pointer directly (matching the text backend).
     pub fn packBridgeBoxed(self: *FunctionCodegen, value_type: ir.ValueType, value: llvm.c.LLVMValueRef, box_struct: bool) !llvm.c.LLVMValueRef {
-        const api = self.api;
-        const b = self.builder;
-        var bv = api.LLVMConstNull(self.types.bridge_ty);
-        bv = api.LLVMBuildInsertValue(b, bv, api.LLVMConstInt(self.types.i8, utils.bridgeTagValue(value_type), 0), 0, "bv.tag");
-        switch (value_type.kind) {
-            .integer, .construct_any, .raw_ptr, .array, .enum_instance => {
-                bv = api.LLVMBuildInsertValue(b, bv, value, 2, "bv.payload");
-            },
-            .ffi_struct => {
-                if (!box_struct) {
-                    bv = api.LLVMBuildInsertValue(b, bv, value, 2, "bv.payload");
-                } else {
-                    // Box the inline struct on the heap so the array element owns a copy.
-                    const struct_ty = self.struct_types.get(value_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
-                    const src = api.LLVMBuildIntToPtr(b, value, self.types.ptr_ty, "bv.struct.src");
-                    const loaded = api.LLVMBuildLoad2(b, struct_ty, src, "bv.struct.val");
-                    const type_name = value_type.name orelse return error.UnsupportedExecutableFeature;
-                    var margs = [_]llvm.c.LLVMValueRef{
-                        api.LLVMConstInt(self.types.i64, ir.nativeStateTypeId(type_name), 0),
-                        api.LLVMSizeOf(struct_ty),
-                    };
-                    const copy = api.LLVMBuildCall2(b, self.runtime_decls.struct_alloc.ty, self.runtime_decls.struct_alloc.fn_value, &margs, margs.len, "bv.struct.copy");
-                    _ = api.LLVMBuildStore(b, loaded, copy);
-                    bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildPtrToInt(b, copy, self.types.i64, "bv.struct.int"), 2, "bv.payload");
-                }
-            },
-            .float => {
-                const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                    api.LLVMBuildFPExt(b, value, self.types.double_ty, "bv.fpext")
-                else
-                    value;
-                const bits = api.LLVMBuildBitCast(b, as_double, self.types.i64, "bv.fbits");
-                bv = api.LLVMBuildInsertValue(b, bv, bits, 2, "bv.payload");
-            },
-            .boolean => {
-                const word = api.LLVMBuildZExt(b, value, self.types.i64, "bv.bool");
-                bv = api.LLVMBuildInsertValue(b, bv, word, 2, "bv.payload");
-            },
-            .string => {
-                const sp = api.LLVMBuildExtractValue(b, value, 0, "bv.str.ptr");
-                const spi = api.LLVMBuildPtrToInt(b, sp, self.types.i64, "bv.str.ptrint");
-                const sl = api.LLVMBuildExtractValue(b, value, 1, "bv.str.len");
-                bv = api.LLVMBuildInsertValue(b, bv, spi, 2, "bv.payload");
-                bv = api.LLVMBuildInsertValue(b, bv, sl, 3, "bv.extra");
-            },
-            .void => return error.UnsupportedExecutableFeature,
-        }
-        return bv;
+        return value_repr.packBridgeBoxed(self, value_type, value, box_struct);
     }
 
     // Unpack a %kira.bridge.value back into a register value of the requested type.
@@ -581,20 +544,7 @@ pub const FunctionCodegen = struct {
         return unpackBridgeValue(self.api, self.builder, self.types, value_type, bv);
     }
 
-    // print(x) writes the value (no trailing newline pieces) then one newline.
     pub fn buildStringConstant(self: *FunctionCodegen, value: []const u8) !llvm.c.LLVMValueRef {
-        const api = self.api;
-        const global_name = try allocPrintZ(self.allocator, "kira.capi.str.{d}.{d}", .{ self.function_decl.id, self.string_counter });
-        defer self.allocator.free(global_name);
-        const array_ty = api.LLVMArrayType2(self.types.i8, value.len + 1);
-        const global = api.LLVMAddGlobal(self.module_ref, array_ty, global_name.ptr);
-        api.LLVMSetLinkage(global, llvm.c.LLVMPrivateLinkage);
-        api.LLVMSetGlobalConstant(global, 1);
-        api.LLVMSetInitializer(global, api.LLVMConstStringInContext2(self.types.context, value.ptr, value.len, 0));
-        const zero = api.LLVMConstInt(self.types.i32, 0, 0);
-        var indices = [_]llvm.c.LLVMValueRef{ zero, zero };
-        const data_ptr = api.LLVMConstInBoundsGEP2(array_ty, global, &indices, indices.len);
-        var fields = [_]llvm.c.LLVMValueRef{ data_ptr, api.LLVMConstInt(self.types.i64, value.len, 0) };
-        return api.LLVMConstNamedStruct(self.types.string_ty, &fields, fields.len);
+        return value_repr.buildStringConstant(self, value);
     }
 };

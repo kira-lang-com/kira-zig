@@ -1,0 +1,74 @@
+// Rust-parity partial moves: a binding may go out of scope with fields moved
+// out, as long as every moved field's type transfers ownership by pointer
+// with storage nulling — arrays, enums, and type-erased (some/any) values.
+// The moved read voids/nulls the field slot on every backend (VM
+// load_indirect moved-void, LLVM load.move.field null), so the base drops
+// with only its remaining fields while the moved values live on under their
+// new owners. This is the `let root = app.content` idiom every Kira UI app
+// entry point uses. Leak-gated on llvm: neither the moved-out values nor the
+// base's remaining fields may leak or double-free.
+
+construct Node {
+    @Required let tag: Int
+}
+
+Node Leaf(value: Int) {
+    let tag: Int {
+        value
+    }
+}
+
+enum Status {
+    Ready: String = "ready"
+    Blocked: String = "blocked"
+}
+
+function buildNode(tag: Int) -> some Node {
+    return Leaf(value: tag)
+}
+
+struct Holder {
+    var ids: [Int] = []
+    var status: Status = Status.Ready("ok")
+    var node: some Node
+    var kept: [Int] = []
+}
+
+function statusText(s: borrow Status) -> String {
+    match s {
+        Ready(text) -> { return text }
+        Blocked(text) -> { return text }
+    }
+    return ""
+}
+
+function consume(holder: Holder) -> Int {
+    // Move three fields out; `holder` then drops with only `kept` (and the
+    // voided slots) — no re-init required.
+    let ids = holder.ids
+    let status = holder.status
+    let node = holder.node
+    var total = ids.count
+    total = total + statusText(status).count
+    total = total + node.tag
+    return total
+}
+
+@Main
+function main() {
+    var round = 0
+    var total = 0
+    // Loop so a double free / use-after-free surfaces deterministically under
+    // churn and any per-iteration leak scales visibly for the leak gate.
+    while round < 50 {
+        var holder = Holder { node: buildNode(round) }
+        holder.ids.append(round)
+        holder.ids.append(round + 1)
+        holder.status = Status.Blocked("waiting")
+        holder.kept.append(round)
+        total = total + consume(move holder)
+        round = round + 1
+    }
+    print(total)
+    return
+}

@@ -382,8 +382,8 @@ fn lowerFunction(
             .add => |value| register_values[value.dst] = api.LLVMBuildAdd(builder, register_values[value.lhs], register_values[value.rhs], "add"),
             .subtract => |value| register_values[value.dst] = api.LLVMBuildSub(builder, register_values[value.lhs], register_values[value.rhs], "sub"),
             .multiply => |value| register_values[value.dst] = api.LLVMBuildMul(builder, register_values[value.lhs], register_values[value.rhs], "mul"),
-            .divide => |value| register_values[value.dst] = api.LLVMBuildSDiv(builder, register_values[value.lhs], register_values[value.rhs], "div"),
-            .modulo => |value| register_values[value.dst] = api.LLVMBuildSRem(builder, register_values[value.lhs], register_values[value.rhs], "mod"),
+            .divide => |value| register_values[value.dst] = if (value.unsigned) api.LLVMBuildUDiv(builder, register_values[value.lhs], register_values[value.rhs], "udiv") else api.LLVMBuildSDiv(builder, register_values[value.lhs], register_values[value.rhs], "div"),
+            .modulo => |value| register_values[value.dst] = if (value.unsigned) api.LLVMBuildURem(builder, register_values[value.lhs], register_values[value.rhs], "urem") else api.LLVMBuildSRem(builder, register_values[value.lhs], register_values[value.rhs], "mod"),
             .unary => |value| {
                 register_values[value.dst] = switch (value.op) {
                     .negate => api.LLVMBuildNeg(builder, register_values[value.src], "neg"),

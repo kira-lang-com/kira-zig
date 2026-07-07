@@ -56,6 +56,7 @@ pub const TokenKind = enum {
     kw_let,
     kw_if,
     kw_else,
+    kw_while,
     kw_return,
     kw_true,
     kw_false,
