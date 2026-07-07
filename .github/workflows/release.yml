@@ -54,6 +54,178 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev
 
+      - name: Resolve LLVM CI metadata (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --ci-metadata --json | Out-File -FilePath "$env:RUNNER_TEMP/llvm-fetch.json" -Encoding utf8NoBOM
+          $metadata = Get-Content "$env:RUNNER_TEMP/llvm-fetch.json" | ConvertFrom-Json
+          "REPOSITORY=$($metadata.repository)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "RELEASE_TAG=$($metadata.release_tag)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "ASSET_NAME=$($metadata.asset_name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "KIRA_LLVM_HOME=$($metadata.install_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Resolve LLVM CI metadata (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --ci-metadata --json | Out-File -FilePath "$env:RUNNER_TEMP\llvm-fetch.json" -Encoding utf8NoBOM
+          $metadata = Get-Content "$env:RUNNER_TEMP\llvm-fetch.json" | ConvertFrom-Json
+          "REPOSITORY=$($metadata.repository)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "RELEASE_TAG=$($metadata.release_tag)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "ASSET_NAME=$($metadata.asset_name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "KIRA_LLVM_HOME=$($metadata.install_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Download pinned LLVM archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/llvm-download"
+          gh release download "$RELEASE_TAG" \
+            --repo "$REPOSITORY" \
+            --pattern "$ASSET_NAME" \
+            --dir "$RUNNER_TEMP/llvm-download"
+          printf 'LLVM_ARCHIVE=%s\n' "$RUNNER_TEMP/llvm-download/$ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Download pinned LLVM archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\llvm-download" | Out-Null
+          gh release download "$env:RELEASE_TAG" `
+            --repo "$env:REPOSITORY" `
+            --pattern "$env:ASSET_NAME" `
+            --dir "$env:RUNNER_TEMP\llvm-download"
+          "LLVM_ARCHIVE=$env:RUNNER_TEMP\llvm-download\$env:ASSET_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Resolve LibFFI CI metadata (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-libffi -- --ci-metadata --json | Out-File -FilePath "$env:RUNNER_TEMP/libffi-fetch.json" -Encoding utf8NoBOM
+          $metadata = Get-Content "$env:RUNNER_TEMP/libffi-fetch.json" | ConvertFrom-Json
+          "LIBFFI_REPOSITORY=$($metadata.repository)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "LIBFFI_RELEASE_TAG=$($metadata.release_tag)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "LIBFFI_ASSET_NAME=$($metadata.asset_name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "KIRA_LIBFFI_HOME=$($metadata.install_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Resolve LibFFI CI metadata (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-libffi -- --ci-metadata --json | Out-File -FilePath "$env:RUNNER_TEMP\libffi-fetch.json" -Encoding utf8NoBOM
+          $metadata = Get-Content "$env:RUNNER_TEMP\libffi-fetch.json" | ConvertFrom-Json
+          "LIBFFI_REPOSITORY=$($metadata.repository)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "LIBFFI_RELEASE_TAG=$($metadata.release_tag)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "LIBFFI_ASSET_NAME=$($metadata.asset_name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+          "KIRA_LIBFFI_HOME=$($metadata.install_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Install pinned LLVM archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          KIRA_LLVM_GITHUB_REPOSITORY: kira-lang-com/kira
+        run: |
+          zig build fetch-llvm -- --archive "$LLVM_ARCHIVE"
+
+      - name: Install pinned LLVM archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          if (Test-Path $env:KIRA_LLVM_HOME) {
+            Remove-Item $env:KIRA_LLVM_HOME -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $env:KIRA_LLVM_HOME | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xf "$env:LLVM_ARCHIVE" -C "$env:KIRA_LLVM_HOME"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if (-not (Test-Path (Join-Path $env:KIRA_LLVM_HOME "bin\clang.exe"))) {
+            throw "Extracted LLVM archive is missing bin\clang.exe under $env:KIRA_LLVM_HOME"
+          }
+
+      - name: Download pinned LibFFI archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/libffi-download"
+          gh release download "$LIBFFI_RELEASE_TAG" \
+            --repo "$LIBFFI_REPOSITORY" \
+            --pattern "$LIBFFI_ASSET_NAME" \
+            --dir "$RUNNER_TEMP/libffi-download"
+          printf 'LIBFFI_ARCHIVE=%s\n' "$RUNNER_TEMP/libffi-download/$LIBFFI_ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Download pinned LibFFI archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\libffi-download" | Out-Null
+          gh release download "$env:LIBFFI_RELEASE_TAG" `
+            --repo "$env:LIBFFI_REPOSITORY" `
+            --pattern "$env:LIBFFI_ASSET_NAME" `
+            --dir "$env:RUNNER_TEMP\libffi-download"
+          "LIBFFI_ARCHIVE=$env:RUNNER_TEMP\libffi-download\$env:LIBFFI_ASSET_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8NoBOM -Append
+
+      - name: Install pinned LibFFI archive (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        run: |
+          zig build fetch-libffi -- --archive "$LIBFFI_ARCHIVE"
+
+      - name: Install pinned LibFFI archive (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          zig build fetch-libffi -- --archive "$env:LIBFFI_ARCHIVE"
+
+      - name: Clear Zig cache after LLVM install (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        run: |
+          rm -rf .zig-cache
+          if [ -n "${ZIG_LOCAL_CACHE_DIR:-}" ]; then
+            rm -rf "$ZIG_LOCAL_CACHE_DIR"
+            mkdir -p "$ZIG_LOCAL_CACHE_DIR"
+          fi
+          if [ -n "${ZIG_GLOBAL_CACHE_DIR:-}" ]; then
+            rm -rf "$ZIG_GLOBAL_CACHE_DIR"
+            mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+          fi
+
+      - name: Clear Zig cache after LLVM install (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          if (Test-Path .zig-cache) {
+            Remove-Item .zig-cache -Recurse -Force
+          }
+          if ($env:ZIG_LOCAL_CACHE_DIR -and (Test-Path $env:ZIG_LOCAL_CACHE_DIR)) {
+            Remove-Item $env:ZIG_LOCAL_CACHE_DIR -Recurse -Force
+          }
+          if ($env:ZIG_LOCAL_CACHE_DIR) {
+            New-Item -ItemType Directory -Force -Path $env:ZIG_LOCAL_CACHE_DIR | Out-Null
+          }
+          if ($env:ZIG_GLOBAL_CACHE_DIR -and (Test-Path $env:ZIG_GLOBAL_CACHE_DIR)) {
+            Remove-Item $env:ZIG_GLOBAL_CACHE_DIR -Recurse -Force
+          }
+          if ($env:ZIG_GLOBAL_CACHE_DIR) {
+            New-Item -ItemType Directory -Force -Path $env:ZIG_GLOBAL_CACHE_DIR | Out-Null
+          }
+
       - name: Build Kira (Unix)
         if: matrix.os != 'windows'
         run: zig build -Doptimize=ReleaseSafe
