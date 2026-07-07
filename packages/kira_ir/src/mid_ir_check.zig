@@ -124,8 +124,38 @@ pub const Checker = struct {
 
         const result = try self.checkBlock(&state, self.function_decl.body);
         if (!self.failed and result == .next) {
+            // A value-returning function must yield a value on every path. When
+            // control can fall off the end — a body-root `if` with no `else`, a
+            // trailing expression that was not threaded into a `return`, a
+            // non-exhaustive branch — the backend would otherwise emit `ret void`
+            // into a value-typed (i64) function, which fails LLVM verification, or
+            // bail without a diagnostic. Report it cleanly before codegen.
+            if (self.returnRequiresValue()) {
+                const message = try std.fmt.allocPrint(
+                    self.allocator,
+                    "`{s}` can reach its end without returning a value, but its return type requires one.",
+                    .{self.function_decl.name},
+                );
+                try self.emitReturnValueDiagnostic(
+                    "function may finish without returning a value",
+                    message,
+                    self.function_decl.span,
+                    "End every path with `return <value>`: add the missing `else` or branch arm, or return a value at the end of the function.",
+                );
+                return;
+            }
             try self.dropScopeLocals(&state, self.function_decl.body, false);
         }
+    }
+
+    /// Whether the function's declared return type demands a returned value. A
+    /// `.void` return needs none; `.unknown` is an unresolved type we do not flag
+    /// (a separate phase reports the resolution failure) to avoid false positives.
+    fn returnRequiresValue(self: *const Checker) bool {
+        return switch (self.function_decl.return_type.kind) {
+            .void, .unknown => false,
+            else => true,
+        };
     }
 
     fn checkBlock(self: *Checker, state: *State, block: mid.Block) anyerror!Control {
@@ -194,10 +224,38 @@ pub const Checker = struct {
                         .copy => .read,
                     };
                     try self.consumeValue(state, value, mode);
+                } else if (self.returnRequiresValue()) {
+                    // A value-less `return` inside a value-returning function: the
+                    // backend would emit `ret void` into an i64 function. Flag it
+                    // here rather than letting invalid IR through.
+                    const message = try std.fmt.allocPrint(
+                        self.allocator,
+                        "`{s}` must return a value here, but this `return` provides none.",
+                        .{self.function_decl.name},
+                    );
+                    try self.emitReturnValueDiagnostic(
+                        "`return` without a value in a value-returning function",
+                        message,
+                        node.span,
+                        "Return a value: `return <value>`.",
+                    );
                 }
                 break :blk .returned;
             },
         };
+    }
+
+    /// Emit the KIR004 missing-return-value diagnostic (fatal, first-per-function).
+    /// Thin wrapper over the shared fatal-diagnostic emitter so the two return
+    /// guards read the same and share one code.
+    fn emitReturnValueDiagnostic(
+        self: *Checker,
+        title: []const u8,
+        message: []const u8,
+        span: source_pkg.Span,
+        help: []const u8,
+    ) anyerror!void {
+        try self.emitOwnershipDiagnostic("KIR004", title, message, span, help);
     }
 
     fn checkIf(self: *Checker, state: *State, node: mid.IfStatement) anyerror!Control {

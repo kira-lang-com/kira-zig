@@ -256,7 +256,14 @@ pub const FunctionCodegen = struct {
             .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
             .convert => |v| {
                 const src_is_float = self.isFloat(v.src);
-                if (v.target == .float) {
+                if (v.reinterpret) {
+                    // Float<->bits: preserve the bit pattern, change only the type
+                    // (Kira Float is f64, integers live in i64 — same width).
+                    self.registers[v.dst] = if (v.target == .float)
+                        api.LLVMBuildBitCast(b, self.registers[v.src], self.types.double_ty, "bitsToFloat")
+                    else
+                        api.LLVMBuildBitCast(b, self.registers[v.src], self.types.i64, "floatToBits");
+                } else if (v.target == .float) {
                     // Int -> Float is sitofp; Float -> Float is identity.
                     self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
                 } else {

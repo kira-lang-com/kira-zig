@@ -883,7 +883,7 @@ pub const Lowerer = struct {
                 const src = try self.lowerExpr(instructions, node.operand);
                 const target_vt = try lowerResolvedType(self.program, node.ty);
                 const dst = self.freshRegister();
-                try instructions.append(.{ .convert = .{ .dst = dst, .src = src, .target = target_vt.kind } });
+                try instructions.append(.{ .convert = .{ .dst = dst, .src = src, .target = target_vt.kind, .reinterpret = node.reinterpret } });
                 break :blk dst;
             },
             .conditional => |node| try expr_stmt_impl.lowerConditionalExpr(self, instructions, node),
