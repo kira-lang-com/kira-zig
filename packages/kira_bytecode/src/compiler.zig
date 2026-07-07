@@ -88,11 +88,13 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
         // emit a metadata-only stub instead of rejecting the program. The
         // hybrid/native paths resolve them through the native bridge and do not
         // need a bytecode entry.
-        if (function_decl.is_extern and resolved_execution == .native) {
+        if (function_decl.is_extern) {
+            // Foreign declarations carry no Kira body. The VM dispatches them
+            // through LibFFI via a metadata-only stub; hybrid/native resolve
+            // them through the native bridge and need no bytecode entry.
             if (mode == .vm) try functions.append(try externStub(allocator, function_decl));
             continue;
         }
-        if (mode == .vm and resolved_execution == .native) return error.NativeFunctionInVmBuild;
         if (resolved_execution == .native and mode == .hybrid_runtime) continue;
 
         var instructions = std.array_list.Managed(instruction.Instruction).init(allocator);
@@ -131,14 +133,22 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 } }),
                 .subtract => |value| try instructions.append(.{ .subtract = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
                 .multiply => |value| try instructions.append(.{ .multiply = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
-                .divide => |value| try instructions.append(.{ .divide = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
-                .modulo => |value| try instructions.append(.{ .modulo = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs } }),
+                .divide => |value| try instructions.append(.{ .divide = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs, .unsigned = value.unsigned } }),
+                .modulo => |value| try instructions.append(.{ .modulo = .{ .dst = value.dst, .lhs = value.lhs, .rhs = value.rhs, .unsigned = value.unsigned } }),
+                .bitwise => |value| try instructions.append(.{ .bitwise = .{
+                    .dst = value.dst,
+                    .lhs = value.lhs,
+                    .rhs = value.rhs,
+                    .op = @enumFromInt(@intFromEnum(value.op)),
+                    .unsigned = value.unsigned,
+                } }),
                 .convert => |value| try instructions.append(.{ .convert = .{ .dst = value.dst, .src = value.src, .to_float = value.target == .float } }),
                 .compare => |value| try instructions.append(.{ .compare = .{
                     .dst = value.dst,
                     .lhs = value.lhs,
                     .rhs = value.rhs,
                     .op = @enumFromInt(@intFromEnum(value.op)),
+                    .unsigned = value.unsigned,
                 } }),
                 .unary => |value| try instructions.append(.{ .unary = .{
                     .dst = value.dst,
@@ -166,11 +176,15 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .type_name = value.type_name,
                     .type_id = value.type_id,
                 } }),
+                .free_native_state => |value| try instructions.append(.{ .free_native_state = .{
+                    .state = value.state,
+                } }),
                 .native_state_field_get => |value| try instructions.append(.{ .native_state_field_get = .{
                     .dst = value.dst,
                     .state = value.state,
                     .field_index = value.field_index,
                     .field_ty = lowerTypeRef(value.field_ty),
+                    .moved = value.moved,
                 } }),
                 .native_state_field_set => |value| try instructions.append(.{ .native_state_field_set = .{
                     .state = value.state,
@@ -187,6 +201,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .index = value.index,
                     .ty = lowerTypeRef(value.ty),
                     .borrow = value.borrow,
+                    .moved = value.moved,
                 } }),
                 .array_set => |value| try instructions.append(.{ .array_set = .{
                     .array = value.array,
@@ -207,6 +222,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .dst = value.dst,
                     .ptr = value.ptr,
                     .ty = lowerTypeRef(value.ty),
+                    .moved = value.moved,
                 } }),
                 .store_indirect => |value| try instructions.append(.{ .store_indirect = .{
                     .ptr = value.ptr,
@@ -227,8 +243,15 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 .label => |value| try instructions.append(.{ .label = .{ .id = value.id } }),
                 .print => |value| try instructions.append(.{ .print = .{ .src = value.src, .ty = lowerTypeRef(value.ty) } }),
                 .call => |value| {
+                    const callee_decl = functionById(program, value.callee) orelse return error.UnknownFunction;
                     const callee_execution = functionExecutionById(program, value.callee) orelse return error.UnknownFunction;
-                    const resolved_callee_execution = resolveExecution(callee_execution, mode);
+                    // Extern callees always dispatch natively (the VM routes the
+                    // stub through LibFFI); resolveExecution's vm mapping of
+                    // @Native -> runtime applies only to Kira bodies.
+                    const resolved_callee_execution = if (callee_decl.is_extern)
+                        runtime_abi.FunctionExecution.native
+                    else
+                        resolveExecution(callee_execution, mode);
                     try instructions.append(switch (resolved_callee_execution) {
                         .runtime => .{ .call_runtime = .{ .function_id = value.callee, .args = value.args, .dst = value.dst } },
                         .native => .{ .call_native = .{
@@ -359,6 +382,13 @@ fn resolveExecution(execution: runtime_abi.FunctionExecution, mode: CompileMode)
             .vm => .runtime,
             .hybrid_runtime => .runtime,
         },
+        // The VM is the reference interpreter: an @Native body is ordinary
+        // Kira (its direct FFI goes through LibFFI), so @Native acts as a
+        // native-compilation hint, not a VM-compatibility gate.
+        .native => switch (mode) {
+            .vm => .runtime,
+            .hybrid_runtime => .native,
+        },
         else => execution,
     };
 }
@@ -487,6 +517,7 @@ test "preserves native state instructions in bytecode" {
                 .{ .alloc_struct = .{ .dst = 0, .type_name = "CounterState" } },
                 .{ .alloc_native_state = .{ .dst = 1, .src = 0, .type_name = "CounterState", .type_id = 123 } },
                 .{ .recover_native_state = .{ .dst = 2, .state = 1, .type_name = "CounterState", .type_id = 123 } },
+                .{ .free_native_state = .{ .state = 1 } },
                 .{ .ret = .{ .src = null } },
             },
         }},
@@ -498,6 +529,8 @@ test "preserves native state instructions in bytecode" {
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[1].alloc_native_state.type_id);
     try std.testing.expect(module.functions[0].instructions[2] == .recover_native_state);
     try std.testing.expectEqual(@as(u64, 123), module.functions[0].instructions[2].recover_native_state.type_id);
+    try std.testing.expect(module.functions[0].instructions[3] == .free_native_state);
+    try std.testing.expectEqual(@as(u32, 1), module.functions[0].instructions[3].free_native_state.state);
 }
 
 test "preserves construct metadata in bytecode" {

@@ -1,7 +1,8 @@
 const std = @import("std");
+const apple_export = @import("apple_export.zig");
+const android_export = @import("android_export.zig");
 const diag_messages = @import("kira_diagnostic_messages");
 const manifest = @import("kira_manifest");
-const kira_live = @import("kira_live");
 const kira_project = @import("kira_project");
 const kira_toolchain = @import("kira_toolchain");
 const kira_wasm_runtime = @import("kira_wasm_runtime");
@@ -10,7 +11,7 @@ const support = @import("../support.zig");
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
     if (parsed.xcode_rebuild_platform) |platform_name| {
-        return xcodeRebuildApple(allocator, stdout, stderr, parsed.input_path, platform_name);
+        return apple_export.xcodeRebuild(allocator, stdout, stderr, parsed.input_path, platform_name);
     }
     const target = kira_project.resolveTargetFromPath(allocator, parsed.input_path) catch |err| switch (err) {
         error.InvalidProjectPath => {
@@ -30,7 +31,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, exports_root);
 
     switch (parsed.family) {
-        .apple, .macos, .ios, .tvos, .visionos => try exportApple(allocator, stdout, stderr, exports_root, parsed.input_path),
+        .apple, .macos, .ios, .tvos, .visionos => try apple_export.run(allocator, stdout, stderr, parsed.family, exports_root, parsed.input_path),
         .windows => try exportWindows(allocator, stdout, stderr, exports_root, project_name),
         .android => try exportAndroid(allocator, stdout, stderr, exports_root, project_name, selected_app_path),
         .web => try exportWeb(allocator, stdout, stderr, exports_root, project_name, parsed.surface),
@@ -79,95 +80,6 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     return parsed;
 }
 
-fn exportApple(
-    allocator: std.mem.Allocator,
-    stdout: anytype,
-    stderr: anytype,
-    exports_root: []const u8,
-    input_path: []const u8,
-) !void {
-    const apple_root = try std.fs.path.join(allocator, &.{ exports_root, "apple" });
-    const base_target = kira_live.resolveLiveTarget(allocator, input_path) catch |err| switch (err) {
-        error.LibraryTargetCannotBeStartedInLiveMode => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(
-                allocator,
-                "apple",
-                "`kira export apple` needs an executable Kira project (app/example) to embed in the unified KiraApp workspace.",
-            ));
-            return error.CommandFailed;
-        },
-        error.TargetNotLiveCapable => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(
-                allocator,
-                "apple",
-                "The Kira project does not declare an Apple-capable runtime.",
-            ));
-            return error.CommandFailed;
-        },
-        error.InvalidProjectPath => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, input_path));
-            return error.CommandFailed;
-        },
-        error.ProjectManifestNotFound => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.PackageMessages.missingProjectManifest(allocator, input_path));
-            return error.CommandFailed;
-        },
-        else => return err,
-    };
-
-    const generated = kira_live.apple_workspace.generate(allocator, base_target, .{
-        .apple_root = apple_root,
-        .mode = .standalone,
-    }) catch {
-        try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(
-            allocator,
-            "apple",
-            "Failed to generate the unified Apple workspace (need the Apple toolchain plus per-platform Kira native builds).",
-        ));
-        return error.CommandFailed;
-    };
-
-    try stdout.print("exported unified Apple workspace at {s}\n", .{generated.apple_root});
-    for (generated.scheme_names) |scheme| {
-        try stdout.print("  scheme: {s}\n", .{scheme});
-    }
-    for (generated.unavailable) |status| {
-        try stdout.print("  note: {s} target not buildable yet ({s})\n", .{ @tagName(status.platform), status.reason });
-    }
-    try stdout.print("open `{s}/KiraApp.xcworkspace` in Xcode, pick a platform scheme, and Run on its device or simulator.\n", .{generated.apple_root});
-}
-
-// Invoked by the generated Xcode Run Script build phase. Rebuilds only the Kira
-// artifacts for the SDK Xcode is building ($PLATFORM_NAME) into the existing
-// exports/apple tree, so editing Kira source and pressing Build regenerates the
-// native object + embedded bundles for that platform without a full re-export.
-fn xcodeRebuildApple(
-    allocator: std.mem.Allocator,
-    stdout: anytype,
-    stderr: anytype,
-    input_path: []const u8,
-    platform_name: []const u8,
-) !void {
-    const base_target = kira_live.resolveLiveTarget(allocator, input_path) catch {
-        try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(
-            allocator,
-            "apple",
-            "`kira export apple --xcode-rebuild` needs the original executable Kira project.",
-        ));
-        return error.CommandFailed;
-    };
-    const apple_root = try std.fs.path.join(allocator, &.{ base_target.target_root, "exports", "apple" });
-    kira_live.apple_workspace.rebuildPlatform(allocator, base_target, apple_root, platform_name) catch {
-        try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(
-            allocator,
-            "apple",
-            "Failed to rebuild Kira artifacts for the requested Apple SDK platform.",
-        ));
-        return error.CommandFailed;
-    };
-    try stdout.print("rebuilt Kira artifacts for {s}\n", .{platform_name});
-}
-
 fn exportWindows(allocator: std.mem.Allocator, stdout: anytype, stderr: anytype, exports_root: []const u8, project_name: []const u8) !void {
     const root = try std.fs.path.join(allocator, &.{ exports_root, "windows" });
     try writeCmakeScaffold(allocator, root, project_name, "windows");
@@ -200,7 +112,7 @@ fn exportAndroid(allocator: std.mem.Allocator, stdout: anytype, stderr: anytype,
         try writeTextFile(try std.fs.path.join(allocator, &.{ root, "local.properties" }), try std.fmt.allocPrint(allocator, "sdk.dir={s}\n", .{sdk_root}));
     }
     try writeTextFile(try std.fs.path.join(allocator, &.{ root, "app", "src", "main", "AndroidManifest.xml" }), "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"><application android:theme=\"@style/AppTheme\" android:label=\"KiraApp\"><activity android:name=\"com.kira.app.MainActivity\" android:exported=\"true\"><intent-filter><action android:name=\"android.intent.action.MAIN\"/><category android:name=\"android.intent.category.LAUNCHER\"/></intent-filter></activity></application></manifest>\n");
-    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "app", "src", "main", "java", "com", "kira", "app", "MainActivity.java" }), androidMainSource());
+    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "app", "src", "main", "java", "com", "kira", "app", "MainActivity.java" }), android_export.mainSource());
     try writeTextFile(try std.fs.path.join(allocator, &.{ root, "app", "src", "main", "assets", "KiraRunner.toml" }), try runnerConfigToml(allocator, "android", project_name, selected_app_path));
     try writeTextFile(try std.fs.path.join(allocator, &.{ root, "app", "src", "main", "res", "values", "styles.xml" }), "<resources><style name=\"AppTheme\" parent=\"android:style/Theme.Material.Light.NoActionBar\"/></resources>\n");
     try stdout.print("exported Android Gradle runner project at {s}\n", .{root});
@@ -240,48 +152,6 @@ fn writeCmakeScaffold(allocator: std.mem.Allocator, root: []const u8, project_na
         \\
     );
     try writeTextFile(try std.fs.path.join(allocator, &.{ root, "src", "main.c" }), "#include <stdio.h>\nint main(void) { puts(\"Kira platform export host\"); return 0; }\n");
-}
-
-fn androidMainSource() []const u8 {
-    return
-    \\package com.kira.app;
-    \\
-    \\import android.app.Activity;
-    \\import android.os.Bundle;
-    \\import android.util.Log;
-    \\import android.widget.TextView;
-    \\import java.io.BufferedReader;
-    \\import java.io.InputStream;
-    \\import java.io.InputStreamReader;
-    \\import java.nio.charset.StandardCharsets;
-    \\
-    \\public final class MainActivity extends Activity {
-    \\  private String runnerConfig() {
-    \\    StringBuilder builder = new StringBuilder();
-    \\    try (InputStream input = getAssets().open("KiraRunner.toml");
-    \\         BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-    \\      String line;
-    \\      while ((line = reader.readLine()) != null) {
-    \\        builder.append(line).append('\n');
-    \\      }
-    \\      return builder.toString();
-    \\    } catch (Exception error) {
-    \\      return "KiraRunner.toml unreadable: " + error.getMessage();
-    \\    }
-    \\  }
-    \\
-    \\  public void onCreate(Bundle state) {
-    \\    super.onCreate(state);
-    \\    String config = runnerConfig();
-    \\    Log.i("KiraRunner", "Kira Android runner host launched");
-    \\    Log.i("KiraRunner", "Kira runner config loaded: " + config);
-    \\    TextView label = new TextView(this);
-    \\    label.setText("Kira runtime configured");
-    \\    setContentView(label);
-    \\  }
-    \\}
-    \\
-    ;
 }
 
 fn runnerConfigToml(allocator: std.mem.Allocator, runner: []const u8, project_name: []const u8, selected_app_path: []const u8) ![]const u8 {

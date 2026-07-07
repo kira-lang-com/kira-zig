@@ -8,11 +8,13 @@ const trampoline = @import("trampoline.zig");
 pub const RuntimeInvoker = *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void;
 const InstallRuntimeInvokerFn = *const fn (*const fn (u32, ?[*]const runtime_abi.BridgeValue, u32, *runtime_abi.BridgeValue) callconv(.c) void) callconv(.c) void;
 const InstallArrayAllocatorFn = *const fn (*const fn (usize) callconv(.c) ?*anyopaque, *const fn (?*anyopaque, usize) callconv(.c) void) callconv(.c) void;
+const InstallClosureDestroyFn = *const fn (*const fn (usize) callconv(.c) void) callconv(.c) void;
 const SetTraceEnabledFn = *const fn (u8) callconv(.c) void;
 const InstallFirstFrameHookFn = *const fn (*const fn () callconv(.c) void) callconv(.c) void;
 const InstallLogHookFn = *const fn (*const fn ([*:0]const u8) callconv(.c) void) callconv(.c) void;
 
 var active_runtime_context: ?*anyopaque = null;
+var active_closure_destroy: ?*const fn (?*anyopaque, usize) void = null;
 var active_runtime_invoker: ?RuntimeInvoker = null;
 var active_array_allocator: ?std.mem.Allocator = null;
 const NativeLibrary = if (builtin.os.tag == .windows) WindowsNativeLibrary else std.DynLib;
@@ -54,6 +56,9 @@ pub const NativeBridge = struct {
         if (library.lookup(InstallArrayAllocatorFn, "kira_hybrid_install_array_allocator")) |install_array_allocator| {
             install_array_allocator(kira_hybrid_array_alloc, kira_hybrid_array_free);
         }
+        if (library.lookup(InstallClosureDestroyFn, "kira_hybrid_install_closure_destroy")) |install_closure_destroy| {
+            install_closure_destroy(kira_hybrid_closure_destroy_thunk);
+        }
         if (library.lookup(SetTraceEnabledFn, "kira_set_execution_trace_enabled")) |set_trace_enabled| {
             set_trace_enabled(if (runtime_abi.executionTraceEnabled()) 1 else 0);
         }
@@ -77,6 +82,9 @@ pub const NativeBridge = struct {
         active_array_allocator = self.allocator;
         if (resolveSelfSymbol(InstallArrayAllocatorFn, "kira_hybrid_install_array_allocator")) |install_array_allocator| {
             install_array_allocator(kira_hybrid_array_alloc, kira_hybrid_array_free);
+        }
+        if (resolveSelfSymbol(InstallClosureDestroyFn, "kira_hybrid_install_closure_destroy")) |install_closure_destroy| {
+            install_closure_destroy(kira_hybrid_closure_destroy_thunk);
         }
         if (resolveSelfSymbol(SetTraceEnabledFn, "kira_set_execution_trace_enabled")) |set_trace_enabled| {
             set_trace_enabled(if (runtime_abi.executionTraceEnabled()) 1 else 0);
@@ -219,6 +227,23 @@ pub fn installRuntimeInvoker(context: ?*anyopaque, invoker: RuntimeInvoker) void
 pub fn clearRuntimeInvoker() void {
     active_runtime_context = null;
     active_runtime_invoker = null;
+    active_closure_destroy = null;
+}
+
+// Runtime-side handler for native drops of runtime-exported closure blocks (see
+// kira_hybrid_install_closure_destroy in runtime_helpers.c). Shares
+// active_runtime_context with the runtime invoker.
+pub fn installClosureDestroy(destroy: *const fn (?*anyopaque, usize) void) void {
+    active_closure_destroy = destroy;
+}
+
+pub export fn kira_hybrid_closure_destroy_thunk(native_ptr: usize) callconv(.c) void {
+    if (active_closure_destroy) |destroy| {
+        destroy(active_runtime_context, native_ptr);
+        return;
+    }
+    // No runtime registered (pure-native process): the block came from malloc.
+    std.c.free(@ptrFromInt(native_ptr));
 }
 
 pub export fn kira_hybrid_host_call_runtime(

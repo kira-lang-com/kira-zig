@@ -325,7 +325,9 @@ test "hybrid_runtime_array_append_cleanup_stress" {
         const native_array_ptr = try vm.copyArrayToNativeLayout(&module, .{ .kind = .array, .name = "I64" }, array_ptr);
         const native_array: *ArrayObject = @ptrFromInt(native_array_ptr);
         for (0..32) |index| {
-            const old_items = native_array.items[0..@max(native_array.len, 1)];
+            // Manual regrow preserving the shared invariant: the items allocation
+            // is always exactly max(cap, 1) elements and len <= cap.
+            const old_items = native_array.items[0..@max(native_array.cap, 1)];
             const new_len = native_array.len + 1;
             const new_items = try vm.allocator.alloc(runtime_abi.BridgeValue, new_len);
             for (old_items[0..native_array.len], 0..) |item, item_index| {
@@ -335,6 +337,7 @@ test "hybrid_runtime_array_append_cleanup_stress" {
             vm.allocator.free(old_items);
             native_array.items = new_items.ptr;
             native_array.len = new_len;
+            native_array.cap = new_len;
         }
         try vm.syncArrayFromNativeLayout(&module, .{ .kind = .array, .name = "I64" }, array_ptr, native_array_ptr);
         vm.destroyArrayNativeLayout(&module, .{ .kind = .array, .name = "I64" }, native_array_ptr);
@@ -895,6 +898,7 @@ test "native widget arrays materialize concrete construct-any elements" {
     native_array.* = .{
         .len = 1,
         .items = native_items.ptr,
+        .cap = 1,
     };
 
     const runtime_array_ptr = try vm.copyArrayFromNativeLayout(&module, .{ .kind = .array, .name = "any Widget" }, @intFromPtr(native_array));

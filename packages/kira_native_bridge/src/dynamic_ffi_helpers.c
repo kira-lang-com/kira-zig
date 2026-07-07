@@ -302,6 +302,10 @@ KIRA_BRIDGE_EXPORT void kira_ui_write_quad(
     }
 }
 
+/* Heap-duplicate a C string for a native consumer that outlives the Kira
+ * value. The copy is caller-owned malloc memory paired with kira_dynamic_free
+ * (same allocator family); dropping the returned pointer without freeing it
+ * leaks the duplicate. */
 KIRA_BRIDGE_EXPORT void *kira_dynamic_cstring_dup(const char *text) {
     if (text == NULL) return NULL;
     size_t len = strlen(text);

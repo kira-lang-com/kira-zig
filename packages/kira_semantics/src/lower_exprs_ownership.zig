@@ -85,6 +85,14 @@ pub fn lowerCallArgument(
                 return error.DiagnosticsEmitted;
             }
         }
+        // A FIELD READ carrying type-erased (Any) storage flowing into an
+        // owned parameter is a PARTIAL MOVE out of its owner
+        // (`loweredChildren(context, children)` inside a consuming method):
+        // record the move on the root binding and re-tag the read `.moved` so
+        // both backends null/void the field slot — the callee owns the value,
+        // and the owner's shell teardown must not free it again. Borrowed
+        // roots are left untouched; the mid IR KIR002 gate rejects those.
+        shared.markAnyFieldMovedIntoOwned(ctx, scope, lowered, exprSpan(syntax_arg.*));
         return lowered;
     }
 
@@ -218,22 +226,65 @@ pub fn emitUseAfterMove(ctx: *shared.Context, name: []const u8, use_span: source
 /// backing. Writing the field back (`x.field = ...`) clears the mark and makes the base whole
 /// again (the in-place mutation idiom); anything else is the same double-free/use-after-free
 /// class KSEM107 prevents and must be rejected here rather than at runtime.
+/// At scope exit, a binding may still have fields moved out (a Rust partial
+/// move). That is SAFE — and allowed — when every moved field's type transfers
+/// by pointer with storage nulling: arrays, enums, and type-erased (Any)
+/// values. For those, the moved read voids/nulls the field slot on every
+/// backend (VM `load_indirect` moved-void, LLVM `load.move.field` null), so
+/// the base drops with only its remaining fields while the moved value lives
+/// on under its new owner — the `let root = app.content` idiom.
+///
+/// A moved field whose type is a NAMED struct is still rejected: struct field
+/// reads lower as deep copies whose Any interiors alias the source
+/// (KIRA_MEMORY_MODEL.md §3), so the base's drop would free storage the copy
+/// still references. Re-initializing the field (`x.field = ...`) remains the
+/// escape hatch there.
 pub fn rejectOutstandingMovedFields(ctx: *shared.Context, scope: *model.Scope) !void {
     var it = scope.entries.iterator();
     while (it.next()) |entry| {
         const binding = entry.value_ptr;
         if (!binding.hasMovedFields()) continue;
+        const offending = blk: {
+            for (binding.moved_fields.items) |field_name| {
+                if (!movedFieldTransfersOwnership(ctx, binding.ty, field_name)) break :blk field_name;
+            }
+            continue;
+        };
         const span = binding.move_span orelse binding.decl_span;
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
             .code = "KSEM107",
             .title = "local was moved",
-            .message = try std.fmt.allocPrint(ctx.allocator, "`{s}` has a field (`{s}`) moved out and never restored, so it cannot be dropped safely.", .{ entry.key_ptr.*, binding.moved_fields.items[0] }),
+            .message = try std.fmt.allocPrint(ctx.allocator, "`{s}` has a field (`{s}`) moved out and never restored, so it cannot be dropped safely.", .{ entry.key_ptr.*, offending }),
             .labels = &.{diagnostics.primaryLabel(span, "a field was moved out here and never written back")},
             .help = "Re-initialize the moved field (`x.field = ...`) before the value goes out of scope, or `move` the whole value instead of a single field.",
         });
         return error.DiagnosticsEmitted;
     }
+}
+
+// Does a move-out of `base_ty`.`field_name` TRANSFER ownership (backends null
+// the field slot at the read) rather than alias? True for array / enum / Any
+// fields. Unresolvable types stay rejected (conservative).
+fn movedFieldTransfersOwnership(ctx: *shared.Context, base_ty: model.ResolvedType, field_name: []const u8) bool {
+    const field_ty = blk: {
+        if (shared.namedTypeHeader(ctx, base_ty)) |header| {
+            for (header.fields) |field| {
+                if (std.mem.eql(u8, field.name, field_name)) break :blk field.ty;
+            }
+            return false;
+        }
+        if (ctx.imported_globals.findType(base_ty.name orelse return false)) |type_decl| {
+            for (type_decl.fields) |field| {
+                if (std.mem.eql(u8, field.name, field_name)) break :blk field.ty;
+            }
+        }
+        return false;
+    };
+    return switch (field_ty.kind) {
+        .array, .enum_instance, .construct_any => true,
+        else => false,
+    };
 }
 
 pub fn emitUseAfterPartialMove(ctx: *shared.Context, name: []const u8, use_span: source_pkg.Span, move_span: ?source_pkg.Span) !void {

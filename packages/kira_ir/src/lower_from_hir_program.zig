@@ -106,6 +106,7 @@ fn markReferencedTypesInExpr(
         .native_state => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.value),
         .native_user_data => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.state),
         .native_recover => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.value),
+        .native_state_free => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.state),
         .call => |node| for (node.args) |arg| try markReferencedTypesInExpr(allocator, program, referenced, arg),
         .virtual_call => |node| {
             try markReferencedTypesInExpr(allocator, program, referenced, node.receiver);
@@ -336,6 +337,7 @@ pub fn markReachableExpr(
         .native_state => |node| try markReachableExpr(allocator, program, reachable, node.value),
         .native_user_data => |node| try markReachableExpr(allocator, program, reachable, node.state),
         .native_recover => |node| try markReachableExpr(allocator, program, reachable, node.value),
+        .native_state_free => |node| try markReachableExpr(allocator, program, reachable, node.state),
         .call => |node| {
             if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
             for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
@@ -374,6 +376,7 @@ pub fn markReachableExpr(
             try markReachableExpr(allocator, program, reachable, node.else_expr);
         },
         .unary => |node| try markReachableExpr(allocator, program, reachable, node.operand),
+        .cast => |node| try markReachableExpr(allocator, program, reachable, node.operand),
         .array => |node| for (node.elements) |element| try markReachableExpr(allocator, program, reachable, element),
         .index => |node| {
             try markReachableExpr(allocator, program, reachable, node.object);

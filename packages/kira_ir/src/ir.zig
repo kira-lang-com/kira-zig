@@ -158,6 +158,7 @@ pub const Instruction = union(enum) {
     multiply: Binary,
     divide: Binary,
     modulo: Binary,
+    bitwise: Bitwise,
     convert: Convert,
     compare: Compare,
     unary: Unary,
@@ -167,6 +168,7 @@ pub const Instruction = union(enum) {
     subobject_ptr: SubobjectPtr,
     field_ptr: FieldPtr,
     recover_native_state: RecoverNativeState,
+    free_native_state: FreeNativeState,
     native_state_field_get: NativeStateFieldGet,
     native_state_field_set: NativeStateFieldSet,
     c_string_to_string: CStringToString,
@@ -280,6 +282,10 @@ pub const Binary = struct {
     dst: u32,
     lhs: u32,
     rhs: u32,
+    // Set on `divide`/`modulo` when operands are an unsigned integer type (U8..U64),
+    // selecting unsigned division/remainder. Add/subtract/multiply ignore it (wrap
+    // identically for both signedness). Default false = signed, preserving old behavior.
+    unsigned: bool = false,
 };
 
 // Numeric conversion between Int and Float (the `Int(x)` / `Float(x)` cast
@@ -293,11 +299,34 @@ pub const Convert = struct {
     target: ValueType.Kind,
 };
 
+pub const BitOp = enum {
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
+};
+
+pub const Bitwise = struct {
+    dst: u32,
+    lhs: u32,
+    rhs: u32,
+    op: BitOp,
+    // Only meaningful for shift_right: true = logical (unsigned) shift, false =
+    // arithmetic (sign-propagating). and/or/xor/shift_left are bit-identical
+    // regardless of signedness.
+    unsigned: bool = false,
+};
+
 pub const Compare = struct {
     dst: u32,
     lhs: u32,
     rhs: u32,
     op: CompareOp,
+    // Set when operands are an unsigned integer type, selecting unsigned ordering
+    // predicates for less/less_equal/greater/greater_equal. equal/not_equal are
+    // sign-agnostic. Default false = signed.
+    unsigned: bool = false,
 };
 
 pub const CompareOp = enum {
@@ -318,6 +347,7 @@ pub const Unary = struct {
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 pub const StoreLocal = struct {
@@ -358,11 +388,18 @@ pub const RecoverNativeState = struct {
     type_id: u64,
 };
 
+pub const FreeNativeState = struct {
+    state: u32,
+};
+
 pub const NativeStateFieldGet = struct {
     dst: u32,
     state: u32,
     field_index: u32,
     field_ty: ValueType,
+    // Field move-out (see LoadIndirect.moved): the payload slot must be nulled
+    // after the read and the destination becomes the owner.
+    moved: bool = false,
 };
 
 pub const NativeStateFieldSet = struct {
@@ -397,6 +434,11 @@ pub const ArrayGet = struct {
     // element instead of deep-cloning it (matching the native backend, which never
     // copies a borrowed element). Set by the IR peepholes for `arr[i].scalar`.
     borrow: bool = false,
+    // Checker-verified element DRAIN from an OWNED array: dst takes the
+    // element's value as its owner and the slot tombstones to VOID (array
+    // release skips it; a later read of the drained slot traps). Used by
+    // consuming-receiver dispatch over `[some T]` children.
+    moved: bool = false,
 };
 
 pub const ArraySet = struct {
@@ -425,6 +467,11 @@ pub const LoadIndirect = struct {
     dst: u32,
     ptr: u32,
     ty: ValueType,
+    // True for a checker-verified field MOVE-OUT (`let previous = obj.nodes`):
+    // ownership transfers to `dst`, and the backend nulls the field storage so
+    // the owner's destructor / a later field overwrite cannot double-free the
+    // moved value. False for plain borrowed reads (`obj.ids[i]`).
+    moved: bool = false,
 };
 
 pub const StoreIndirect = struct {

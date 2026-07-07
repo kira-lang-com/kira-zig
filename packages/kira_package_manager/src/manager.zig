@@ -90,24 +90,29 @@ pub fn loadModuleMapForSource(allocator: std.mem.Allocator, source_path: []const
     const lockfile = try manifest.parseLockFile(allocator, lockfile_text);
 
     for (lockfile.packages) |item| {
-        const source_root = switch (item.source) {
-            .registry => |registry| blk: {
-                const package_root = try registry_fetch.ensureRegistrySource(allocator, registry.archive_path, registry.checksum, true);
-                break :blk try discoverModuleSourceRoot(allocator, package_root);
-            },
-            .path => |path_source| try discoverModuleSourceRoot(allocator, path_source.path),
+        const package_root: []const u8 = switch (item.source) {
+            .registry => |registry| try registry_fetch.ensureRegistrySource(allocator, registry.archive_path, registry.checksum, true),
+            .path => |path_source| path_source.path,
             .git => |git_source| blk: {
                 const checkout = try git.resolveGitCheckout(allocator, git_source.url, null, null, true, git_source.commit);
-                break :blk try discoverModuleSourceRoot(allocator, checkout.source_root);
+                break :blk checkout.source_root;
             },
         };
         try owners.append(.{
             .module_root = item.module_root,
             .package_name = item.name,
-            .source_root = source_root,
+            .source_root = try discoverModuleSourceRoot(allocator, package_root),
+            .execution_mode = ownerExecutionMode(allocator, package_root),
         });
     }
     return .{ .owners = try owners.toOwnedSlice() };
+}
+
+// The package's declared execution_mode, or "" when the manifest is missing or
+// unreadable — callers treat "" as "inherit the app's mode".
+fn ownerExecutionMode(allocator: std.mem.Allocator, package_root: []const u8) []const u8 {
+    const loaded = loadPackageManifest(allocator, package_root) catch return "";
+    return loaded.manifest.execution_mode;
 }
 
 fn appendCurrentProjectOwner(
@@ -121,6 +126,7 @@ fn appendCurrentProjectOwner(
         .module_root = module_root,
         .package_name = loaded.manifest.name,
         .source_root = loaded.module_source_root,
+        .execution_mode = loaded.manifest.execution_mode,
     });
 }
 
