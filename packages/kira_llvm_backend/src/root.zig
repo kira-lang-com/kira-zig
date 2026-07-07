@@ -10,9 +10,12 @@ pub const LlvmTarget = @import("target.zig").LlvmTarget;
 pub const toolchainLayout = @import("kira_llvm_toolchain_layout");
 pub const unimplemented = @import("stubs.zig").unimplemented;
 
+pub const cgu_cache = @import("cgu_cache.zig");
+
 test {
-    // Pull the CGU-hash unit tests into this package's test binary. Zig only runs
-    // tests from files the root references through a `test`/`comptime` block, not
-    // from bare `pub const _ = @import(...)` re-exports.
+    // Pull the CGU unit tests into this package's test binary. Zig only runs tests
+    // from files the root references through a `test`/`comptime` block, not from
+    // bare `pub const _ = @import(...)` re-exports.
     _ = @import("cgu_hash.zig");
+    _ = @import("cgu_cache.zig");
 }
