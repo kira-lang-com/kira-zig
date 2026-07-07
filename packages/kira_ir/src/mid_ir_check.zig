@@ -37,9 +37,11 @@ pub fn checkProgram(
     program: mid.Program,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !?mid.CheckedProgram {
+    var type_class = copyable.TypeClass.init(allocator);
+    defer type_class.deinit();
     for (program.functions) |function_decl| {
         if (function_decl.is_extern) continue;
-        var checker = Checker.init(allocator, program, function_decl, out_diagnostics);
+        var checker = Checker.init(allocator, program, function_decl, out_diagnostics, &type_class);
         try checker.checkFunction();
         if (checker.failed) return null;
     }
@@ -97,6 +99,10 @@ pub const Checker = struct {
     program: mid.Program,
     function_decl: mid.Function,
     diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
+    // Program-scoped memo for the pure structural type classifications, shared across
+    // every per-function Checker so `isCopyableType`/`containsConstructAny` are computed
+    // at most once per type name for the whole program instead of per value per function.
+    type_class: *copyable.TypeClass,
     failed: bool = false,
 
     fn init(
@@ -104,12 +110,14 @@ pub const Checker = struct {
         program: mid.Program,
         function_decl: mid.Function,
         diagnostics_list: *std.array_list.Managed(diagnostics.Diagnostic),
+        type_class: *copyable.TypeClass,
     ) Checker {
         return .{
             .allocator = allocator,
             .program = program,
             .function_decl = function_decl,
             .diagnostics = diagnostics_list,
+            .type_class = type_class,
         };
     }
 
