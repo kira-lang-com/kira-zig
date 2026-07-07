@@ -1,0 +1,37 @@
+// Codex P1 regression: moving an array field OUT of a recovered nativeState
+// (`let taken = view.nodes; view.nodes = []`) must VOID the state's slot on
+// EVERY backend. The LLVM backend nulled the moved-read slot; the VM did not,
+// so the re-init/free destroyed the payload the binding now owns while the
+// binding still aliased it (use-after-free / double free on vm+hybrid).
+// Leak-gated on llvm, and the value checks catch a UAF on vm/hybrid.
+
+struct Tree {
+    var nodes: [Int] = []
+    var generation: Int = 0
+}
+
+@Main
+function main() {
+    let state = nativeState(Tree {})
+    let handle = nativeUserData(state)
+    var round = 0
+    var checksum = 0
+    while round < 100 {
+        var view = nativeRecover<Tree>(handle)
+        view.nodes.append(round)
+        view.nodes.append(round + 1)
+        // Move the array field out of the recovered state, then re-initialize
+        // the field. The moved binding must survive the re-init's drop.
+        let taken = view.nodes
+        view.nodes = []
+        view.generation = view.generation + 1
+        var i = 0
+        while i < taken.count {
+            checksum = checksum + taken[i]
+            i = i + 1
+        }
+        round = round + 1
+    }
+    print(checksum)
+    return
+}

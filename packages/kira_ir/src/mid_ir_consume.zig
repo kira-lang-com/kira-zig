@@ -20,6 +20,7 @@ const aliasAccessLocalId = state_mod.aliasAccessLocalId;
 const clearMovedPaths = state_mod.clearMovedPaths;
 const rootLocalId = place_algebra.rootLocalId;
 const placeRelation = place_algebra.placeRelation;
+const valueType = place_algebra.valueType;
 
 pub fn consumeBindingValue(
     self: *Checker,
@@ -60,6 +61,19 @@ pub fn consumeBindingValue(
         return;
     }
 
+    if (self.containsConstructAny(valueType(value))) {
+        if (self.requiresOwnedConstructAnyMove(value, .owned)) {
+            try self.emitOwnershipDiagnostic(
+                "KIR002",
+                "move-only existential requires ownership transfer",
+                "Binding this `some`/`any` value would copy or alias storage that the native backend currently treats as move-only.",
+                span,
+                "Bind a fresh construct value, or move an owned existential local/field instead of reusing a borrowed or indexed value.",
+            );
+            return;
+        }
+    }
+
     if (self.bindingMoveSource(state, value)) |source_place| {
         try self.movePlace(state, source_place, span);
         const local_state = state.locals.getPtr(local.id) orelse return;
@@ -70,6 +84,20 @@ pub fn consumeBindingValue(
     try self.consumeValue(state, value, .read);
     const local_state = state.locals.getPtr(local.id) orelse return;
     local_state.availability = .live;
+}
+
+// An index-projected place rooted in an OWNED local: the element-drain shape
+// (`widgets[index].lower(ctx)`). The backends take the element and VOID the
+// slot, so the transfer is real even though index places are not statically
+// movable (indices are dynamic; drained slots are runtime-checked).
+fn receiverIsOwnedElementDrain(self: *const Checker, value: mid.Value) bool {
+    const place = switch (value) {
+        .place => |node| node.place,
+        else => return false,
+    };
+    if (!place_algebra.placeHasIndexProjection(place)) return false;
+    const ownership = self.rootLocalOwnership(place) orelse return false;
+    return ownership != .borrow_read and ownership != .borrow_mut;
 }
 
 pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathUseKind) anyerror!void {
@@ -95,6 +123,28 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             try self.consumeCallArgs(state, node.args, node.param_ownership);
         },
         .virtual_call => |node| {
+            // A CONSUMING method call (owned self receiver): a type-erased
+            // receiver must actually transfer — the callee frees what it
+            // receives, and Any values are move-only (no clone repair).
+            // Backstops KSEM157; also catches paths the HIR marking misses.
+            // EXCEPTION: an index-projected receiver rooted in an OWNED place
+            // is an element DRAIN — the backends take the element and VOID the
+            // slot (runtime-checked; indices are dynamic), so it is not an
+            // alias even though index places are not statically movable.
+            if ((node.receiver_ownership == .owned or node.receiver_ownership == .move) and
+                self.containsConstructAny(valueType(node.receiver.*)) and
+                !receiverIsOwnedElementDrain(self, node.receiver.*) and
+                self.requiresOwnedConstructAnyMove(node.receiver.*, node.receiver_ownership))
+            {
+                try self.emitOwnershipDiagnostic(
+                    "KIR002",
+                    "move-only existential requires ownership transfer",
+                    "Calling this consuming method would copy or alias a `some`/`any` receiver the callee frees.",
+                    node.span,
+                    "Call the consuming method on an owned existential value (move it into a local first), not on a borrowed or indexed one.",
+                );
+                return;
+            }
             try self.consumeValue(state, node.receiver.*, self.effectiveUseKind(node.receiver.*, node.receiver_ownership));
             try self.consumeCallArgs(state, node.args, node.param_ownership);
         },
@@ -109,13 +159,45 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             }
         },
         .construct => |node| {
-            for (node.fields) |field| try self.consumeValue(state, field.value, .read);
+            for (node.fields) |field| {
+                if (self.containsConstructAny(valueType(field.value))) {
+                    if (self.requiresOwnedConstructAnyMove(field.value, .owned)) {
+                        try self.emitOwnershipDiagnostic(
+                            "KIR002",
+                            "move-only existential requires ownership transfer",
+                            "Constructing this aggregate would copy or alias a `some`/`any` field into owned storage.",
+                            field.span,
+                            "Provide a fresh construct value for the field, or move an owned existential local/field instead of reusing a borrowed or indexed value.",
+                        );
+                        return;
+                    }
+                    try self.consumeValue(state, field.value, self.effectiveUseKind(field.value, .owned));
+                } else {
+                    try self.consumeValue(state, field.value, .read);
+                }
+            }
         },
         .construct_enum_variant => |node| {
             if (node.payload) |payload| try self.consumeValue(state, payload.*, .read);
         },
         .array => |node| {
-            for (node.elements) |element| try self.consumeValue(state, element, .read);
+            for (node.elements) |element| {
+                if (self.containsConstructAny(valueType(element))) {
+                    if (self.requiresOwnedConstructAnyMove(element, .owned)) {
+                        try self.emitOwnershipDiagnostic(
+                            "KIR002",
+                            "move-only existential requires ownership transfer",
+                            "Building this array would copy or alias a `some`/`any` element into owned storage.",
+                            node.span,
+                            "Use fresh construct values in the array literal, or move owned existential locals/fields into it.",
+                        );
+                        return;
+                    }
+                    try self.consumeValue(state, element, self.effectiveUseKind(element, .owned));
+                } else {
+                    try self.consumeValue(state, element, .read);
+                }
+            }
         },
         .builder_array => |node| try self.consumeBuilderBlock(state, node.builder),
         .binary => |node| {
@@ -134,7 +216,7 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             try self.consumeValue(&else_state, node.else_value.*, mode);
             try self.joinState(state, &then_state, &else_state);
         },
-        .native_state, .native_user_data, .native_recover, .c_string_to_string, .array_len, .string_len => |node| try self.consumeValue(state, node.inner.*, .read),
+        .native_state, .native_user_data, .native_recover, .native_state_free, .c_string_to_string, .array_len, .string_len => |node| try self.consumeValue(state, node.inner.*, .read),
         .opaque_member => |node| try self.consumeValue(state, node.object.*, .read),
         .opaque_index => |node| {
             try self.consumeValue(state, node.object.*, .read);
@@ -192,6 +274,47 @@ pub fn consumeCallArgs(self: *Checker, state: *State, args: []const mid.Value, o
         // by-value move rule invalidate an argument the callee only borrows,
         // producing false "moved before use" errors on borrowed parameters.
         const mode = if (index < ownership.len) ownership[index] else model.OwnershipMode.borrow_read;
+        if (self.requiresOwnedConstructAnyMove(arg, mode)) {
+            const span = switch (arg) {
+                .place => |node| node.place.span,
+                .call => |node| node.span,
+                .virtual_call => |node| node.span,
+                .callback => |node| node.span,
+                .call_value => |node| node.span,
+                .construct => |node| node.span,
+                .construct_enum_variant => |node| node.span,
+                .array => |node| node.span,
+                .builder_array => |node| node.span,
+                .binary => |node| node.span,
+                .unary => |node| node.span,
+                .cast => |node| node.span,
+                .conditional => |node| node.span,
+                .native_state => |node| node.span,
+                .native_user_data => |node| node.span,
+                .native_recover => |node| node.span,
+                .native_state_free => |node| node.span,
+                .c_string_to_string => |node| node.span,
+                .array_len => |node| node.span,
+                .string_len => |node| node.span,
+                .opaque_member => |node| node.span,
+                .opaque_index => |node| node.span,
+                .integer => |node| node.span,
+                .float => |node| node.span,
+                .string => |node| node.span,
+                .boolean => |node| node.span,
+                .null_ptr => |node| node.span,
+                .function_ref => |node| node.span,
+                .namespace_ref => |node| node.span,
+            };
+            try self.emitOwnershipDiagnostic(
+                "KIR002",
+                "move-only existential requires ownership transfer",
+                "Passing this `some`/`any` value by ownership would copy or alias storage that the native backend currently treats as move-only.",
+                span,
+                "Pass a fresh construct value, or move an owned existential local/field instead of passing a borrowed or indexed value.",
+            );
+            return;
+        }
         const use_kind = self.effectiveUseKind(arg, mode);
         if (self.placeForValue(state, arg)) |place| {
             try accesses.append(.{ .place = place, .kind = use_kind, .span = place.span });
@@ -252,6 +375,8 @@ pub fn bindingMoveSource(self: *Checker, state: *State, value: mid.Value) ?mid.P
     const place = self.placeForValue(state, value) orelse return null;
     return switch (place.ty.kind) {
         .array => place,
+        .construct_any => place,
+        .named => if (self.containsConstructAny(place.ty)) place else null,
         // Fieldless enums are copied by value, so binding one does not move its
         // source; only payload-carrying enums transfer ownership on bind.
         .enum_instance => if (self.isCopyableType(place.ty)) null else place,

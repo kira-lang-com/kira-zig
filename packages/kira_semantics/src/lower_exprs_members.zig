@@ -5,6 +5,12 @@ const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
 const construct_any = @import("lower_exprs_construct_any.zig");
+const ownership_exprs = @import("lower_exprs_ownership.zig");
+// Consuming-receiver bookkeeping (body-consumes-self) lives in
+// lower_exprs_receivers.zig (Core Law #5).
+const receivers = @import("lower_exprs_receivers.zig");
+const methodCallConsumesReceiver = receivers.methodCallConsumesReceiver;
+const applyConsumingReceiver = receivers.applyConsumingReceiver;
 const function_types = @import("function_types.zig");
 const parent = @import("lower_exprs.zig");
 const resolveFieldContainerType = parent.resolveFieldContainerType;
@@ -317,6 +323,7 @@ pub fn tryLowerComputedAccessor(
     object: *model.Expr,
     member: []const u8,
     span: source_pkg.Span,
+    accessor_scope: ?*model.Scope,
 ) !?*model.Expr {
     const headers = ctx.function_headers orelse return null;
     const object_type = model.hir.exprType(object.*);
@@ -324,10 +331,17 @@ pub fn tryLowerComputedAccessor(
         const method_decl = try construct_any.resolveMethod(ctx, object_type, member, span, true) orelse return null;
         const function_header = headers.get(method_decl.full_name) orelse return null;
         if (!function_header.is_accessor) return null;
+        const family_name = (object_type.construct_constraint orelse return null).construct_name;
+        // A consuming accessor (`body`) transfers the receiver into the callee.
+        if (accessor_scope) |consume_scope| {
+            if (methodCallConsumesReceiver(ctx, family_name, method_decl.name, method_decl.full_name)) {
+                try applyConsumingReceiver(ctx, consume_scope, object, span);
+            }
+        }
         const lowered = try ctx.allocator.create(model.Expr);
         lowered.* = .{ .virtual_call = .{
             .receiver = object,
-            .static_type_name = try ctx.allocator.dupe(u8, (object_type.construct_constraint orelse return null).construct_name),
+            .static_type_name = try ctx.allocator.dupe(u8, family_name),
             .method_name = try ctx.allocator.dupe(u8, method_decl.name),
             .args = &.{},
             .ty = method_decl.return_type,
@@ -341,6 +355,15 @@ pub fn tryLowerComputedAccessor(
     const key = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ type_name, member });
     const header = headers.get(key) orelse return null;
     if (!header.is_accessor) return null;
+
+    // A consuming accessor (`body`) transfers the receiver into the callee.
+    if (accessor_scope) |consume_scope| {
+        if (header.param_ownership.len > 0 and
+            (header.param_ownership[0] == .owned or header.param_ownership[0] == .move))
+        {
+            try applyConsumingReceiver(ctx, consume_scope, object, span);
+        }
+    }
 
     const args = try ctx.allocator.alloc(*model.Expr, 1);
     args[0] = object;
@@ -544,6 +567,14 @@ pub fn lowerResolvedMethodCall(
                 try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, headers));
             }
 
+            // Consuming method resolved statically (concrete receiver type):
+            // same receiver bookkeeping as the virtual path.
+            if (resolved_header.param_ownership.len > 0 and
+                (resolved_header.param_ownership[0] == .owned or resolved_header.param_ownership[0] == .move))
+            {
+                try applyConsumingReceiver(ctx, scope, receiver, node.span);
+            }
+
             lowered.* = .{ .call = .{
                 .callee_name = method_decl.full_name,
                 .function_id = resolved_header.id,
@@ -644,6 +675,10 @@ pub fn lowerVirtualMethodCall(
     }
     if (trailing_callback_type) |callback_type| {
         try args.append(try lowerTrailingCallbackValue(ctx, node, callback_type, imports, scope, function_headers orelse return error.DiagnosticsEmitted));
+    }
+
+    if (methodCallConsumesReceiver(ctx, static_type_name, method_decl.name, method_decl.full_name)) {
+        try applyConsumingReceiver(ctx, scope, receiver, node.span);
     }
 
     lowered.* = .{ .virtual_call = .{

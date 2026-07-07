@@ -25,3 +25,10 @@ Thumbs.db
 
 __pycache__/
 *.pyc
+
+# Test run captures and scratch .txt output (never fixtures). Keep genuine
+# .txt: build files (CMakeLists.txt) and test data (sample.txt / empty.txt).
+*.txt
+!CMakeLists.txt
+!**/sample.txt
+!**/empty.txt

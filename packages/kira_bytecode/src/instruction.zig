@@ -53,6 +53,13 @@ pub const OpCode = enum(u8) {
     // tag of any earlier instruction; old KBC modules still deserialize. New
     // modules carrying it are written as KBC7.
     convert,
+    // Bitwise/shift ops. Appended after `convert` (before the fused group) so it
+    // does not shift any earlier serialized tag. Carried by KBC8.
+    bitwise,
+    // Releases a native-state box created by `alloc_native_state`
+    // (`nativeStateFree`). Appended after `bitwise` so no earlier serialized
+    // tag shifts. Carried by KBC9.
+    free_native_state,
     // --- VM-internal fused instructions ------------------------------------
     // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
     // private per-function code copies. They never appear in compiler output
@@ -85,9 +92,9 @@ pub const Instruction = union(OpCode) {
     add: struct { dst: u32, lhs: u32, rhs: u32 },
     subtract: struct { dst: u32, lhs: u32, rhs: u32 },
     multiply: struct { dst: u32, lhs: u32, rhs: u32 },
-    divide: struct { dst: u32, lhs: u32, rhs: u32 },
-    modulo: struct { dst: u32, lhs: u32, rhs: u32 },
-    compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp },
+    divide: struct { dst: u32, lhs: u32, rhs: u32, unsigned: bool = false },
+    modulo: struct { dst: u32, lhs: u32, rhs: u32, unsigned: bool = false },
+    compare: struct { dst: u32, lhs: u32, rhs: u32, op: CompareOp, unsigned: bool = false },
     unary: struct { dst: u32, src: u32, op: UnaryOp },
     store_local: struct { local: u32, src: u32, borrow: bool = false },
     load_local: struct { dst: u32, local: u32, ownership: ownership_mode.OwnershipMode = .borrow_read },
@@ -95,7 +102,12 @@ pub const Instruction = union(OpCode) {
     subobject_ptr: struct { dst: u32, base: u32, offset: u32 },
     field_ptr: struct { dst: u32, base: u32, base_type_name: []const u8, field_index: u32, field_ty: TypeRef },
     recover_native_state: struct { dst: u32, state: u32, type_name: []const u8, type_id: u64 },
-    native_state_field_get: struct { dst: u32, state: u32, field_index: u32, field_ty: TypeRef },
+    // `moved` marks a checker-verified move-out of an array/enum/Any field from
+    // a recovered native state (`let n = view.nodes; view.nodes = []`): the VM
+    // takes ownership into dst and VOIDS the payload slot, so a later set/free
+    // does not destroy the same payload again. Mirrors the LLVM backend's
+    // native-state moved-read slot nulling. Carried by KBCA.
+    native_state_field_get: struct { dst: u32, state: u32, field_index: u32, field_ty: TypeRef, moved: bool = false },
     native_state_field_set: struct { state: u32, field_index: u32, src: u32, field_ty: TypeRef },
     c_string_to_string: struct { dst: u32, src: u32 },
     array_len: struct { dst: u32, array: u32 },
@@ -105,12 +117,17 @@ pub const Instruction = union(OpCode) {
     // IR lowering, guarded so the array cannot be mutated/freed during that call).
     // The interpreter then aliases a managed element instead of deep-cloning it,
     // matching the native backend, which never copies a borrowed element.
-    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef, borrow: bool = false },
+    array_get: struct { dst: u32, array: u32, index: u32, ty: TypeRef, borrow: bool = false, moved: bool = false },
     array_set: struct { array: u32, index: u32, src: u32 },
     array_append: struct { array: u32, src: u32 },
     enum_tag: struct { dst: u32, src: u32 },
     enum_payload: struct { dst: u32, src: u32, payload_ty: TypeRef },
-    load_indirect: struct { dst: u32, ptr: u32, ty: TypeRef },
+    // `moved` marks a checker-verified field move-out (`let x = obj.field`):
+    // the VM takes ownership of the field's value and VOIDS the field slot, so
+    // the base drops with only its remaining fields (Rust partial move) while
+    // the moved value lives on in the destination register. Mirrors the LLVM
+    // backend's moved-read storage nulling.
+    load_indirect: struct { dst: u32, ptr: u32, ty: TypeRef, moved: bool = false },
     store_indirect: struct { ptr: u32, src: u32, ty: TypeRef },
     copy_indirect: struct { dst_ptr: u32, src_ptr: u32, type_name: []const u8 },
     branch: struct { condition: u32, true_label: u32, false_label: u32 },
@@ -126,6 +143,8 @@ pub const Instruction = union(OpCode) {
     // Float->Int, truncating/saturating). Placed after `ret` to match the
     // OpCode enum's serialization-stable ordering.
     convert: struct { dst: u32, src: u32, to_float: bool },
+    bitwise: struct { dst: u32, lhs: u32, rhs: u32, op: BitOp, unsigned: bool = false },
+    free_native_state: struct { state: u32 },
     // VM-internal fused forms; see the OpCode comment above.
     // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
     fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },
@@ -220,6 +239,15 @@ pub const CompareOp = enum(u8) {
 pub const UnaryOp = enum(u8) {
     negate,
     not,
+    bit_not,
+};
+
+pub const BitOp = enum(u8) {
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
 };
 
 pub const TypeRef = struct {

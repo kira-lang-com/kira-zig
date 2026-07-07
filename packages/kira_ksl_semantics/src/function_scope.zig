@@ -2,6 +2,7 @@ const std = @import("std");
 const syntax = @import("kira_ksl_syntax_model");
 const shader_model = @import("kira_shader_model");
 const shader_ir = @import("kira_shader_ir");
+const source = @import("kira_source");
 const parent = @import("analyzer.zig");
 const utils = @import("analyzer_utils.zig");
 
@@ -24,6 +25,13 @@ pub const FunctionScope = struct {
     return_type: shader_model.Type,
     locals: std.StringHashMap(shader_model.Type),
     params: std.StringHashMap(shader_model.Type),
+    // Storage buffers touched by atomicAdd, and buffers touched by plain
+    // indexing. A buffer used BOTH ways lowers to invalid backend source
+    // (e.g. MSL binds it as `device atomic_uint*` while plain `buf[i]` loads
+    // are non-atomic), so the two sets must stay disjoint — checked after the
+    // body is lowered (Codex review).
+    atomic_buffers: std.StringHashMap(source.Span),
+    indexed_buffers: std.StringHashMap(void),
 
     pub fn init(
         analyzer: *Analyzer,
@@ -39,9 +47,42 @@ pub const FunctionScope = struct {
             .return_type = return_type,
             .locals = std.StringHashMap(shader_model.Type).init(analyzer.allocator),
             .params = std.StringHashMap(shader_model.Type).init(analyzer.allocator),
+            .atomic_buffers = std.StringHashMap(source.Span).init(analyzer.allocator),
+            .indexed_buffers = std.StringHashMap(void).init(analyzer.allocator),
         };
         for (params) |param_decl| try scope.params.put(param_decl.name, param_decl.ty);
         return scope;
+    }
+
+    // A storage buffer must not be accessed both atomically and by plain index.
+    // Call after the function body is lowered; every atomicAdd target and every
+    // indexed buffer has been recorded by then.
+    pub fn checkAtomicBufferAliasing(self: *FunctionScope) !void {
+        var it = self.atomic_buffers.iterator();
+        while (it.next()) |entry| {
+            if (self.indexed_buffers.contains(entry.key_ptr.*)) {
+                try self.analyzer.emitDiagnostic("KSL073", "mixed atomic and plain buffer access", entry.value_ptr.*, "A storage buffer used with atomicAdd must not also be read or written with plain indexing; use a separate buffer for non-atomic access.");
+                return error.DiagnosticsEmitted;
+            }
+        }
+    }
+
+    fn storageResourceName(self: *FunctionScope, expr: *const syntax.ast.Expr) ?[]const u8 {
+        if (expr.* != .identifier) return null;
+        const name = qualifiedNameText(self.analyzer.allocator, expr.identifier.name) catch return null;
+        const scope = self.shader_scope orelse return null;
+        for (scope.resources) |resource_decl| {
+            if (std.mem.eql(u8, resource_decl.name, name) and resource_decl.kind == .storage) return resource_decl.name;
+        }
+        return null;
+    }
+
+    fn findResource(self: *FunctionScope, name: []const u8) ?shader_ir.ResourceDecl {
+        const scope = self.shader_scope orelse return null;
+        for (scope.resources) |resource_decl| {
+            if (std.mem.eql(u8, resource_decl.name, name)) return resource_decl;
+        }
+        return null;
     }
 
     pub fn lowerBlock(self: *FunctionScope, block: syntax.ast.Block) anyerror!shader_ir.Block {
@@ -65,6 +106,7 @@ pub const FunctionScope = struct {
             } },
             .return_stmt => |return_stmt| .{ .return_stmt = try self.lowerReturn(return_stmt) },
             .if_stmt => |if_stmt| .{ .if_stmt = try self.lowerIf(if_stmt) },
+            .while_stmt => |while_stmt| .{ .while_stmt = try self.lowerWhile(while_stmt) },
         };
     }
 
@@ -117,6 +159,19 @@ pub const FunctionScope = struct {
         return .{
             .value = value,
             .span = return_stmt.span,
+        };
+    }
+
+    fn lowerWhile(self: *FunctionScope, while_stmt: syntax.ast.WhileStatement) anyerror!shader_ir.WhileStatement {
+        const condition = try self.lowerExpr(while_stmt.condition, .{ .scalar = .bool });
+        if (condition.ty != .scalar or condition.ty.scalar != .bool) {
+            try self.analyzer.emitDiagnostic("KSL016", "while condition must be Bool", syntax.ast.exprSpan(while_stmt.condition.*), "Use a boolean expression in the `while` condition.");
+            return error.DiagnosticsEmitted;
+        }
+        return .{
+            .condition = condition,
+            .body = try self.lowerBlock(while_stmt.body),
+            .span = while_stmt.span,
         };
     }
 
@@ -316,6 +371,11 @@ pub const FunctionScope = struct {
             try self.analyzer.emitDiagnostic("KSL018", "indexing is not valid here", index_expr.span, "Only storage runtime arrays are indexable in KSL v1.");
             return error.DiagnosticsEmitted;
         }
+        // Record a plain (non-atomic) access so checkAtomicBufferAliasing can
+        // reject a buffer used both atomically and by plain indexing.
+        if (self.storageResourceName(index_expr.object)) |buffer_name| {
+            try self.indexed_buffers.put(buffer_name, {});
+        }
         return try self.allocExpr(.{
             .ty = object.ty.runtime_array.*,
             .span = index_expr.span,
@@ -375,6 +435,59 @@ pub const FunctionScope = struct {
                 break :blk .{ .scalar = .float };
             },
             .sample => .{ .vector = .{ .scalar = .float, .width = 4 } },
+            .atomic_add => blk: {
+                if (call_expr.args.len != 3) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd(buffer, index, value) takes a read_write uint storage buffer, an index, and a value.");
+                    return error.DiagnosticsEmitted;
+                }
+                const target = try self.lowerExpr(call_expr.args[0], null);
+                if (target.ty != .runtime_array) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd's first argument must be a storage buffer resource.");
+                    return error.DiagnosticsEmitted;
+                }
+                // The buffer must be a `storage read_write [UInt]` resource, and the
+                // index/value must be integers — otherwise backends emit atomics
+                // against read-only or non-uint storage (Codex review).
+                const element = target.ty.runtime_array.*;
+                if (element != .scalar or element.scalar != .uint) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd requires a `UInt` storage buffer.");
+                    return error.DiagnosticsEmitted;
+                }
+                const buffer_name = self.storageResourceName(call_expr.args[0]) orelse {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd's first argument must be a storage buffer resource.");
+                    return error.DiagnosticsEmitted;
+                };
+                const resource = self.findResource(buffer_name).?;
+                if (resource.access != .read_write) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd requires a `storage read_write` buffer.");
+                    return error.DiagnosticsEmitted;
+                }
+                try self.atomic_buffers.put(buffer_name, call_expr.span);
+                const index = try self.lowerExpr(call_expr.args[1], .{ .scalar = .uint });
+                if (index.ty != .scalar or (index.ty.scalar != .uint and index.ty.scalar != .int)) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd's index must be an integer.");
+                    return error.DiagnosticsEmitted;
+                }
+                const amount = try self.lowerExpr(call_expr.args[2], .{ .scalar = .uint });
+                if (amount.ty != .scalar or amount.ty.scalar != .uint) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "atomicAdd's value must be a `UInt`.");
+                    return error.DiagnosticsEmitted;
+                }
+                break :blk .{ .scalar = .uint };
+            },
+            .load => blk: {
+                if (call_expr.args.len != 2) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "load(texture, coord) takes a texture and an integer coordinate.");
+                    return error.DiagnosticsEmitted;
+                }
+                const tex = try self.lowerExpr(call_expr.args[0], null);
+                if (tex.ty != .texture) {
+                    try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "load's first argument must be a texture resource.");
+                    return error.DiagnosticsEmitted;
+                }
+                const texel_scalar: shader_model.ScalarType = if (tex.ty.texture == .texture_2d_uint) .uint else .float;
+                break :blk .{ .vector = .{ .scalar = texel_scalar, .width = 4 } };
+            },
             .mul => blk: {
                 if (call_expr.args.len != 2) {
                     try self.analyzer.emitDiagnostic("KSL020", "invalid intrinsic call", call_expr.span, "Pass the expected arguments to the intrinsic.");

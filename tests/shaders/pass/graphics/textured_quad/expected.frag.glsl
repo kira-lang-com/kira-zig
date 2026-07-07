@@ -32,14 +32,14 @@ layout(std140) uniform surface_Block {
     vec4 tint;
 } surface;
 
-uniform sampler2D albedo;
+uniform sampler2D kira_albedo_linear;
 
 in vec2 kira_varying_uv;
 layout(location = 0) out vec4 kira_frag_color;
 
-FragmentOut TexturedQuad__fragment__entry(VertexToFragment input) {
+FragmentOut TexturedQuad__fragment__entry(VertexToFragment kira_input_param) {
     FragmentOut kira_out;
-    vec4 sampled = texture(albedo, input.uv);
+    vec4 sampled = texture(kira_albedo_linear, kira_input_param.uv);
     if (use_tint) {
         kira_out.color = (sampled * surface.tint);
     } else {

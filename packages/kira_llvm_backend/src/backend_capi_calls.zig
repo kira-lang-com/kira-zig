@@ -108,8 +108,18 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
         args[0] = v.receiver;
         @memcpy(args[1..], v.args);
         try lowerCall(fc, .{ .callee = method_id, .args = args, .dst = v.dst });
+        // Record construct_any results HERE, exactly once — UNLESS lowerCall
+        // already recorded them (fresh-Any callee): recording again here after
+        // a lowerCall record would dropPriorOccupant the value that was JUST
+        // stored, destroying the live result before the caller uses it (the
+        // widget-dispatch use-after-free). A construct-family virtual-call
+        // result is treated as single-owner: its .struct_ptr slot runs the
+        // runtime-typed destroy at scope exit (KIRA_MEMORY_MODEL.md §3). Enum
+        // results are recorded by lowerCall (native) / lowerRuntimeCall
+        // (hybrid) themselves — the same exactly-once rule, so no enum case
+        // here.
         if (v.dst) |dst| switch (v.return_ty.kind) {
-            .construct_any, .enum_instance => drop.onAlloc(fc, dst),
+            .construct_any => if (!fc.dtors.tracksFreshAnyResult(method_id)) drop.onAlloc(fc, dst),
             else => {},
         };
         if (return_slot) |slot| {
@@ -172,6 +182,36 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                         else => continue,
                     }
                     const pt = if (i < callee_decl.param_types.len) callee_decl.param_types[i] else continue;
+                    // A borrowed array (field read / borrow param) passed to an
+                    // owned/move array parameter: the callee owns its parameter and
+                    // frees it at exit, so hand it an independent deep clone — passing
+                    // the raw pointer would free storage the caller's field still
+                    // references (the popClip clipStack double-free). An owned source
+                    // is escaped after the call by the loop below, so it moves as-is.
+                    if (pt.kind == .array) {
+                        if (!drop.isOwned(fc, arg)) {
+                            const sptr = api.LLVMBuildIntToPtr(fc.builder, fc.registers[arg], fc.types.ptr_ty, "call.arr.src");
+                            const elem = fc.dtors.elementClone(fc.request.program.programPtr(), pt);
+                            var cargs = [_]llvm.c.LLVMValueRef{ sptr, elem orelse api.LLVMConstNull(fc.types.ptr_ty) };
+                            const clone = api.LLVMBuildCall2(fc.builder, fc.runtime_decls.array_clone.ty, fc.runtime_decls.array_clone.fn_value, &cargs, cargs.len, "call.arr.clone");
+                            fc.registers[arg] = api.LLVMBuildPtrToInt(fc.builder, clone, fc.types.i64, "call.arr.cloneint");
+                        }
+                        continue;
+                    }
+                    // A borrowed closure (array element read / borrow param) passed to
+                    // an owned/move closure parameter: the callee's .closure param slot
+                    // frees it at exit, so hand over an independent deep clone or the
+                    // real owner (the array / field) frees the same block again.
+                    // kira_capi_closure_clone is tag-safe — callable values and plain
+                    // FFI pointers pass through. An owned source moves as-is (escaped
+                    // by the loop below).
+                    if (pt.kind == .raw_ptr) {
+                        if (!drop.isOwned(fc, arg)) {
+                            var cargs = [_]llvm.c.LLVMValueRef{fc.registers[arg]};
+                            fc.registers[arg] = api.LLVMBuildCall2(fc.builder, fc.dtors.closure_clone.ty, fc.dtors.closure_clone.fn_value, &cargs, cargs.len, "call.clos.clone");
+                        }
+                        continue;
+                    }
                     if (pt.kind != .ffi_struct) continue;
                     const name = pt.name orelse continue;
                     if (fc.dtors.map.get(name) == null) continue;
@@ -197,16 +237,37 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
                     // into a struct field clones it), so the caller must KEEP ownership and
                     // free its own enum at scope exit. Escaping it would orphan the value the
                     // caller allocated — a per-call leak (every SizeMode/Alignment view arg).
-                    .owned, .move => if (arg >= fc.register_types.len or fc.register_types[arg].kind != .enum_instance) drop.onEscape(fc, arg),
+                    // Strings are Copy too: the callee has no string param slot (it clones
+                    // anything it keeps), so the caller keeps ownership of the buffer.
+                    .owned, .move => {
+                        const k = if (arg < fc.register_types.len) fc.register_types[arg].kind else ir.ValueType.Kind.integer;
+                        if (k != .enum_instance and k != .string) drop.onEscape(fc, arg);
+                    },
                     else => {},
                 }
             }
             if (call.dst) |dst| {
                 fc.registers[dst] = result;
                 // An ffi_struct or array result is fresh caller-stable owned heap storage;
-                // track it so the caller frees it at scope exit.
+                // track it so the caller frees it at scope exit. A string result is always
+                // a fresh owned buffer (the callee's `ret` clones untracked sources). A
+                // raw_ptr result is tracked as an owned closure: the callee's `ret` clones
+                // untracked closure sources, and the .closure drop is tag-safe (an extern
+                // call's plain FFI pointer result is recorded but never freed).
                 switch (callee_decl.return_type.kind) {
-                    .ffi_struct, .array => drop.onAlloc(fc, dst),
+                    .ffi_struct, .array, .raw_ptr => drop.onAlloc(fc, dst),
+                    // A returned enum is a fresh owned heap block (the callee's `ret`
+                    // clones untracked sources — the returned-enum invariant), so the
+                    // caller tracks it and frees it at scope exit via the typed enum
+                    // destroy. Without this every enum-returning call leaked its block
+                    // plus any nested payload chain (Result -> RenderFailure -> String).
+                    .enum_instance => drop.onAlloc(fc, dst),
+                    // A construct_any result is tracked only when the callee provably
+                    // returns a fresh owned tree (fresh-Any analysis; the setup
+                    // pre-scan allocated the .struct_ptr slot under the same
+                    // condition). Alias-returning callees stay untracked (§3).
+                    .construct_any => if (fc.dtors.tracksFreshAnyResult(callee_decl.id)) drop.onAlloc(fc, dst),
+                    .string => drop.trackStringRegister(fc, dst),
                     else => {},
                 }
             }
@@ -252,6 +313,7 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
         const bv = api.LLVMBuildLoad2(b, fc.types.bridge_ty, result_slot, "rt.result.bv");
         const unpacked = try fc.unpackBridge(callee_decl.return_type, bv);
         var cloned_owned = false;
+        var cloned_string = false;
         fc.registers[dst] = switch (callee_decl.return_type.kind) {
             .ffi_struct => blk: {
                 const type_name = callee_decl.return_type.name orelse break :blk unpacked;
@@ -261,11 +323,25 @@ pub fn lowerRuntimeCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Fun
                 cloned_owned = true;
                 break :blk cloned;
             },
+            // A VM-returned string is a view of VM-owned bytes; deep-clone so the
+            // native caller owns an independent buffer (keeps the strings-always-
+            // owned call-result invariant in hybrid too).
+            .string => blk: {
+                if (!fc.drop_enabled) break :blk unpacked;
+                cloned_string = true;
+                break :blk drop.cloneStringValue(fc, unpacked);
+            },
             else => unpacked,
         };
-        // Track for native drop ONLY when a native-owned clone was produced. Without clone
-        // metadata the value is the VM-returned (VM-owned) pointer; tracking it would have the
-        // native epilogue free VM-owned storage.
+        // Track for native drop ONLY when the native side owns the storage: a
+        // native-owned clone produced above, or an enum block — the bridge hands
+        // enums over as fresh libc-malloc'd blocks the native caller owns and
+        // drops exactly once (lowerEnumToNativeOwned; see
+        // HybridRuntime.cleanupPendingCallbackReturns). Everything else is the
+        // VM-returned (VM-owned) pointer; tracking it would have the native
+        // epilogue free VM-owned storage.
         if (cloned_owned) drop.onAlloc(fc, dst);
+        if (cloned_string) drop.trackStringRegister(fc, dst);
+        if (callee_decl.return_type.kind == .enum_instance) drop.onAlloc(fc, dst);
     }
 }

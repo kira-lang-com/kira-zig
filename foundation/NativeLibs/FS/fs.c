@@ -1,5 +1,7 @@
 #include "fs.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,10 +41,16 @@ static char* fs_strdup_local(const char* text) {
     return copy;
 }
 
+/* Shared static empty payload. Every non-heap `data` the fs API hands out is
+ * exactly this pointer, so fs_free_buffer can tell "nothing to free" apart from
+ * a heap buffer that happens to hold an empty string (an empty file reads as a
+ * malloc'd "\0" buffer that must still be freed). */
+static const char fs_empty_string[] = "";
+
 static fs_read_result fs_empty_result(void) {
     fs_read_result result;
     result.ok = false;
-    result.data = "";
+    result.data = fs_empty_string;
     result.size = 0;
     return result;
 }
@@ -50,7 +58,7 @@ static fs_read_result fs_empty_result(void) {
 static fs_read_result fs_buffer_result(char* data, uint64_t size) {
     fs_read_result result;
     result.ok = data != NULL;
-    result.data = data == NULL ? "" : data;
+    result.data = data == NULL ? fs_empty_string : data;
     result.size = data == NULL ? 0 : size;
     return result;
 }
@@ -199,6 +207,83 @@ fs_read_result fs_read_file(const char* path) {
     return result;
 }
 
+// Binary-safe write: `size` explicit, no strlen — container bytes may hold NULs.
+bool fs_write_bytes(const char* path, const uint8_t* data, uint64_t size) {
+    if (path == NULL || (data == NULL && size != 0)) {
+        return false;
+    }
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    BOOL ok = WriteFile(file, data, (DWORD)size, &written, NULL);
+    CloseHandle(file);
+    return ok && written == size;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        return false;
+    }
+    uint64_t total_written = 0;
+    while (total_written < size) {
+        ssize_t written = write(fd, data + total_written, size - total_written);
+        if (written < 0) {
+            close(fd);
+            return false;
+        }
+        total_written += (uint64_t)written;
+    }
+    close(fd);
+    return true;
+#endif
+}
+
+// Partial read: `size` bytes from `offset` into caller-owned `out`. Returns bytes
+// actually read (0 on error / EOF-at-offset). Never reads the whole file — the
+// partial-read contract for container streaming (compression blocks < IO units).
+uint64_t fs_read_range(const char* path, uint64_t offset, uint64_t size, uint8_t* out) {
+    if (path == NULL || out == NULL || size == 0) {
+        return 0;
+    }
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)offset;
+    if (!SetFilePointerEx(file, li, NULL, FILE_BEGIN)) {
+        CloseHandle(file);
+        return 0;
+    }
+    DWORD got = 0;
+    BOOL ok = ReadFile(file, out, (DWORD)size, &got, NULL);
+    CloseHandle(file);
+    return ok ? (uint64_t)got : 0;
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    uint64_t total_read = 0;
+    while (total_read < size) {
+        ssize_t got = pread(fd, out + total_read, size - total_read, (off_t)(offset + total_read));
+        if (got < 0) {
+            close(fd);
+            return 0;
+        }
+        if (got == 0) {
+            break;
+        }
+        total_read += (uint64_t)got;
+    }
+    close(fd);
+    return total_read;
+#endif
+}
+
 bool fs_write_file(const char* path, const char* data) {
     if (path == NULL || data == NULL) {
         return false;
@@ -246,6 +331,58 @@ bool fs_file_exists(const char* path) {
 #endif
 }
 
+// True when `path` exists as ANY entry (file, directory, symlink, …), unlike
+// fs_file_exists which is regular-file-only.
+bool fs_path_exists(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat info;
+    return stat(path, &info) == 0;
+#endif
+}
+
+// True when `path` exists and is a directory.
+bool fs_is_directory(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat info;
+    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+#endif
+}
+
+// Create a single directory. Succeeds if it already exists (idempotent); does
+// NOT create intermediate parents.
+bool fs_make_directory(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+    // "Already exists" is only success when what exists is a DIRECTORY. An
+    // existing regular file also raises EEXIST / ERROR_ALREADY_EXISTS; reporting
+    // success there would let callers assume a directory and fail later, so
+    // verify it is actually a directory before claiming idempotent success
+    // (Codex review).
+#ifdef _WIN32
+    if (CreateDirectoryA(path, NULL)) {
+        return true;
+    }
+    return GetLastError() == ERROR_ALREADY_EXISTS && fs_is_directory(path);
+#else
+    if (mkdir(path, 0755) == 0) {
+        return true;
+    }
+    return errno == EEXIST && fs_is_directory(path);
+#endif
+}
+
 uint64_t fs_file_size(const char* path) {
     if (path == NULL) {
         return 0;
@@ -269,9 +406,93 @@ uint64_t fs_file_size(const char* path) {
 }
 
 void fs_free_buffer(const char* buffer) {
-    if (buffer != NULL && buffer[0] != '\0') {
+    /* Compare against the shared sentinel, not buffer contents: a successful
+     * read of an empty file returns a heap-allocated "\0" buffer, and the old
+     * `buffer[0] != '\0'` guard leaked it on every empty-file read. */
+    if (buffer != NULL && buffer != fs_empty_string) {
         free((void*)buffer);
     }
+}
+
+// Rename/move a path. On success the old path no longer exists and new_path
+// names the same file/directory. Existing new_path is replaced.
+bool fs_rename_path(const char* old_path, const char* new_path) {
+    if (old_path == NULL || new_path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    return MoveFileExA(old_path, new_path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    return rename(old_path, new_path) == 0;
+#endif
+}
+
+// Recursively delete a file or directory (directories are emptied first).
+bool fs_remove_path(const char* path) {
+    if (path == NULL) {
+        return false;
+    }
+#ifdef _WIN32
+    WIN32_FIND_DATAA data;
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        size_t plen = strlen(path);
+        char* pattern = (char*)malloc(plen + 3);
+        if (pattern == NULL) {
+            return false;
+        }
+        snprintf(pattern, plen + 3, "%s\\*", path);
+        HANDLE h = FindFirstFileA(pattern, &data);
+        free(pattern);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+                    continue;
+                }
+                size_t clen = plen + 1 + strlen(data.cFileName) + 1;
+                char* child = (char*)malloc(clen);
+                if (child != NULL) {
+                    snprintf(child, clen, "%s\\%s", path, data.cFileName);
+                    fs_remove_path(child);
+                    free(child);
+                }
+            } while (FindNextFileA(h, &data));
+            FindClose(h);
+        }
+        return RemoveDirectoryA(path) != 0;
+    }
+    return DeleteFileA(path) != 0;
+#else
+    struct stat info;
+    if (lstat(path, &info) != 0) {
+        return false;
+    }
+    if (S_ISDIR(info.st_mode)) {
+        DIR* dir = opendir(path);
+        if (dir != NULL) {
+            struct dirent* entry;
+            size_t plen = strlen(path);
+            while ((entry = readdir(dir)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                    continue;
+                }
+                size_t clen = plen + 1 + strlen(entry->d_name) + 1;
+                char* child = (char*)malloc(clen);
+                if (child != NULL) {
+                    snprintf(child, clen, "%s/%s", path, entry->d_name);
+                    fs_remove_path(child);
+                    free(child);
+                }
+            }
+            closedir(dir);
+        }
+        return rmdir(path) == 0;
+    }
+    return unlink(path) == 0;
+#endif
 }
 
 static bool fs_listing_add(fs_directory_listing* listing, const char* name) {
@@ -351,11 +572,11 @@ int fs_directory_count(void* listing_handle) {
 
 const char* fs_directory_entry(void* listing_handle, int index) {
     if (listing_handle == NULL) {
-        return "";
+        return fs_empty_string;
     }
     fs_directory_listing* listing = (fs_directory_listing*)listing_handle;
     if (index < 0 || index >= listing->count) {
-        return "";
+        return fs_empty_string;
     }
     return listing->entries[index];
 }

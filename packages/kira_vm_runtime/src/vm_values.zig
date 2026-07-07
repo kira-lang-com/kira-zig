@@ -98,7 +98,38 @@ pub fn unaryValue(vm: anytype, value: runtime_abi.Value, op: bytecode.UnaryOp) !
                 return error.RuntimeFailure;
             },
         },
+        .bit_not => switch (value) {
+            // Ones' complement on the raw bit pattern; sign-agnostic.
+            .integer => |inner| .{ .integer = ~inner },
+            else => {
+                vm.rememberError("vm bitwise not expects an integer operand");
+                return error.RuntimeFailure;
+            },
+        },
     };
+}
+
+// Bitwise AND/OR/XOR and shifts on the raw 64-bit pattern. `unsigned` only
+// affects shift_right (logical vs arithmetic). Shift amount is taken mod 64.
+pub fn bitwiseValue(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value, op: bytecode.BitOp, unsigned: bool) !runtime_abi.Value {
+    if (lhs != .integer or rhs != .integer) {
+        vm.rememberError("vm bitwise op expects integer operands");
+        return error.RuntimeFailure;
+    }
+    const a: u64 = @bitCast(lhs.integer);
+    const b: u64 = @bitCast(rhs.integer);
+    const shift_amt: u6 = @intCast(b & 63);
+    const result: u64 = switch (op) {
+        .bit_and => a & b,
+        .bit_or => a | b,
+        .bit_xor => a ^ b,
+        .shift_left => a << shift_amt,
+        .shift_right => if (unsigned)
+            a >> shift_amt
+        else
+            @bitCast(lhs.integer >> shift_amt),
+    };
+    return .{ .integer = @bitCast(result) };
 }
 
 pub fn addValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
@@ -116,6 +147,19 @@ pub fn addValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !r
                 return error.RuntimeFailure;
             }
             break :blk .{ .float = lhs_value + rhs.float };
+        },
+        // String concatenation: `+` on two strings allocates a heap-managed result
+        // (registered so slot-ownership tracking frees it like any managed string).
+        .string => |lhs_value| blk: {
+            if (rhs != .string) {
+                vm.rememberError("vm add expects matching string operands");
+                return error.RuntimeFailure;
+            }
+            const out = try vm.heap.allocator.alloc(u8, lhs_value.len + rhs.string.len);
+            @memcpy(out[0..lhs_value.len], lhs_value);
+            @memcpy(out[lhs_value.len..], rhs.string);
+            try vm.heap.registerString(out);
+            break :blk .{ .string = out };
         },
         else => {
             vm.rememberError("vm add expects numeric operands");
@@ -170,7 +214,7 @@ pub fn multiplyValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Valu
     };
 }
 
-pub fn divideValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+pub fn divideValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value, unsigned: bool) !runtime_abi.Value {
     return switch (lhs) {
         .integer => |lhs_value| blk: {
             if (rhs != .integer) {
@@ -180,6 +224,13 @@ pub fn divideValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value)
             if (rhs.integer == 0) {
                 vm.rememberError("vm divide does not allow division by zero");
                 return error.RuntimeFailure;
+            }
+            if (unsigned) {
+                // Reinterpret the raw 64-bit pattern as u64 so high-bit-set values
+                // (> i64 max) divide by magnitude, not sign. Matches LLVM `udiv`.
+                const lu: u64 = @bitCast(lhs_value);
+                const ru: u64 = @bitCast(rhs.integer);
+                break :blk .{ .integer = @bitCast(lu / ru) };
             }
             break :blk .{ .integer = @divTrunc(lhs_value, rhs.integer) };
         },
@@ -236,7 +287,7 @@ pub fn convertValue(vm: anytype, src: runtime_abi.Value, to_float: bool) !runtim
     };
 }
 
-pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value) !runtime_abi.Value {
+pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value, unsigned: bool) !runtime_abi.Value {
     return switch (lhs) {
         .integer => |lhs_value| blk: {
             if (rhs != .integer) {
@@ -246,6 +297,12 @@ pub fn moduloValues(vm: anytype, lhs: runtime_abi.Value, rhs: runtime_abi.Value)
             if (rhs.integer == 0) {
                 vm.rememberError("vm modulo does not allow division by zero");
                 return error.RuntimeFailure;
+            }
+            if (unsigned) {
+                // Unsigned remainder on the raw 64-bit pattern. Matches LLVM `urem`.
+                const lu: u64 = @bitCast(lhs_value);
+                const ru: u64 = @bitCast(rhs.integer);
+                break :blk .{ .integer = @bitCast(lu % ru) };
             }
             // Truncated remainder (toward zero) to match `@divTrunc` above, the
             // LLVM backend's `srem`, and Rust's `%`, so `(a/b)*b + a%b == a`

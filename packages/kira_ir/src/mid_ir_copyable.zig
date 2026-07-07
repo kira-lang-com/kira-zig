@@ -29,6 +29,10 @@ pub fn isCopyableType(self: *const Checker, ty: model.ResolvedType) bool {
     return isCopyableTypeDepth(self, ty, 0);
 }
 
+pub fn containsConstructAny(self: *const Checker, ty: model.ResolvedType) bool {
+    return containsConstructAnyDepth(self, ty, 0);
+}
+
 fn isCopyableTypeDepth(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
     if (isTriviallyCopyableType(ty)) return true;
     if (depth >= max_copyable_depth) return false;
@@ -64,6 +68,60 @@ fn isCopyableStructType(self: *const Checker, ty: model.ResolvedType, depth: u32
         return true;
     }
     return false;
+}
+
+fn containsConstructAnyDepth(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+    if (depth >= max_copyable_depth) return false;
+    return switch (ty.kind) {
+        .construct_any => true,
+        .array => if (ty.name) |name|
+            containsConstructAnyDepth(self, resolvedTypeFromStorageText(name) orelse return false, depth + 1)
+        else
+            false,
+        .named => containsConstructAnyStructType(self, ty, depth),
+        .enum_instance => containsConstructAnyEnumType(self, ty, depth),
+        else => false,
+    };
+}
+
+fn containsConstructAnyEnumType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+    const name = ty.name orelse return false;
+    for (self.program.source_program.enums) |enum_decl| {
+        if (!std.mem.eql(u8, enum_decl.name, name)) continue;
+        for (enum_decl.variants) |variant| {
+            if (variant.payload_ty) |payload| {
+                if (containsConstructAnyDepth(self, payload, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+fn containsConstructAnyStructType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+    const name = ty.name orelse return false;
+    for (self.program.source_program.types) |type_decl| {
+        if (!std.mem.eql(u8, type_decl.name, name)) continue;
+        for (type_decl.fields) |field| {
+            if (containsConstructAnyDepth(self, field.ty, depth + 1)) return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn resolvedTypeFromStorageText(text: []const u8) ?model.ResolvedType {
+    if (std.mem.startsWith(u8, text, "any ")) {
+        return .{
+            .kind = .construct_any,
+            .name = text,
+            .construct_constraint = .{ .construct_name = text[4..] },
+        };
+    }
+    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
+        return .{ .kind = .array, .name = text[1 .. text.len - 1] };
+    }
+    return .{ .kind = .named, .name = text };
 }
 
 test {

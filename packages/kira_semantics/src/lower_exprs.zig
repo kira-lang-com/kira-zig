@@ -13,6 +13,7 @@ const matches = @import("lower_stmts_match.zig");
 const attempts = @import("lower_stmts_attempt.zig");
 const scope_flow = @import("lower_exprs_scope_flow.zig");
 const types = @import("lower_exprs_types.zig");
+const enum_variants = @import("lower_exprs_enum_variants.zig");
 
 pub const lowerStructLiteralExpr = calls.lowerStructLiteralExpr;
 pub const lowerTypeConstruction = calls.lowerTypeConstruction;
@@ -22,6 +23,7 @@ pub const lowerCallExpr = calls.lowerCallExpr;
 pub const lowerNativeStateExpr = native_state.lowerNativeStateExpr;
 pub const lowerNativeUserDataExpr = native_state.lowerNativeUserDataExpr;
 pub const lowerNativeRecoverExpr = native_state.lowerNativeRecoverExpr;
+pub const lowerNativeStateFreeExpr = native_state.lowerNativeStateFreeExpr;
 pub const lowerMatchStatement = matches.lowerMatchStatement;
 pub const rejectOutstandingMovedFields = types.rejectOutstandingMovedFields;
 
@@ -80,7 +82,7 @@ pub const flattenMemberExpr = types.flattenMemberExpr;
 pub const flattenMemberExprPath = types.flattenMemberExprPath;
 pub const lowerBuilderBlock = builder.lowerBuilderBlock;
 const emitUseAfterMove = types.emitUseAfterMove;
-pub const lowerEnumVariantExprExpected = lowerEnumVariantExprExpectedInternal;
+pub const lowerEnumVariantExprExpected = enum_variants.lowerEnumVariantExprExpected;
 
 fn tryLowerCountMemberExpr(object: *model.Expr, member_name: []const u8, span: source_pkg.Span) ?model.Expr {
     if (!std.mem.eql(u8, member_name, "count")) return null;
@@ -283,6 +285,7 @@ pub fn lowerStatement(
             }
             const iterator = try lowerExpr(ctx, node.iterator, imports, scope, function_headers);
             const binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), node.span);
+            const binding_ownership: model.OwnershipMode = if (shared.containsConstructAnyStorage(ctx, binding_ty)) .borrow_read else .owned;
             if (iterator.* == .array and iterator.array.elements.len == 0 and binding_ty.kind == .unknown) {
                 var empty_body_scope = try scope_flow.cloneScope(ctx.allocator, scope.*);
                 defer empty_body_scope.deinit(ctx.allocator);
@@ -304,6 +307,7 @@ pub fn lowerStatement(
                 .id = local_id,
                 .ty = binding_ty,
                 .storage = .immutable,
+                .ownership = binding_ownership,
                 .initialized = true,
                 .decl_span = node.span,
             });
@@ -311,7 +315,7 @@ pub fn lowerStatement(
                 .id = local_id,
                 .name = try ctx.allocator.dupe(u8, node.binding_name),
                 .ty = binding_ty,
-                .ownership = .owned,
+                .ownership = binding_ownership,
                 .span = node.span,
             });
             const lowered: model.Statement = .{ .for_stmt = .{
@@ -479,140 +483,6 @@ fn emitUninitializedLocalUse(
     });
 }
 
-fn lowerEnumVariantExprExpectedInternal(
-    ctx: *shared.Context,
-    expr: *syntax.ast.Expr,
-    expected_type: model.ResolvedType,
-    imports: []const model.Import,
-    scope: *model.Scope,
-    function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
-) anyerror!?*model.Expr {
-    if (expected_type.kind != .enum_instance or expected_type.name == null) return null;
-    return lowerEnumVariantExpr(ctx, expr, expected_type, imports, scope, function_headers);
-}
-
-fn lowerEnumVariantExpr(
-    ctx: *shared.Context,
-    expr: *syntax.ast.Expr,
-    expected_type: model.ResolvedType,
-    imports: []const model.Import,
-    scope: *model.Scope,
-    function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
-) anyerror!?*model.Expr {
-    const EnumTarget = struct {
-        enum_name: []const u8,
-        variant_name: []const u8,
-        payload_expr: ?*syntax.ast.Expr,
-        span: source_pkg.Span,
-    };
-
-    const enum_target: EnumTarget = switch (expr.*) {
-        .member => |node| .{
-            .enum_name = expected_type.name orelse try flattenMemberExprPath(ctx.allocator, node.object),
-            .variant_name = node.member,
-            .payload_expr = @as(?*syntax.ast.Expr, null),
-            .span = node.span,
-        },
-        .call => |node| blk: {
-            if (node.callee.* != .member or node.trailing_builder != null or node.trailing_callback != null) return null;
-            if (node.args.len > 1) return null;
-            break :blk .{
-                .enum_name = expected_type.name orelse try flattenMemberExprPath(ctx.allocator, node.callee.member.object),
-                .variant_name = node.callee.member.member,
-                .payload_expr = if (node.args.len == 1) node.args[0].value else null,
-                .span = node.span,
-            };
-        },
-        else => return null,
-    };
-
-    const resolved_name = resolveEnumName(ctx, enum_target.enum_name, expected_type.name orelse "");
-    const enum_decl = resolveEnumDecl(ctx, resolved_name) orelse return null;
-    if (enum_decl.type_params.len != 0 and (expected_type.name == null or !std.mem.eql(u8, expected_type.name.?, resolved_name))) {
-        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM106",
-            .title = "generic enum constructor needs an explicit type",
-            .message = "Generic enum variant construction currently needs an explicit surrounding enum type.",
-            .labels = &.{diagnostics.primaryLabel(enum_target.span, "constructor does not provide enough type information")},
-            .help = "Write an explicit type such as `let value: Result<String, ParseError> = Result.Ok(\"ok\")`.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-
-    const variant_decl = findEnumVariant(enum_decl, enum_target.variant_name) orelse return null;
-    const payload = if (enum_target.payload_expr) |payload_expr|
-        if (variant_decl.payload_ty) |payload_ty|
-            if (function_headers) |headers|
-                try types.lowerExpectedValue(ctx, payload_expr, payload_ty, imports, scope, headers, enum_target.span)
-            else
-                try lowerExpr(ctx, payload_expr, imports, scope, function_headers)
-        else {
-            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                .severity = .@"error",
-                .code = "KSEM105",
-                .title = "match pattern payload is invalid",
-                .message = "This enum variant does not accept a payload value.",
-                .labels = &.{diagnostics.primaryLabel(enum_target.span, "payload value is not valid for this enum variant")},
-                .help = "Remove the argument from this enum constructor call.",
-            });
-            return error.DiagnosticsEmitted;
-        }
-    else if (variant_decl.payload_ty != null)
-        variant_decl.default_value
-    else
-        null;
-
-    if (variant_decl.payload_ty != null and payload == null) {
-        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM105",
-            .title = "match pattern payload is invalid",
-            .message = "This enum variant requires an associated payload value.",
-            .labels = &.{diagnostics.primaryLabel(enum_target.span, "missing enum payload value")},
-            .help = "Pass the payload argument or add a default value on the enum variant declaration.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-
-    const lowered = try ctx.allocator.create(model.Expr);
-    lowered.* = .{ .construct_enum_variant = .{
-        .enum_name = try ctx.allocator.dupe(u8, resolved_name),
-        .variant_name = try ctx.allocator.dupe(u8, variant_decl.name),
-        .discriminant = variant_decl.discriminant,
-        .payload = payload,
-        .ty = .{ .kind = .enum_instance, .name = try ctx.allocator.dupe(u8, resolved_name) },
-        .span = enum_target.span,
-    } };
-    return lowered;
-}
-
-fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
-    if (ctx.concrete_enums) |concrete_enums| {
-        if (concrete_enums.get(name)) |enum_decl| return enum_decl;
-    }
-    if (ctx.enum_headers) |headers| {
-        if (headers.get(name)) |enum_decl| return enum_decl;
-    }
-    return null;
-}
-
-fn resolveEnumName(ctx: *shared.Context, candidate: []const u8, fallback: []const u8) []const u8 {
-    if (candidate.len != 0) {
-        if (resolveEnumDecl(ctx, candidate) != null) return candidate;
-        const leaf = qualifiedLeaf(candidate);
-        if (resolveEnumDecl(ctx, leaf) != null) return leaf;
-    }
-    return fallback;
-}
-
-fn findEnumVariant(enum_decl: model.EnumDecl, name: []const u8) ?model.EnumVariantHir {
-    for (enum_decl.variants) |variant_decl| {
-        if (std.mem.eql(u8, variant_decl.name, name)) return variant_decl;
-    }
-    return null;
-}
-
 pub fn lowerExpr(
     ctx: *shared.Context,
     expr: *syntax.ast.Expr,
@@ -623,7 +493,7 @@ pub fn lowerExpr(
     ctx.lower_depth += 1;
     defer ctx.lower_depth -= 1;
     try shared.checkLoweringDepth(ctx, shared.exprSpan(expr.*));
-    if (try lowerEnumVariantExpr(ctx, expr, .{ .kind = .unknown }, imports, scope, function_headers)) |enum_expr| {
+    if (try enum_variants.lowerEnumVariantExpr(ctx, expr, .{ .kind = .unknown }, imports, scope, function_headers)) |enum_expr| {
         return enum_expr;
     }
     const lowered = try ctx.allocator.create(model.Expr);
@@ -634,7 +504,14 @@ pub fn lowerExpr(
         .bool => |node| lowered.* = .{ .boolean = .{ .value = node.value, .span = node.span } },
         .array => |node| {
             var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
-            for (node.elements) |element| try elements.append(try lowerExpr(ctx, element, imports, scope, function_headers));
+            for (node.elements) |element| {
+                const lowered_element = try lowerExpr(ctx, element, imports, scope, function_headers);
+                // An Any field read as an array element is a partial move out of
+                // its owner (`[content]` forwarding a single content field into an
+                // array-content widget — the editor SurfaceBox case).
+                shared.markAnyFieldMovedIntoOwned(ctx, scope, lowered_element, exprSpan(element.*));
+                try elements.append(lowered_element);
+            }
             const array_ty = try resolveArrayLiteralType(ctx, elements.items, node.span);
             lowered.* = .{ .array = .{
                 .elements = try elements.toOwnedSlice(),
@@ -671,6 +548,9 @@ pub fn lowerExpr(
         },
         .native_recover => |node| {
             lowered.* = try lowerNativeRecoverExpr(ctx, node, imports, scope, function_headers);
+        },
+        .native_state_free => |node| {
+            lowered.* = try lowerNativeStateFreeExpr(ctx, node, imports, scope, function_headers);
         },
         .ownership => |node| {
             return try lowerOwnershipExpr(ctx, node, imports, scope, function_headers);
@@ -847,7 +727,7 @@ pub fn lowerExpr(
                 return lowered;
             }
             // A computed-property accessor (`widget.node`) runs the Widget->Node bridge.
-            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span)) |accessor| {
+            if (try members.tryLowerComputedAccessor(ctx, object, node.member, node.span, scope)) |accessor| {
                 lowered.* = accessor.*;
                 return lowered;
             }
@@ -897,6 +777,7 @@ pub fn lowerExpr(
                 .operand = operand,
                 .ty = switch (node.op) {
                     .negate => operand_type,
+                    .bit_not => operand_type,
                     .not => .{ .kind = .boolean },
                 },
                 .span = node.span,
@@ -925,6 +806,11 @@ pub fn lowerExpr(
                     .greater_equal => .greater_equal,
                     .logical_and => .logical_and,
                     .logical_or => .logical_or,
+                    .bit_and => .bit_and,
+                    .bit_or => .bit_or,
+                    .bit_xor => .bit_xor,
+                    .shift_left => .shift_left,
+                    .shift_right => .shift_right,
                 },
                 .lhs = lhs,
                 .rhs = rhs,
