@@ -337,6 +337,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out Kira
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -356,30 +359,53 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          cat > /tmp/notes.md << 'RELEASE_NOTES'
-          Kira ${{ github.ref_name }} release
+          VERSION="${TAG_NAME#v}"
+
+          # Header + the matching CHANGELOG.md section (everything between this
+          # version's heading and the next "## [" heading).
+          printf '## Kira %s\n\n' "$VERSION" > /tmp/notes.md
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { capture = 1; next }
+            capture && index($0, "## [") == 1 { exit }
+            capture { print }
+          ' CHANGELOG.md >> /tmp/notes.md
+
+          if ! grep -q '[^[:space:]]' /tmp/notes.md; then
+            printf 'Kira %s release.\n' "$VERSION" >> /tmp/notes.md
+          fi
+
+          cat >> /tmp/notes.md << 'RELEASE_NOTES'
 
           ## Installation
-          Extract the `kira-<platform>` archive for your platform, put `kira` on your PATH, and run it once to install the matching managed toolchain.
-          Use `kira fetch-llvm` afterwards if you want LLVM/native and hybrid backends on that machine.
 
-          ## What's Included
-          - `kira-<platform>` - Bootstrapper launcher archive for each supported host
-          - `kira-toolchain-<platform>` - Managed Kira toolchain archive downloaded automatically by the launcher
-          - `SHA256SUMS.txt` - Checksums for all published assets
+          Download the `kira-<platform>` archive for your host, put `kira` on your
+          `PATH`, and run it once to install the matching managed toolchain. Run
+          `kira fetch-llvm` afterwards for LLVM/native and hybrid backends.
+
+          ## Assets
+
+          - `kira-<platform>` — bootstrapper launcher for each supported host
+            (linux-x64, macos-arm64, windows-x64)
+          - `kira-toolchain-<platform>` — managed toolchain archive fetched
+            automatically by the launcher
+          - `SHA256SUMS.txt` — checksums for every published asset
 
           ## Verification
-          Verify the checksums using `sha256sum -c SHA256SUMS.txt`
+
+          Verify the checksums with `sha256sum -c SHA256SUMS.txt`.
           RELEASE_NOTES
+
+          printf '\n**Full changelog**: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+            "$GH_REPO" "$TAG_NAME" >> /tmp/notes.md
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release edit "$TAG_NAME" \
-              --title "$TAG_NAME" \
+              --title "Kira ${VERSION}" \
               --notes-file /tmp/notes.md
             gh release upload "$TAG_NAME" artifacts/* --clobber
           else
             gh release create "$TAG_NAME" \
-              --title "$TAG_NAME" \
+              --title "Kira ${VERSION}" \
               --notes-file /tmp/notes.md \
               artifacts/*
           fi
