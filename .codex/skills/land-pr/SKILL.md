@@ -33,17 +33,15 @@ merge** — it is the only method that collapses a PR to a single flat-list entr
 It is not technically a merge commit and it discards the individual commit
 messages, keeping only the squash message.
 
-## Default for this repo
+## Default for this repo: squash-merge BOTH stages
 
-The repo owner's standing preference is **one entry per PR in GitHub's UI**, which
-means **squash and merge for fork-internal PRs**. This deliberately overrides the
-older "no-ff merge only" guidance in Agents.md for the fork stage — record that in
-the PR when you land it.
-
-The **upstream** PR (fork `main` -> `kira-lang-com/kira` `main`) still uses a
-**no-fast-forward merge commit**: upstream wants one merge commit per landed unit,
-and the squashed fork history already collapsed the detail, so the upstream merge
-adds exactly one clean merge commit referencing one squashed commit.
+The repo owner's standing rule is **one entry per PR in GitHub's UI, everywhere** —
+so **squash and merge every PR, fork AND upstream**. Squash is the only method that
+collapses a PR to a single flat-list entry, and the owner wants that for both the
+fork-internal PR and the upstream PR. This deliberately overrides the older
+"no-fast-forward merge commit for upstream" guidance — record the override in the
+PR when you land it. Never `--merge` (a real merge commit re-exposes the individual
+commits in GitHub's flat list) and never `--rebase` (flattens all N onto the line).
 
 ## Procedure
 
@@ -62,13 +60,13 @@ adds exactly one clean merge commit referencing one squashed commit.
    title is a good default). Confirm it landed as one commit:
    `git log --oneline <base> -3`.
 
-3. **Upstream PR — no-fast-forward merge commit.** After the fork PR is merged
-   into fork `main`:
+3. **Upstream PR — also squash and merge.** After the fork PR is merged into fork
+   `main`, open the upstream PR from fork `main` and land it the same way:
    ```sh
-   gh pr merge <n> --repo kira-lang-com/kira --merge
+   gh pr merge <n> --repo kira-lang-com/kira --squash --delete-branch
    ```
-   `--merge` (never `--squash`, never `--rebase`) so upstream `main`'s first-parent
-   line records one merge commit per landed unit.
+   `--squash` (never `--merge`, never `--rebase`) so upstream `main` also reads as
+   one flat-list entry per landed unit.
 
 ## Pushing branches that touch `.github/workflows/`
 
