@@ -103,7 +103,7 @@ fn functionReturnsFresh(
                 },
                 .call_virtual => |v| {
                     const dst = v.dst orelse continue;
-                    markReg(reg_fresh, reg_written, dst, v.return_ty.kind == .construct_any);
+                    markReg(reg_fresh, reg_written, dst, virtualCallReturnsFresh(program, v, known));
                 },
                 .store_local => |v| {
                     if (v.local >= local_ok.len) continue;
@@ -135,6 +135,56 @@ fn functionReturnsFresh(
         }
     }
     return saw_return;
+}
+
+// A virtual call's Any result is fresh only when EVERY dispatch target it can
+// reach is proven fresh — mirrors backend_capi_calls.lowerCallVirtual so the
+// analysis matches the code that actually runs:
+//   - a concrete `static_type_name` routes to lowerStaticVirtualCall, a normal
+//     call to the resolved method, which can return a borrowed Any alias, so it
+//     is fresh only if that resolved callee is proven fresh (same as `.call`);
+//   - otherwise the construct-family dispatch calls one candidate per matching
+//     implementation, fresh only if all candidates are proven fresh (any
+//     borrowed-returning candidate makes tracking the result a double-free).
+fn virtualCallReturnsFresh(program: *const ir.Program, v: ir.VirtualCall, known: *const FreshAnyReturns) bool {
+    if (v.return_ty.kind != .construct_any) return false;
+    if (findTypeDecl(program, v.static_type_name)) |type_decl| {
+        const fn_id = methodFunctionId(type_decl, v.method_name) orelse return false;
+        return known.contains(fn_id);
+    }
+    var matched = false;
+    for (program.construct_implementations) |implementation| {
+        if (!implementationSatisfiesFamily(implementation, v.static_type_name)) continue;
+        const fn_id = methodFunctionIdByType(program, implementation.type_name, v.method_name) orelse continue;
+        matched = true;
+        if (!known.contains(fn_id)) return false;
+    }
+    return matched;
+}
+
+fn findTypeDecl(program: *const ir.Program, name: []const u8) ?ir.TypeDecl {
+    for (program.types) |type_decl| {
+        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+    }
+    return null;
+}
+
+fn methodFunctionId(type_decl: ir.TypeDecl, method_name: []const u8) ?u32 {
+    for (type_decl.methods) |method_decl| {
+        if (std.mem.eql(u8, method_decl.name, method_name)) return method_decl.function_id;
+    }
+    return null;
+}
+
+fn methodFunctionIdByType(program: *const ir.Program, type_name: []const u8, method_name: []const u8) ?u32 {
+    return methodFunctionId(findTypeDecl(program, type_name) orelse return null, method_name);
+}
+
+fn implementationSatisfiesFamily(implementation: ir.ConstructImplementation, family: []const u8) bool {
+    for (implementation.families) |candidate| {
+        if (std.mem.eql(u8, candidate, family)) return true;
+    }
+    return std.mem.eql(u8, implementation.construct_constraint.construct_name, family);
 }
 
 fn markReg(reg_fresh: []bool, reg_written: []bool, dst: u32, fresh: bool) void {
