@@ -203,6 +203,13 @@ fn emitStatement(allocator: std.mem.Allocator, writer: anytype, statement: shade
             }
             try writer.writeAll("\n");
         },
+        .while_stmt => |while_stmt| {
+            try writer.writeAll("while (");
+            try emitExpr(allocator, writer, while_stmt.condition);
+            try writer.writeAll(") ");
+            try emitBlock(allocator, writer, while_stmt.body, indent_level);
+            try writer.writeAll("\n");
+        },
     }
 }
 
@@ -284,6 +291,23 @@ fn emitExpr(allocator: std.mem.Allocator, writer: anytype, expr: *const shader_i
                     try emitCallArgs(allocator, writer, call_expr.args);
                     try writer.writeByte(')');
                 },
+                .load => {
+                    // texelFetch: unfiltered integer-coordinate read.
+                    try writer.writeAll("textureLoad(");
+                    try emitExpr(allocator, writer, call_expr.args[0]);
+                    try writer.writeAll(", vec2<i32>(");
+                    try emitExpr(allocator, writer, call_expr.args[1]);
+                    try writer.writeAll("), 0)");
+                },
+                .atomic_add => {
+                    try writer.writeAll("atomicAdd(&");
+                    try emitExpr(allocator, writer, call_expr.args[0]);
+                    try writer.writeAll("[");
+                    try emitExpr(allocator, writer, call_expr.args[1]);
+                    try writer.writeAll("], ");
+                    try emitExpr(allocator, writer, call_expr.args[2]);
+                    try writer.writeByte(')');
+                },
             },
         },
     }
@@ -348,6 +372,7 @@ fn wgslTextureName(allocator: std.mem.Allocator, texture: shader_model.TextureDi
     _ = allocator;
     return switch (texture) {
         .texture_2d => "texture_2d<f32>",
+        .texture_2d_uint => "texture_2d<u32>",
         .texture_cube => "texture_cube<f32>",
         .depth_2d => "texture_depth_2d",
     };

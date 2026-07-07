@@ -1,0 +1,52 @@
+// Codex P2 regression: a consuming method called on a NESTED field receiver
+// (`outer.inner.render()`, not just `self.field.render()`). The receiver walk
+// must resolve the root local and partial-move the outermost field, voiding
+// the leaf slot — otherwise the callee frees the leaf's Any payload and the
+// root drops the same sub-field again (double free). Leak-gated on llvm.
+
+construct Widget {
+    @Required let body: Widget
+
+    @Consuming
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Widget Leaf(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+struct Inner {
+    var child: some Widget
+}
+
+struct Outer {
+    var inner: Inner
+}
+
+function build(tag: Int) -> some Widget {
+    return Leaf(text: "n")
+}
+
+function consume(outer: Outer) -> Int {
+    // Nested field receiver: outer.inner.child is a consuming call whose
+    // receiver's object is itself a field (inner), not a local.
+    let lines = outer.inner.child.render()
+    return lines.count
+}
+
+@Main
+function main() {
+    var round = 0
+    var total = 0
+    while round < 30 {
+        let outer = Outer { inner: Inner { child: build(round) } }
+        total = total + consume(move outer)
+        round = round + 1
+    }
+    print(total)
+    return
+}

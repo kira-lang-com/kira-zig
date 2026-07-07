@@ -37,6 +37,11 @@ pub const PhaseExpectation = struct {
 
 pub const Expectation = struct {
     backends: []const Backend = &.{},
+    // Top-level `check_leaks = true`: after the llvm run phase passes, re-run the
+    // native binary under macOS `leaks --atExit` and fail the case if any leaks
+    // are reported (see tests/leak_check.zig). VM/hybrid phases are unaffected
+    // (the VM asserts its own heap cleanup; hybrid defers frees to the VM).
+    check_leaks: bool = false,
     check: PhaseExpectation,
     build: PhaseExpectation,
     run: PhaseExpectation,
@@ -135,6 +140,7 @@ pub fn parseExpectation(
     text: []const u8,
 ) !Expectation {
     var backends = std.array_list.Managed(Backend).init(allocator);
+    var check_leaks = false;
     var check = PhaseBuilder{};
     var build = PhaseBuilder{};
     var run = PhaseBuilder{};
@@ -157,6 +163,16 @@ pub fn parseExpectation(
 
         switch (section) {
             .top => {
+                if (std.mem.eql(u8, key, "check_leaks")) {
+                    if (std.mem.eql(u8, value, "true")) {
+                        check_leaks = true;
+                    } else if (std.mem.eql(u8, value, "false")) {
+                        check_leaks = false;
+                    } else {
+                        return error.InvalidExpectation;
+                    }
+                    continue;
+                }
                 if (!std.mem.eql(u8, key, "backends")) return error.InvalidExpectation;
                 if (backends.items.len != 0) return error.InvalidExpectation;
                 const parsed = try parseBackends(allocator, value);
@@ -181,6 +197,7 @@ pub fn parseExpectation(
 
     return .{
         .backends = resolved_backends,
+        .check_leaks = check_leaks,
         .check = check_expectation,
         .build = build_expectation,
         .run = run_expectation,

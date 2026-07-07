@@ -156,6 +156,7 @@ fn cloneArrayValueDynamic(vm: anytype, module: *const bytecode.Module, source: *
     object.* = .{
         .len = source.len,
         .items = items.ptr,
+        .cap = @max(source.len, 1),
     };
     return vm.heap.registerArray(object);
 }

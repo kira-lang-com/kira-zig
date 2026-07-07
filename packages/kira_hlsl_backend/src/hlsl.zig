@@ -7,6 +7,7 @@ pub const LoweredShader = struct {
     shader_name: []const u8,
     vertex_source: ?[]const u8 = null,
     fragment_source: ?[]const u8 = null,
+    compute_source: ?[]const u8 = null,
 };
 
 pub fn lowerShader(
@@ -15,25 +16,23 @@ pub fn lowerShader(
     shader_decl: shader_ir.ShaderDecl,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !LoweredShader {
-    if (shader_decl.kind == .compute) {
-        try diagnostics.appendOwned(allocator, out_diagnostics, .{
-            .severity = .@"error",
-            .code = "KSL123",
-            .title = "compute shaders are not supported by the HLSL graphics backend",
-            .message = "The current HLSL lowering path is scoped to graphics shaders for render pipeline validation.",
-            .help = "Use a graphics shader for HLSL today, or add a compute-capable lowering path before building this shader.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-
-    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
-    const fragment_stage = findStage(shader_decl.stages, .fragment);
-
+    _ = out_diagnostics;
     var lowerer = Lowerer{
         .allocator = allocator,
         .program = &program,
         .shader = &shader_decl,
     };
+
+    if (shader_decl.kind == .compute) {
+        const compute_stage = findStage(shader_decl.stages, .compute) orelse return error.InvalidArguments;
+        return .{
+            .shader_name = shader_decl.name,
+            .compute_source = try lowerer.emitStage(compute_stage),
+        };
+    }
+
+    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
+    const fragment_stage = findStage(shader_decl.stages, .fragment);
 
     return .{
         .shader_name = shader_decl.name,
@@ -165,6 +164,19 @@ const Lowerer = struct {
 
     fn emitStageEntry(self: *Lowerer, writer: anytype, stage: shader_ir.StageDecl) !void {
         const entry_name = stageEntryName(self.allocator, self.shader.name, stage.kind);
+        if (stage.kind == .compute) {
+            const t = stage.threads orelse shader_ir.Threads{ .x = 64, .y = 1, .z = 1 };
+            try writer.print("[numthreads({d}, {d}, {d})]\n", .{ t.x, t.y, t.z });
+            try writer.print("void {s}(", .{entry_name});
+            if (stage.input_type) |input_type_name| {
+                try writer.print("{s} kira_input", .{sanitizeName(input_type_name)});
+            }
+            try writer.writeAll(") {\n    ");
+            try writer.print("{s}(", .{sanitizeName(stage.entry.name)});
+            if (stage.input_type != null) try writer.writeAll("kira_input");
+            try writer.writeAll(");\n}\n");
+            return;
+        }
         const return_type = if (stage.output_type) |output_type_name| sanitizeName(output_type_name) else "void";
         try writer.print("{s} {s}(", .{ return_type, entry_name });
         if (stage.input_type) |input_type_name| {
@@ -228,6 +240,13 @@ fn emitStatement(writer: anytype, statement: shader_ir.Statement, indent_level: 
                 try writer.writeAll(" else ");
                 try emitBlock(writer, else_block, indent_level);
             }
+            try writer.writeAll("\n");
+        },
+        .while_stmt => |while_stmt| {
+            try writer.writeAll("while (");
+            try emitExpr(writer, while_stmt.condition);
+            try writer.writeAll(") ");
+            try emitBlock(writer, while_stmt.body, indent_level);
             try writer.writeAll("\n");
         },
     }
@@ -315,6 +334,27 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try emitExpr(writer, call_expr.args[2]);
                     try writer.writeByte(')');
                 },
+                .load => {
+                    // texelFetch: Texture2D.Load(int3(x, y, mip)).
+                    const texture_name = switch (call_expr.args[0].node) {
+                        .name => |name_ref| name_ref.name,
+                        else => "unsupported_texture",
+                    };
+                    try writer.print("{s}.Load(int3(", .{sanitizeName(texture_name)});
+                    try emitExpr(writer, call_expr.args[1]);
+                    try writer.writeAll(", 0))");
+                },
+                .atomic_add => {
+                    // HLSL `InterlockedAdd` is a STATEMENT with an out-parameter for
+                    // the original value; it cannot be a valid inline expression, and
+                    // the D3D backend is unverified. Emitting an undefined
+                    // `kira_atomic_add(...)` helper produced HLSL that downstream
+                    // compilation must reject while the KSL build reported pass — a
+                    // Core Law #2 smoke surface. Fail clearly instead (Codex review):
+                    // GLSL/MSL/WGSL emit real atomic builtins; HLSL rejects until it
+                    // has real statement-form lowering.
+                    return error.UnsupportedShaderIntrinsic;
+                },
             },
         },
     }
@@ -387,6 +427,7 @@ fn hlslTypeName(ty: shader_model.Type) []const u8 {
 fn hlslTextureName(texture: shader_model.TextureDimension) []const u8 {
     return switch (texture) {
         .texture_2d => "Texture2D<float4>",
+        .texture_2d_uint => "Texture2D<uint>",
         .texture_cube => "TextureCube<float4>",
         .depth_2d => "Texture2D<float>",
     };

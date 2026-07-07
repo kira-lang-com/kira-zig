@@ -16,6 +16,7 @@ pub const OpCode = @import("instruction.zig").OpCode;
 pub const isFused = @import("instruction.zig").isFused;
 pub const CompareOp = @import("instruction.zig").CompareOp;
 pub const UnaryOp = @import("instruction.zig").UnaryOp;
+pub const BitOp = @import("instruction.zig").BitOp;
 pub const ArithKind = @import("instruction.zig").ArithKind;
 pub const TypeRef = @import("instruction.zig").TypeRef;
 pub const compileProgram = @import("compiler.zig").compileProgram;

@@ -7,6 +7,7 @@ pub const LoweredShader = struct {
     shader_name: []const u8,
     vertex_source: ?[]const u8 = null,
     fragment_source: ?[]const u8 = null,
+    compute_source: ?[]const u8 = null,
 };
 
 pub fn lowerShader(
@@ -15,25 +16,23 @@ pub fn lowerShader(
     shader_decl: shader_ir.ShaderDecl,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !LoweredShader {
-    if (shader_decl.kind == .compute) {
-        try diagnostics.appendOwned(allocator, out_diagnostics, .{
-            .severity = .@"error",
-            .code = "KSL121",
-            .title = "compute shaders are not supported by the GLSL 330 backend",
-            .message = "The current KSL backend targets GLSL 330 for the repo's existing Sokol/OpenGL graphics path, and that path does not support compute shaders.",
-            .help = "Use a graphics shader for the GLSL 330 backend, or add a future compute-capable backend before trying to build this shader.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-
-    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
-    const fragment_stage = findStage(shader_decl.stages, .fragment);
-
+    _ = out_diagnostics;
     var lowerer = Lowerer{
         .allocator = allocator,
         .program = &program,
         .shader = &shader_decl,
     };
+
+    if (shader_decl.kind == .compute) {
+        const compute_stage = findStage(shader_decl.stages, .compute) orelse return error.InvalidArguments;
+        return .{
+            .shader_name = shader_decl.name,
+            .compute_source = try lowerer.emitComputeStage(compute_stage),
+        };
+    }
+
+    const vertex_stage = findStage(shader_decl.stages, .vertex) orelse return error.InvalidArguments;
+    const fragment_stage = findStage(shader_decl.stages, .fragment);
 
     return .{
         .shader_name = shader_decl.name,
@@ -46,6 +45,45 @@ const Lowerer = struct {
     allocator: std.mem.Allocator,
     program: *const shader_ir.Program,
     shader: *const shader_ir.ShaderDecl,
+
+    // GLSL 330 has no compute stage; emit a 430 compute shader. This backend is
+    // unverified on-device (the repo's GL path is 330 graphics only), but the
+    // source must still be VALID: emitResources declares storage as an SSBO and
+    // main() synthesizes the input struct from GLSL compute builtins before
+    // calling entry — previously main() called entry() with no argument, so any
+    // compute shader using its input produced invalid GLSL (Codex review).
+    fn emitComputeStage(self: *Lowerer, stage: shader_ir.StageDecl) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        try out.writer.writeAll("#version 430 core\n\n");
+        try self.emitStructs(&out.writer);
+        try self.emitOptions(&out.writer);
+        try self.emitResources(&out.writer, .compute);
+        try self.emitHelpers(&out.writer);
+        try self.emitFunction(&out.writer, stage.entry);
+        const t = stage.threads orelse shader_ir.Threads{ .x = 64, .y = 1, .z = 1 };
+        try out.writer.print("layout(local_size_x = {d}, local_size_y = {d}, local_size_z = {d}) in;\n", .{ t.x, t.y, t.z });
+        try out.writer.writeAll("void main() {\n");
+        if (stage.input_type) |input_type_name| {
+            const input_type = findType(self.program.types, input_type_name) orelse return error.InvalidArguments;
+            try out.writer.print("    {s} kira_input;\n", .{sanitizeName(input_type.name)});
+            for (input_type.fields) |field_decl| {
+                const builtin = field_decl.builtin orelse continue;
+                const target = switch (builtin) {
+                    .thread_id => "gl_GlobalInvocationID",
+                    .local_id => "gl_LocalInvocationID",
+                    .group_id => "gl_WorkGroupID",
+                    .local_index => "gl_LocalInvocationIndex",
+                    else => continue,
+                };
+                try out.writer.print("    kira_input.{s} = {s};\n", .{ sanitizeName(field_decl.name), target });
+            }
+            try out.writer.print("    {s}(kira_input);\n", .{sanitizeName(stage.entry.name)});
+        } else {
+            try out.writer.print("    {s}();\n", .{sanitizeName(stage.entry.name)});
+        }
+        try out.writer.writeAll("}\n");
+        return out.toOwnedSlice();
+    }
 
     fn emitStage(self: *Lowerer, stage: shader_ir.StageDecl, paired_fragment: ?shader_ir.StageDecl) ![]const u8 {
         var out: std.Io.Writer.Allocating = .init(self.allocator);
@@ -80,7 +118,7 @@ const Lowerer = struct {
     }
 
     fn emitResources(self: *Lowerer, writer: anytype, stage: shader_model.Stage) !void {
-        _ = stage;
+        var storage_binding: u32 = 0;
         for (self.shader.groups) |group_decl| {
             for (group_decl.resources) |resource_decl| {
                 switch (resource_decl.kind) {
@@ -99,7 +137,25 @@ const Lowerer = struct {
                     .texture => {},
                     .sampler => {},
                     .storage => {
-                        // Storage resources stay in reflection for now; GLSL 330 graphics lowering does not emit them.
+                        // GLSL 430 compute emits the storage buffer as a real SSBO so
+                        // the compute body references a DECLARED buffer. GLSL 330
+                        // graphics has no SSBO, so storage stays reflection-only there
+                        // (graphics shaders do not carry storage). Previously the
+                        // compute source referenced an undeclared buffer yet reported
+                        // pass — a Core Law #2 fake-parity smoke surface (Codex review).
+                        if (stage == .compute) {
+                            const elem_ty = switch (resource_decl.ty) {
+                                .runtime_array => |elem| elem.*,
+                                else => resource_decl.ty,
+                            };
+                            try writer.print("layout(std430, binding = {d}) buffer {s}_Buffer {{\n    {s} {s}[];\n}};\n\n", .{
+                                storage_binding,
+                                sanitizeName(resource_decl.name),
+                                glslTypeName(elem_ty),
+                                sanitizeName(resource_decl.name),
+                            });
+                            storage_binding += 1;
+                        }
                     },
                 }
             }
@@ -303,6 +359,13 @@ fn emitStatement(writer: anytype, statement: shader_ir.Statement, indent_level: 
             }
             try writer.writeAll("\n");
         },
+        .while_stmt => |while_stmt| {
+            try writer.writeAll("while (");
+            try emitExpr(writer, while_stmt.condition);
+            try writer.writeAll(") ");
+            try emitBlock(writer, while_stmt.body, indent_level);
+            try writer.writeAll("\n");
+        },
     }
 }
 
@@ -407,6 +470,25 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try emitExpr(writer, call_expr.args[2]);
                     try writer.writeByte(')');
                 },
+                .load => {
+                    // texelFetch: unfiltered integer-coordinate read.
+                    const texture_name = switch (call_expr.args[0].node) {
+                        .name => |name_ref| name_ref.name,
+                        else => "unsupported_texture",
+                    };
+                    try writer.print("texelFetch(kira_{s}, ivec2(", .{sanitizeName(texture_name)});
+                    try emitExpr(writer, call_expr.args[1]);
+                    try writer.writeAll("), 0)");
+                },
+                .atomic_add => {
+                    try writer.writeAll("atomicAdd(");
+                    try emitExpr(writer, call_expr.args[0]);
+                    try writer.writeAll("[");
+                    try emitExpr(writer, call_expr.args[1]);
+                    try writer.writeAll("], ");
+                    try emitExpr(writer, call_expr.args[2]);
+                    try writer.writeByte(')');
+                },
             },
         },
     }
@@ -479,6 +561,7 @@ fn glslTypeName(ty: shader_model.Type) []const u8 {
 fn glslSamplerType(texture: shader_model.TextureDimension) []const u8 {
     return switch (texture) {
         .texture_2d => "sampler2D",
+        .texture_2d_uint => "usampler2D",
         .texture_cube => "samplerCube",
         .depth_2d => "sampler2DShadow",
     };

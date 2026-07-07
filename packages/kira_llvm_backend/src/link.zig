@@ -44,6 +44,12 @@ fn compileHelperSource(
     try argv.append(driver_path);
     try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
     if (pic and !isWindowsTarget(selector)) try argv.append("-fPIC");
+    // Array ownership free is unconditional: kira_array_release reclaims owned
+    // arrays on the pure-native path (the hybrid/VM path still defers to the VM's
+    // destructors). The old KIRA_ARRAY_OWNERSHIP_FREE gate is gone — the clone
+    // coverage it waited on (native-state boxing, field move-outs, borrowed-array
+    // returns) is complete and validated under `leaks` on leak-harness,
+    // liquid-glass, basic-foundation-app, and the project-matter editor.
     try argv.appendSlice(&.{ "-c", helper_source, "-o", helper_object });
     try runCommand(allocator, argv.items);
 }

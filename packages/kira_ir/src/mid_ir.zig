@@ -175,6 +175,7 @@ pub const Value = union(enum) {
     native_state: UnaryWrapperValue,
     native_user_data: UnaryWrapperValue,
     native_recover: UnaryWrapperValue,
+    native_state_free: UnaryWrapperValue,
     c_string_to_string: UnaryWrapperValue,
     array_len: UnaryWrapperValue,
     string_len: UnaryWrapperValue,

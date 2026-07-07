@@ -199,7 +199,10 @@ pub fn runPrepared(
             if (lhs == .integer and rhs == .integer) {
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = lhs.integer +% rhs.integer });
             } else {
-                setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.addValues(vm, lhs, rhs));
+                // setSlotOwned: string concatenation allocates a heap-managed result
+                // that the destination slot must own (numeric results are unmanaged,
+                // so ownership resolves to false for them exactly as before).
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.addValues(vm, lhs, rhs));
             }
             pc += 1;
             continue :dispatch code[pc];
@@ -229,14 +232,21 @@ pub fn runPrepared(
         .divide => |value| {
             const lhs = registers[value.lhs];
             const rhs = registers[value.rhs];
-            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(vm, lhs, rhs));
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(vm, lhs, rhs, value.unsigned));
             pc += 1;
             continue :dispatch code[pc];
         },
         .modulo => |value| {
             const lhs = registers[value.lhs];
             const rhs = registers[value.rhs];
-            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(vm, lhs, rhs));
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(vm, lhs, rhs, value.unsigned));
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .bitwise => |value| {
+            const lhs = registers[value.lhs];
+            const rhs = registers[value.rhs];
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.bitwiseValue(vm, lhs, rhs, value.op, value.unsigned));
             pc += 1;
             continue :dispatch code[pc];
         },
@@ -252,13 +262,15 @@ pub fn runPrepared(
             if (lhs == .integer and rhs == .integer) {
                 const lhs_int = lhs.integer;
                 const rhs_int = rhs.integer;
+                const lhs_u: u64 = @bitCast(lhs_int);
+                const rhs_u: u64 = @bitCast(rhs_int);
                 const result = switch (value.op) {
                     .equal => lhs_int == rhs_int,
                     .not_equal => lhs_int != rhs_int,
-                    .less => lhs_int < rhs_int,
-                    .less_equal => lhs_int <= rhs_int,
-                    .greater => lhs_int > rhs_int,
-                    .greater_equal => lhs_int >= rhs_int,
+                    .less => if (value.unsigned) lhs_u < rhs_u else lhs_int < rhs_int,
+                    .less_equal => if (value.unsigned) lhs_u <= rhs_u else lhs_int <= rhs_int,
+                    .greater => if (value.unsigned) lhs_u > rhs_u else lhs_int > rhs_int,
+                    .greater_equal => if (value.unsigned) lhs_u >= rhs_u else lhs_int >= rhs_int,
                 };
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = result });
             } else {
@@ -374,6 +386,11 @@ pub fn runPrepared(
             pc += 1;
             continue :dispatch code[pc];
         },
+        .free_native_state => |value| {
+            try native_state.freeNativeState(vm, registers, value);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
         .native_state_field_get => |value| {
             try native_state.nativeStateFieldGet(vm, module, registers, register_owned, value);
             pc += 1;
@@ -422,6 +439,19 @@ pub fn runPrepared(
             if (index >= array_ptr.len) {
                 vm.rememberError("array index is out of bounds");
                 return error.RuntimeFailure;
+            }
+            if (value.moved) {
+                // Checker-verified element DRAIN from an owned array: the
+                // destination takes the element's value as its owner and the
+                // slot tombstones to VOID — the array's release skips it and a
+                // later read of the drained slot fails the dispatch cleanly
+                // instead of double-freeing. Mirrors the native backend.
+                const mutable_array: *ArrayObject = @ptrFromInt(array_value.raw_ptr);
+                const drained = runtime_abi.bridgeValueToValue(mutable_array.items[index]);
+                mutable_array.items[index] = runtime_abi.bridgeValueFromValue(.void);
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], drained);
+                pc += 1;
+                continue :dispatch code[pc];
             }
             const element = try prologue.prepareArrayElement(vm, module, value.ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]), value.borrow);
             if (element.owned) {
@@ -557,7 +587,17 @@ pub fn runPrepared(
                 vm.rememberError("indirect load requires a valid pointer");
                 return error.RuntimeFailure;
             }
-            if (value.ty.kind == .ffi_struct) {
+            if (value.moved and value.ty.kind != .ffi_struct) {
+                // Checker-verified field move-out (`let x = obj.field`, Rust
+                // partial move): the destination takes the field's value AS ITS
+                // OWNER — no clone — and the field slot is VOIDED so the base
+                // drops with only its remaining fields. Mirrors the LLVM
+                // backend's moved-read storage nulling; without the void, base
+                // drop would free the value this register now owns.
+                const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr.raw_ptr);
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], slot_ptr.*);
+                slot_ptr.* = .void;
+            } else if (value.ty.kind == .ffi_struct) {
                 const type_name = value.ty.name orelse {
                     vm.rememberError("struct load type is missing a name");
                     return error.RuntimeFailure;
@@ -892,7 +932,9 @@ pub fn runPrepared(
                 runtime_abi.Value{ .integer = fused.arithIntegers(lhs.integer, rhs.integer, value.kind) }
             else
                 try fused.arithValues(vm, lhs, rhs, value.kind);
-            setSlotBorrowed(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
+            // setSlotOwned: string `+` allocates a heap-managed result the local must
+            // own; numeric results are unmanaged so this degrades to borrowed.
+            setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
             continue :dispatch code[pc];
         },
@@ -902,7 +944,7 @@ pub fn runPrepared(
                 runtime_abi.Value{ .integer = fused.arithIntegers(lhs.integer, value.imm, value.kind) }
             else
                 try fused.arithValues(vm, lhs, .{ .integer = value.imm }, value.kind);
-            setSlotBorrowed(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
+            setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
             continue :dispatch code[pc];
         },
