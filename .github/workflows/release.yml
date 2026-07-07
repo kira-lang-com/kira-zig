@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: "0.1.0"
+  VERSION: "2026.07.2"
   BINARY_NAME: "kira"
   PRIMARY_EXECUTABLE: "kirac"
 
@@ -185,7 +185,7 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           cat > /tmp/notes.md << 'RELEASE_NOTES'
-          Kira v0.1.0 release
+          Kira ${{ github.ref_name }} release
 
           ## Installation
           Extract the `kira-<platform>` archive for your platform, put `kira` on your PATH, and run it once to install the matching managed toolchain.
