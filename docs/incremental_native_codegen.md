@@ -156,12 +156,48 @@ module; everything else is a cache hit. That is where the <1s comes from.
 - Negative: a stale object must never be reused — covered by version bump (input
   1), config keying, and content addressing.
 
+## Measured performance and the cold-build verdict
+
+Editor (`project-matter/apps/editor`, 1264 lowered native functions), on the
+managed LLVM, objects emitted **in-process** (`LLVMRunPasses` + `EmitToFile`, no
+clang subprocess, no textual-IR round trip):
+
+| Build | Wall | Breakdown |
+| --- | --- | --- |
+| Whole-program (default path) | **~12 s** | frontend 3.4 s + one clang `-O2` ~8.5 s + link |
+| Incremental **warm**, one-function body edit | **~4.75 s** | frontend + 1 CGU re-emitted + link |
+| Incremental **cold** (empty cache) | **~26 s** | frontend 3.4 s + **emit 20.5 s** + link 0.5 s |
+
+Cold journey while building this: 153 s (serial clang) → 48 s (parallel clang) →
+35 s (in-process) → 26 s (per-CGU minimal declarations).
+
+**Cold does not beat whole-program, and the reason is structural.** The emit
+phase is ~20.5 s and is dominated by fixed *per-CGU* work — building each of the
+1265 modules' scaffold (struct types, dtor/dispatcher declarations, runtime
+externs, target machine) and running `EmitToFile` codegen — repeated once per
+unit. Whole-program does that work once.
+
+Crucially, **optimization is not the bottleneck.** Emit time is essentially flat
+across pass pipelines (`KIRA_CGU_PASSES`): `no-op-module` 20.6 s, `default<O1>`
+20.7 s, `default<O2>` 23.0 s. So a cheaper pipeline buys ~2.5 s at most — nowhere
+near the ~14 s needed to reach 12 s. Link is already trivial (0.5 s) because
+in-process objects skip the text round trip.
+
+Verdict: per-function splitting inherently multiplies fixed per-unit codegen
+overhead by N, so a cold build that populates the whole cache cannot beat a single
+whole-program compile. The remaining levers (reuse one `TargetMachine` per worker
+instead of per CGU; restrict the per-CGU type/dtor scaffold to referenced types)
+would shave seconds, not cross 12 s. And cold is the wrong target: it is paid
+once, after which every edit is ~4.75 s instead of ~12 s (break-even after two
+edits). The incremental win is the **warm** path, which works.
+
 ## Files
 
 | File | Role | Status |
 | --- | --- | --- |
-| `cgu_hash.zig` | CGU + support digests, invalidation properties | landed, tested |
+| `cgu_hash.zig` | per-function + support digests; all-signatures completeness | landed, tested |
 | `cgu_cache.zig` | content-addressed on-disk store + GC | landed, tested |
-| `backend_capi.zig` `buildModule` | whole-program build (default path) | unchanged |
-| split emitter | support + per-function modules, extern decls | in progress |
-| `backend.zig` `compile` | flag-gated dispatch to split emitter + relink | pending |
+| `backend_capi.zig` `buildModulePlanned` | whole-program / support / per-function via `ModulePlan` | landed |
+| `backend_capi_calls.zig` `collectBodyFunctionRefs` | per-CGU declared-function set (incl. virtual/family) | landed |
+| `cgu_build.zig` | split orchestrator: hash → cache → in-process parallel emit → relink → GC | landed |
+| `backend.zig` `compileViaCApi` | flag-gated (`KIRA_INCREMENTAL`) dispatch to the split path | landed |

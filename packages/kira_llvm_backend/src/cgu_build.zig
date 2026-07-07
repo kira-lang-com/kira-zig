@@ -21,6 +21,10 @@ const runtime_utils = @import("backend_runtime_utils.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
 
+fn nowNs() i128 {
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake).raw.toNanoseconds();
+}
+
 /// Whether the incremental path is requested. Default OFF: the whole-program
 /// build stays the default until the split is proven at full corpus parity.
 pub fn enabled() bool {
@@ -210,7 +214,8 @@ fn emitObjectInProcess(
     // the in-memory module.
     const options = api.LLVMCreatePassBuilderOptions();
     defer api.LLVMDisposePassBuilderOptions(options);
-    if (api.LLVMRunPasses(module_ref, "default<O2>", machine, options)) |run_err| {
+    const passes: [*:0]const u8 = if (std.c.getenv("KIRA_CGU_PASSES")) |p| p else "default<O2>";
+    if (api.LLVMRunPasses(module_ref, passes, machine, options)) |run_err| {
         const msg = api.LLVMGetErrorMessage(run_err);
         defer api.LLVMDisposeErrorMessage(msg);
         std.debug.print("kira incremental: opt passes failed: {s}\n", .{std.mem.span(msg)});
@@ -332,21 +337,26 @@ pub fn compileExecutable(
     }
 
     const rebuilt = pending.items.len;
+    const stats = std.c.getenv("KIRA_INCREMENTAL_STATS") != null;
+    const emit_start = nowNs();
     try emitPending(allocator, &api, request, triple, pending.items);
+    const emit_ns = nowNs() - emit_start;
 
     // Runtime + dynamic-FFI helper objects, then full relink of the live set.
+    const link_start = nowNs();
     const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
     const dynamic_ffi_object = try linker.buildDynamicFfiHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
     try objects.append(try allocator.dupe(u8, bridge_object));
     try objects.append(try allocator.dupe(u8, dynamic_ffi_object));
 
     try linker.linkExecutable(allocator, executable_path, objects.items, request.resolved_native_libraries, request.target_selector);
+    const link_ns = nowNs() - link_start;
 
     // Reclaim objects for functions that were deleted, renamed, or changed.
     _ = cache.collectGarbage() catch 0;
 
-    if (std.c.getenv("KIRA_INCREMENTAL_STATS") != null) {
-        std.debug.print("kira incremental: {d} CGUs reused, {d} rebuilt\n", .{ reused, rebuilt });
+    if (stats) {
+        std.debug.print("kira incremental: {d} CGUs reused, {d} rebuilt; emit {d}ms, link {d}ms\n", .{ reused, rebuilt, @divTrunc(emit_ns, std.time.ns_per_ms), @divTrunc(link_ns, std.time.ns_per_ms) });
     }
 
     var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
