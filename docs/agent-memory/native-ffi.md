@@ -64,6 +64,7 @@ Three important helpers:
 - `nativeState(value)` — box and copy Kira-owned state.
 - `nativeUserData(state)` — export opaque userdata token.
 - `nativeRecover<T>(token)` — recover typed mutable access.
+- `nativeStateFree(state_or_token)` — release the boxed state once native code no longer holds the token.
 
 Use this for native APIs that store and later hand back `void*` userdata.
 

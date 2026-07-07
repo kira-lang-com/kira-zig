@@ -1,4 +1,5 @@
 backends = ["hybrid", "vm", "llvm"]
+check_leaks = true
 
 [phases.check]
 result = "pass"

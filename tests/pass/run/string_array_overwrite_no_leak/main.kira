@@ -1,0 +1,27 @@
+// Codex regression: overwriting a [String] slot must free the old cloned
+// buffer. elementDestroy is null for String, so lowerArraySet used a plain
+// kira_array_store that orphaned the previous buffer — one leaked string per
+// overwrite. Runtime concatenation forces a heap buffer each store; the old
+// one must be freed. Leak-gated on llvm.
+
+@Main
+function main() {
+    var head = "item"
+    var sep = "-"
+    var names: [String] = []
+    names.append("seed-a")
+    names.append("seed-b")
+    names.append("seed-c")
+    var round = 0
+    while round < 200 {
+        // Each store is a freshly heap-allocated concatenation; the previous
+        // cloned buffer in the slot must be released, not orphaned.
+        names[0] = head + sep + "alpha"
+        names[1] = head + sep + "beta"
+        names[2] = head + sep + "gamma"
+        round = round + 1
+    }
+    print(names[0])
+    print(names[2])
+    return
+}

@@ -83,6 +83,9 @@ struct fs_read_result {
 @FFI.Pointer { target: __darwin_pthread_handler_rec; ownership: borrowed; }
 struct __darwin_pthread_handler_rec_ptr {}
 
+@FFI.Pointer { target: uint8_t; ownership: borrowed; }
+struct uint8_t_ptr {}
+
 @FFI.Extern { library: fs; symbol: fs_close; abi: c; }
 function fs_close(handle: RawPtr): Void;
 
@@ -107,14 +110,23 @@ function fs_free_buffer(buffer: CString): Void;
 @FFI.Extern { library: fs; symbol: fs_free_directory_listing; abi: c; }
 function fs_free_directory_listing(listing: RawPtr): Void;
 
+@FFI.Extern { library: fs; symbol: fs_is_directory; abi: c; }
+function fs_is_directory(path: CString): CBool;
+
 @FFI.Extern { library: fs; symbol: fs_is_open; abi: c; }
 function fs_is_open(handle: RawPtr): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_list_directory; abi: c; }
 function fs_list_directory(path: CString): RawPtr;
 
+@FFI.Extern { library: fs; symbol: fs_make_directory; abi: c; }
+function fs_make_directory(path: CString): CBool;
+
 @FFI.Extern { library: fs; symbol: fs_open_read; abi: c; }
 function fs_open_read(path: CString): RawPtr;
+
+@FFI.Extern { library: fs; symbol: fs_path_exists; abi: c; }
+function fs_path_exists(path: CString): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_read_all_from_handle; abi: c; }
 function fs_read_all_from_handle(handle: RawPtr): fs_read_result;
@@ -124,6 +136,18 @@ function fs_read_all_text_from_handle(handle: RawPtr): CString;
 
 @FFI.Extern { library: fs; symbol: fs_read_file; abi: c; }
 function fs_read_file(path: CString): fs_read_result;
+
+@FFI.Extern { library: fs; symbol: fs_read_range; abi: c; }
+function fs_read_range(path: CString, offset: U64, size: U64, out: uint8_t_ptr): U64;
+
+@FFI.Extern { library: fs; symbol: fs_remove_path; abi: c; }
+function fs_remove_path(path: CString): CBool;
+
+@FFI.Extern { library: fs; symbol: fs_rename_path; abi: c; }
+function fs_rename_path(old_path: CString, new_path: CString): CBool;
+
+@FFI.Extern { library: fs; symbol: fs_write_bytes; abi: c; }
+function fs_write_bytes(path: CString, data: uint8_t_ptr, size: U64): CBool;
 
 @FFI.Extern { library: fs; symbol: fs_write_file; abi: c; }
 function fs_write_file(path: CString, data: CString): CBool;

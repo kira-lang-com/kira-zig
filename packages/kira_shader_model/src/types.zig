@@ -32,6 +32,9 @@ pub const TextureDimension = enum {
     texture_2d,
     texture_cube,
     depth_2d,
+    // 2D texture of unsigned-integer texels (e.g. R32Uint visibility buffer).
+    // Read via `load` (texelFetch), never sampled/filtered.
+    texture_2d_uint,
 };
 
 pub const SamplerKind = enum {

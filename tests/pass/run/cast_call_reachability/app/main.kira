@@ -1,0 +1,18 @@
+// Regression: a function reachable ONLY as the operand of an Int()/Float()
+// numeric cast must still be lowered. Before the fix, markReachableExpr had no
+// `.cast` arm, so `measure` (used only inside `Int(measure())`) was pruned from
+// the program and native lowering failed with an undischarged-call obligation.
+@Main
+function main() {
+    print(Int(measure()))
+    print(Float(count()))
+    return
+}
+
+function measure() -> Float {
+    return 42.9
+}
+
+function count() -> Int {
+    return 7
+}

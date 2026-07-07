@@ -174,6 +174,7 @@ pub const BuildSystem = struct {
                 .require_main = !request.test_mode,
                 .test_mode = request.test_mode,
                 .synthesize_test_driver = request.synthesize_test_driver,
+                .package_execution_defaults = request.target.execution == .hybrid,
             },
         );
     }

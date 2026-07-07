@@ -35,6 +35,7 @@ pub fn builtinType(name: []const u8) ?shader_model.Type {
     if (std.mem.eql(u8, name, "Float3x3")) return .{ .matrix = .{ .columns = 3, .rows = 3 } };
     if (std.mem.eql(u8, name, "Float4x4")) return .{ .matrix = .{ .columns = 4, .rows = 4 } };
     if (std.mem.eql(u8, name, "Texture2d")) return .{ .texture = .texture_2d };
+    if (std.mem.eql(u8, name, "Texture2dUint")) return .{ .texture = .texture_2d_uint };
     if (std.mem.eql(u8, name, "TextureCube")) return .{ .texture = .texture_cube };
     if (std.mem.eql(u8, name, "DepthTexture2d")) return .{ .texture = .depth_2d };
     if (std.mem.eql(u8, name, "Sampler")) return .{ .sampler = .filtering };
@@ -134,6 +135,7 @@ pub fn typeName(allocator: std.mem.Allocator, ty: shader_model.Type) ![]const u8
         .struct_ref => allocator.dupe(u8, ty.struct_ref),
         .texture => |texture| allocator.dupe(u8, switch (texture) {
             .texture_2d => "Texture2d",
+            .texture_2d_uint => "Texture2dUint",
             .texture_cube => "TextureCube",
             .depth_2d => "DepthTexture2d",
         }),
@@ -185,6 +187,8 @@ pub fn intrinsicFromName(name: []const u8) ?shader_ir.Intrinsic {
     if (std.mem.eql(u8, name, "normalize")) return .normalize;
     if (std.mem.eql(u8, name, "dot")) return .dot;
     if (std.mem.eql(u8, name, "sample")) return .sample;
+    if (std.mem.eql(u8, name, "load")) return .load;
+    if (std.mem.eql(u8, name, "atomicAdd")) return .atomic_add;
     if (std.mem.eql(u8, name, "length")) return .length;
     if (std.mem.eql(u8, name, "pow")) return .pow;
     if (std.mem.eql(u8, name, "sin")) return .sin;

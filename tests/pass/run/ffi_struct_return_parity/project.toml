@@ -1,0 +1,7 @@
+[project]
+name = "ffi_struct_return_parity"
+version = "0.1.0"
+
+[defaults]
+execution_mode = "llvm"
+build_target = "host"

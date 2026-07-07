@@ -56,6 +56,12 @@ typedef struct {
 typedef struct {
     size_t len;
     KiraBridgeValue *items;
+    /* Capacity of the `items` allocation, in elements. Invariant shared with the
+     * VM heap (ownership.zig): the items buffer is always exactly max(cap, 1)
+     * elements, len <= cap. Appends grow geometrically through `cap`, replacing
+     * the old grow-by-one realloc that made building an n-element array O(n^2)
+     * memcpy (the dominant native-frame cost in dense UI trees). */
+    size_t cap;
 } KiraArray;
 
 /* Native-backend native-state token. These three fields are the C-ABI prefix shared with
@@ -72,6 +78,7 @@ typedef struct {
 
 static void (*kira_runtime_invoker_ex)(uint32_t, const KiraBridgeValue *, uint32_t, KiraBridgeValue *) = NULL;
 static void *(*kira_array_alloc_fn)(size_t) = NULL;
+static void (*kira_closure_destroy_fn)(uintptr_t) = NULL;
 static void (*kira_array_free_fn)(void *, size_t) = NULL;
 static void (*kira_live_first_frame_hook)(void) = NULL;
 static void (*kira_live_log_hook)(const char*) = NULL;
@@ -129,6 +136,7 @@ static void kira_array_repair_invalid_storage(KiraArray *array) {
         kira_trace_log("NATIVE", "ARRAY_REPAIR", "items=%p len=%llu", (void *)array->items, (unsigned long long)array->len);
         array->items = NULL;
         array->len = 0;
+        array->cap = 0;
     }
 }
 
@@ -155,6 +163,17 @@ static int kira_array_is_active(const KiraArray *array) {
 
 KIRA_BRIDGE_EXPORT void kira_set_execution_trace_enabled(uint8_t enabled) {
     kira_trace_execution_enabled = enabled != 0 ? 1 : 0;
+}
+
+/*
+ * Hybrid closure teardown: runtime-exported closure blocks are allocated by the
+ * VM allocator (exportRuntimeClosureToNative) and tracked VM-side, so a native
+ * drop must hand them back to the runtime instead of calling libc free (which
+ * traps on the smp pointer and would double-free at VM deinit). The hook
+ * receives the UNTAGGED block pointer.
+ */
+KIRA_BRIDGE_EXPORT void kira_hybrid_install_closure_destroy(void (*destroy_fn)(uintptr_t)) {
+    kira_closure_destroy_fn = destroy_fn;
 }
 
 KIRA_BRIDGE_EXPORT void kira_hybrid_install_array_allocator(void *(*alloc_fn)(size_t), void (*free_fn)(void *, size_t)) {
@@ -271,7 +290,18 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
     KiraArray *array = (KiraArray *)kira_bridge_alloc(sizeof(KiraArray));
     if (array == NULL) return NULL;
     array->len = (size_t)len;
-    array->items = array->len == 0 ? NULL : (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
+    array->cap = array->len;
+    /* Invariant (shared with ownership.zig): the items allocation is always
+     * exactly max(cap, 1) elements — never NULL, even for an empty array. The
+     * VM destroy path reconstructs the slice as items[0..max(cap,1)] and would
+     * otherwise free a one-element slice at address 0 for an empty array
+     * returned across the bridge (Codex review). */
+    const size_t item_count = array->len == 0 ? 1 : array->len;
+    array->items = (KiraBridgeValue *)kira_bridge_calloc(item_count, sizeof(KiraBridgeValue));
+    if (array->items == NULL) {
+        kira_bridge_free(array, sizeof(KiraArray));
+        return NULL;
+    }
     return array;
 }
 
@@ -284,25 +314,47 @@ KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {
  * `clone_elem` copies elements byte-for-byte (primitive/leaf element types).
  * Ownership model only — no reference counts.
  */
+/*
+ * Deep-copy a string element's byte buffer so the clone owns independent storage.
+ * String buffers inside owned arrays follow the same ownership model as RAW_PTR
+ * elements: the backend clones every string INTO an array element, so the element
+ * always owns its buffer, kira_array_release frees it, and a clone must therefore
+ * duplicate it (aliasing would double-free). Plain malloc — string buffers are
+ * libc-owned on the native path even in hybrid builds.
+ */
+static void kira_bridge_clone_string_element(KiraBridgeValue *value) {
+    if (value->tag != KIRA_BRIDGE_VALUE_STRING) return;
+    const unsigned char *src = value->payload.string.ptr;
+    size_t len = value->payload.string.len;
+    if (src == NULL) return;
+    unsigned char *buf = (unsigned char *)malloc(len == 0 ? 1 : len);
+    if (buf == NULL) { value->payload.string.ptr = NULL; value->payload.string.len = 0; return; }
+    memcpy(buf, src, len);
+    value->payload.string.ptr = buf;
+}
+
 KIRA_BRIDGE_EXPORT KiraArray *kira_array_clone(const KiraArray *array, void *(*clone_elem)(void *)) {
     if (kira_array_alloc_fn != NULL) return (KiraArray *)array; /* hybrid: VM owns; no native clone */
     if (array == NULL || kira_bridge_probably_invalid_pointer(array)) return NULL;
     KiraArray *copy = (KiraArray *)kira_bridge_alloc(sizeof(KiraArray));
     if (copy == NULL) return NULL;
     copy->len = array->len;
+    copy->cap = array->len;
     if (array->len == 0 || array->items == NULL || kira_bridge_probably_invalid_pointer(array->items)) {
         copy->len = array->len;
+        copy->cap = 0;
         copy->items = NULL;
         return copy;
     }
     copy->items = (KiraBridgeValue *)kira_bridge_calloc(array->len, sizeof(KiraBridgeValue));
-    if (copy->items == NULL) { copy->len = 0; return copy; }
+    if (copy->items == NULL) { copy->len = 0; copy->cap = 0; return copy; }
     for (size_t i = 0; i < array->len; i++) {
         copy->items[i] = array->items[i];
         if (clone_elem != NULL && array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
             void *element = (void *)array->items[i].payload.raw_ptr;
             if (element != NULL) copy->items[i].payload.raw_ptr = (uintptr_t)clone_elem(element);
         }
+        kira_bridge_clone_string_element(&copy->items[i]);
     }
     return copy;
 }
@@ -337,7 +389,6 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
     kira_array_repair_invalid_storage(array);
     if (array == NULL || index < 0 || (size_t)index >= array->len) return;
     if (value == NULL) return;
-#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
     /*
      * Defer on the hybrid/VM path exactly as kira_array_release does: the VM owns
      * and reclaims array memory through its own native-layout destructors.
@@ -348,9 +399,18 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
         void *incoming = value->tag == KIRA_BRIDGE_VALUE_RAW_PTR ? (void *)value->payload.raw_ptr : NULL;
         if (old != NULL && old != incoming) release_raw_ptr(old);
     }
-#else
-    (void)release_raw_ptr;
-#endif
+    /*
+     * String elements own their byte buffer (the backend clones every string into
+     * an element), so overwriting one must free the old buffer regardless of
+     * whether a RAW_PTR element destructor was supplied. Same old!=incoming guard
+     * as above so a self-store is a no-op.
+     */
+    if (kira_array_alloc_fn == NULL && array->items[index].tag == KIRA_BRIDGE_VALUE_STRING) {
+        unsigned char *old = (unsigned char *)array->items[index].payload.string.ptr;
+        const unsigned char *incoming =
+            value->tag == KIRA_BRIDGE_VALUE_STRING ? value->payload.string.ptr : NULL;
+        if (old != NULL && old != incoming) free(old);
+    }
     array->items[index] = *value;
 }
 
@@ -360,9 +420,9 @@ KIRA_BRIDGE_EXPORT void kira_array_store_release(KiraArray *array, int64_t index
  * The backend emits this with the old and incoming array pointers and the element
  * destructor; it releases the old array unless it is null (moved-out/uninitialised
  * field) or the same pointer being stored back. Delegates to kira_array_release, so
- * it inherits the KIRA_ARRAY_OWNERSHIP_FREE gate and the hybrid/VM deferral. Only
- * sound because aggregate reads now deep-clone (value semantics) — the old field
- * value is independently owned and not aliased by the incoming value.
+ * it inherits the hybrid/VM deferral. Only sound because aggregate reads deep-clone
+ * (value semantics) — the old field value is independently owned and not aliased by
+ * the incoming value.
  */
 KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *));
 
@@ -406,6 +466,10 @@ KIRA_BRIDGE_EXPORT void kira_destroy_closure(uintptr_t value) {
     void *ptr = (void *)(value & 0x7FFFFFFFFFFFFFFFULL); /* clear the closure tag bit */
     uintptr_t bits = (uintptr_t)ptr;
     if (bits < 0x1000 || (bits & 0x7) != 0) return; /* not a heap-allocated block */
+    if (kira_closure_destroy_fn != NULL) {
+        kira_closure_destroy_fn(bits);
+        return;
+    }
     free(ptr);
 }
 
@@ -413,16 +477,25 @@ KIRA_BRIDGE_EXPORT void kira_array_append(KiraArray *array, const KiraBridgeValu
     if (!kira_array_is_active(array)) return;
     kira_array_repair_invalid_storage(array);
     if (array == NULL || value == NULL) return;
-    size_t next_len = array->len + 1;
-    KiraBridgeValue *next_items = (KiraBridgeValue *)kira_bridge_alloc(next_len * sizeof(KiraBridgeValue));
+    if (array->items != NULL && array->len < array->cap) {
+        array->items[array->len] = *value;
+        array->len = array->len + 1;
+        return;
+    }
+    size_t next_cap = array->cap < 4 ? 4 : array->cap * 2;
+    if (next_cap < array->len + 1) next_cap = array->len + 1;
+    KiraBridgeValue *next_items = (KiraBridgeValue *)kira_bridge_alloc(next_cap * sizeof(KiraBridgeValue));
     if (next_items == NULL) return;
     if (array->items != NULL && array->len != 0) {
         memcpy(next_items, array->items, array->len * sizeof(KiraBridgeValue));
-        kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
+    }
+    if (array->items != NULL) {
+        kira_bridge_free(array->items, (array->cap == 0 ? 1 : array->cap) * sizeof(KiraBridgeValue));
     }
     array->items = next_items;
+    array->cap = next_cap;
     array->items[array->len] = *value;
-    array->len = next_len;
+    array->len = array->len + 1;
 }
 
 KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, KiraBridgeValue *out_value) {
@@ -433,6 +506,22 @@ KIRA_BRIDGE_EXPORT void kira_array_load(const KiraArray *array, int64_t index, K
         return;
     }
     *out_value = array->items[index];
+}
+
+/* Element DRAIN (checker-verified move out of an OWNED array): hand the
+ * element's bridge value to the caller — which now owns it — and tombstone
+ * the slot to VOID so kira_array_release skips it and a later read of the
+ * drained slot yields a zero value (deterministic dispatch failure) instead
+ * of a double free. */
+KIRA_BRIDGE_EXPORT void kira_array_take(KiraArray *array, int64_t index, KiraBridgeValue *out_value) {
+    KiraBridgeValue zero = {0};
+    if (out_value == NULL) return;
+    if (!kira_array_is_active(array) || kira_bridge_probably_invalid_pointer(array->items) || index < 0 || (size_t)index >= array->len) {
+        *out_value = zero;
+        return;
+    }
+    *out_value = array->items[index];
+    array->items[index] = zero;
 }
 
 KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_ptr)(void *)) {
@@ -458,35 +547,93 @@ KIRA_BRIDGE_EXPORT void kira_array_release(KiraArray *array, void (*release_raw_
      * checker, emits exactly one release at each owned array's drop point; moves
      * transfer ownership (the source is not dropped) and borrows are never dropped,
      * while owned values produced from borrowed data are deep-cloned (kira_array_clone)
-     * so they own independent storage. A release here is then the sole owner going
-     * away: run the element destructor on RAW_PTR elements, then free the items
-     * buffer and the struct.
+     * so they own independent storage — at struct copies, native-state boxing,
+     * borrowed element/field stores, and borrowed-array returns. Checker-verified
+     * field move-outs null the source storage so the old owner cannot re-release.
+     * A release here is then the sole owner going away: run the element destructor
+     * on RAW_PTR elements, then free the items buffer and the struct.
      *
-     * Gated behind KIRA_ARRAY_OWNERSHIP_FREE (default OFF = defer = stable, the
-     * committed no-crash behavior). Turning it on requires the backend to (a) deep
-     * clone at EVERY borrow->owned boundary (currently only return-struct copies) and
-     * (b) emit drops for orphaned owned arrays (field move-outs). Until both are
-     * complete and DEVICE-validated, freeing risks the use-after-free that crashed on
-     * device. See .codex/work/reports/array-registry-leak-and-promotion.md §7f.
+     * This used to be gated behind KIRA_ARRAY_OWNERSHIP_FREE (defer-by-default)
+     * while clone/drop coverage was incomplete; the gate is gone and the free path
+     * is the only behavior. History: .codex/work/reports/
+     * array-registry-leak-and-promotion.md §7b–§7j.
      */
-#if defined(KIRA_ARRAY_OWNERSHIP_FREE)
     kira_trace_log("NATIVE", "ARRAY_RELEASE_FREE", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
-    if (release_raw_ptr != NULL && array->items != NULL &&
-        !kira_bridge_probably_invalid_pointer(array->items)) {
+    if (array->items != NULL && !kira_bridge_probably_invalid_pointer(array->items)) {
         for (size_t i = 0; i < array->len; i++) {
-            if (array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
+            if (release_raw_ptr != NULL && array->items[i].tag == KIRA_BRIDGE_VALUE_RAW_PTR) {
                 void *element = (void *)array->items[i].payload.raw_ptr;
                 if (element != NULL) release_raw_ptr(element);
             }
+            /* String elements own their buffer (cloned in by the backend); free it
+             * with the array regardless of the RAW_PTR element destructor. */
+            if (array->items[i].tag == KIRA_BRIDGE_VALUE_STRING &&
+                array->items[i].payload.string.ptr != NULL) {
+                free((void *)array->items[i].payload.string.ptr);
+            }
         }
     }
-    kira_bridge_free(array->items, array->len * sizeof(KiraBridgeValue));
+    kira_bridge_free(array->items, (array->cap == 0 ? 1 : array->cap) * sizeof(KiraBridgeValue));
     kira_bridge_free(array, sizeof(KiraArray));
-    return;
+}
+
+/* Registry of live native-backend state tokens. The VM tracks every box it
+ * allocates (`native_state_boxes`) and frees survivors at teardown
+ * (deinitTrackedNativeStates); this list is the native binary's equivalent.
+ * Tokens have no scope-based lifetime — `nativeUserData` handles may alias
+ * them for the whole program — so the only sound reclamation points are an
+ * explicit `kira_native_state_free` (which unlinks) and process exit (the
+ * destructor below frees every survivor through the same typed-interior
+ * path). Registry nodes are external so the 3-field token ABI prefix shared
+ * with the VM stays untouched. */
+typedef struct KiraNativeStateNode {
+    KiraNativeState *state;
+    struct KiraNativeStateNode *next;
+} KiraNativeStateNode;
+static KiraNativeStateNode *kira_native_state_registry = NULL;
+
+#if defined(_WIN32)
+#include <windows.h>
+static SRWLOCK kira_native_state_registry_lock = SRWLOCK_INIT;
+static void kira_native_state_registry_acquire(void) { AcquireSRWLockExclusive(&kira_native_state_registry_lock); }
+static void kira_native_state_registry_release(void) { ReleaseSRWLockExclusive(&kira_native_state_registry_lock); }
 #else
-    (void)release_raw_ptr;
-    kira_trace_log("NATIVE", "ARRAY_RELEASE_DEFERRED", "array=%p len=%llu", (void *)array, (unsigned long long)array->len);
+#include <pthread.h>
+static pthread_mutex_t kira_native_state_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static void kira_native_state_registry_acquire(void) { pthread_mutex_lock(&kira_native_state_registry_lock); }
+static void kira_native_state_registry_release(void) { pthread_mutex_unlock(&kira_native_state_registry_lock); }
 #endif
+
+static void kira_native_state_registry_teardown(void);
+
+static void kira_native_state_registry_add(KiraNativeState *state) {
+    static int teardown_registered = 0;
+    KiraNativeStateNode *node = (KiraNativeStateNode *)malloc(sizeof(KiraNativeStateNode));
+    if (node == NULL) return; /* untracked: survives to exit unreclaimed, never unsafe */
+    node->state = state;
+    kira_native_state_registry_acquire();
+    if (!teardown_registered) {
+        teardown_registered = 1;
+        atexit(kira_native_state_registry_teardown);
+    }
+    node->next = kira_native_state_registry;
+    kira_native_state_registry = node;
+    kira_native_state_registry_release();
+}
+
+static void kira_native_state_registry_remove(KiraNativeState *state) {
+    kira_native_state_registry_acquire();
+    KiraNativeStateNode **link = &kira_native_state_registry;
+    while (*link != NULL) {
+        if ((*link)->state == state) {
+            KiraNativeStateNode *dead = *link;
+            *link = dead->next;
+            free(dead);
+            break;
+        }
+        link = &(*link)->next;
+    }
+    kira_native_state_registry_release();
 }
 
 KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, int64_t payload_size) {
@@ -500,6 +647,7 @@ KIRA_BRIDGE_EXPORT KiraNativeState *kira_native_state_alloc(uint64_t type_id, in
         free(state);
         return NULL;
     }
+    kira_native_state_registry_add(state);
     return state;
 }
 
@@ -525,6 +673,62 @@ KIRA_BRIDGE_EXPORT void kira_struct_free(void *ptr) {
 KIRA_BRIDGE_EXPORT void *kira_native_state_payload(KiraNativeState *state) {
     if (state == NULL) return NULL;
     return state->payload;
+}
+
+/* Shallow free of a native-backend native-state token (`nativeStateFree`).
+ * Frees the payload byte buffer and the token itself; interior heap values
+ * (arrays/strings copied into the payload) stay governed by the array/string
+ * ownership model. `runtime_payload` is VM-owned metadata and is never set on
+ * native-allocated tokens, so it is not touched here. Outstanding
+ * `nativeRecover` views into this state become dangling — freeing is the
+ * caller's declaration that no views survive. */
+/* Typed interior teardown hook for native-state tokens. The LLVM backend's
+ * generated kira_capi_state_interior_release (installed by the same global
+ * constructor as the closure-destroy hook, native builds only) switches on
+ * state->type_id and frees the heap values the payload's bridge slots own
+ * (string buffers, arrays, boxed structs, closures, type-erased shells) —
+ * VM parity with freeNativeState, which destroys interiors. NULL (hybrid /
+ * drop-disabled builds) keeps the historical shallow free. */
+static void (*kira_state_interior_release_fn)(KiraNativeState *) = NULL;
+
+KIRA_BRIDGE_EXPORT void kira_capi_install_state_interior_release(void (*release_fn)(KiraNativeState *)) {
+    kira_state_interior_release_fn = release_fn;
+}
+
+static void kira_native_state_dispose(KiraNativeState *state) {
+    if (kira_state_interior_release_fn != NULL) {
+        kira_state_interior_release_fn(state);
+    }
+    free(state->payload);
+    state->payload = NULL;
+    free(state);
+}
+
+KIRA_BRIDGE_EXPORT void kira_native_state_free(KiraNativeState *state) {
+    if (state == NULL) return;
+    kira_native_state_registry_remove(state);
+    kira_native_state_dispose(state);
+}
+
+/* Process-exit teardown of surviving native-state tokens — VM parity with
+ * deinitTrackedNativeStates. Registered via atexit on the first allocation
+ * (see kira_native_state_registry_add), so it runs during exit() before the
+ * final leak accounting: tokens that legitimately live for the whole program
+ * (userdata handles held by FFI callbacks) are reclaimed rather than
+ * reported as leaks. Interiors go through the typed release hook when
+ * installed (native builds); hybrid keeps the shallow free (VM-owned
+ * interiors are the VM's to drop). */
+static void kira_native_state_registry_teardown(void) {
+    kira_native_state_registry_acquire();
+    KiraNativeStateNode *node = kira_native_state_registry;
+    kira_native_state_registry = NULL;
+    kira_native_state_registry_release();
+    while (node != NULL) {
+        KiraNativeStateNode *next = node->next;
+        kira_native_state_dispose(node->state);
+        free(node);
+        node = next;
+    }
 }
 
 KIRA_BRIDGE_EXPORT void *kira_native_state_recover(void *user_data, uint64_t expected_type_id) {

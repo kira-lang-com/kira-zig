@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime_abi = @import("kira_runtime_abi");
 const diag_messages = @import("kira_diagnostic_messages");
 const source_pkg = @import("kira_source");
 const diagnostics = @import("kira_diagnostics");
@@ -109,6 +110,13 @@ pub const CompileOptions = struct {
     allow_runtime_direct_ffi: bool = false,
     require_main: bool = true,
     test_mode: bool = false,
+    /// Resolve `.inherited` function execution from each owning PACKAGE's
+    /// declared `execution_mode` (manifest) before backend lowering: packages
+    /// declaring "llvm"/"native" compile native even without per-function
+    /// @Native. Set for hybrid builds, where the app-level default is the VM
+    /// and per-package native opt-in is the way a mixed program gets fast
+    /// library code (e.g. a UI stack) under an interpreted app.
+    package_execution_defaults: bool = false,
     /// Synthesize a pure-Kira test driver entry (`__kira_test_main`) that runs
     /// every `Test` and prints PASS/FAIL/SKIP, so the suite executes as ordinary
     /// Kira on the selected backend instead of through a Zig comparison runner.
@@ -243,6 +251,8 @@ pub fn compileFileToIrForTargetWithOptions(
     };
     timingPrint("[kira:timing] semantics.analyzeWithImports path={s} ns={d}\n", .{ parsed.source.path, elapsedNs(semantics_start) });
 
+    if (options.package_execution_defaults) applyPackageExecutionDefaults(hir, module_map);
+
     const ir_start = nowNs();
     var unsupported = ir.UnsupportedFeature{};
     const ir_program = ir.lowerProgramWithDiagnostics(allocator, hir, .{
@@ -283,6 +293,46 @@ pub fn compileFileToIrForTargetWithOptions(
     };
 }
 
+// Package-level execution defaults: a function (or type) left `.inherited` by
+// annotations takes its OWNING PACKAGE's declared execution_mode when that
+// package opted into native ("llvm"/"native"). Ownership is the longest
+// module-source-root prefix of the declaration's span path, so nested package
+// checkouts resolve to the innermost package.
+fn applyPackageExecutionDefaults(hir: anytype, module_map: anytype) void {
+    for (hir.functions) |*function_decl| {
+        if (function_decl.execution != .inherited) continue;
+        if (function_decl.is_extern) continue;
+        if (packageWantsNative(module_map, function_decl.span.source_path)) {
+            function_decl.execution = .native;
+        }
+    }
+    for (hir.types) |*type_decl| {
+        if (type_decl.execution != .inherited) continue;
+        if (packageWantsNative(module_map, type_decl.span.source_path)) {
+            type_decl.execution = .native;
+        }
+    }
+}
+
+fn packageWantsNative(module_map: anytype, source_path: ?[]const u8) bool {
+    const path = source_path orelse return false;
+    var best_len: usize = 0;
+    var best_mode: []const u8 = "";
+    for (module_map.owners) |owner| {
+        if (owner.source_root.len > best_len and std.mem.startsWith(u8, path, owner.source_root)) {
+            best_len = owner.source_root.len;
+            best_mode = owner.execution_mode;
+        }
+    }
+    // Accept every manifest spelling of the native mode. `llvm_native` is the
+    // canonical name (it maps to the `.llvm_native` build mode); a dependency
+    // using it must still have its `.inherited` functions compiled native in
+    // hybrid, not left runtime-inherited (Codex review).
+    return std.mem.eql(u8, best_mode, "llvm") or
+        std.mem.eql(u8, best_mode, "native") or
+        std.mem.eql(u8, best_mode, "llvm_native");
+}
+
 pub fn compileFileToBytecode(allocator: std.mem.Allocator, path: []const u8) !VmPipelineResult {
     const prepared = try compileFileForBackend(allocator, path, .vm, &.{});
     return .{
@@ -313,6 +363,7 @@ pub fn compileFileForBackendWithSelector(
 ) !ExecutablePipelineResult {
     return compileFileForBackendWithOptions(allocator, path, target, target_selector, explicit_native_libraries, .{
         .allow_runtime_direct_ffi = target == .vm,
+        .package_execution_defaults = target == .hybrid,
     });
 }
 

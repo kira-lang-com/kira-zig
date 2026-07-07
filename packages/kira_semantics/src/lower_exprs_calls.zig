@@ -165,6 +165,7 @@ pub fn lowerTypeConstruction(
             else
                 try lowerExpr(ctx, arg.value, imports, scope, function_headers);
             try rejectAliasedArrayField(ctx, field_ty, field_value, arg.span);
+            shared.markAnyFieldMovedIntoOwned(ctx, scope, field_value, arg.span);
             const field_name = if (type_header) |header| header.fields[field_index].name else imported_type.?.fields[field_index].name;
             try fields.append(.{
                 .field_name = try ctx.allocator.dupe(u8, field_name),
@@ -194,6 +195,7 @@ pub fn lowerTypeConstruction(
             else
                 try lowerExpr(ctx, field.value, imports, scope, function_headers);
             try rejectAliasedArrayField(ctx, field_ty, field_value, field.span);
+            shared.markAnyFieldMovedIntoOwned(ctx, scope, field_value, field.span);
             try fields.append(.{
                 .field_name = try ctx.allocator.dupe(u8, field.name),
                 .field_index = @as(u32, @intCast(field_index)),
@@ -601,11 +603,26 @@ pub fn lowerCallExpr(
         if (localOrImportedTypeFieldCount(ctx, callee_name, callee_leaf)) |field_count| node.args.len <= field_count else false
     else
         false;
+    // Bare-callee precedence must be the same in every package: a visible type (e.g. a
+    // Widget form's node type) wins over a same-named FUNCTION from another package, exactly
+    // as it does in the root package. Only the current package's OWN function outranks the
+    // type. (Previously a dependency package preferred any bare function header, so
+    // `Text(...)` inside a library resolved to a transitive package's 4-arg `Text` function
+    // while the same code in the root app resolved to the imported `Text` widget.)
+    const own_scoped_function = if (function_headers) |headers| blk: {
+        if (ctx.current_package) |package_name| {
+            if (std.mem.indexOfScalar(u8, callee_name, '.') == null) {
+                const scoped = std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ package_name, callee_name }) catch break :blk false;
+                break :blk headers.get(scoped) != null;
+            }
+        }
+        break :blk false;
+    } else false;
     const should_prefer_type = if (has_local_type or has_imported_type)
         if (is_qualified_callee)
             exact_function_header == null and exact_qualified_function_header == null and qualified_type_fits
         else
-            ctx.current_package == null or exact_function_header == null
+            !own_scoped_function
     else
         false;
     if (should_prefer_type) {

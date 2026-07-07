@@ -36,6 +36,12 @@ pub const RwLock = struct {
     }
 };
 
+// Shared process-global state guard: build/check jobs take the shared side,
+// the in-process VM run (which chdirs) takes the exclusive side. Lives here so
+// both the orchestration driver (execute.zig) and the backend run phases
+// (execute_run_phases.zig) serialize on the same lock.
+pub var process_state_lock: RwLock = .{};
+
 pub const PhaseSet = struct {
     check: bool = true,
     build: bool = true,

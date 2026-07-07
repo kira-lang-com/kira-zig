@@ -164,6 +164,7 @@ The important distinction is:
 - `nativeState(...)` boxes and copies a Kira-owned value into stable callback-state storage
 - `nativeUserData(...)` exports the opaque userdata token that native code can carry and hand back later
 - `nativeRecover<T>(...)` re-enters that boxed storage as typed mutable Kira access
+- `nativeStateFree(...)` releases the boxed storage when the native API no longer holds the token; outstanding `nativeRecover` views become invalid
 - this is not a C-layout promise for ordinary Kira structs
 - this is not a general-purpose raw-pointer reinterpret cast
 - this avoids forcing globals for callback-oriented native APIs

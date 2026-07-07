@@ -119,6 +119,12 @@ pub const Construct = struct {
     content_passthrough: bool = false,
     required_functions: []RequiredFunction = &.{},
     section_functions: []SectionFunction = &.{},
+    // Names of family methods declared `@Consuming`: the method takes `self`
+    // OWNED (the call consumes the receiver; the callee owns and drops the
+    // shell). Every concrete implementation inherits the owned receiver, and
+    // virtual dispatch through the family transfers ownership. The synthesized
+    // `body` accessor is implicitly consuming and is not listed here.
+    consuming_functions: []const []const u8 = &.{},
     // Fields a construct requires its concrete declarations to provide, declared as direct
     // `@Required let name: T` members (the SwiftUI-style surface).
     required_fields: []RequiredField = &.{},
@@ -485,6 +491,7 @@ pub const Expr = union(enum) {
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
     native_recover: NativeRecoverExpr,
+    native_state_free: NativeStateFreeExpr,
     binary: BinaryExpr,
     unary: UnaryExpr,
     cast: CastExpr,
@@ -590,6 +597,11 @@ pub const FieldExpr = struct {
     ty: ResolvedType,
     storage: FieldStorage,
     span: source_pkg.Span,
+    // True when the move checker classified this read as a field MOVE-OUT
+    // (`let previous = obj.nodes` on a non-copyable field; KSEM107 enforces the
+    // re-init). Codegen must transfer ownership — null the field's storage after
+    // the read — so a later field overwrite cannot drop the moved-out value.
+    moved: bool = false,
 };
 
 pub const NativeStateExpr = struct {
@@ -607,6 +619,12 @@ pub const NativeUserDataExpr = struct {
 pub const NativeRecoverExpr = struct {
     value: *Expr,
     ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+pub const NativeStateFreeExpr = struct {
+    state: *Expr,
+    ty: ResolvedType = .{ .kind = .void },
     span: source_pkg.Span,
 };
 
@@ -736,6 +754,12 @@ pub const IndexExpr = struct {
     object: *Expr,
     index: *Expr,
     ty: ResolvedType,
+    // Checker-verified element DRAIN (`widgets[index].lower(ctx)` feeding a
+    // consuming receiver from an OWNED array): the destination takes the
+    // element's value and the slot tombstones to VOID on every backend, so
+    // the array's release skips it and a later read of the drained slot traps
+    // deterministically instead of double-freeing.
+    moved: bool = false,
     span: source_pkg.Span,
 };
 
@@ -753,11 +777,17 @@ pub const BinaryOp = enum {
     greater_equal,
     logical_and,
     logical_or,
+    bit_and,
+    bit_or,
+    bit_xor,
+    shift_left,
+    shift_right,
 };
 
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 pub const FieldStorage = enum {
@@ -784,6 +814,7 @@ pub fn exprType(expr: Expr) ResolvedType {
         .native_state => |node| node.ty,
         .native_user_data => |node| node.ty,
         .native_recover => |node| node.ty,
+        .native_state_free => |node| node.ty,
         .binary => |node| node.ty,
         .unary => |node| node.ty,
         .cast => |node| node.ty,
