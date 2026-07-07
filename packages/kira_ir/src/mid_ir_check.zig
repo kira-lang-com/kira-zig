@@ -91,6 +91,7 @@ pub const Checker = struct {
     // Rust-style `Copy` classification lives in `mid_ir_copyable.zig`; re-expose it
     // so call sites read as `self.isCopyableType(...)`.
     pub const isCopyableType = copyable.isCopyableType;
+    pub const containsConstructAny = copyable.containsConstructAny;
 
     allocator: std.mem.Allocator,
     program: mid.Program,
@@ -176,6 +177,16 @@ pub const Checker = struct {
             .switch_stmt => |node| try self.checkSwitch(state, node),
             .return_stmt => |node| blk: {
                 if (node.value) |value| {
+                    if (self.requiresOwnedConstructAnyMove(value, self.function_decl.return_ownership)) {
+                        try self.emitOwnershipDiagnostic(
+                            "KIR002",
+                            "move-only existential requires ownership transfer",
+                            "Returning this `some`/`any` value would copy or alias storage that the native backend currently treats as move-only.",
+                            node.span,
+                            "Return a fresh construct value, or move an owned local/field instead of returning a borrowed or indexed existential.",
+                        );
+                        break :blk .returned;
+                    }
                     const mode: PathUseKind = switch (self.function_decl.return_ownership) {
                         .borrow_read => .borrow_shared,
                         .borrow_mut => .borrow_mut,
@@ -367,11 +378,31 @@ pub const Checker = struct {
         try self.dropLocalIds(state, ids.items);
     }
 
+    // A moved-out child path whose own type transfers by pointer with storage
+    // nulling — arrays, enums, type-erased (Any) values — leaves the base
+    // droppable: both backends void/null the field slot at the moved read (VM
+    // load_indirect moved-void, LLVM load.move.field null), so scope exit
+    // drops only the remaining fields (Rust partial move; the KiraUI
+    // `let root = app.content` idiom). A struct-typed moved path still blocks
+    // the drop: struct reads copy with aliasing Any interiors.
+    fn movedPathTransfers(place: mid.Place) bool {
+        return switch (place.ty.kind) {
+            .array, .enum_instance, .construct_any => true,
+            else => false,
+        };
+    }
+
     fn dropLocalIds(self: *Checker, state: *State, local_ids: []const u32) anyerror!void {
         for (local_ids) |local_id| {
             const local_state = state.locals.getPtr(local_id) orelse continue;
             if (local_state.local.ownership != .borrow_read and local_state.local.ownership != .borrow_mut) {
-                if (local_state.moved_paths.items.len != 0 and local_state.availability == .live) {
+                const blocking = blk: {
+                    for (local_state.moved_paths.items) |place| {
+                        if (!movedPathTransfers(place)) break :blk true;
+                    }
+                    break :blk false;
+                };
+                if (blocking and local_state.availability == .live) {
                     if (self.failed) return;
                     const moved_desc = try self.describeMovedPaths(local_state.local.name, local_state.moved_paths.items);
                     defer self.allocator.free(moved_desc);
@@ -574,7 +605,7 @@ pub const Checker = struct {
         return ownership == .borrow_read or ownership == .borrow_mut;
     }
 
-    fn rootLocalOwnership(self: *const Checker, place: mid.Place) ?model.OwnershipMode {
+    pub fn rootLocalOwnership(self: *const Checker, place: mid.Place) ?model.OwnershipMode {
         const id = rootLocalId(place.root) orelse return null;
         for (self.function_decl.locals) |local| {
             if (local.id == id) return local.ownership;
@@ -585,5 +616,21 @@ pub const Checker = struct {
         return null;
     }
 
-};
+    pub fn requiresOwnedConstructAnyMove(self: *const Checker, value: mid.Value, ownership: model.OwnershipMode) bool {
+        switch (ownership) {
+            .move, .owned => {},
+            else => return false,
+        }
+        const ty = valueType(value);
+        switch (ty.kind) {
+            .construct_any, .array, .named, .enum_instance => {},
+            else => return false,
+        }
+        if (!self.containsConstructAny(ty)) return false;
+        return switch (value) {
+            .place => self.effectiveUseKind(value, ownership) != .move,
+            else => false,
+        };
+    }
 
+};

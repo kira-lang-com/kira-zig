@@ -329,10 +329,13 @@ pub fn build(b: *std.Build) void {
 
     const real_runtime_verify_cmd = b.addRunArtifact(repository_truth);
     const platform_matrix_cmd = b.addRunArtifact(platform_matrix);
-    _ = b.addRunArtifact(memory_validation);
+    const memory_validation_cmd = b.addRunArtifact(memory_validation);
+    const memory_validation_step = b.step("verify-memory", "Verify memory-ownership invariants and leak-regression coverage");
+    memory_validation_step.dependOn(&memory_validation_cmd.step);
     const real_runtime_verify_step = b.step("verify-real-runtime", "Verify real runtime, Wasm, device runner, and backend policy paths");
     real_runtime_verify_step.dependOn(&real_runtime_verify_cmd.step);
     real_runtime_verify_step.dependOn(&platform_matrix_cmd.step);
+    real_runtime_verify_step.dependOn(&memory_validation_cmd.step);
     const repo_truth_step = b.step("repo-truth", "Reject Python, root Zig clutter, and fake validation markers");
     repo_truth_step.dependOn(&real_runtime_verify_cmd.step);
     const platform_matrix_step = b.step("platform-validation-matrix", "Verify platform validation matrix wiring and anti-smoke evidence");
@@ -346,6 +349,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&install_toolchain_step.step);
     test_step.dependOn(&real_runtime_verify_cmd.step);
     test_step.dependOn(&platform_matrix_cmd.step);
+    test_step.dependOn(&memory_validation_cmd.step);
     // Unit tests for the interpreter-hot packages run against safety-mode
     // variants (full optimize-mode checks), independent of the ReleaseFast
     // modules the `kira` snapshot ships with.

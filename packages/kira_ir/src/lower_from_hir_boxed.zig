@@ -89,6 +89,7 @@ fn collectBoxedFromExpr(boxed: []bool, expr: *const model.Expr) void {
         .native_state => |node| collectBoxedFromExpr(boxed, node.value),
         .native_user_data => |node| collectBoxedFromExpr(boxed, node.state),
         .native_recover => |node| collectBoxedFromExpr(boxed, node.value),
+        .native_state_free => |node| collectBoxedFromExpr(boxed, node.state),
         else => {},
     }
 }

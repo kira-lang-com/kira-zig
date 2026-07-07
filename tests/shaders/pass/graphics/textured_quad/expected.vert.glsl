@@ -32,16 +32,16 @@ layout(std140) uniform surface_Block {
     vec4 tint;
 } surface;
 
-uniform sampler2D albedo;
+uniform sampler2D kira_albedo_linear;
 
 layout(location = 0) in vec3 kira_attr_position;
 layout(location = 1) in vec2 kira_attr_uv;
 out vec2 kira_varying_uv;
 
-VertexToFragment TexturedQuad__vertex__entry(VertexIn input) {
+VertexToFragment TexturedQuad__vertex__entry(VertexIn kira_input_param) {
     VertexToFragment kira_out;
-    kira_out.clip_position = (camera.view_projection * vec4(input.position, 1));
-    kira_out.uv = input.uv;
+    kira_out.clip_position = (camera.view_projection * vec4(kira_input_param.position, 1.0));
+    kira_out.uv = kira_input_param.uv;
     return kira_out;
 }
 

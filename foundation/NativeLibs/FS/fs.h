@@ -23,7 +23,14 @@ void fs_close(void* handle);
 
 fs_read_result fs_read_file(const char* path);
 bool fs_write_file(const char* path, const char* data);
+bool fs_write_bytes(const char* path, const uint8_t* data, uint64_t size);
+uint64_t fs_read_range(const char* path, uint64_t offset, uint64_t size, uint8_t* out);
 bool fs_file_exists(const char* path);
+bool fs_path_exists(const char* path);
+bool fs_is_directory(const char* path);
+bool fs_make_directory(const char* path);
+bool fs_rename_path(const char* old_path, const char* new_path);
+bool fs_remove_path(const char* path);
 uint64_t fs_file_size(const char* path);
 void fs_free_buffer(const char* buffer);
 

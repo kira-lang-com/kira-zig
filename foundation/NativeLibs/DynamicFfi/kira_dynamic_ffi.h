@@ -72,7 +72,10 @@ KIRA_BRIDGE_EXPORT void kira_dynamic_write_f64_at(void *ptr, uint64_t offset, do
  * must not overlap (a memcpy, not memmove). No-op on NULL or zero count. */
 KIRA_BRIDGE_EXPORT void kira_dynamic_write_f32_span(void *dst, uint64_t offset, const void *src, uint32_t count);
 
-/* C string helpers. */
+/* C string helpers. kira_dynamic_cstring_dup returns a malloc'd copy the
+ * CALLER owns; every duplicate must be released with kira_dynamic_free once
+ * the native consumer is done with it, or it leaks. kira_dynamic_cstring_at
+ * is a borrowed view into `ptr` and must NOT be freed. */
 KIRA_BRIDGE_EXPORT void *kira_dynamic_cstring_dup(const char *text);
 KIRA_BRIDGE_EXPORT const char *kira_dynamic_cstring_at(void *ptr, uint64_t offset);
 

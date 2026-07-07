@@ -294,6 +294,11 @@ fn dumpExpr(writer: anytype, expr: ast.Expr, depth: usize) anyerror!void {
             try writer.writeAll("NativeUserData\n");
             try dumpExpr(writer, value.state.*, depth + 1);
         },
+        .native_state_free => |value| {
+            try indent(writer, depth);
+            try writer.writeAll("NativeStateFree\n");
+            try dumpExpr(writer, value.state.*, depth + 1);
+        },
         .native_recover => |value| {
             try indent(writer, depth);
             try writer.writeAll("NativeRecover\n");
@@ -384,7 +389,7 @@ fn dumpTypeExprInline(writer: anytype, ty: ast.TypeExpr) anyerror!void {
             try dumpTypeExprInline(writer, value.target.*);
         },
         .any => |value| {
-            try writer.writeAll("any ");
+            try writer.writeAll(if (value.existential) "some " else "any ");
             try dumpTypeExprInline(writer, value.target.*);
         },
         .array => |value| {

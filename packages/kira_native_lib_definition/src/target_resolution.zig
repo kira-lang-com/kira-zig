@@ -26,6 +26,19 @@ pub const TargetSelector = struct {
     }
 };
 
+/// Records why a declared native library could not be resolved for the active
+/// target and must be skipped (rather than aborting the whole preparation pass).
+/// The most common case is a manifest path that references an environment
+/// variable (e.g. `${VULKAN_SDK}`) that is not set on the current machine.
+pub const Unavailable = struct {
+    reason: Reason,
+    /// Reason-specific detail; for `missing_environment_variable` this is the
+    /// name of the unset variable.
+    detail: []const u8,
+
+    pub const Reason = enum { missing_environment_variable };
+};
+
 pub const ResolvedNativeLibrary = struct {
     manifest_path: ?[]const u8 = null,
     name: []const u8,
@@ -37,6 +50,10 @@ pub const ResolvedNativeLibrary = struct {
     autobinding: ?native.AutobindingSpec = null,
     build: native.BuildRecipe = .{},
     link: LinkExtras,
+    /// When non-null the library cannot be prepared on this machine/target and
+    /// every preparation step (artifact build, autobinding, freshness checks)
+    /// must skip it and surface a warning instead of failing.
+    unavailable: ?Unavailable = null,
 };
 
 pub fn resolveLibrary(allocator: std.mem.Allocator, spec: native.NativeLibrarySpec, active_target: TargetSelector) !ResolvedNativeLibrary {
