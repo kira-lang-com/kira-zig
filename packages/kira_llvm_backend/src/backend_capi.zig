@@ -273,11 +273,50 @@ fn boolGlobal(api: *const llvm.Api, module_ref: llvm.c.LLVMModuleRef, types: Typ
     return api.LLVMConstNamedStruct(types.string_ty, &fields, fields.len);
 }
 
+// Which parts of the program a single LLVM module should DEFINE. All modules
+// DECLARE the full scaffold (runtime externs, struct types, dtor/dispatcher
+// symbols, every user function) so that any body can reference any symbol; the
+// plan only controls which BODIES are emitted, so the emitted objects partition
+// the program with no duplicate definitions.
+//
+//   - Whole-program (default `.{}`): every user-function body + all support
+//     bodies. This is the original, unchanged codegen path.
+//   - Support CGU: `.{ .emit_bodies = <empty>, .emit_support = true }` — the
+//     shared dtor/dispatcher bodies, host main, hybrid trampolines, and NO user
+//     bodies. One object per build.
+//   - Per-function CGU: `.{ .emit_bodies = {id}, .emit_support = false }` — one
+//     user-function body; all helpers referenced as externs resolved against the
+//     support CGU at link time. One object per changed function.
+pub const ModulePlan = struct {
+    /// User-function ids whose bodies to emit. `null` = every lowerable function
+    /// (whole-program). An empty set emits no user bodies (support CGU).
+    emit_bodies: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
+    /// Emit the shared support definitions (dtor/closure/enum/dynamic bodies,
+    /// call_value dispatcher bodies, host main, hybrid trampolines). When false,
+    /// those symbols are only declared, to be linked against the support CGU.
+    emit_support: bool = true,
+
+    fn emitsBody(self: ModulePlan, id: u32) bool {
+        const set = self.emit_bodies orelse return true;
+        return set.contains(id);
+    }
+};
+
 pub fn buildModule(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
     request: backend_api.CompileRequest,
     triple: []const u8,
+) !Lowered {
+    return buildModulePlanned(allocator, api, request, triple, .{});
+}
+
+pub fn buildModulePlanned(
+    allocator: std.mem.Allocator,
+    api: *const llvm.Api,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+    plan: ModulePlan,
 ) !Lowered {
     const context = api.LLVMContextCreate();
     const module_name = try allocator.dupeZ(u8, request.module_name);
@@ -304,36 +343,41 @@ pub fn buildModule(
     // KIRA_CAPI_DROP while it is validated; with drop off, the destroy helpers are simply
     // never called, so generating them is free of behavior change or double-free risk.
     const drop_enabled = dropEnabled();
-    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode);
+    // Support CGU defines the dtor bodies; per-function CGUs only declare them.
+    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode, !plan.emit_support);
     defer dtors.deinit(allocator);
 
-    // Per-closure typed capture teardown/clone: build the kira_capi_closure_release /
-    // kira_capi_closure_clone bodies (their declarations live in dtors) and, on the
-    // native path with drop on, install the release as the kira_destroy_closure hook
-    // via a global constructor so every owned-closure drop point frees captures too.
-    {
-        const shapes = try closure_dtors.collectShapes(allocator, request.program.programPtr());
-        defer closure_dtors.freeShapes(allocator, shapes);
-        try closure_dtors.build(
-            allocator,
-            api,
-            module_ref,
-            types,
-            request.program.programPtr(),
-            runtime_decls,
-            &dtors,
-            shapes,
-            request.mode == .llvm_native and drop_enabled,
-        );
+    // Shared helper BODIES belong to the support CGU only. Per-function CGUs
+    // reference these symbols (already declared in `dtors`) as externs.
+    if (plan.emit_support) {
+        // Per-closure typed capture teardown/clone: build the kira_capi_closure_release /
+        // kira_capi_closure_clone bodies (their declarations live in dtors) and, on the
+        // native path with drop on, install the release as the kira_destroy_closure hook
+        // via a global constructor so every owned-closure drop point frees captures too.
+        {
+            const shapes = try closure_dtors.collectShapes(allocator, request.program.programPtr());
+            defer closure_dtors.freeShapes(allocator, shapes);
+            try closure_dtors.build(
+                allocator,
+                api,
+                module_ref,
+                types,
+                request.program.programPtr(),
+                runtime_decls,
+                &dtors,
+                shapes,
+                request.mode == .llvm_native and drop_enabled,
+            );
+        }
+
+        // Typed enum destroy/clone bodies (string-payload boxes; declarations live
+        // in dtors.enum_map, empty in hybrid).
+        try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
+
+        // Runtime-typed dynamic dispatchers for type-erased values and native-state
+        // interiors (declarations live in dtors; referenced only on the native path).
+        try dynamic_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
     }
-
-    // Typed enum destroy/clone bodies (string-payload boxes; declarations live
-    // in dtors.enum_map, empty in hybrid).
-    try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
-
-    // Runtime-typed dynamic dispatchers for type-erased values and native-state
-    // interiors (declarations live in dtors; referenced only on the native path).
-    try dynamic_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
     // generated after the concrete functions are declared.
@@ -407,6 +451,9 @@ pub fn buildModule(
     for (request.program.programPtr().functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
         if (function_decl.is_extern) continue;
+        // Per-function CGUs emit only their own body; every other function stays a
+        // declaration here and is resolved from its own object at link time.
+        if (!plan.emitsBody(function_decl.id)) continue;
         const function_value = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
         var fc = codegen.FunctionCodegen{
             .allocator = allocator,
@@ -427,29 +474,33 @@ pub fn buildModule(
         try fc.lower();
     }
 
-    // Generate the dispatcher bodies now that all concrete functions exist.
-    for (dispatcher_sigs) |sig| {
-        const decl = dispatchers.get(sig.hash).?;
-        try dispatch.buildDispatcher(allocator, api, builder, types, request, &functions, runtime_decls, &struct_types, sig, decl.fn_value);
-    }
-
-    // Hybrid mode: emit the kira_native_fn_{id} trampoline the VM calls for each
-    // native function, wrapping the kira_native_impl_{id} body.
-    if (request.mode == .hybrid) {
-        for (request.program.programPtr().functions) |function_decl| {
-            if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-            if (function_decl.is_extern) continue;
-            const impl_fn = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
-            const impl_ty = try types.functionType(allocator, function_decl);
-            try dispatch.buildHybridTrampoline(allocator, api, builder, module_ref, types, &struct_types, runtime_decls.malloc, function_decl, impl_fn, impl_ty);
+    // Dispatcher bodies, hybrid trampolines, and the host main are shared support
+    // definitions: emitted once in the support CGU, declared-only elsewhere.
+    if (plan.emit_support) {
+        // Generate the dispatcher bodies now that all concrete functions exist.
+        for (dispatcher_sigs) |sig| {
+            const decl = dispatchers.get(sig.hash).?;
+            try dispatch.buildDispatcher(allocator, api, builder, types, request, &functions, runtime_decls, &struct_types, sig, decl.fn_value);
         }
-    }
 
-    if (request.mode == .llvm_native) {
-        const entry_decl = request.program.programPtr().functions[request.program.programPtr().entry_index];
-        if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
-        const entry_value = functions.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
-        try buildHostMain(allocator, api, builder, module_ref, types, entry_decl, entry_value);
+        // Hybrid mode: emit the kira_native_fn_{id} trampoline the VM calls for each
+        // native function, wrapping the kira_native_impl_{id} body.
+        if (request.mode == .hybrid) {
+            for (request.program.programPtr().functions) |function_decl| {
+                if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+                if (function_decl.is_extern) continue;
+                const impl_fn = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
+                const impl_ty = try types.functionType(allocator, function_decl);
+                try dispatch.buildHybridTrampoline(allocator, api, builder, module_ref, types, &struct_types, runtime_decls.malloc, function_decl, impl_fn, impl_ty);
+            }
+        }
+
+        if (request.mode == .llvm_native) {
+            const entry_decl = request.program.programPtr().functions[request.program.programPtr().entry_index];
+            if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
+            const entry_value = functions.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
+            try buildHostMain(allocator, api, builder, module_ref, types, entry_decl, entry_value);
+        }
     }
 
     if (std.c.getenv("KIRA_CAPI_DUMP") != null) {
