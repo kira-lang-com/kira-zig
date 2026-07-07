@@ -15,19 +15,14 @@ pub fn setTimingsEnabled(enabled: bool) void {
     timings_enabled = enabled;
 }
 
+// Monotonic clock; previously returned 0 on non-Windows, making all non-Windows graph
+// timings fake. Now uses std.Io.Clock on every platform.
 fn nowNs() i128 {
-    if (builtin.os.tag == .windows) {
-        var counter: std.os.windows.LARGE_INTEGER = undefined;
-        var frequency: std.os.windows.LARGE_INTEGER = undefined;
-        _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
-        _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency);
-        return @divTrunc(@as(i128, counter) * 1_000_000_000, @as(i128, frequency));
-    }
-    return 0;
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake).raw.toNanoseconds();
 }
 
 fn elapsedNs(start: i128) u64 {
-    return @intCast(nowNs() - start);
+    return @intCast(@max(nowNs() - start, 0));
 }
 
 fn timingPrint(comptime fmt: []const u8, args: anytype) void {
