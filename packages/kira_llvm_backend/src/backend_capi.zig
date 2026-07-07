@@ -381,7 +381,13 @@ pub fn buildModulePlanned(
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
     // generated after the concrete functions are declared.
-    const dispatcher_sigs = try dispatch.collectCallValueDispatchers(allocator, request.program.programPtr().*);
+    // Support CGU declares every dispatcher (its bodies live here); a per-function
+    // CGU declares only the dispatchers its own emitted body calls.
+    const dispatcher_sigs = try dispatch.collectCallValueDispatchersFiltered(
+        allocator,
+        request.program.programPtr().*,
+        if (plan.emit_support) null else plan.emit_bodies,
+    );
     defer allocator.free(dispatcher_sigs);
     var dispatchers = std.AutoHashMapUnmanaged(u64, dispatch.DispatcherDecl){};
     defer dispatchers.deinit(allocator);
@@ -419,6 +425,9 @@ pub fn buildModulePlanned(
 
     for (request.program.programPtr().functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+        // Every module declares all functions (extern, no body unless in emit_bodies);
+        // a body may reference any function via direct/virtual/callback dispatch, so a
+        // precise per-CGU declaration set would have to replicate virtual resolution.
         // Extern functions are real C symbols: declare them with their C ABI signature so
         // call sites (lowered through backend_capi_ffi) match the declaration.
         const function_ty = if (function_decl.is_extern)
