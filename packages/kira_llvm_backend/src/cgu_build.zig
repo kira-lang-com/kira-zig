@@ -25,10 +25,13 @@ fn nowNs() i128 {
     return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake).raw.toNanoseconds();
 }
 
-/// Whether the incremental path is requested. Default OFF: the whole-program
-/// build stays the default until the split is proven at full corpus parity.
+/// Whether the incremental native path is used. Default ON for native executable
+/// links: warm one-function rebuilds re-emit only the changed function's object
+/// and relink (~4.75s on the editor vs ~12s whole-program). Set KIRA_INCREMENTAL=0
+/// to force the whole-program path — recommended for cold/one-shot builds (CI,
+/// clean checkouts), where splitting into per-function objects is ~2x slower.
 pub fn enabled() bool {
-    const raw = std.c.getenv("KIRA_INCREMENTAL") orelse return false;
+    const raw = std.c.getenv("KIRA_INCREMENTAL") orelse return true;
     const value = std.mem.span(raw);
     return value.len != 0 and value[0] != '0';
 }
@@ -201,17 +204,18 @@ fn emitCgu(
     try emitObjectInProcess(allocator, api, machine, lowered.module_ref, object_path);
 }
 
-/// Register the native target once per process (idempotent). Must run before any
-/// TargetMachine is created, and single-threaded — the registries it mutates are
-/// process-global. Called from compileExecutable before the emit pool spawns.
-var targets_ready = std.atomic.Value(bool).init(false);
+/// Register the native target. The LLVMInitialize* calls are idempotent, so this
+/// runs unconditionally at the start of every build rather than caching a
+/// process-global "done" flag: each build opens its own LLVM `Api`, and a cached
+/// flag could report "ready" while a freshly (re)loaded library has an empty target
+/// registry — leaving GetTargetFromTriple with "no available targets". Must run
+/// single-threaded, before the emit pool: the registries it mutates are global and
+/// the registration itself is not thread-safe.
 fn ensureTargetsInitialized(api: *const llvm.Api) void {
-    if (targets_ready.load(.acquire)) return;
     api.LLVMInitializeTargetInfo();
     api.LLVMInitializeTarget();
     api.LLVMInitializeTargetMC();
     api.LLVMInitializeAsmPrinter();
-    targets_ready.store(true, .release);
 }
 
 /// Optimize `module` at -O2 and write a native object to `object_path` using the
