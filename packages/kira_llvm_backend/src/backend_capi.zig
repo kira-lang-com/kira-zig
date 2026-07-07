@@ -295,9 +295,21 @@ pub const ModulePlan = struct {
     /// call_value dispatcher bodies, host main, hybrid trampolines). When false,
     /// those symbols are only declared, to be linked against the support CGU.
     emit_support: bool = true,
+    /// User-function ids to DECLARE in this module. `null` declares every lowerable
+    /// function (whole-program and the support CGU, whose dispatcher/main bodies can
+    /// reference any function). A per-function CGU passes exactly the functions its
+    /// body can look up during lowering (from `backend_capi_calls.collectBodyFunctionRefs`),
+    /// so each per-function module declares O(refs) functions instead of the whole
+    /// program — turning the cold split build from O(N²) declarations into O(N·refs).
+    declare_functions: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 
     fn emitsBody(self: ModulePlan, id: u32) bool {
         const set = self.emit_bodies orelse return true;
+        return set.contains(id);
+    }
+
+    fn declares(self: ModulePlan, id: u32) bool {
+        const set = self.declare_functions orelse return true;
         return set.contains(id);
     }
 };
@@ -425,9 +437,9 @@ pub fn buildModulePlanned(
 
     for (request.program.programPtr().functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-        // Every module declares all functions (extern, no body unless in emit_bodies);
-        // a body may reference any function via direct/virtual/callback dispatch, so a
-        // precise per-CGU declaration set would have to replicate virtual resolution.
+        // Per-function CGUs declare only the functions their body can reference
+        // (collectBodyFunctionRefs); the support/whole-program module declares all.
+        if (!plan.declares(function_decl.id)) continue;
         // Extern functions are real C symbols: declare them with their C ABI signature so
         // call sites (lowered through backend_capi_ffi) match the declaration.
         const function_ty = if (function_decl.is_extern)

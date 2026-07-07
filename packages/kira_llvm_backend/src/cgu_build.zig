@@ -14,6 +14,7 @@ const backend_api = @import("kira_backend_api");
 const native = @import("kira_native_lib_definition");
 const llvm = @import("llvm_c.zig");
 const capi = @import("backend_capi.zig");
+const calls = @import("backend_capi_calls.zig");
 const cgu_hash = @import("cgu_hash.zig");
 const cgu_cache = @import("cgu_cache.zig");
 const runtime_utils = @import("backend_runtime_utils.zig");
@@ -312,11 +313,21 @@ pub fn compileExecutable(
         if (cache.has(digest)) {
             reused += 1;
         } else {
-            const one = try allocator.create(std.AutoHashMapUnmanaged(u32, void));
-            one.* = .{};
-            try one.put(allocator, function_decl.id, {});
-            try body_sets.append(one);
-            try pending.append(.{ .plan = .{ .emit_bodies = one, .emit_support = false }, .object_path = object_path });
+            // emit_bodies is exactly this function (emitting a callee's body too would
+            // duplicate its definition). declare_functions is everything the body can
+            // look up during lowering — itself plus direct, callback, and virtual/family
+            // callees — so the module declares only what it references, not the program.
+            const bodies = try allocator.create(std.AutoHashMapUnmanaged(u32, void));
+            bodies.* = .{};
+            try bodies.put(allocator, function_decl.id, {});
+            try body_sets.append(bodies);
+
+            const decls = try allocator.create(std.AutoHashMapUnmanaged(u32, void));
+            decls.* = .{};
+            try calls.collectBodyFunctionRefs(allocator, program, function_decl, decls);
+            try body_sets.append(decls);
+
+            try pending.append(.{ .plan = .{ .emit_bodies = bodies, .declare_functions = decls, .emit_support = false }, .object_path = object_path });
         }
     }
 
