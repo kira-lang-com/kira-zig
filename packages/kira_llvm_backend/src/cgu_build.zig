@@ -47,6 +47,76 @@ fn incrementalRoot(allocator: std.mem.Allocator, object_path: []const u8) ![]con
     return std.fs.path.join(allocator, &.{ dir, "incremental" });
 }
 
+/// One codegen unit queued for emission: the module plan and the cache object
+/// path to write. Independent of every other item, so items emit concurrently.
+const WorkItem = struct {
+    plan: capi.ModulePlan,
+    object_path: []const u8,
+};
+
+/// Emit every pending CGU, in parallel across CPU cores. Each worker uses its own
+/// arena (backed by the page allocator) so no two threads share a mutable
+/// allocator; the LLVM contexts are per-CGU and disjoint, `api`/`request`/`triple`
+/// and the item slice are read-only, and clang runs as separate subprocesses — so
+/// the only shared mutable state is the atomic work cursor and the first-error
+/// slot. Returns the first emit error encountered, if any.
+fn emitPending(
+    allocator: std.mem.Allocator,
+    api: *const llvm.Api,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+    items: []const WorkItem,
+) !void {
+    if (items.len == 0) return;
+
+    var ctx = EmitCtx{ .api = api, .request = request, .triple = triple, .items = items };
+
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const thread_count = @min(items.len, @max(@as(usize, 1), cpu_count));
+
+    if (thread_count <= 1) {
+        ctx.work();
+    } else {
+        const threads = try allocator.alloc(std.Thread, thread_count);
+        defer allocator.free(threads);
+        var spawned: usize = 0;
+        for (threads) |*t| {
+            t.* = std.Thread.spawn(.{}, EmitCtx.work, .{&ctx}) catch break;
+            spawned += 1;
+        }
+        // If not every thread spawned, run the remainder on this thread too so no
+        // work item is dropped.
+        if (spawned == 0) ctx.work();
+        for (threads[0..spawned]) |t| t.join();
+    }
+
+    if (ctx.first_error) |err| return err;
+}
+
+const EmitCtx = struct {
+    api: *const llvm.Api,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+    items: []const WorkItem,
+    next: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    err_lock: std.atomic.Mutex = .unlocked,
+    first_error: ?anyerror = null,
+
+    fn work(self: *EmitCtx) void {
+        while (true) {
+            const index = self.next.fetchAdd(1, .monotonic);
+            if (index >= self.items.len) return;
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            emitCgu(arena.allocator(), self.api, self.request, self.triple, self.items[index].plan, self.items[index].object_path) catch |err| {
+                while (!self.err_lock.tryLock()) std.Thread.yield() catch std.atomic.spinLoopHint();
+                defer self.err_lock.unlock();
+                if (self.first_error == null) self.first_error = err;
+            };
+        }
+    }
+};
+
 /// Build one CGU module per the plan and emit its object straight into the cache
 /// at `object_path`, then dispose the module and its context.
 fn emitCgu(
@@ -100,23 +170,41 @@ pub fn compileExecutable(
         objects.deinit();
     }
 
-    var reused: usize = 0;
-    var rebuilt: usize = 0;
+    // CGUs whose object is missing and must be emitted this build. Emitting shells
+    // out to clang per unit, which is the dominant cost, so it is done in parallel
+    // (below) rather than in this serial digest/bookkeeping pass. The emit-body sets
+    // referenced by each plan are kept alive in `body_sets` until after the pool
+    // joins.
+    var pending = std.array_list.Managed(WorkItem).init(allocator);
+    defer pending.deinit();
+    var body_sets = std.array_list.Managed(*std.AutoHashMapUnmanaged(u32, void)).init(allocator);
+    defer {
+        for (body_sets.items) |set| {
+            set.deinit(allocator);
+            allocator.destroy(set);
+        }
+        body_sets.deinit();
+    }
 
+    var reused: usize = 0;
+
+    // Enqueue helper: mark the digest live, record its object path for linking, and
+    // queue an emit if the object is not already cached. `plan_bodies` is the
+    // heap-owned set (kept in body_sets) the plan borrows, or null for support.
     // Support CGU (shared bodies + all extern declarations, no user bodies).
     {
         const digest = try hasher.hashSupport();
         try cache.markLive(digest);
         const object_path = try cache.objectPath(digest);
+        try objects.append(object_path);
         if (cache.has(digest)) {
             reused += 1;
         } else {
-            var empty = std.AutoHashMapUnmanaged(u32, void){};
-            defer empty.deinit(allocator);
-            try emitCgu(allocator, &api, request, triple, .{ .emit_bodies = &empty, .emit_support = true }, object_path);
-            rebuilt += 1;
+            const empty = try allocator.create(std.AutoHashMapUnmanaged(u32, void));
+            empty.* = .{};
+            try body_sets.append(empty);
+            try pending.append(.{ .plan = .{ .emit_bodies = empty, .emit_support = true }, .object_path = object_path });
         }
-        try objects.append(object_path);
     }
 
     // One CGU per lowered, non-extern user function.
@@ -127,17 +215,20 @@ pub fn compileExecutable(
         const digest = try hasher.hashFunction(function_decl);
         try cache.markLive(digest);
         const object_path = try cache.objectPath(digest);
+        try objects.append(object_path);
         if (cache.has(digest)) {
             reused += 1;
         } else {
-            var one = std.AutoHashMapUnmanaged(u32, void){};
-            defer one.deinit(allocator);
+            const one = try allocator.create(std.AutoHashMapUnmanaged(u32, void));
+            one.* = .{};
             try one.put(allocator, function_decl.id, {});
-            try emitCgu(allocator, &api, request, triple, .{ .emit_bodies = &one, .emit_support = false }, object_path);
-            rebuilt += 1;
+            try body_sets.append(one);
+            try pending.append(.{ .plan = .{ .emit_bodies = one, .emit_support = false }, .object_path = object_path });
         }
-        try objects.append(object_path);
     }
+
+    const rebuilt = pending.items.len;
+    try emitPending(allocator, &api, request, triple, pending.items);
 
     // Runtime + dynamic-FFI helper objects, then full relink of the live set.
     const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
