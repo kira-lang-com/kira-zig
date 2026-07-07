@@ -301,7 +301,13 @@ pub fn lowerArraySet(fc: *FunctionCodegen, v: ir.ArraySet) !void {
     // own slot is a no-op, not a use-after-free. Primitive elements (no destructor) keep
     // the plain store.
     const elem_destroy = if (fc.drop_enabled) fc.dtors.elementDestroy(fc.request.program.programPtr(), fc.register_types[v.src]) else null;
-    if (elem_destroy) |destroy_fn| {
+    // String elements own a cloned buffer that kira_array_store_release frees by
+    // STRING tag (no RAW_PTR destructor needed). elementDestroy returns null for
+    // them, so without forcing the release path a plain kira_array_store would
+    // orphan the old buffer — one leaked string per overwrite (Codex review).
+    const is_string_elem = fc.drop_enabled and v.src < fc.register_types.len and fc.register_types[v.src].kind == .string;
+    if (elem_destroy != null or is_string_elem) {
+        const destroy_fn = elem_destroy orelse api.LLVMConstNull(fc.types.ptr_ty);
         var args = [_]llvm.c.LLVMValueRef{ arr, fc.registers[v.index], slot, destroy_fn };
         _ = api.LLVMBuildCall2(b, fc.runtime_decls.array_store_release.ty, fc.runtime_decls.array_store_release.fn_value, &args, args.len, "");
     } else {

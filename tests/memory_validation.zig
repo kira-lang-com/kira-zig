@@ -139,6 +139,7 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     // fresh owned tree (fresh-Any analysis); alias-returning callees stay
     // untracked so the caller never frees storage the real owner still holds.
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_fresh_any.zig", "functionReturnsFresh", "the fresh-Any return analysis exists");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_fresh_any.zig", "virtualCallReturnsFresh", "virtual-call Any results are fresh only when every dispatch target is proven fresh (a static virtual call resolves to a normal method that may return a borrowed alias)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "tracksFreshAnyResult(callee_decl.id)) drop.onAlloc", "plain-call Any results are tracked only for proven fresh-Any callees");
     // Enum call results are owned by the caller and recorded at the call lowering
     // itself (returned-enum invariant: every call yields a fresh owned block).
