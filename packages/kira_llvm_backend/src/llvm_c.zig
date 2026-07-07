@@ -6,8 +6,10 @@ const NativeLibrary = if (builtin.os.tag == .windows) WindowsNativeLibrary else 
 pub const c = @cImport({
     @cInclude("llvm-c/Analysis.h");
     @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/Error.h");
     @cInclude("llvm-c/Target.h");
     @cInclude("llvm-c/TargetMachine.h");
+    @cInclude("llvm-c/Transforms/PassBuilder.h");
 });
 
 pub const Api = struct {
@@ -126,6 +128,13 @@ pub const Api = struct {
     LLVMTargetMachineEmitToFile: *const @TypeOf(c.LLVMTargetMachineEmitToFile),
     LLVMGetHostCPUName: *const @TypeOf(c.LLVMGetHostCPUName),
     LLVMGetHostCPUFeatures: *const @TypeOf(c.LLVMGetHostCPUFeatures),
+    // New pass-manager runner + options, for in-process -O2 object emission
+    // (no clang subprocess, no textual-IR round trip).
+    LLVMRunPasses: *const @TypeOf(c.LLVMRunPasses),
+    LLVMCreatePassBuilderOptions: *const @TypeOf(c.LLVMCreatePassBuilderOptions),
+    LLVMDisposePassBuilderOptions: *const @TypeOf(c.LLVMDisposePassBuilderOptions),
+    LLVMGetErrorMessage: *const @TypeOf(c.LLVMGetErrorMessage),
+    LLVMDisposeErrorMessage: *const @TypeOf(c.LLVMDisposeErrorMessage),
 
     LLVMInitializeTargetInfo: *const fn () callconv(.c) void,
     LLVMInitializeTarget: *const fn () callconv(.c) void,
@@ -252,6 +261,11 @@ pub const Api = struct {
             .LLVMTargetMachineEmitToFile = try load(&lib, *const @TypeOf(c.LLVMTargetMachineEmitToFile), "LLVMTargetMachineEmitToFile"),
             .LLVMGetHostCPUName = try load(&lib, *const @TypeOf(c.LLVMGetHostCPUName), "LLVMGetHostCPUName"),
             .LLVMGetHostCPUFeatures = try load(&lib, *const @TypeOf(c.LLVMGetHostCPUFeatures), "LLVMGetHostCPUFeatures"),
+            .LLVMRunPasses = try load(&lib, *const @TypeOf(c.LLVMRunPasses), "LLVMRunPasses"),
+            .LLVMCreatePassBuilderOptions = try load(&lib, *const @TypeOf(c.LLVMCreatePassBuilderOptions), "LLVMCreatePassBuilderOptions"),
+            .LLVMDisposePassBuilderOptions = try load(&lib, *const @TypeOf(c.LLVMDisposePassBuilderOptions), "LLVMDisposePassBuilderOptions"),
+            .LLVMGetErrorMessage = try load(&lib, *const @TypeOf(c.LLVMGetErrorMessage), "LLVMGetErrorMessage"),
+            .LLVMDisposeErrorMessage = try load(&lib, *const @TypeOf(c.LLVMDisposeErrorMessage), "LLVMDisposeErrorMessage"),
             .LLVMInitializeTargetInfo = try load(&lib, *const fn () callconv(.c) void, tc.init_symbols.target_info),
             .LLVMInitializeTarget = try load(&lib, *const fn () callconv(.c) void, tc.init_symbols.target),
             .LLVMInitializeTargetMC = try load(&lib, *const fn () callconv(.c) void, tc.init_symbols.target_mc),

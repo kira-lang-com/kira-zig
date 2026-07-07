@@ -69,10 +69,23 @@ fn emitPending(
 ) !void {
     if (items.len == 0) return;
 
-    var ctx = EmitCtx{ .api = api, .request = request, .triple = triple, .items = items };
+    // Register the native target once, single-threaded, before any worker builds a
+    // TargetMachine. Then emit the first CGU on this thread as a warmup: the first
+    // LLVMRunPasses call lazily initializes process-global pass/cl::opt state, which
+    // must not race across the pool.
+    ensureTargetsInitialized(api);
+    {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        try emitCgu(arena.allocator(), api, request, triple, items[0].plan, items[0].object_path);
+    }
+    const rest = items[1..];
+    if (rest.len == 0) return;
+
+    var ctx = EmitCtx{ .api = api, .request = request, .triple = triple, .items = rest };
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const thread_count = @min(items.len, @max(@as(usize, 1), cpu_count));
+    const thread_count = @min(rest.len, @max(@as(usize, 1), cpu_count));
 
     if (thread_count <= 1) {
         ctx.work();
@@ -130,7 +143,87 @@ fn emitCgu(
     const lowered = try capi.buildModulePlanned(allocator, api, request, triple, plan);
     defer api.LLVMContextDispose(lowered.context);
     defer api.LLVMDisposeModule(lowered.module_ref);
-    try runtime_utils.emitObjectFileViaClang(allocator, api, lowered.module_ref, object_path, request.target_selector);
+    try emitObjectInProcess(allocator, api, lowered.module_ref, triple, object_path);
+}
+
+/// Register the native target once per process (idempotent). Must run before any
+/// TargetMachine is created, and single-threaded — the registries it mutates are
+/// process-global. Called from compileExecutable before the emit pool spawns.
+var targets_ready = std.atomic.Value(bool).init(false);
+fn ensureTargetsInitialized(api: *const llvm.Api) void {
+    if (targets_ready.load(.acquire)) return;
+    api.LLVMInitializeTargetInfo();
+    api.LLVMInitializeTarget();
+    api.LLVMInitializeTargetMC();
+    api.LLVMInitializeAsmPrinter();
+    targets_ready.store(true, .release);
+}
+
+/// Optimize `module` at -O2 and write a native object to `object_path`, entirely
+/// in-process: no clang subprocess and no textual-IR round trip (the two costs
+/// that made per-CGU emission slow). Each call builds its own TargetMachine so
+/// concurrent emits share no mutable LLVM state beyond the process-global target
+/// registry (initialized once, before the pool).
+fn emitObjectInProcess(
+    allocator: std.mem.Allocator,
+    api: *const llvm.Api,
+    module_ref: llvm.c.LLVMModuleRef,
+    triple: []const u8,
+    object_path: []const u8,
+) !void {
+    const triple_z = try allocator.dupeZ(u8, triple);
+    defer allocator.free(triple_z);
+
+    var target: llvm.c.LLVMTargetRef = undefined;
+    var target_err: [*c]u8 = null;
+    if (api.LLVMGetTargetFromTriple(triple_z.ptr, &target, &target_err) != 0) {
+        defer if (target_err != null) api.LLVMDisposeMessage(target_err);
+        if (target_err != null) std.debug.print("kira incremental: target lookup failed: {s}\n", .{std.mem.span(target_err)});
+        return error.TargetLookupFailed;
+    }
+
+    const cpu = api.LLVMGetHostCPUName();
+    const features = api.LLVMGetHostCPUFeatures();
+    const machine = api.LLVMCreateTargetMachine(
+        target,
+        triple_z.ptr,
+        cpu,
+        features,
+        llvm.c.LLVMCodeGenLevelDefault,
+        llvm.c.LLVMRelocDefault,
+        llvm.c.LLVMCodeModelDefault,
+    ) orelse return error.TargetMachineCreationFailed;
+    defer api.LLVMDisposeTargetMachine(machine);
+
+    // Set the module's data layout from the target machine. The clang path got this
+    // for free (clang stamps the target datalayout onto the IR it compiles); an
+    // in-process module only had its triple set, so without this it would compute
+    // struct offsets, sizes, and alignments against LLVM's default layout — a silent
+    // miscompile that surfaces on layout-heavy code.
+    const data_layout = api.LLVMCreateTargetDataLayout(machine);
+    defer api.LLVMDisposeTargetData(data_layout);
+    api.LLVMSetModuleDataLayout(module_ref, data_layout);
+
+    // Middle-end -O2 (mem2reg, SROA, instcombine, inlining within the unit, ...):
+    // the perf lever the clang path applied to the textual IR, now run directly on
+    // the in-memory module.
+    const options = api.LLVMCreatePassBuilderOptions();
+    defer api.LLVMDisposePassBuilderOptions(options);
+    if (api.LLVMRunPasses(module_ref, "default<O2>", machine, options)) |run_err| {
+        const msg = api.LLVMGetErrorMessage(run_err);
+        defer api.LLVMDisposeErrorMessage(msg);
+        std.debug.print("kira incremental: opt passes failed: {s}\n", .{std.mem.span(msg)});
+        return error.OptPassesFailed;
+    }
+
+    const path_z = try allocator.dupeZ(u8, object_path);
+    defer allocator.free(path_z);
+    var emit_err: [*c]u8 = null;
+    if (api.LLVMTargetMachineEmitToFile(machine, module_ref, path_z.ptr, llvm.c.LLVMObjectFile, &emit_err) != 0) {
+        defer if (emit_err != null) api.LLVMDisposeMessage(emit_err);
+        if (emit_err != null) std.debug.print("kira incremental: object emission failed: {s}\n", .{std.mem.span(emit_err)});
+        return error.ObjectEmissionFailed;
+    }
 }
 
 /// Incremental native executable build. Mirrors backend.compileViaCApi's link
