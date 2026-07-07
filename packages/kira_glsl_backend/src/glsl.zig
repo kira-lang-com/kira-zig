@@ -46,9 +46,12 @@ const Lowerer = struct {
     program: *const shader_ir.Program,
     shader: *const shader_ir.ShaderDecl,
 
-    // GLSL 330 has no compute stage; emit a plausible 430 compute shader. This backend
-    // is unverified on-device (the repo's GL path is 330 graphics only) — it exists so
-    // the ksl! macro, which compiles every backend, does not fail on a compute shader.
+    // GLSL 330 has no compute stage; emit a 430 compute shader. This backend is
+    // unverified on-device (the repo's GL path is 330 graphics only), but the
+    // source must still be VALID: emitResources declares storage as an SSBO and
+    // main() synthesizes the input struct from GLSL compute builtins before
+    // calling entry — previously main() called entry() with no argument, so any
+    // compute shader using its input produced invalid GLSL (Codex review).
     fn emitComputeStage(self: *Lowerer, stage: shader_ir.StageDecl) ![]const u8 {
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         try out.writer.writeAll("#version 430 core\n\n");
@@ -59,7 +62,26 @@ const Lowerer = struct {
         try self.emitFunction(&out.writer, stage.entry);
         const t = stage.threads orelse shader_ir.Threads{ .x = 64, .y = 1, .z = 1 };
         try out.writer.print("layout(local_size_x = {d}, local_size_y = {d}, local_size_z = {d}) in;\n", .{ t.x, t.y, t.z });
-        try out.writer.print("void main() {{ {s}(); }}\n", .{sanitizeName(stage.entry.name)});
+        try out.writer.writeAll("void main() {\n");
+        if (stage.input_type) |input_type_name| {
+            const input_type = findType(self.program.types, input_type_name) orelse return error.InvalidArguments;
+            try out.writer.print("    {s} kira_input;\n", .{sanitizeName(input_type.name)});
+            for (input_type.fields) |field_decl| {
+                const builtin = field_decl.builtin orelse continue;
+                const target = switch (builtin) {
+                    .thread_id => "gl_GlobalInvocationID",
+                    .local_id => "gl_LocalInvocationID",
+                    .group_id => "gl_WorkGroupID",
+                    .local_index => "gl_LocalInvocationIndex",
+                    else => continue,
+                };
+                try out.writer.print("    kira_input.{s} = {s};\n", .{ sanitizeName(field_decl.name), target });
+            }
+            try out.writer.print("    {s}(kira_input);\n", .{sanitizeName(stage.entry.name)});
+        } else {
+            try out.writer.print("    {s}();\n", .{sanitizeName(stage.entry.name)});
+        }
+        try out.writer.writeAll("}\n");
         return out.toOwnedSlice();
     }
 

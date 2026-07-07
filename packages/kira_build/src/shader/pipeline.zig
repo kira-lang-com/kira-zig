@@ -639,13 +639,67 @@ test "shader lowering emits a compute kernel across backends" {
     try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "[[thread_position_in_grid]]") != null);
     try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "device") != null);
 
-    // GLSL/HLSL: compute lowering succeeds (unverified backends, plausible source).
+    // GLSL: compute lowering emits VALID source (unverified backend), not a
+    // smoke surface. The storage buffer must be a declared SSBO, and main() must
+    // synthesize the input struct from compute builtins and pass it to entry —
+    // an undeclared buffer or an argument-less entry() call is invalid GLSL that
+    // would fake-pass (Core Law #2). Guards against the placeholder regressing.
     const glsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .glsl_330);
     try std.testing.expect(glsl.artifacts.len == 1);
-    try std.testing.expect(glsl.artifacts[0].compute_glsl != null);
+    const glsl_src = glsl.artifacts[0].compute_glsl.?;
+    try std.testing.expect(std.mem.indexOf(u8, glsl_src, "buffer particles_Buffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl_src, "std430") != null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl_src, "gl_GlobalInvocationID") != null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl_src, "entry(kira_input)") != null);
+    // The entry() call must NOT be argument-less when an input is declared.
+    try std.testing.expect(std.mem.indexOf(u8, glsl_src, "entry();") == null);
+
+    // HLSL: compute (non-atomic) still lowers; the atomicAdd intrinsic is
+    // rejected separately (see the KSL072 test below).
     const hlsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .hlsl);
     try std.testing.expect(hlsl.artifacts.len == 1);
     try std.testing.expect(hlsl.artifacts[0].compute_hlsl != null);
+}
+
+test "HLSL rejects the atomicAdd intrinsic instead of emitting an undefined helper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+    try temp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "main.ksl",
+        .data =
+        \\type ComputeIn { @builtin(thread_id) let thread_id: UInt3 }
+        \\shader AtomicOnly {
+        \\    group Dispatch { storage read_write counters: [UInt] }
+        \\    compute {
+        \\        threads(8, 1, 1)
+        \\        input ComputeIn
+        \\        function entry(input: ComputeIn) {
+        \\            counters[input.thread_id.x] = atomicAdd(counters, input.thread_id.x, input.thread_id.y)
+        \\            return
+        \\        }
+        \\    }
+        \\}
+        ,
+    });
+    const source_path = try temp_dir.dir.realPathFileAlloc(std.testing.io, "main.ksl", allocator);
+
+    // MSL and GLSL emit real atomic builtins.
+    const msl = try buildFileForTarget(allocator, source_path, .msl);
+    try std.testing.expect(msl.artifacts.len == 1);
+    try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "atomic_fetch_add_explicit") != null);
+    const glsl = try buildFileForTarget(allocator, source_path, .glsl_330);
+    try std.testing.expect(std.mem.indexOf(u8, glsl.artifacts[0].compute_glsl.?, "atomicAdd(") != null);
+
+    // HLSL rejects it: a KSL072 diagnostic and a lowering-stage failure, never an
+    // undefined kira_atomic_add helper in emitted source (Core Law #2).
+    const hlsl = try buildFileForTarget(allocator, source_path, .hlsl);
+    try std.testing.expect(hlsl.artifacts.len == 0);
+    try std.testing.expect(hlsl.failure_stage == .lowering);
+    try expectDiagnosticCode(hlsl.diagnostics, "KSL072");
 }
 
 fn expectDiagnosticCode(items: []const diagnostics.Diagnostic, code: []const u8) !void {
