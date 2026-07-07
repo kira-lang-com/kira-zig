@@ -57,6 +57,12 @@
 const std = @import("std");
 const ir = @import("kira_ir");
 const backend_api = @import("kira_backend_api");
+// IR-only projections of what the SUPPORT CGU emits beyond type layouts: the set
+// of call_value dispatcher signatures and the closure capture shapes. Both are
+// pure functions of the program IR (no LLVM handles), so hashing them lets the
+// support digest stay stable across body edits that don't touch either set.
+const dispatch = @import("backend_capi_dispatch.zig");
+const closure_dtors = @import("backend_capi_closure_dtors.zig");
 
 /// Bump when codegen logic changes in a way that can alter emitted objects for
 /// otherwise-identical IR (new lowering, changed ABI handling, symbol scheme, ...).
@@ -239,19 +245,35 @@ pub const CguHasher = struct {
 
     /// Digest for the SUPPORT CGU — the object holding every shared definition
     /// (dtor/clone helpers, call_value dispatchers, host main, hybrid trampolines)
-    /// plus the extern declarations of all user functions. Those bodies are
-    /// derived from the whole program (the dispatcher set from call_value sites,
-    /// closure teardown from capture shapes, etc.), so this folds the full program
-    /// structurally: any change rebuilds the support object. That is
-    /// correct-by-construction — no support-relevant input can be silently missed.
+    /// plus the extern declarations of all user functions.
     ///
-    /// The support object carries NO user-function bodies, so its clang cost is
-    /// just the helpers, not the program. A tighter projection (rebuild support
-    /// only when the dispatcher/closure/type sets actually change, so pure body
-    /// edits keep it cached) is a follow-up; the per-function user CGUs already
-    /// carry the bulk of the incremental win.
+    /// This folds ONLY what the support object actually emits, so a pure body edit
+    /// (arithmetic, constants, control flow) that changes no function's signature,
+    /// no dispatcher signature, and no closure shape leaves the digest unchanged
+    /// and the support object cached. The complete set of support inputs:
+    ///
+    ///   1. version + config (opt/triple/mode/drop) — the object's build settings.
+    ///   2. Every function SIGNATURE (not body). Covers the extern declarations of
+    ///      all functions, the hybrid trampolines, and — via the entry — host main.
+    ///      A body edit does not change a signature; a param/return/name/id change
+    ///      does, and must rebuild support (its extern decl / trampoline changed).
+    ///   3. types_digest — all struct/enum layouts. Covers the per-type dtor/clone
+    ///      helper bodies, the typed enum destroy/clone, and the dynamic dispatchers
+    ///      (which key on struct type ids): all are pure functions of the layouts.
+    ///   4. The call_value dispatcher signature SET. Derived from call_value sites
+    ///      in bodies, so a body edit that introduces/removes a distinct call_value
+    ///      shape (adding a new dispatcher) rebuilds support; one that does not,
+    ///      does not.
+    ///   5. Closure capture shapes. Derived from const_closure sites; the closure
+    ///      teardown/clone bodies depend on capture types/ownership, so a change to
+    ///      any capture shape rebuilds support.
+    ///
+    /// Anything a support body depends on is either a signature (2), a layout (3),
+    /// a dispatcher signature (4), or a closure shape (5); nothing else about a
+    /// function body reaches the support object, so omitting bodies here is sound.
     pub fn hashSupport(self: *CguHasher) !Digest {
         var h = Hasher.init();
+        // (1) version + config.
         h.int(codegen_format_version);
         h.bytes(self.config.triple);
         h.bytes(self.config.opt_flag);
@@ -260,9 +282,50 @@ pub const CguHasher = struct {
         // A domain tag so a support digest can never collide with a single-function
         // digest that happened to fold identical bytes.
         h.bytes("kira.cgu.support");
+
+        // (2) every function signature (bodies excluded), in id order, plus which
+        // function is the entry point (host main calls it by symbol).
         h.int(self.program.entry_index);
-        for (self.program.functions) |function| hashReflect(&h, ir.Function, function);
+        const fn_order = try sortedIndicesById(self.allocator, self.program.functions);
+        defer self.allocator.free(fn_order);
+        h.int(@as(u64, fn_order.len));
+        for (fn_order) |index| hashSignature(&h, self.program.functions[index]);
+
+        // (3) all struct + enum layouts (precomputed).
         h.raw(&self.types_digest);
+
+        // (4) call_value dispatcher signature set, sorted by signature hash.
+        const dispatchers = try dispatch.collectCallValueDispatchers(self.allocator, self.program.*);
+        defer self.allocator.free(dispatchers);
+        std.mem.sort(dispatch.DispatcherSig, dispatchers, {}, struct {
+            fn less(_: void, a: dispatch.DispatcherSig, b: dispatch.DispatcherSig) bool {
+                return a.hash < b.hash;
+            }
+        }.less);
+        h.bytes("dispatchers");
+        h.int(@as(u64, dispatchers.len));
+        for (dispatchers) |sig| {
+            h.int(sig.hash);
+            hashReflect(&h, @TypeOf(sig.param_types), sig.param_types);
+            hashReflect(&h, ir.ValueType, sig.return_type);
+        }
+
+        // (5) closure capture shapes, sorted by closure function id.
+        const shapes = try closure_dtors.collectShapes(self.allocator, self.program);
+        defer closure_dtors.freeShapes(self.allocator, shapes);
+        std.mem.sort(closure_dtors.ClosureShape, shapes, {}, struct {
+            fn less(_: void, a: closure_dtors.ClosureShape, b: closure_dtors.ClosureShape) bool {
+                return a.function_id < b.function_id;
+            }
+        }.less);
+        h.bytes("closure-shapes");
+        h.int(@as(u64, shapes.len));
+        for (shapes) |shape| {
+            h.int(shape.function_id);
+            hashReflect(&h, @TypeOf(shape.capture_types), shape.capture_types);
+            hashReflect(&h, @TypeOf(shape.capture_ownership), shape.capture_ownership);
+        }
+
         return h.final();
     }
 };
@@ -298,6 +361,19 @@ fn computeTypesDigest(allocator: std.mem.Allocator, program: *const ir.Program) 
     }
 
     return h.final();
+}
+
+fn sortedIndicesById(allocator: std.mem.Allocator, items: []const ir.Function) ![]usize {
+    const indices = try allocator.alloc(usize, items.len);
+    for (indices, 0..) |*slot, i| slot.* = i;
+    const Ctx = struct {
+        items: []const ir.Function,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            return ctx.items[a].id < ctx.items[b].id;
+        }
+    };
+    std.mem.sort(usize, indices, Ctx{ .items = items }, Ctx.lessThan);
+    return indices;
 }
 
 fn sortedIndicesByName(allocator: std.mem.Allocator, comptime T: type, items: []const T) ![]usize {
@@ -411,4 +487,31 @@ test "hashing is deterministic across independent hasher instances" {
     var functions = [_]ir.Function{testFunction(0, "f0", &body)};
     const program = ir.Program{ .functions = &functions, .entry_index = 0 };
     try testing.expectEqualSlices(u8, &(try hashOne(&program, 0)), &(try hashOne(&program, 0)));
+}
+
+fn hashSupportOf(program: *const ir.Program) !Digest {
+    var hasher = try CguHasher.init(testing.allocator, program, test_config);
+    defer hasher.deinit();
+    return hasher.hashSupport();
+}
+
+test "support CGU stays cached across a pure body edit, rebuilds on signature change" {
+    var f0_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 1 } }, .{ .ret = .{ .src = 0 } } };
+    var f1_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 2 } }, .{ .ret = .{ .src = 0 } } };
+    var functions = [_]ir.Function{ testFunction(0, "f0", &f0_body), testFunction(1, "f1", &f1_body) };
+    const program = ir.Program{ .functions = &functions, .entry_index = 0 };
+
+    const support_before = try hashSupportOf(&program);
+
+    // (a) Pure body edit (constant f1 returns) — support has no user bodies, and
+    // this changes no signature/dispatcher/closure shape, so it MUST stay cached.
+    f1_body[0] = .{ .const_int = .{ .dst = 0, .value = 999 } };
+    const support_after_body = try hashSupportOf(&program);
+    try testing.expectEqualSlices(u8, &support_before, &support_after_body);
+
+    // (b) Signature change (f1's return type) — the support object holds f1's
+    // extern declaration, so it MUST rebuild.
+    functions[1].return_type = .{ .kind = .integer, .name = "I8" };
+    const support_after_sig = try hashSupportOf(&program);
+    try testing.expect(!std.mem.eql(u8, &support_before, &support_after_sig));
 }
