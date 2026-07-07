@@ -1,10 +1,10 @@
 # Incremental Native Codegen (`@Native` / LLVM backend)
 
-Status: **infrastructure landed, end-to-end wiring in progress.** The hashing
-(`cgu_hash.zig`) and on-disk object cache (`cgu_cache.zig`) are implemented and
-unit-tested. The module split that produces the per-function objects the cache
-keys into is the remaining step; it is being built additively behind a
-default-off flag so the default whole-program path is never destabilized.
+Status: **landed and default-on for native executable links.** Content hashing
+(`cgu_hash.zig`), the on-disk object cache (`cgu_cache.zig`), the per-function +
+support module split, in-process object emission, and the full build wiring are
+all implemented, unit-tested, and corpus-green. `KIRA_INCREMENTAL=0` forces the
+whole-program path. See "Status: default ON" and the cold-build verdict below.
 
 ## Goal
 

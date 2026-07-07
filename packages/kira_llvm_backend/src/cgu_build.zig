@@ -17,6 +17,7 @@ const capi = @import("backend_capi.zig");
 const calls = @import("backend_capi_calls.zig");
 const cgu_hash = @import("cgu_hash.zig");
 const cgu_cache = @import("cgu_cache.zig");
+const emscripten = @import("emscripten.zig");
 const runtime_utils = @import("backend_runtime_utils.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
@@ -36,10 +37,15 @@ pub fn enabled() bool {
     return value.len != 0 and value[0] != '0';
 }
 
-/// Whether this request is one the incremental path handles today: a native
-/// executable link. Hybrid shared libraries and object-only requests fall back.
+/// Whether this request is one the incremental path handles today: a HOST native
+/// executable link. Hybrid shared libraries and object-only requests fall back —
+/// and so does wasm32-emscripten, which reaches the backend with `.mode =
+/// .llvm_native` but an Emscripten target selector: the in-process emit initializes
+/// and creates only the host TargetMachine, so a wasm CGU would fail target lookup.
 pub fn handles(request: backend_api.CompileRequest) bool {
-    return request.mode == .llvm_native and request.emit.executable_path != null;
+    return request.mode == .llvm_native and
+        request.emit.executable_path != null and
+        !emscripten.isSelector(request.target_selector);
 }
 
 fn dropEnabled() bool {
@@ -114,6 +120,7 @@ fn emitPending(
     api: *const llvm.Api,
     request: backend_api.CompileRequest,
     triple: []const u8,
+    passes: [*:0]const u8,
     items: []const WorkItem,
 ) !void {
     if (items.len == 0) return;
@@ -128,12 +135,12 @@ fn emitPending(
         defer machine.deinit(api);
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
-        try emitCgu(arena.allocator(), api, machine, request, triple, items[0].plan, items[0].object_path);
+        try emitCgu(arena.allocator(), api, machine, request, triple, passes, items[0].plan, items[0].object_path);
     }
     const rest = items[1..];
     if (rest.len == 0) return;
 
-    var ctx = EmitCtx{ .api = api, .request = request, .triple = triple, .items = rest };
+    var ctx = EmitCtx{ .api = api, .request = request, .triple = triple, .passes = passes, .items = rest };
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const thread_count = @min(rest.len, @max(@as(usize, 1), cpu_count));
@@ -161,6 +168,7 @@ const EmitCtx = struct {
     api: *const llvm.Api,
     request: backend_api.CompileRequest,
     triple: []const u8,
+    passes: [*:0]const u8,
     items: []const WorkItem,
     next: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     err_lock: std.atomic.Mutex = .unlocked,
@@ -181,7 +189,7 @@ const EmitCtx = struct {
             if (index >= self.items.len) return;
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            emitCgu(arena.allocator(), self.api, machine, self.request, self.triple, self.items[index].plan, self.items[index].object_path) catch |err| self.recordError(err);
+            emitCgu(arena.allocator(), self.api, machine, self.request, self.triple, self.passes, self.items[index].plan, self.items[index].object_path) catch |err| self.recordError(err);
         }
     }
 };
@@ -195,13 +203,14 @@ fn emitCgu(
     machine: Machine,
     request: backend_api.CompileRequest,
     triple: []const u8,
+    passes: [*:0]const u8,
     plan: capi.ModulePlan,
     object_path: []const u8,
 ) !void {
     const lowered = try capi.buildModulePlanned(allocator, api, request, triple, plan);
     defer api.LLVMContextDispose(lowered.context);
     defer api.LLVMDisposeModule(lowered.module_ref);
-    try emitObjectInProcess(allocator, api, machine, lowered.module_ref, object_path);
+    try emitObjectInProcess(allocator, api, machine, lowered.module_ref, object_path, passes);
 }
 
 /// Register the native target. The LLVMInitialize* calls are idempotent, so this
@@ -218,15 +227,33 @@ fn ensureTargetsInitialized(api: *const llvm.Api) void {
     api.LLVMInitializeAsmPrinter();
 }
 
-/// Optimize `module` at -O2 and write a native object to `object_path` using the
-/// worker's shared `machine`, entirely in-process: no clang subprocess and no
-/// textual-IR round trip (the two costs that made per-CGU emission slow).
+/// The new-PM pipeline string for a clang-style opt flag, so incremental emission
+/// honors KIRA_NATIVE_OPT the same way the whole-program clang path does (a build
+/// cached under `-O0` must not silently ship `-O2` code). KIRA_CGU_PASSES overrides
+/// entirely, for diagnostics.
+fn passPipeline(opt_flag: []const u8) [*:0]const u8 {
+    if (std.c.getenv("KIRA_CGU_PASSES")) |p| return p;
+    if (std.mem.eql(u8, opt_flag, "-O0")) return "default<O0>";
+    if (std.mem.eql(u8, opt_flag, "-O1")) return "default<O1>";
+    if (std.mem.eql(u8, opt_flag, "-O3")) return "default<O3>";
+    if (std.mem.eql(u8, opt_flag, "-Os")) return "default<Os>";
+    if (std.mem.eql(u8, opt_flag, "-Oz")) return "default<Oz>";
+    return "default<O2>";
+}
+
+/// Optimize `module` with the `passes` pipeline and write a native object for
+/// `object_path` using the worker's shared `machine`, entirely in-process: no clang
+/// subprocess and no textual-IR round trip (the two costs that made per-CGU emission
+/// slow). The object is written to a sibling temp file and renamed into place only
+/// on success — an interrupted or failed emit must not leave a truncated `.o` that
+/// the cache (which only checks existence) would reuse.
 fn emitObjectInProcess(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
     machine: Machine,
     module_ref: llvm.c.LLVMModuleRef,
     object_path: []const u8,
+    passes: [*:0]const u8,
 ) !void {
     // Set the module's data layout from the target machine. The clang path got this
     // for free (clang stamps the target datalayout onto the IR it compiles); an
@@ -235,12 +262,11 @@ fn emitObjectInProcess(
     // miscompile that surfaces on layout-heavy code.
     api.LLVMSetModuleDataLayout(module_ref, machine.data_layout);
 
-    // Middle-end -O2 (mem2reg, SROA, instcombine, inlining within the unit, ...):
-    // the perf lever the clang path applied to the textual IR, now run directly on
-    // the in-memory module.
+    // Middle-end optimization (mem2reg, SROA, instcombine, inlining within the unit,
+    // ...): the perf lever the clang path applied to the textual IR, run directly on
+    // the in-memory module at the requested opt level.
     const options = api.LLVMCreatePassBuilderOptions();
     defer api.LLVMDisposePassBuilderOptions(options);
-    const passes: [*:0]const u8 = if (std.c.getenv("KIRA_CGU_PASSES")) |p| p else "default<O2>";
     if (api.LLVMRunPasses(module_ref, passes, machine.machine, options)) |run_err| {
         const msg = api.LLVMGetErrorMessage(run_err);
         defer api.LLVMDisposeErrorMessage(msg);
@@ -248,14 +274,27 @@ fn emitObjectInProcess(
         return error.OptPassesFailed;
     }
 
-    const path_z = try allocator.dupeZ(u8, object_path);
-    defer allocator.free(path_z);
+    // Emit to a sibling temp file, then atomically rename into place. The temp name
+    // is derived from the content-addressed object path (unique per CGU), so
+    // concurrent workers never collide. On any failure the temp is removed and
+    // `object_path` is never created, so the cache never sees a partial object.
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{object_path});
+    defer allocator.free(tmp_path);
+    const tmp_z = try allocator.dupeZ(u8, tmp_path);
+    defer allocator.free(tmp_z);
+
     var emit_err: [*c]u8 = null;
-    if (api.LLVMTargetMachineEmitToFile(machine.machine, module_ref, path_z.ptr, llvm.c.LLVMObjectFile, &emit_err) != 0) {
+    if (api.LLVMTargetMachineEmitToFile(machine.machine, module_ref, tmp_z.ptr, llvm.c.LLVMObjectFile, &emit_err) != 0) {
         defer if (emit_err != null) api.LLVMDisposeMessage(emit_err);
+        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, tmp_path) catch {};
         if (emit_err != null) std.debug.print("kira incremental: object emission failed: {s}\n", .{std.mem.span(emit_err)});
         return error.ObjectEmissionFailed;
     }
+
+    std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), object_path, std.Options.debug_io) catch |err| {
+        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, tmp_path) catch {};
+        return err;
+    };
 }
 
 /// Incremental native executable build. Mirrors backend.compileViaCApi's link
@@ -365,7 +404,7 @@ pub fn compileExecutable(
     const rebuilt = pending.items.len;
     const stats = std.c.getenv("KIRA_INCREMENTAL_STATS") != null;
     const emit_start = nowNs();
-    try emitPending(allocator, &api, request, triple, pending.items);
+    try emitPending(allocator, &api, request, triple, passPipeline(config.opt_flag), pending.items);
     const emit_ns = nowNs() - emit_start;
 
     // Runtime + dynamic-FFI helper objects, then full relink of the live set.
