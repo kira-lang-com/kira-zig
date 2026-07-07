@@ -28,16 +28,18 @@
 //!    is the body; nothing about F's own codegen escapes it. Using reflection rather
 //!    than a hand-written per-instruction walk means a newly added instruction field
 //!    can never be silently omitted.
-//! 4. **Signatures of F's direct callees** — for every function id F references via
-//!    `const_function` / `const_closure` (the only way a concrete function symbol
-//!    enters final IR; `call` takes a register the const feeds), the callee's
-//!    *signature only*: symbol-affecting name, params, return, per-parameter
-//!    ownership, extern-ness, and foreign binding. **Not** the callee body. F's
-//!    module only holds an external `declare` for a callee, so a callee body change
-//!    cannot alter F's `.o` — but a signature change alters the `declare`, so it
-//!    must invalidate F. (This body-exclusion is sound only because incremental
-//!    codegen does not inline across CGUs; a whole-program/release build that
-//!    cross-inlines must not use this cache.)
+//! 4. **Every function's signature** (all of them, sorted by id) — *signature only*:
+//!    symbol-affecting name, params, return, per-parameter ownership, extern-ness,
+//!    and foreign binding; **not** bodies. F's module holds an external `declare`
+//!    for each callee it references, and F can reach a callee by direct call,
+//!    virtual/family dispatch, or callback — resolving that exact set would mean
+//!    replaying virtual method resolution. Folding ALL signatures is complete by
+//!    construction: a callee body change leaves it untouched (F's `.o` is
+//!    unaffected), while any signature change invalidates F (its `declare` may have
+//!    changed). Conservative — a signature edit rebuilds every function — but
+//!    signature edits are far rarer than body edits. (Sound only because incremental
+//!    codegen does not inline across CGUs; a cross-inlining release build must not
+//!    use this cache.)
 //! 5. **Every struct and enum layout** in the program (sorted by name), hashed in
 //!    full. A struct's size/alignment/field order changes the GEPs, allocations, and
 //!    ABI of every function that touches it. Rather than risk missing a transitively
@@ -190,6 +192,15 @@ pub const CguHasher = struct {
     /// Digest of every struct + enum layout in the program (sorted by name), folded
     /// into every function's hash. Precomputed once.
     types_digest: Digest = undefined,
+    /// Digest of EVERY function's signature (sorted by id), folded into every
+    /// function's hash. A function's module declares each callee it references as an
+    /// extern whose type comes from the callee's signature; a caller can reach a
+    /// callee by direct call, virtual/family dispatch, or callback, and resolving
+    /// that set precisely would mean replaying virtual method resolution. Folding all
+    /// signatures instead is complete by construction: any signature change
+    /// invalidates every function (conservative — signature edits are far rarer than
+    /// body edits, which leave this digest untouched). Precomputed once.
+    signatures_digest: Digest = undefined,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ir.Program, config: CguConfig) !CguHasher {
         var self = CguHasher{ .allocator = allocator, .program = program, .config = config };
@@ -197,6 +208,7 @@ pub const CguHasher = struct {
             try self.fn_by_id.put(allocator, function.id, function);
         }
         self.types_digest = try computeTypesDigest(allocator, program);
+        self.signatures_digest = try computeSignaturesDigest(allocator, program);
         return self;
     }
 
@@ -219,23 +231,11 @@ pub const CguHasher = struct {
         // (3) F's own lowered IR, in full.
         hashReflect(&h, ir.Function, function);
 
-        // (4) signatures (not bodies) of F's direct callees, sorted by id.
-        var callees = std.array_list.Managed(u32).init(self.allocator);
-        defer callees.deinit();
-        try collectCallees(&callees, function);
-        std.mem.sort(u32, callees.items, {}, std.sort.asc(u32));
-        var last: ?u32 = null;
-        for (callees.items) |callee_id| {
-            if (last != null and last.? == callee_id) continue; // dedupe
-            last = callee_id;
-            if (self.fn_by_id.get(callee_id)) |callee| {
-                hashSignature(&h, callee);
-            } else {
-                // Unknown id (should not happen post-lowering); fold the raw id so the
-                // absence is still deterministically part of the key.
-                h.int(callee_id);
-            }
-        }
+        // (4) every callee declaration F could emit: all function signatures. Complete
+        // by construction (covers direct, virtual/family, and callback dispatch without
+        // resolving the call graph); a callee BODY change leaves this untouched, a
+        // callee SIGNATURE change invalidates F.
+        h.raw(&self.signatures_digest);
 
         // (5) all struct + enum layouts (precomputed).
         h.raw(&self.types_digest);
@@ -330,17 +330,16 @@ pub const CguHasher = struct {
     }
 };
 
-/// Direct function-symbol references in final IR arrive only through
-/// `const_function` / `const_closure` (a later `call` consumes the register they
-/// populate). Collecting their ids yields F's exact static callee set.
-fn collectCallees(out: *std.array_list.Managed(u32), function: ir.Function) !void {
-    for (function.instructions) |instruction| {
-        switch (instruction) {
-            .const_function => |node| try out.append(node.function_id),
-            .const_closure => |node| try out.append(node.function_id),
-            else => {},
-        }
-    }
+/// Digest of every function's signature, sorted by id. Folded into each function's
+/// hash so a callee's signature change invalidates its callers, without having to
+/// resolve which functions actually call it (direct, virtual, or callback).
+fn computeSignaturesDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
+    var h = Hasher.init();
+    const order = try sortedIndicesById(allocator, program.functions);
+    defer allocator.free(order);
+    h.int(@as(u64, order.len));
+    for (order) |index| hashSignature(&h, program.functions[index]);
+    return h.final();
 }
 
 fn computeTypesDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
