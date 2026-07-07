@@ -56,6 +56,8 @@ This must remain a Zig/Kira repo. Python is forbidden everywhere: `*.py`, `pytho
 
 Do not add random root-level Zig files. Only root-level Zig files allowed are `build.zig` and `build.zig.zon`. Move any other root-level `*.zig` into the correct package/tool/fixture/test directory or delete it if obsolete. Do not leave scratch files, repros, generated helpers, smoke runners, temporary migration tools, or one-off validation files at repo root.
 
+Agent working files ALWAYS go in `.codex/`, NEVER in `.claude/`. This repo is shared by more than one agent runtime — you are not the only agent that works here, so treat `.codex/` as the single shared agent workspace: scratch and throwaway output in `.codex/tmp/`, longer-lived notes in `.codex/work/`, skills in `.codex/skills/`. Read existing `.codex/` contents before starting; another agent may have left context. Do not create or write under `.claude/`, and do not dump scratch into a Claude-specific job/temp directory when `.codex/tmp/` exists — if you reach for `.claude/` or a `$CLAUDE_*` path, redirect to `.codex/`.
+
 ### 5. File Size Is Architecture
 
 Large Zig files are architecture debt, not style debt. Any non-generated Zig file at or above 600 lines is oversized and must be considered for splitting. Any non-generated Zig file over 1000 lines is forbidden and must be split when encountered. If an agent touches, opens, audits, or discovers an oversized Zig file, it must not ignore it because the current task differs.
