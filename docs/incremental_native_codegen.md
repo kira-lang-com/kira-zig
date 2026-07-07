@@ -143,11 +143,18 @@ Content-addressed store at `<incremental_root>/<config-key>/<hexdigest>.o`.
 On a one-line body edit, step 4 runs for exactly one small single-function
 module; everything else is a cache hit. That is where the <1s comes from.
 
-## Correctness gate before this becomes default
+## Status: default ON
 
-- Flag-gated (`KIRA_INCREMENTAL`, default OFF) until proven.
-- Full corpus (`zig build test-backends`, vm/llvm/hybrid) must pass with the flag
-  ON — every case that passes whole-program must pass split.
+The split is the default for native executable links (`KIRA_INCREMENTAL` unset →
+on). Set `KIRA_INCREMENTAL=0` to force the whole-program path — recommended for
+cold/one-shot builds (CI, clean checkouts), which are ~2x slower when split into
+per-function objects (see the verdict below). Only native executable links take
+the split path; VM/hybrid/wasm and object-only/validate builds are unaffected.
+
+Correctness gate (met):
+
+- Full corpus (`zig build test-backends`, vm/llvm/hybrid) passes with the split as
+  the default (499/0) — every case that passes whole-program passes split.
 - **Golden parity test**: for representative programs, a clean whole-program
   build and an incremental (split) build must produce behaviorally identical
   binaries (same stdout / exit / leak profile). A change that only touches one
@@ -200,4 +207,4 @@ edits). The incremental win is the **warm** path, which works.
 | `backend_capi.zig` `buildModulePlanned` | whole-program / support / per-function via `ModulePlan` | landed |
 | `backend_capi_calls.zig` `collectBodyFunctionRefs` | per-CGU declared-function set (incl. virtual/family) | landed |
 | `cgu_build.zig` | split orchestrator: hash → cache → in-process parallel emit → relink → GC | landed |
-| `backend.zig` `compileViaCApi` | flag-gated (`KIRA_INCREMENTAL`) dispatch to the split path | landed |
+| `backend.zig` `compileViaCApi` | dispatch to the split path (default on; `KIRA_INCREMENTAL=0` opts out) | landed |
