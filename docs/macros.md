@@ -29,6 +29,8 @@ This page documents the macro language surface. Forms below are exercised by the
 | Procedural, function | `comptime macro Name { kind { function } … }` | `Name!(arg)` | compile-time code |
 | Procedural, attribute | `comptime macro Name { kind { attribute } … }` | `@Name` above a declaration | compile-time code |
 | Procedural, derive | `comptime macro Name { kind { derive } … }` | `@Derive(Name, …)` above a declaration | compile-time code |
+| Procedural, field-triggered | `comptime macro Name { kind { attribute } trigger { field } replace { true } … }` | `@Name` on a FIELD of a declaration | compile-time code |
+| Procedural, wrapper | `comptime macro Name { kind { wrapper } … }` | `@Name` on a struct declares a wrapper template; the template's name on a FIELD summons the macro | compile-time code |
 
 A trailing `!` at the call site marks every value-position macro, declarative or procedural-function
 — the user always sees that arguments are *unevaluated syntax*, not values. Attribute and derive
@@ -173,7 +175,9 @@ right = temporary$0
 ```kira
 comptime macro Name {
     kind { function }                       // or: attribute | derive
-    appliesTo { struct, class, enum }       // required for attribute/derive; omitted for function
+    appliesTo { struct, class, enum, form } // required for attribute/derive; omitted for function
+    trigger { field }                       // optional: auto-apply when a FIELD carries `@Name`
+    replace { true }                        // optional: output REPLACES the annotated declaration
 
     expand(input: Syntax) -> Syntax {       // function:  (Syntax)      -> Syntax
         body                                // attribute: (Declaration) -> Syntax
@@ -181,11 +185,25 @@ comptime macro Name {
 }
 ```
 
-`kind` is required and fixed to one of `function`, `attribute`, `derive`; it determines both the
-call syntax and the signature of `expand`. `appliesTo` is required for `attribute` and `derive`
-(it lists the declaration kinds the macro is legal on) and omitted for `function`. `expand` is the
-one member every `comptime macro` must define, and its body is ordinary Kira run at compile time on
-the same evaluator as `comptime function`.
+`kind` is required and fixed to one of `function`, `attribute`, `derive`, `wrapper`; it
+determines both the call syntax and the signature of `expand` (`wrapper` takes
+`expand(target: Declaration, wrapper: Declaration)` — see the property-wrapper case study).
+`appliesTo` is required for `attribute` and `derive` (it lists the declaration kinds the macro is
+legal on) and omitted for `function`; `form` admits construct-backed declaration forms
+(`Widget Counter(...) { ... }`). `expand` is the one member every `comptime macro` must define,
+and its body is ordinary Kira run at compile time on the same evaluator as `comptime function`.
+
+Two opt-in members extend attribute macros:
+
+- `trigger { field }` — the macro auto-applies to a whole declaration whenever one of the
+  declaration's *fields* carries an annotation matching the macro's name. This is the
+  property-wrapper shape: `@State var count: Int = 0` inside `Widget Counter` summons macro
+  `State` over the `Counter` declaration (the macro sees the full declaration; the field
+  annotation itself is just the trigger). A field-triggered macro must also be `replace { true }`
+  (KMAC029): its purpose is rewriting the declaration that carries the field.
+- `replace { true }` — the macro's generated declarations REPLACE the annotated declaration
+  instead of being appended alongside it. At most one replace-mode macro may apply to a
+  declaration (KMAC028) — a second replacer would have no original left to observe.
 
 ### Expansion ordering and visibility
 
@@ -204,6 +222,13 @@ When a declaration carries several macros (`@A @B` and/or `@Derive(C, D)`):
 struct Syntax {
     function identifiers() -> [Identifier]
     static function join(items: [Syntax], separator: String) -> Syntax
+    // Declaration-shaped Syntax only (a value derived from `target.syntax`):
+    function dropField(name: Identifier) -> Syntax                 // remove a field declaration
+    function rewriteProperty(
+        name: Identifier,        // the property whose uses to rewrite
+        read: Syntax,            // replaces every bare, unshadowed read (e.g. `__get_count()`)
+        writeCallee: Syntax,     // `name = v` becomes `writeCallee(v)`
+    ) -> Syntax
 }
 
 struct Identifier {
@@ -214,12 +239,15 @@ struct Identifier {
 struct Declaration {
     var name: Identifier
     var fields: [Field]
-    var syntax: Syntax
+    var syntax: Syntax        // the declaration's exact source text
 }
 
 struct Field {
     var name: Identifier
     var type: TypeRef
+    var initializer: Syntax   // source of the initial-value expression ("" when absent)
+    var syntax: Syntax        // the whole field declaration, annotations included
+    function hasAnnotation(name: String) -> Bool
 }
 
 struct TypeRef {
@@ -230,6 +258,14 @@ struct Diagnostics {
     static function error(message: String, at: Syntax)
 }
 ```
+
+`Syntax.rewriteProperty` and `Syntax.dropField` are *span edits* over the declaration's original
+source: the machinery parses the text, walks every member body with full lexical-scope tracking
+(a read is rewritten only when the property is not shadowed by a local binding, parameter,
+callback parameter, for/builder-for binding, match or handler binding), and splices the
+replacement text back — untouched source survives byte-for-byte, comments included. Assigning
+*through* a wrapped property (`name.x = v`, `name[i] = v`) is KMAC027: the proxy has no place to
+write through; read the value, mutate the copy, assign it back.
 
 #### Hygiene boundary: no `String → Identifier`
 
@@ -375,8 +411,8 @@ struct Vec2 {
 ## Case study: property wrappers (where the macro line falls)
 
 `PropertyWrapper` is an ordinary attribute macro. It validates that the annotated struct has a
-`wrappedValue` member, records whether it also has `projectedValue`, and tags the type with a
-conformance:
+`wrappedValue` member, records whether it also has `projectedValue`, and generates conformance
+query functions for the type:
 
 ```kira
 comptime macro PropertyWrapper {
@@ -395,48 +431,82 @@ comptime macro PropertyWrapper {
             return quote { }
         }
         return quote {
-            extend #{target.name}: PropertyWrapperConformance {
-                static let hasProjectedValue: Bool = #{hasProjectedValue}
-            }
+            function is_#{target.name}_propertyWrapper() -> Bool { return true }
+            function has_#{target.name}_projectedValue() -> Bool { return #{hasProjectedValue} }
         }
     }
 }
-```
 
-That is *everything* `PropertyWrapper` does: it validates one declaration and tags it. An attribute
-macro only ever sees the single declaration it is attached to, so it has no way to reach into
-`Widget Counter` and rewrite a `@State var count: Int = 0` somewhere else in the program — that is a
-different declaration, one that does not even exist until `State` has already been validated.
-
-So the lowering of `@State var count: Int = 0` is **not a macro**. It is a single fixed rule, owned
-by the compiler, that runs whenever a property declaration is annotated with a type conforming to
-`PropertyWrapperConformance`. Given `@State var count: Int = 0`, the compiler generates a backing
-field (`_count`), a computed property under the original name proxying `wrappedValue`, and — only if
-`hasProjectedValue` was recorded `true` — a `$`-prefixed computed property proxying
-`projectedValue`:
-
-```kira
-Widget Counter() {
-    var _count: State = State(wrappedValue: 0)
-    var count: Int {
-        get { return _count.wrappedValue as Int }
-        set(newValue) { _count.wrappedValue = newValue }
-    }
-    var $count: Binding {
-        get { return _count.projectedValue as Binding }
-    }
-    body { /* references `count` by that exact name */ }
+@PropertyWrapper
+struct State {
+    var wrappedValue: Int
+    var projectedValue: Bool
 }
 ```
 
-`_count`, `count`, `$count` are **not** hygienic gensyms — they are derived deterministically from
-the literal property name, because the whole point is that `count` stays referenceable by that exact
-name everywhere else in the widget. This is the only place in the system where a name is
-intentionally derived rather than passed through as a fragment or hygienically renamed, and it is
-compiler-owned precisely because (a) it depends on a fact recorded by a *different* declaration and
-(b) it applies uniformly to every wrapper type. The hygiene boundary (no `String -> Identifier`)
-makes this division of labor enforced rather than incidental: a macro could not implement the
-use-site rewrite even if it wanted to.
+The conformance is surfaced as free functions whose names are glued to the annotated type via a
+mid-identifier splice (`is_#{target.name}_propertyWrapper` → `is_State_propertyWrapper`), because
+Kira `extend` applies only to *constructs* — not plain structs — and Kira has no `static` members,
+so the `extend T: Conformance { static let ... }` shape is not expressible here. The behaviour is
+identical in spirit: the macro sees one declaration, validates it, and emits a Bool-returning
+conformance surface derived from its fields. This exact macro is exercised end-to-end across
+vm / llvm / hybrid in `tests/pass/run/macro_property_wrapper` (with the missing-`wrappedValue`
+diagnostic, `KMAC021`, pinned by `tests/fail/semantics/macro_property_wrapper_missing`).
+
+The full property-wrapper feature is `kind { wrapper }` — one macro defines the *protocol*, and
+every wrapper type is an ordinary annotated struct:
+
+```kira
+comptime macro PropertyWrapper {
+    kind { wrapper }
+    appliesTo { form }    // what a wrapper may rewrite when summoned by a field
+
+    expand(target: Declaration, wrapper: Declaration) -> Syntax { … }
+}
+
+@PropertyWrapper
+struct State {
+    var wrappedValue: Wrapped     // `Wrapped` = the macro's placeholder for the field's type
+    var key: String = ""
+
+    function get() -> Wrapped { …storage read…  }
+    function set(value: Wrapped) { …storage write… }
+}
+
+Widget Counter() {
+    @State var count: Int = 0      // works because State IS a @PropertyWrapper
+    body { /* bare `count` reads, `count = v` writes */ }
+}
+```
+
+Machinery semantics of `kind { wrapper }`:
+
+- Annotating a struct with the macro's name registers it as a wrapper **template** and runs the
+  macro's *validation invocation* — `expand(template, template)` (`target.name == wrapper.name`
+  discriminates the path). The macro validates the protocol (`wrappedValue`, …) and may emit
+  conformance declarations. The template itself is then **removed from the program**: it may
+  carry placeholder types (`Wrapped`) and is never compiled as-is. Templates are registered in a
+  pre-scan, so declaration order between packages never matters.
+- A field annotated with a registered template's name summons the macro over the enclosing
+  declaration — `expand(target = the form, wrapper = the template)` — and the output **replaces**
+  the form. One summon per template per declaration; the macro loops over the wrapped fields.
+
+Inside the rewrite path the macro *monomorphizes* the template per wrapped field with
+`Syntax.replaceIdentifier` (whole-identifier textual substitution, string literals and comments
+untouched): rename `State` → `__pw_Counter_count` (including internal self-references such as
+`nativeRecover<State>`), substitute `Wrapped` → the field's declared type — so **any field type
+works** without generics. It then emits per-property get/set accessor functions that construct
+the monomorphized wrapper (seeded with the field's initializer and an `"Owner.property"` key) and
+rewrites the form with `dropField` + `rewriteProperty`. Storage policy lives entirely in the
+wrapper struct's own `get`/`set` — Kira UI's `State` persists through an ambient native slot so
+widget state survives per-frame rebuilds; the compiler knows nothing about any of it.
+
+The generated names (`__pw_Counter_get_count`, …) are deterministically derived by splice gluing —
+not hygienic gensyms — because the rewritten uses must name them. The whole protocol is exercised
+across vm / llvm / hybrid in `tests/pass/run/macro_wrapper_state` (validation conformance,
+Int + String state side by side, reads/writes rerouted, shadowed locals untouched); the
+standalone `trigger { field }` + `replace { true }` machinery is pinned separately by
+`tests/pass/run/macro_field_trigger_rewrite`.
 
 ## Diagnostics
 
@@ -456,6 +526,11 @@ use-site rewrite even if it wanted to.
 | `KMAC012` | `comptime macro` `expand` signature does not match its `kind` |
 | `KMAC016` | a function macro used in statement position whose expansion does not parse as statements |
 | `KMAC017` | a function macro used in expression position whose expansion is not a single expression |
+| `KMAC025` | `Syntax.dropField` on a field that does not exist |
+| `KMAC026` | `Syntax.dropField`/`rewriteProperty` on a value that is not a declaration |
+| `KMAC027` | assignment through a wrapped property path (`name.x = v`, `name[i] = v`) |
+| `KMAC028` | more than one replace-mode macro (or wrapper summon) on one declaration |
+| `KMAC029` | a `trigger { field }` macro that is not `replace { true }` |
 
 ## Implementation status
 

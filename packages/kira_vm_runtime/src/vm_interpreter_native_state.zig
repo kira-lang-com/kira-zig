@@ -43,6 +43,25 @@ pub fn recoverNativeState(
     setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.recoverNativeState(module, value.type_name, state_value.raw_ptr, value.type_id) });
 }
 
+pub fn freeNativeState(
+    vm: *Vm,
+    registers: []runtime_abi.Value,
+    value: anytype,
+) !void {
+    const state_value = registers[value.state];
+    if (state_value != .raw_ptr) {
+        vm.rememberError("nativeStateFree requires a native state token");
+        return error.RuntimeFailure;
+    }
+    // Null tokens are a no-op, mirroring the native backend's
+    // kira_native_state_free(NULL). Unknown tokens (not VM-allocated boxes,
+    // e.g. hybrid native-side tokens or raw payload views) are left alone:
+    // the VM cannot know their allocator, and freeing them here would corrupt
+    // the other backend's heap.
+    if (state_value.raw_ptr == 0) return;
+    vm.freeNativeState(state_value.raw_ptr);
+}
+
 pub fn nativeStateFieldGet(
     vm: *Vm,
     module: *const bytecode.Module,
@@ -63,16 +82,37 @@ pub fn nativeStateFieldGet(
             return error.RuntimeFailure;
         }
         if (box.runtime_payload != 0) {
-            const payload: [*]const runtime_abi.Value = @ptrFromInt(payload_ptr);
-            setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], payload[@intCast(value.field_index)]);
+            const payload: [*]runtime_abi.Value = @ptrFromInt(payload_ptr);
+            // A checker-verified field move-out (`let n = view.nodes; view.nodes
+            // = []`) takes ownership into dst and VOIDS the source slot, so the
+            // later set/free does not destroy the payload dst now owns (and dst
+            // does not alias a freed slot — the LLVM backend nulls the slot the
+            // same way). A plain read borrows.
+            if (value.moved) {
+                const taken = payload[@intCast(value.field_index)];
+                payload[@intCast(value.field_index)] = .void;
+                setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], taken);
+            } else {
+                setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], payload[@intCast(value.field_index)]);
+            }
         } else {
+            // Bridge payload: materialize an independent owned copy. dst does not
+            // alias the state's value, so a moved read is already safe here (the
+            // state frees the original, dst frees its copy) — no slot voiding
+            // needed to prevent a double free.
             const payload: [*]const runtime_abi.BridgeValue = @ptrFromInt(payload_ptr);
             const materialized = try vm.materializeNativeStateValue(module, value.field_ty, runtime_abi.bridgeValueToValue(payload[@intCast(value.field_index)]));
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], materialized);
         }
     } else {
-        const payload: [*]const runtime_abi.Value = @ptrFromInt(state_value.raw_ptr);
-        setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], payload[@intCast(value.field_index)]);
+        const payload: [*]runtime_abi.Value = @ptrFromInt(state_value.raw_ptr);
+        if (value.moved) {
+            const taken = payload[@intCast(value.field_index)];
+            payload[@intCast(value.field_index)] = .void;
+            setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], taken);
+        } else {
+            setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], payload[@intCast(value.field_index)]);
+        }
     }
 }
 

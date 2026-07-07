@@ -65,6 +65,7 @@ pub fn valueType(value: mid.Value) model.ResolvedType {
         .native_state => |node| node.ty,
         .native_user_data => |node| node.ty,
         .native_recover => |node| node.ty,
+        .native_state_free => |node| node.ty,
         .c_string_to_string => |node| node.ty,
         .array_len => |node| node.ty,
         .string_len => |node| node.ty,

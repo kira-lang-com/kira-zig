@@ -207,6 +207,7 @@ pub const Analyzer = struct {
 
         var scope = try FunctionScope.init(self, source_info.module_alias, shader_scope, params.items, return_type);
         const body = try scope.lowerBlock(source_info.decl.body);
+        try scope.checkAtomicBufferAliasing();
 
         const lowered: shader_ir.FunctionDecl = .{
             .name = key,

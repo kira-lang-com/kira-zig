@@ -68,6 +68,7 @@ pub const HybridRuntime = struct {
             .writer = writer,
         };
         native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
+        native_bridge.installClosureDestroy(closureDestroyHook(Context));
         defer native_bridge.clearRuntimeInvoker();
 
         switch (self.manifest.entry_execution) {
@@ -88,6 +89,7 @@ pub const HybridRuntime = struct {
             .writer = writer,
         };
         native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
+        native_bridge.installClosureDestroy(closureDestroyHook(Context));
         defer native_bridge.clearRuntimeInvoker();
         try self.invokeRuntime(&runtime_context, function_id, &.{}, null);
     }
@@ -107,6 +109,7 @@ pub const HybridRuntime = struct {
             .writer = writer,
         };
         native_bridge.installRuntimeInvoker(&runtime_context, runtimeInvoke(Context));
+        native_bridge.installClosureDestroy(closureDestroyHook(Context));
         defer native_bridge.clearRuntimeInvoker();
         const function_decl = self.module.findFunctionById(function_id) orelse return error.UnknownFunction;
         return self.vm.runFunctionById(&self.module, function_decl.id, &.{}, writer, .{
@@ -411,6 +414,18 @@ fn RuntimeContext(comptime Writer: type) type {
         runtime: *HybridRuntime,
         writer: Writer,
     };
+}
+
+// Native drop of a runtime-exported closure block: release it through the VM
+// (which allocated and tracks it) instead of libc free. See
+// kira_hybrid_install_closure_destroy in runtime_helpers.c.
+fn closureDestroyHook(comptime Context: type) *const fn (?*anyopaque, usize) void {
+    return struct {
+        fn destroy(context: ?*anyopaque, native_ptr: usize) void {
+            const ctx: *Context = @ptrCast(@alignCast(context orelse return));
+            ctx.runtime.vm.releaseExportedNativeClosure(native_ptr);
+        }
+    }.destroy;
 }
 
 fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void {

@@ -48,13 +48,14 @@ pub fn lowerBuilderBlock(
 
                 if (ctx.active_locals != null and ctx.active_next_local_id != null) {
                     binding_ty = try resolveArrayElementType(ctx, model.hir.exprType(iterator.*), value.span);
+                    const binding_ownership: model.OwnershipMode = if (shared.containsConstructAnyStorage(ctx, binding_ty)) .borrow_read else .owned;
                     binding_local_id = ctx.active_next_local_id.?.*;
                     ctx.active_next_local_id.?.* += 1;
                     try ctx.active_locals.?.append(.{
                         .id = binding_local_id,
                         .name = try ctx.allocator.dupe(u8, value.binding_name),
                         .ty = binding_ty,
-                        .ownership = .owned,
+                        .ownership = binding_ownership,
                         .span = value.span,
                     });
                     loop_scope_storage = try scope_flow.cloneScope(ctx.allocator, active_scope.*);
@@ -63,6 +64,7 @@ pub fn lowerBuilderBlock(
                         .id = binding_local_id,
                         .ty = binding_ty,
                         .storage = .immutable,
+                        .ownership = binding_ownership,
                         .initialized = true,
                         .decl_span = value.span,
                     });

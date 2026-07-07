@@ -1,0 +1,68 @@
+// Recursive widget-tree shape: a struct owns closure fields and an array of the
+// same struct. Rebuilding nested trees must release child arrays and every
+// closure block they carry.
+
+struct Node {
+    let id: Int
+    let onPress: (Int) -> Int
+    let children: [Node]
+}
+
+function makeAdder(base: Int): (Int) -> Int {
+    return { n in
+        return base + n
+    }
+}
+
+function makeLeaf(id: Int) -> Node {
+    return Node {
+        id: id
+        onPress: makeAdder(id)
+        children: []
+    }
+}
+
+function makeBranch(id: Int) -> Node {
+    var children: [Node] = []
+    children.append(makeLeaf(id + 10))
+    children.append(makeLeaf(id + 20))
+    return Node {
+        id: id
+        onPress: makeAdder(id)
+        children: move children
+    }
+}
+
+function makeTree(seed: Int) -> Node {
+    var children: [Node] = []
+    children.append(makeBranch(seed + 100))
+    children.append(makeBranch(seed + 200))
+    return Node {
+        id: seed
+        onPress: makeAdder(seed)
+        children: move children
+    }
+}
+
+function visit(node: borrow Node) -> Int {
+    var total = node.onPress(1)
+    var i = 0
+    while i < node.children.count {
+        total = total + visit(node.children[i])
+        i = i + 1
+    }
+    return total
+}
+
+@Main
+function main() {
+    var total = 0
+    var rebuild = 0
+    while rebuild < 200 {
+        let tree = makeTree(rebuild)
+        total = total + visit(tree)
+        rebuild = rebuild + 1
+    }
+    print(total)
+    return
+}
