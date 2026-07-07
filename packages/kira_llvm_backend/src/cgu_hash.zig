@@ -236,6 +236,35 @@ pub const CguHasher = struct {
 
         return h.final();
     }
+
+    /// Digest for the SUPPORT CGU — the object holding every shared definition
+    /// (dtor/clone helpers, call_value dispatchers, host main, hybrid trampolines)
+    /// plus the extern declarations of all user functions. Those bodies are
+    /// derived from the whole program (the dispatcher set from call_value sites,
+    /// closure teardown from capture shapes, etc.), so this folds the full program
+    /// structurally: any change rebuilds the support object. That is
+    /// correct-by-construction — no support-relevant input can be silently missed.
+    ///
+    /// The support object carries NO user-function bodies, so its clang cost is
+    /// just the helpers, not the program. A tighter projection (rebuild support
+    /// only when the dispatcher/closure/type sets actually change, so pure body
+    /// edits keep it cached) is a follow-up; the per-function user CGUs already
+    /// carry the bulk of the incremental win.
+    pub fn hashSupport(self: *CguHasher) !Digest {
+        var h = Hasher.init();
+        h.int(codegen_format_version);
+        h.bytes(self.config.triple);
+        h.bytes(self.config.opt_flag);
+        h.int(@intFromEnum(self.config.mode));
+        h.int(@as(u8, @intFromBool(self.config.drop_enabled)));
+        // A domain tag so a support digest can never collide with a single-function
+        // digest that happened to fold identical bytes.
+        h.bytes("kira.cgu.support");
+        h.int(self.program.entry_index);
+        for (self.program.functions) |function| hashReflect(&h, ir.Function, function);
+        h.raw(&self.types_digest);
+        return h.final();
+    }
 };
 
 /// Direct function-symbol references in final IR arrive only through
