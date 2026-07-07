@@ -673,12 +673,15 @@ test "HLSL rejects the atomicAdd intrinsic instead of emitting an undefined help
         .data =
         \\type ComputeIn { @builtin(thread_id) let thread_id: UInt3 }
         \\shader AtomicOnly {
-        \\    group Dispatch { storage read_write counters: [UInt] }
+        \\    group Dispatch {
+        \\        storage read_write counters: [UInt]
+        \\        storage read_write output: [UInt]
+        \\    }
         \\    compute {
         \\        threads(8, 1, 1)
         \\        input ComputeIn
         \\        function entry(input: ComputeIn) {
-        \\            counters[input.thread_id.x] = atomicAdd(counters, input.thread_id.x, input.thread_id.y)
+        \\            output[input.thread_id.x] = atomicAdd(counters, input.thread_id.x, input.thread_id.y)
         \\            return
         \\        }
         \\    }
@@ -700,6 +703,63 @@ test "HLSL rejects the atomicAdd intrinsic instead of emitting an undefined help
     try std.testing.expect(hlsl.artifacts.len == 0);
     try std.testing.expect(hlsl.failure_stage == .lowering);
     try expectDiagnosticCode(hlsl.diagnostics, "KSL072");
+}
+
+test "atomicAdd rejects mixed atomic/plain buffer use and non-writable targets" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Mixed atomic + plain access on the same buffer -> KSL073 (would lower to
+    // invalid backend source, e.g. MSL device atomic_uint* with plain loads).
+    var mixed_dir = std.testing.tmpDir(.{});
+    defer mixed_dir.cleanup();
+    try mixed_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "main.ksl",
+        .data =
+        \\type ComputeIn { @builtin(thread_id) let thread_id: UInt3 }
+        \\shader Mixed {
+        \\    group Dispatch { storage read_write counters: [UInt] }
+        \\    compute {
+        \\        threads(8, 1, 1)
+        \\        input ComputeIn
+        \\        function entry(input: ComputeIn) {
+        \\            counters[input.thread_id.x] = atomicAdd(counters, input.thread_id.x, input.thread_id.y)
+        \\            return
+        \\        }
+        \\    }
+        \\}
+        ,
+    });
+    const mixed_path = try mixed_dir.dir.realPathFileAlloc(std.testing.io, "main.ksl", allocator);
+    const mixed = try buildFileForTarget(allocator, mixed_path, .msl);
+    try std.testing.expect(mixed.artifacts.len == 0);
+    try expectDiagnosticCode(mixed.diagnostics, "KSL073");
+
+    // atomicAdd on a read-only storage buffer -> KSL020.
+    var ro_dir = std.testing.tmpDir(.{});
+    defer ro_dir.cleanup();
+    try ro_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "main.ksl",
+        .data =
+        \\type ComputeIn { @builtin(thread_id) let thread_id: UInt3 }
+        \\shader ReadOnly {
+        \\    group Dispatch { storage read counters: [UInt] }
+        \\    compute {
+        \\        threads(8, 1, 1)
+        \\        input ComputeIn
+        \\        function entry(input: ComputeIn) {
+        \\            let old = atomicAdd(counters, input.thread_id.x, input.thread_id.y)
+        \\            return
+        \\        }
+        \\    }
+        \\}
+        ,
+    });
+    const ro_path = try ro_dir.dir.realPathFileAlloc(std.testing.io, "main.ksl", allocator);
+    const ro = try buildFileForTarget(allocator, ro_path, .msl);
+    try std.testing.expect(ro.artifacts.len == 0);
+    try expectDiagnosticCode(ro.diagnostics, "KSL020");
 }
 
 fn expectDiagnosticCode(items: []const diagnostics.Diagnostic, code: []const u8) !void {
