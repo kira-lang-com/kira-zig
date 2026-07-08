@@ -1,0 +1,163 @@
+//! GitHub operations for devflow, via the `gh` CLI. Every query uses `--jq` so
+//! the extraction happens in gh and this module stays free of JSON parsing.
+//! Guards baked in here: PRs open against an explicit base with an empty body
+//! (CodeRabbit authors the description), and merges are squash-only.
+
+const std = @import("std");
+const proc = @import("proc.zig");
+const Context = @import("context.zig").Context;
+
+/// Number of an open PR for `head` against the fork, or null if none.
+pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
+    const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "list", "-R", ctx.fork_slug, "--head", head,
+        "--json", "number", "--jq", ".[0].number // empty",
+    });
+    defer ctx.allocator.free(out);
+    if (out.len == 0) return null;
+    return std.fmt.parseInt(u32, out, 10) catch null;
+}
+
+/// Open a PR on the fork: base = `base`, head = `head`, empty body.
+/// Returns the new PR number.
+pub fn openForkPr(ctx: Context, base: []const u8, head: []const u8, title: []const u8) !u32 {
+    const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "create", "-R", ctx.fork_slug,
+        "--base", base, "--head", head, "--title", title, "--body", "",
+    });
+    defer ctx.allocator.free(url);
+    return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
+}
+
+/// Open a PR from the fork's default branch to upstream's default branch.
+pub fn openUpstreamPr(ctx: Context, head_slug: []const u8, base: []const u8, head: []const u8, title: []const u8) !u32 {
+    const head_ref = try std.fmt.allocPrint(ctx.allocator, "{s}:{s}", .{ ownerOf(head_slug), head });
+    defer ctx.allocator.free(head_ref);
+    const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "create", "-R", ctx.upstream_slug,
+        "--base", base, "--head", head_ref, "--title", title, "--body", "",
+    });
+    defer ctx.allocator.free(url);
+    return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
+}
+
+pub fn comment(ctx: Context, slug: []const u8, number: u32, body: []const u8) !void {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "comment", num_str, "-R", slug, "--body", body,
+    });
+}
+
+/// Comma-joined logins that have SUBMITTED A REVIEW (not merely commented).
+/// A walkthrough comment from a bot is NOT a review — gating on submitted
+/// reviews is what stops a rate-limited/incomplete bot review from reading as
+/// "done" (Core Law #2: a marker must not satisfy a deeper layer).
+pub fn reviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "view", num_str, "-R", slug, "--json", "reviews",
+        "--jq", "[.reviews[].author.login] | unique | join(\",\")",
+    });
+}
+
+
+/// Count of unresolved review threads across ALL pages (0 = all findings
+/// resolved). Pages through `reviewThreads` so a PR with >100 threads cannot
+/// hide unresolved findings on a later page and falsely read as resolved.
+pub fn unresolvedThreadCount(ctx: Context, slug: []const u8, number: u32) !u32 {
+    const owner = ownerOf(slug);
+    const repo = repoOf(slug);
+
+    var total: u32 = 0;
+    var cursor: ?[]u8 = null;
+    defer if (cursor) |c| ctx.allocator.free(c);
+
+    while (true) {
+        const after = if (cursor) |c|
+            try std.fmt.allocPrint(ctx.allocator, "\"{s}\"", .{c})
+        else
+            try ctx.allocator.dupe(u8, "null");
+        defer ctx.allocator.free(after);
+
+        const query = try std.fmt.allocPrint(ctx.allocator,
+            \\query {{ repository(owner:"{s}", name:"{s}") {{ pullRequest(number:{d}) {{ reviewThreads(first:100, after:{s}) {{ nodes {{ isResolved }} pageInfo {{ hasNextPage endCursor }} }} }} }} }}
+        , .{ owner, repo, number, after });
+        defer ctx.allocator.free(query);
+
+        const query_arg = try std.fmt.allocPrint(ctx.allocator, "query={s}", .{query});
+        defer ctx.allocator.free(query_arg);
+
+        // Emit: "<unresolved-on-page>\t<hasNextPage>\t<endCursor>".
+        const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+            "gh", "api", "graphql", "-f", query_arg,
+            "--jq",
+            ".data.repository.pullRequest.reviewThreads | " ++
+                "\"\\([.nodes[]|select(.isResolved==false)]|length)\\t\\(.pageInfo.hasNextPage)\\t\\(.pageInfo.endCursor // \"\")\"",
+        });
+        defer ctx.allocator.free(out);
+
+        var fields = std.mem.splitScalar(u8, out, '\t');
+        const count_str = fields.next() orelse "0";
+        const has_next = fields.next() orelse "false";
+        const end_cursor = fields.next() orelse "";
+
+        total += std.fmt.parseInt(u32, std.mem.trim(u8, count_str, " \r\n"), 10) catch 0;
+
+        if (!std.mem.eql(u8, std.mem.trim(u8, has_next, " \r\n"), "true") or end_cursor.len == 0) break;
+
+        // Null the pointer between free and dupe: if the dupe errors, the
+        // `defer` above must not free the already-freed cursor (double-free).
+        if (cursor) |c| {
+            ctx.allocator.free(c);
+            cursor = null;
+        }
+        cursor = try ctx.allocator.dupe(u8, std.mem.trim(u8, end_cursor, " \r\n"));
+    }
+    return total;
+}
+
+pub fn isMerged(ctx: Context, slug: []const u8, number: u32) !bool {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "view", num_str, "-R", slug, "--json", "state", "--jq", ".state",
+    });
+    defer ctx.allocator.free(out);
+    return std.mem.eql(u8, out, "MERGED");
+}
+
+/// Squash-merge the PR so `main` records exactly one commit per landed unit.
+pub fn squashMerge(ctx: Context, slug: []const u8, number: u32) !void {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "merge", num_str, "-R", slug, "--squash",
+    });
+}
+
+fn numberFromPrUrl(url: []const u8) ?u32 {
+    const trimmed = std.mem.trim(u8, url, " \t\r\n");
+    const slash = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return null;
+    return std.fmt.parseInt(u32, trimmed[slash + 1 ..], 10) catch null;
+}
+
+fn ownerOf(slug: []const u8) []const u8 {
+    const slash = std.mem.indexOfScalar(u8, slug, '/') orelse return slug;
+    return slug[0..slash];
+}
+
+fn repoOf(slug: []const u8) []const u8 {
+    const slash = std.mem.indexOfScalar(u8, slug, '/') orelse return slug;
+    return slug[slash + 1 ..];
+}
+
+test "numberFromPrUrl" {
+    try std.testing.expectEqual(@as(?u32, 11), numberFromPrUrl("https://github.com/iPriam/kira/pull/11\n"));
+}
+
+test "owner/repo split" {
+    try std.testing.expectEqualStrings("iPriam", ownerOf("iPriam/kira"));
+    try std.testing.expectEqualStrings("kira", repoOf("iPriam/kira"));
+}
