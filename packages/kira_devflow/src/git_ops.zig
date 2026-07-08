@@ -64,7 +64,7 @@ pub fn pushForkBranch(ctx: Context, branch: []const u8) !void {
 
 /// The content difference between two refs, as `git diff --stat`. This is the
 /// ONLY honest divergence signal: ahead/behind commit counts lie after a
-/// squash-merge (SHAs are rewritten) whereas an empty diff proves identical
+/// merge (a squash rewrites SHAs; a merge commit adds new ones) whereas an empty diff proves identical
 /// trees. Caller owns the returned slice.
 pub fn contentDiffStat(ctx: Context, a: []const u8, b: []const u8) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "diff", "--stat", a, b });
@@ -87,7 +87,7 @@ pub const ResyncResult = enum {
     already_synced,
     /// Fast-forwarded cleanly.
     fast_forwarded,
-    /// Diverged (post-squash); reset local branch to the remote after backing
+    /// Diverged (post-merge); reset local branch to the remote after backing
     /// up the previous tip on `backup_ref`.
     reset_with_backup,
     /// Skipped because the working tree was dirty — never destroy WIP.
@@ -95,7 +95,7 @@ pub const ResyncResult = enum {
 };
 
 /// Bring the local default branch in line with `remote/<default>` after a land.
-/// This is the step whose absence leaves local main stranded on pre-squash
+/// This is the step whose absence leaves local main stranded on pre-merge
 /// commits. It refuses to touch a dirty tree, and always backs up the prior tip
 /// on `backup_ref` before any reset so no committed work can be lost.
 pub fn resyncLocalDefaultBranch(ctx: Context, remote: []const u8, backup_ref: []const u8) !ResyncResult {
@@ -123,7 +123,7 @@ pub fn resyncLocalDefaultBranch(ctx: Context, remote: []const u8, backup_ref: []
     defer ff.deinit(ctx.allocator);
     if (ff.ok()) return .fast_forwarded;
 
-    // Diverged (squash-merge). Reset to the remote; the prior tip is on backup_ref.
+    // Diverged (post-merge). Reset to the remote; the prior tip is on backup_ref.
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "reset", "--hard", remote_ref });
     return .reset_with_backup;
 }
