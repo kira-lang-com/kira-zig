@@ -1,6 +1,6 @@
 //! devflow verb implementations. Each function is a thin orchestration of
 //! git_ops/gh_ops with the flow guards made structural: push is always SSH,
-//! land is always a merge commit + resync, status never trusts ahead/behind counts,
+//! land is always squash-as-PR (one flat entry, merge-style subject) + resync, status never trusts ahead/behind counts,
 //! and upstream PRs are refused until the fork PR has actually merged.
 
 const std = @import("std");
@@ -140,7 +140,7 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 }
 
 /// `land <pr> [--codex]`: refuse unless the required reviewers have SUBMITTED a
-/// review and no threads are unresolved, then merge (merge commit) and resync the local
+/// review and no threads are unresolved, then land as one squash commit with a "Merge pull request #N from ..." subject and resync the local
 /// default branch. Checking only unresolved-thread-count is unsafe: it is 0
 /// before reviews post, so land must apply the same participant gate as
 /// wait-reviews (Codex P2: "Require reviewer completion before merging").
@@ -160,8 +160,8 @@ pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
         return error.UnresolvedReviews;
     }
 
-    try gh.mergeCommit(ctx, ctx.fork_slug, number);
-    out.print("devflow: merged fork PR #{d} (merge commit)\n", .{number});
+    try gh.landAsPullRequest(ctx, ctx.fork_slug, number);
+    out.print("devflow: landed fork PR #{d} (squash, 'Merge pull request' subject)\n", .{number});
 
     const backup = try std.fmt.allocPrint(ctx.allocator, "devflow/prelanded-{s}", .{ctx.default_branch});
     defer ctx.allocator.free(backup);
