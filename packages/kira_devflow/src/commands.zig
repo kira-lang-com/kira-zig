@@ -1,6 +1,6 @@
 //! devflow verb implementations. Each function is a thin orchestration of
 //! git_ops/gh_ops with the flow guards made structural: push is always SSH,
-//! land is always squash + resync, status never trusts ahead/behind counts,
+//! land is always a merge commit + resync, status never trusts ahead/behind counts,
 //! and upstream PRs are refused until the fork PR has actually merged.
 
 const std = @import("std");
@@ -140,10 +140,10 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 }
 
 /// `land <pr> [--codex]`: refuse unless the required reviewers have SUBMITTED a
-/// review and no threads are unresolved, then squash-merge and resync the local
+/// review and no threads are unresolved, then merge (merge commit) and resync the local
 /// default branch. Checking only unresolved-thread-count is unsafe: it is 0
 /// before reviews post, so land must apply the same participant gate as
-/// wait-reviews (Codex P2: "Require reviewer completion before squash-merging").
+/// wait-reviews (Codex P2: "Require reviewer completion before merging").
 pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
     const logins = try gh.reviewerLogins(ctx, ctx.fork_slug, number);
     defer ctx.allocator.free(logins);
@@ -160,8 +160,8 @@ pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
         return error.UnresolvedReviews;
     }
 
-    try gh.squashMerge(ctx, ctx.fork_slug, number);
-    out.print("devflow: squash-merged fork PR #{d}\n", .{number});
+    try gh.mergeCommit(ctx, ctx.fork_slug, number);
+    out.print("devflow: merged fork PR #{d} (merge commit)\n", .{number});
 
     const backup = try std.fmt.allocPrint(ctx.allocator, "devflow/prelanded-{s}", .{ctx.default_branch});
     defer ctx.allocator.free(backup);
@@ -171,7 +171,7 @@ pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
         .already_synced => out.line("devflow: local branch already in sync with fork"),
         .fast_forwarded => out.print("devflow: local {s} fast-forwarded to origin\n", .{ctx.default_branch}),
         .reset_with_backup => out.print(
-            "devflow: local {s} reset to origin (post-squash); prior tip backed up on {s}\n",
+            "devflow: local {s} reset to origin (post-merge); prior tip backed up on {s}\n",
             .{ ctx.default_branch, backup },
         ),
         .skipped_dirty => out.line(
