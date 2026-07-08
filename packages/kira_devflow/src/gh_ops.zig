@@ -9,8 +9,15 @@ const Context = @import("context.zig").Context;
 
 /// Number of an open PR for `head` against the fork, or null if none.
 pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
+    return prNumberOn(ctx, ctx.fork_slug, head);
+}
+
+/// Number of an open PR whose head branch is `head` on repo `slug` (works for a
+/// cross-fork PR too — `--head` filters by head branch name), or null if none.
+/// Used to keep PR opens idempotent across retry/resume.
+pub fn prNumberOn(ctx: Context, slug: []const u8, head: []const u8) !?u32 {
     const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "list", "-R", ctx.fork_slug, "--head", head,
+        "gh", "pr", "list", "-R", slug, "--head", head,
         "--json", "number", "--jq", ".[0].number // empty",
     });
     defer ctx.allocator.free(out);

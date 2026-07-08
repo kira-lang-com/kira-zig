@@ -17,14 +17,18 @@ Prefer it over hand-run git/gh — the guards are structural, not advisory:
 ```sh
 zig build devflow -- status              # content diff, NOT ahead/behind counts
 zig build devflow -- commit [-m "..."]   # stage all + signed commit
-zig build devflow -- push                # always via the fork SSH remote
-zig build devflow -- open-fork-pr [t]    # fork-internal PR, empty body
-zig build devflow -- request-reviews N [--codex]
-zig build devflow -- wait-reviews N [--codex]   # blocks until threads resolved
-zig build devflow -- land N              # squash w/ "Merge pull request #N from..." subject + resync
+zig build devflow -- push                # push the branch to the fork over SSH
+zig build devflow -- open-fork-pr [t]    # open ONE PR against upstream (single-stage)
+zig build devflow -- request-reviews N [--codex]   # on the upstream PR
+zig build devflow -- wait-reviews N [--codex]      # blocks until threads resolved
+zig build devflow -- land N              # squash-merge upstream PR w/ "Merge pull request #N from..." subject, mirror fork, resync local
 zig build devflow -- sync                # resync local main if it drifted
-zig build devflow -- open-upstream-pr [t]
 ```
+
+Single-stage: `open-fork-pr` opens the PR **on upstream** (the owner is a
+maintainer), `land` merges it there and then force-mirrors the fork's `main` to
+`upstream/main` so the fork never diverges. Branch off `upstream/main` before
+starting.
 
 Two rules the tool enforces that must never be broken by hand either:
 
@@ -67,61 +71,52 @@ re-exposes children. **Only squash gives one line per PR.** So the resolution is
 **squash merge with the subject forced to the merge line** — one commit per PR, no
 children, but reading exactly like a GitHub merge.
 
-## Default for this repo: squash-with-merge-subject BOTH stages
+## Default for this repo: single-stage squash-with-merge-subject
 
-The repo owner's standing rule: land every PR — fork AND upstream — as a **squash
-merge whose subject is set to `Merge pull request #N from <owner>/<branch>`** (PR title
-as body):
+The owner is a **maintainer of `kira-lang-com/kira`**, so there is exactly ONE landing,
+directly on upstream — no fork→upstream double-landing (that manufactured parallel SHAs
+and permanent ahead/behind divergence). Land the single upstream PR as a **squash merge
+whose subject is set to `Merge pull request #N from <owner>/<branch>`** (PR title as body):
 
 ```sh
-gh pr merge <n> --repo <slug> --squash \
+gh pr merge <n> --repo kira-lang-com/kira --squash \
   --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>"
 ```
 
-This is the ONLY way to get a single flat-list entry per PR that reads like a merge.
-Do NOT use `--merge` (a real merge commit re-exposes every child commit in the flat
-list — verified) and do NOT use `--rebase` (flattens all children onto the line).
-Curating the branch to clean commits is still good practice (the body/review read
-better), but it is not what keeps the list clean — the squash is.
+Squash is the ONLY method that gives a single flat-list entry per PR. Do NOT use
+`--merge` (a real merge commit re-exposes every child commit in the flat list — verified)
+and do NOT use `--rebase` (flattens all children onto the line). The fork's `main` is a
+**mirror**: after the upstream merge, reset it to `upstream/main` so it stays 0/0.
 
 ## Procedure
 
-1. **Curate the branch BEFORE review.** Rebase onto the latest base and squash
-   fixup/WIP commits into coherent logical commits with imperative messages (one per
-   logical change; a large PR may keep a handful of independently-reviewable ones).
-   Do this first, then push and request review — so CI and the reviews apply to the
-   commits that will actually land. If you rewrite the branch AFTER review, the green
-   CI and submitted reviews now point at stale SHAs: re-request review and re-check CI
-   before merging, never merge a rewritten head on the strength of a pre-rewrite review.
+1. **Branch off `upstream/main` and curate BEFORE review.** Create the feature branch
+   from `upstream/main`. Squash fixup/WIP commits into coherent logical commits with
+   imperative messages. Push (to the fork as a branch host, or directly to upstream if
+   you have write access) and open ONE PR against `upstream` `main`. Curate first so CI
+   and reviews apply to the SHAs that land; if you rewrite the branch after review,
+   re-request review and re-check CI before merging.
 
 2. **Preconditions.** The PR is green and reviewed:
-   - CI passing: `gh pr checks <n> --repo <owner/repo>`.
+   - CI passing: `gh pr checks <n> --repo kira-lang-com/kira`.
    - Every requested review resolved: CodeRabbit always; Codex when it was pinged.
      Never land with a requested review still pending or an unresolved finding.
-   - If a review never appeared, the review App is likely not installed on the
-     fork — surface that, do not land unreviewed.
+   - If a review never appeared, the review App is likely not installed — surface that,
+     do not land unreviewed.
 
-3. **Fork-internal PR — squash with merge subject.** With the branch curated (step 1)
-   and green (step 2):
+3. **Merge once — squash with merge subject.** With the branch curated (step 1) and
+   green (step 2):
    ```sh
-   gh pr merge <n> --repo <fork> --squash \
+   gh pr merge <n> --repo kira-lang-com/kira --squash \
      --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>" \
      --delete-branch
    ```
-   One flat-list entry reading `Merge pull request #N from <owner>/<branch>`, no
-   children. `--delete-branch` is safe here — the head is a throwaway feature branch.
-   Confirm: `git log --oneline <base> -3` shows one entry for the PR.
+   One flat-list entry reading `Merge pull request #N from <owner>/<branch>`, no children.
 
-4. **Upstream PR — also squash with merge subject.** After the fork PR merges into fork
-   `main`, open the upstream PR from a **dedicated branch** (cherry-pick the landed
-   change onto a branch off `upstream/main`) — not from fork `main` directly. Land it
-   the same way, but WITHOUT `--delete-branch` (never risk deleting a shared branch):
-   ```sh
-   gh pr merge <n> --repo kira-lang-com/kira --squash \
-     --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>"
-   ```
-   Squash with the forced subject (never plain `--merge`, never `--rebase`) so upstream
-   `main` also reads as one `Merge pull request #N from …` entry per landed unit.
+4. **Mirror the fork.** After the merge, reset the fork's `main` to `upstream/main` so it
+   never diverges: `git push git@github.com:<owner>/kira.git upstream/main:main --force`
+   (SSH; fork `main` is unprotected). Resync local `main` to `upstream/main` too. `devflow`
+   automates steps 3–4.
 
 ## Pushing branches that touch `.github/workflows/`
 
