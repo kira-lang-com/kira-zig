@@ -1,4 +1,0 @@
-- consuming_body_wrapper_parity: relies on the `@Widget` `body { ... }` builder block plus construct-instantiation-with-child-list syntax (`Wrap() { Leaf(text = "hi") }`); this DSL builds a host-shaped widget tree that cannot be reduced to a scalar Test assertion.
-- consuming_children_drain_parity: relies on `@Content let children: [Widget]` populated via the multi-child builder block (`Row() { Leaf(...) \n Leaf(...) \n Leaf(...) }`); same builder DSL as above.
-- consuming_for_reemit_parity: relies on `body { ... }` plus a nested `For(child in children) { child }` re-emit inside a builder block; same builder DSL as above.
-- consuming_single_to_array_forward_parity: relies on `body { ... }` forwarding a single `@Content` field into an array-content widget via the builder block; same builder DSL as above.

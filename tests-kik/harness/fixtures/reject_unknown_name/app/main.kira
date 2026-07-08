@@ -1,0 +1,6 @@
+// MUST FAIL: `mysteryValue` is never declared (undefined name, semantics stage).
+@Main
+function main() {
+    let x = mysteryValue + 1
+    return
+}

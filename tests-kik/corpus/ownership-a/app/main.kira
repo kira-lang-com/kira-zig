@@ -1,7 +1,0 @@
-import Foundation
-
-@Main
-function main() {
-    print("kik-corpus-ownership-a")
-    return
-}
