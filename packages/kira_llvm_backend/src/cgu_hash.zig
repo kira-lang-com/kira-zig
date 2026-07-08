@@ -65,6 +65,7 @@ const backend_api = @import("kira_backend_api");
 // support digest stay stable across body edits that don't touch either set.
 const dispatch = @import("backend_capi_dispatch.zig");
 const closure_dtors = @import("backend_capi_closure_dtors.zig");
+const fresh_any = @import("backend_capi_fresh_any.zig");
 
 /// Bump when codegen logic changes in a way that can alter emitted objects for
 /// otherwise-identical IR (new lowering, changed ABI handling, symbol scheme, ...).
@@ -201,6 +202,20 @@ pub const CguHasher = struct {
     /// invalidates every function (conservative — signature edits are far rarer than
     /// body edits, which leave this digest untouched). Precomputed once.
     signatures_digest: Digest = undefined,
+    /// Digest of the set of functions PROVEN to return a fresh owned construct_any
+    /// (fresh_any.compute). This is a BODY-derived, cross-CGU property: a caller of
+    /// such a function tracks the result as an owned .struct_ptr drop, so a callee
+    /// body edit that flips its fresh-Any status changes the caller's emitted
+    /// ownership code even though the callee's signature is unchanged. Folded into
+    /// every function so such a flip invalidates callers. Precomputed once.
+    fresh_any_digest: Digest = undefined,
+    /// Digest of construct-family membership (each ConstructImplementation's
+    /// type_name + families + constraint). Family virtual-call lowering emits one
+    /// dispatch case per implementation satisfying the family, so adding/removing a
+    /// family member changes callers' dispatch tables without touching any signature
+    /// or type layout. Folded into every function so membership changes invalidate
+    /// callers. Precomputed once.
+    construct_family_digest: Digest = undefined,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ir.Program, config: CguConfig) !CguHasher {
         var self = CguHasher{ .allocator = allocator, .program = program, .config = config };
@@ -209,6 +224,8 @@ pub const CguHasher = struct {
         }
         self.types_digest = try computeTypesDigest(allocator, program);
         self.signatures_digest = try computeSignaturesDigest(allocator, program);
+        self.fresh_any_digest = try computeFreshAnyDigest(allocator, program);
+        self.construct_family_digest = try computeConstructFamilyDigest(allocator, program);
         return self;
     }
 
@@ -239,6 +256,12 @@ pub const CguHasher = struct {
 
         // (5) all struct + enum layouts (precomputed).
         h.raw(&self.types_digest);
+
+        // (6) body-derived cross-CGU properties that change a CALLER's emitted code:
+        // the fresh-Any return set (owned-result tracking) and construct-family
+        // membership (virtual dispatch tables). Neither is captured by (3)/(4)/(5).
+        h.raw(&self.fresh_any_digest);
+        h.raw(&self.construct_family_digest);
 
         return h.final();
     }
@@ -333,6 +356,47 @@ pub const CguHasher = struct {
 /// Digest of every function's signature, sorted by id. Folded into each function's
 /// hash so a callee's signature change invalidates its callers, without having to
 /// resolve which functions actually call it (direct, virtual, or callback).
+/// Digest of the fresh-Any return set: the ids of functions proven to return a
+/// fresh owned construct_any. A caller's ownership tracking depends on this for its
+/// callees, so a body edit that flips a function's status must invalidate callers.
+fn computeFreshAnyDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
+    var h = Hasher.init();
+    var fresh = try fresh_any.compute(allocator, program);
+    defer fresh.deinit(allocator);
+
+    var ids = std.array_list.Managed(u32).init(allocator);
+    defer ids.deinit();
+    var it = fresh.set.keyIterator();
+    while (it.next()) |id_ptr| try ids.append(id_ptr.*);
+    std.mem.sort(u32, ids.items, {}, std.sort.asc(u32));
+
+    h.int(@as(u64, ids.items.len));
+    for (ids.items) |id| h.int(id);
+    return h.final();
+}
+
+/// Digest of construct-family membership: each ConstructImplementation's type name,
+/// families, and constraint (sorted by type name). Family virtual-call dispatch
+/// tables are built from this, so membership changes must invalidate callers.
+fn computeConstructFamilyDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
+    var h = Hasher.init();
+    const impls = program.construct_implementations;
+    const order = try allocator.alloc(usize, impls.len);
+    defer allocator.free(order);
+    for (order, 0..) |*slot, i| slot.* = i;
+    const Ctx = struct {
+        impls: []const ir.ConstructImplementation,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            return std.mem.lessThan(u8, ctx.impls[a].type_name, ctx.impls[b].type_name);
+        }
+    };
+    std.mem.sort(usize, order, Ctx{ .impls = impls }, Ctx.lessThan);
+
+    h.int(@as(u64, order.len));
+    for (order) |index| hashReflect(&h, ir.ConstructImplementation, impls[index]);
+    return h.final();
+}
+
 fn computeSignaturesDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
     var h = Hasher.init();
     const order = try sortedIndicesById(allocator, program.functions);

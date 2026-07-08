@@ -259,10 +259,19 @@ pub const FunctionCodegen = struct {
                 if (v.reinterpret) {
                     // Float<->bits: preserve the bit pattern, change only the type
                     // (Kira Float is f64, integers live in i64 — same width).
-                    self.registers[v.dst] = if (v.target == .float)
-                        api.LLVMBuildBitCast(b, self.registers[v.src], self.types.double_ty, "bitsToFloat")
-                    else
-                        api.LLVMBuildBitCast(b, self.registers[v.src], self.types.i64, "floatToBits");
+                    if (v.target == .float) {
+                        self.registers[v.dst] = api.LLVMBuildBitCast(b, self.registers[v.src], self.types.double_ty, "bitsToFloat");
+                    } else {
+                        // A named F32 source is a 32-bit LLVM float; widen it to f64
+                        // first so the bitcast has matching widths and the result
+                        // matches the VM, which stores every float as f64. Without this
+                        // floatToBits(F32(..)) would build an invalid float -> i64 cast.
+                        var src = self.registers[v.src];
+                        if (api.LLVMTypeOf(src) == self.types.float_ty) {
+                            src = api.LLVMBuildFPExt(b, src, self.types.double_ty, "f32.widen");
+                        }
+                        self.registers[v.dst] = api.LLVMBuildBitCast(b, src, self.types.i64, "floatToBits");
+                    }
                 } else if (v.target == .float) {
                     // Int -> Float is sitofp; Float -> Float is identity.
                     self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
