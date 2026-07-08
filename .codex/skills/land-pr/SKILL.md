@@ -89,25 +89,37 @@ merging. So the rule has two halves — do not skip the first:
 
 ## Procedure
 
-1. **Preconditions.** The PR is green and reviewed:
+1. **Curate the branch BEFORE review.** Rebase onto the latest base and squash
+   fixup/WIP commits into coherent logical commits with imperative messages (one per
+   logical change; a large PR may keep a handful of independently-reviewable ones).
+   Do this first, then push and request review — so CI and the reviews apply to the
+   commits that will actually land. If you rewrite the branch AFTER review, the green
+   CI and submitted reviews now point at stale SHAs: re-request review and re-check CI
+   before merging, never merge a rewritten head on the strength of a pre-rewrite review.
+
+2. **Preconditions.** The PR is green and reviewed:
    - CI passing: `gh pr checks <n> --repo <owner/repo>`.
    - Every requested review resolved: CodeRabbit always; Codex when it was pinged.
      Never land with a requested review still pending or an unresolved finding.
    - If a review never appeared, the review App is likely not installed on the
      fork — surface that, do not land unreviewed.
 
-2. **Curate, then fork-internal PR — merge commit.** First curate the branch to a
-   few clean logical commits (rebase onto base, squash fixups). Then:
+3. **Fork-internal PR — merge commit.** With the branch curated (step 1) and green
+   (step 2):
    ```sh
    gh pr merge <n> --repo <fork> --merge --delete-branch
    ```
    This records `Merge pull request #N from <owner>/<branch>` with the PR title as
-   body. Confirm: `git log --oneline --first-parent <base> -3` reads one merge per PR.
+   body. `--delete-branch` is safe here — the head is a throwaway feature branch.
+   Confirm: `git log --oneline --first-parent <base> -3` reads one merge per PR.
 
-3. **Upstream PR — also a merge commit.** After the fork PR merges into fork `main`,
-   open the upstream PR from fork `main` and land it the same way:
+4. **Upstream PR — also a merge commit.** After the fork PR merges into fork `main`,
+   open the upstream PR from a **dedicated branch** (cherry-pick the landed change onto
+   a branch off `upstream/main`) — not from fork `main` directly. Land it the same way,
+   but WITHOUT `--delete-branch` (the head is a branch you may still need; never risk
+   deleting a shared branch):
    ```sh
-   gh pr merge <n> --repo kira-lang-com/kira --merge --delete-branch
+   gh pr merge <n> --repo kira-lang-com/kira --merge
    ```
    `--merge` (never `--squash`, never `--rebase`) so upstream `main` gets the same
    `Merge pull request #N from …` header per landed unit.
