@@ -130,6 +130,13 @@ pub fn build(b: *std.Build) void {
     modules.get("kira_llvm_backend").?.addOptions("kira_llvm_build_options", llvm_options);
     modules.get("kira_llvm_backend").?.link_libc = true;
 
+    // kira_dynamic_ffi resolves process symbols via dlfcn/dlsym (@cImport of
+    // <dlfcn.h>) and drives libffi, so it needs libc headers + linkage. The
+    // main `kira` snapshot links libc transitively through other modules, but
+    // the isolated unit-test compiles for this package and kira_native_bridge
+    // do not, which fails on hosts without an implicitly-linked libc (Linux).
+    modules.get("kira_dynamic_ffi").?.link_libc = true;
+
     const cli_options = b.addOptions();
     cli_options.addOption([]const u8, "binary_name", kira_bootstrapper_name);
     cli_options.addOption([]const u8, "version", kirac_version);
