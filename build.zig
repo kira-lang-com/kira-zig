@@ -178,6 +178,15 @@ pub fn build(b: *std.Build) void {
         .name = kira_primary_executable,
         .root_module = modules.get("kira_cli").?,
     });
+    // Export the executable's dynamic symbol table. `kira test` resolves the
+    // in-process developer/native API (e.g. `kira_developer_*`, statically
+    // linked from kira_main) through `dlsym(RTLD_DEFAULT, ...)`. On ELF hosts
+    // those symbols are invisible to `dlsym` unless the main executable is
+    // linked with `-rdynamic`/`-Wl,-export-dynamic`, so without this the
+    // in-process FFI path fails with `MissingNativeSymbol` on Linux (macOS
+    // resolves process-image symbols regardless). Additive only: it exports
+    // more symbols, never removes any.
+    cli.rdynamic = true;
 
     const bootstrapper_options = b.addOptions();
     bootstrapper_options.addOption([]const u8, "version", kirac_version);
