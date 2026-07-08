@@ -40,6 +40,13 @@ pub fn status(ctx: Context) !void {
     try reportPair(ctx, "local vs fork", ctx.default_branch, fork_ref);
 }
 
+/// Single-stage: the PR lives on upstream when there is an upstream remote
+/// (the owner is a maintainer, so there is one landing — on upstream). Falls
+/// back to the fork only when no upstream remote is configured.
+fn prSlug(ctx: Context) []const u8 {
+    return if (ctx.hasUpstream()) ctx.upstream_slug else ctx.fork_slug;
+}
+
 fn reportPair(ctx: Context, label: []const u8, a: []const u8, b: []const u8) !void {
     const stat = try git.contentDiffStat(ctx, a, b);
     defer ctx.allocator.free(stat);
@@ -82,27 +89,44 @@ pub fn push(ctx: Context) !void {
     out.print("devflow: pushed {s} to {s}\n", .{ branch, ctx.fork_ssh_url });
 }
 
-/// `open-fork-pr [title]`: open a fork-internal PR (base = default branch).
+/// `open-pr [title]`: open ONE PR against upstream (single-stage) from the
+/// current branch. With no upstream remote, opens a fork-internal PR instead.
 pub fn openForkPr(ctx: Context, title_opt: ?[]const u8) !void {
     const branch = try git.currentBranch(ctx);
     defer ctx.allocator.free(branch);
 
+    const title = title_opt orelse branch;
+    if (ctx.hasUpstream()) {
+        // Idempotent: if the upstream PR for this branch already exists (retry/
+        // resume), report it instead of erroring on `gh pr create`.
+        if (try gh.prNumberOn(ctx, ctx.upstream_slug, branch)) |existing| {
+            out.print("devflow: PR #{d} already open on {s} for {s}\n", .{ existing, ctx.upstream_slug, branch });
+            return;
+        }
+        const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, title);
+        out.print("devflow: opened PR #{d} on {s} ({s}:{s} -> {s})\n", .{ number, ctx.upstream_slug, ownerLogin(ctx.fork_slug), branch, ctx.default_branch });
+        return;
+    }
     if (try gh.prNumberForBranch(ctx, branch)) |existing| {
         out.print("devflow: PR #{d} already open for {s}\n", .{ existing, branch });
         return;
     }
-
-    const title = title_opt orelse branch;
     const number = try gh.openForkPr(ctx, ctx.default_branch, branch, title);
     out.print("devflow: opened fork PR #{d} ({s} -> {s})\n", .{ number, branch, ctx.default_branch });
 }
 
+fn ownerLogin(slug: []const u8) []const u8 {
+    const slash = std.mem.indexOfScalar(u8, slug, '/') orelse return slug;
+    return slug[0..slash];
+}
+
 /// `request-reviews <pr> [--codex]`: always ping CodeRabbit; Codex only on demand.
 pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
-    try gh.comment(ctx, ctx.fork_slug, number, "@coderabbitai review");
+    const slug = prSlug(ctx);
+    try gh.comment(ctx, slug, number, "@coderabbitai review");
     out.print("devflow: requested CodeRabbit review on #{d}\n", .{number});
     if (ping_codex) {
-        try gh.comment(ctx, ctx.fork_slug, number, "@codex review");
+        try gh.comment(ctx, slug, number, "@codex review");
         out.print("devflow: requested Codex review on #{d}\n", .{number});
     }
 }
@@ -113,17 +137,18 @@ pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
 pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
     var waited: u64 = 0;
     const timeout_ns = waitTimeoutNs();
+    const slug = prSlug(ctx);
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
         // a rate-limited/incomplete review must not read as "reviewed".
-        const logins = try gh.reviewerLogins(ctx, ctx.fork_slug, number);
+        const logins = try gh.reviewerLogins(ctx, slug, number);
         defer ctx.allocator.free(logins);
         const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
         const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
         const reviewers_seen = has_rabbit and (!require_codex or has_codex);
 
         if (reviewers_seen) {
-            const unresolved = try gh.unresolvedThreadCount(ctx, ctx.fork_slug, number);
+            const unresolved = try gh.unresolvedThreadCount(ctx, slug, number);
             if (unresolved == 0) {
                 out.print("devflow: reviews complete on #{d}, no unresolved threads\n", .{number});
                 return;
@@ -145,7 +170,8 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 /// before reviews post, so land must apply the same participant gate as
 /// wait-reviews (Codex P2: "Require reviewer completion before merging").
 pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
-    const logins = try gh.reviewerLogins(ctx, ctx.fork_slug, number);
+    const slug = prSlug(ctx);
+    const logins = try gh.reviewerLogins(ctx, slug, number);
     defer ctx.allocator.free(logins);
     const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
     const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
@@ -154,14 +180,20 @@ pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
         return error.ReviewsPending;
     }
 
-    const unresolved = try gh.unresolvedThreadCount(ctx, ctx.fork_slug, number);
+    const unresolved = try gh.unresolvedThreadCount(ctx, slug, number);
     if (unresolved != 0) {
         out.print("devflow: refusing to land #{d}: {d} unresolved review thread(s)\n", .{ number, unresolved });
         return error.UnresolvedReviews;
     }
 
-    try gh.landAsPullRequest(ctx, ctx.fork_slug, number);
-    out.print("devflow: landed fork PR #{d} (squash, 'Merge pull request' subject)\n", .{number});
+    try gh.landAsPullRequest(ctx, slug, number);
+    out.print("devflow: landed PR #{d} on {s} (squash, 'Merge pull request' subject)\n", .{ number, slug });
+
+    // Single-stage: keep the fork a pure mirror of upstream so it never diverges.
+    if (ctx.hasUpstream()) {
+        try git.mirrorForkToUpstream(ctx);
+        out.print("devflow: mirrored fork {s} to upstream/{s}\n", .{ ctx.default_branch, ctx.default_branch });
+    }
 
     const backup = try std.fmt.allocPrint(ctx.allocator, "devflow/prelanded-{s}", .{ctx.default_branch});
     defer ctx.allocator.free(backup);

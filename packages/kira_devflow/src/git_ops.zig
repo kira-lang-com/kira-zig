@@ -82,6 +82,17 @@ pub fn setBranch(ctx: Context, name: []const u8, target: []const u8) !void {
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "branch", "-f", name, target });
 }
 
+/// Single-stage flow: after a change lands on upstream, force the fork's default
+/// branch to `upstream/<default>` so the fork stays a pure 0-ahead/0-behind
+/// mirror. Fork `main` is unprotected and its content is already on upstream, so
+/// this loses nothing. Pushed over SSH (workflow-scope proof).
+pub fn mirrorForkToUpstream(ctx: Context) !void {
+    try fetchRemote(ctx, "upstream");
+    const refspec = try std.fmt.allocPrint(ctx.allocator, "upstream/{s}:{s}", .{ ctx.default_branch, ctx.default_branch });
+    defer ctx.allocator.free(refspec);
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "push", ctx.fork_ssh_url, refspec, "--force" });
+}
+
 pub const ResyncResult = enum {
     /// Already identical — nothing to do.
     already_synced,
