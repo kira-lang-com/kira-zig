@@ -1,7 +1,7 @@
 //! GitHub operations for devflow, via the `gh` CLI. Every query uses `--jq` so
 //! the extraction happens in gh and this module stays free of JSON parsing.
 //! Guards baked in here: PRs open against an explicit base with an empty body
-//! (CodeRabbit authors the description), and merges create a merge commit (apple/swift look).
+//! (CodeRabbit authors the description), and merges are squash-with-merge-subject: one flat entry per PR reading "Merge pull request #N from owner/branch".
 
 const std = @import("std");
 const proc = @import("proc.zig");
@@ -128,14 +128,38 @@ pub fn isMerged(ctx: Context, slug: []const u8, number: u32) !bool {
     return std.mem.eql(u8, out, "MERGED");
 }
 
-/// Merge the PR with a MERGE COMMIT (`apple/swift` history look): `main` records
-/// `Merge pull request #N from <owner>/<branch>` with the PR title as body. The
-/// PR must be curated to a few clean commits first so the flat list stays readable.
-pub fn mergeCommit(ctx: Context, slug: []const u8, number: u32) !void {
+/// Land the PR as ONE commit whose subject reads like GitHub's merge line:
+/// `Merge pull request #N from <owner>/<branch>`, PR title as body. This is a
+/// SQUASH merge with a custom subject — the only way to get a single flat-list
+/// entry per PR (squash collapses the children; a real `--merge` commit
+/// re-exposes every child commit in GitHub's commit list) while still reading
+/// like `apple/swift`'s history.
+pub fn landAsPullRequest(ctx: Context, slug: []const u8, number: u32) !void {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+
+    // head owner + branch + PR title, tab-separated.
+    const info = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",                                                          "pr",
+        "view",                                                        num_str,
+        "-R",                                                          slug,
+        "--json",                                                      "headRefName,headRepositoryOwner,title",
+        "--jq",                                                        "(.headRepositoryOwner.login // \"\") + \"\\t\" + .headRefName + \"\\t\" + .title",
+    });
+    defer ctx.allocator.free(info);
+
+    var it = std.mem.splitScalar(u8, info, '\t');
+    const owner = it.next() orelse return error.PrInfoUnparseable;
+    const branch = it.next() orelse return error.PrInfoUnparseable;
+    const title = it.next() orelse "";
+
+    const subject = try std.fmt.allocPrint(ctx.allocator, "Merge pull request #{d} from {s}/{s}", .{ number, owner, branch });
+    defer ctx.allocator.free(subject);
+
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "merge", num_str, "-R", slug, "--merge",
+        "gh",        "pr",   "merge",   num_str,
+        "-R",        slug,   "--squash", "--subject",
+        subject,     "--body", title,
     });
 }
 

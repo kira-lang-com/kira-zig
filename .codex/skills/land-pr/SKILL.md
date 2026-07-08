@@ -21,7 +21,7 @@ zig build devflow -- push                # always via the fork SSH remote
 zig build devflow -- open-fork-pr [t]    # fork-internal PR, empty body
 zig build devflow -- request-reviews N [--codex]
 zig build devflow -- wait-reviews N [--codex]   # blocks until threads resolved
-zig build devflow -- land N              # merge-commit + resync local main
+zig build devflow -- land N              # squash w/ "Merge pull request #N from..." subject + resync
 zig build devflow -- sync                # resync local main if it drifted
 zig build devflow -- open-upstream-pr [t]
 ```
@@ -60,32 +60,29 @@ So the choice is real:
 | **Merge commit (no-ff)** | merge commit **+ all N individuals** | merge commit per PR | yes (in the DAG) |
 | Rebase and merge | all N individuals | all N individuals | yes (flattened) |
 
-The owner wants the **`apple/swift` look**: the flat list reads as
-`Merge pull request #N from <owner>/<branch>` entries (PR title as body), one merge
-per PR, authored by the PR author. That is the **merge commit** method — it does
-re-expose the PR's individual commits, so it only stays clean if each PR is curated
-to a few meaningful commits first (which is why the "curate first" half of the rule
-below is non-negotiable).
+The owner wants BOTH: the flat list must show **exactly one entry per PR** (no child
+commits) AND each entry must read `Merge pull request #N from <owner>/<branch>` — the
+`apple/swift` look. The table shows these two wants collide for a real `--merge`: it
+re-exposes children. **Only squash gives one line per PR.** So the resolution is a
+**squash merge with the subject forced to the merge line** — one commit per PR, no
+children, but reading exactly like a GitHub merge.
 
-## Default for this repo: merge-commit BOTH stages (apple/swift style)
+## Default for this repo: squash-with-merge-subject BOTH stages
 
-The repo owner's standing rule is the **`apple/swift` history look**: every PR lands
-as a **merge commit** whose subject is GitHub's default
-`Merge pull request #N from <owner>/<branch>` with the PR title as the body, authored
-by the PR author — fork AND upstream. So **`gh pr merge <n> --merge` for both stages**
-(never `--squash`, never `--rebase`). This supersedes the earlier squash-only policy
-(`f940a50`).
+The repo owner's standing rule: land every PR — fork AND upstream — as a **squash
+merge whose subject is set to `Merge pull request #N from <owner>/<branch>`** (PR title
+as body):
 
-The catch that made squash tempting: a merge commit ALSO re-exposes the PR's
-individual commits in GitHub's flat commit list. Swift stays clean because each PR is
-**curated to a few meaningful commits** (fixups squashed into logical parents) before
-merging. So the rule has two halves — do not skip the first:
+```sh
+gh pr merge <n> --repo <slug> --squash \
+  --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>"
+```
 
-1. **Curate the PR branch first**: rebase onto the latest base, squash fixup/WIP
-   commits into coherent logical commits with imperative messages. Aim for one commit
-   per logical change; a large PR may keep a handful of independently-reviewable ones.
-2. **Merge with a merge commit** (`--merge`), giving the `Merge pull request #N from …`
-   header plus those curated commits.
+This is the ONLY way to get a single flat-list entry per PR that reads like a merge.
+Do NOT use `--merge` (a real merge commit re-exposes every child commit in the flat
+list — verified) and do NOT use `--rebase` (flattens all children onto the line).
+Curating the branch to clean commits is still good practice (the body/review read
+better), but it is not what keeps the list clean — the squash is.
 
 ## Procedure
 
@@ -104,25 +101,27 @@ merging. So the rule has two halves — do not skip the first:
    - If a review never appeared, the review App is likely not installed on the
      fork — surface that, do not land unreviewed.
 
-3. **Fork-internal PR — merge commit.** With the branch curated (step 1) and green
-   (step 2):
+3. **Fork-internal PR — squash with merge subject.** With the branch curated (step 1)
+   and green (step 2):
    ```sh
-   gh pr merge <n> --repo <fork> --merge --delete-branch
+   gh pr merge <n> --repo <fork> --squash \
+     --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>" \
+     --delete-branch
    ```
-   This records `Merge pull request #N from <owner>/<branch>` with the PR title as
-   body. `--delete-branch` is safe here — the head is a throwaway feature branch.
-   Confirm: `git log --oneline --first-parent <base> -3` reads one merge per PR.
+   One flat-list entry reading `Merge pull request #N from <owner>/<branch>`, no
+   children. `--delete-branch` is safe here — the head is a throwaway feature branch.
+   Confirm: `git log --oneline <base> -3` shows one entry for the PR.
 
-4. **Upstream PR — also a merge commit.** After the fork PR merges into fork `main`,
-   open the upstream PR from a **dedicated branch** (cherry-pick the landed change onto
-   a branch off `upstream/main`) — not from fork `main` directly. Land it the same way,
-   but WITHOUT `--delete-branch` (the head is a branch you may still need; never risk
-   deleting a shared branch):
+4. **Upstream PR — also squash with merge subject.** After the fork PR merges into fork
+   `main`, open the upstream PR from a **dedicated branch** (cherry-pick the landed
+   change onto a branch off `upstream/main`) — not from fork `main` directly. Land it
+   the same way, but WITHOUT `--delete-branch` (never risk deleting a shared branch):
    ```sh
-   gh pr merge <n> --repo kira-lang-com/kira --merge
+   gh pr merge <n> --repo kira-lang-com/kira --squash \
+     --subject "Merge pull request #<n> from <owner>/<branch>" --body "<PR title>"
    ```
-   `--merge` (never `--squash`, never `--rebase`) so upstream `main` gets the same
-   `Merge pull request #N from …` header per landed unit.
+   Squash with the forced subject (never plain `--merge`, never `--rebase`) so upstream
+   `main` also reads as one `Merge pull request #N from …` entry per landed unit.
 
 ## Pushing branches that touch `.github/workflows/`
 
