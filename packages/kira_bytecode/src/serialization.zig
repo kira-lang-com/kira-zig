@@ -21,7 +21,7 @@ const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBCA");
+    try writer.writeAll("KBCB");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -185,6 +185,7 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.src, .little);
                     try writer.writeByte(if (value.to_float) 1 else 0);
+                    try writer.writeByte(if (value.reinterpret) 1 else 0);
                 },
                 .bitwise => |value| {
                     try writer.writeInt(u32, value.dst, .little);
@@ -371,9 +372,14 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // verified field move-out: the VM takes the field's value and voids the
     // slot — Rust partial move). Older containers omit it (plain borrow read).
     const is_kbca = std.mem.eql(u8, &magic, "KBCA");
-    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca;
-    const has_load_indirect_moved = is_kbca;
-    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca;
+    // KBCB is KBCA plus a trailing `reinterpret` flag byte on `convert` (Float<->
+    // bits bitcast: floatToBits / bitsToFloat). Older containers omit it and
+    // default to a value-preserving numeric convert.
+    const is_kbcb = std.mem.eql(u8, &magic, "KBCB");
+    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca or is_kbcb;
+    const has_load_indirect_moved = is_kbca or is_kbcb;
+    const has_convert_reinterpret = is_kbcb;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca or is_kbcb;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -619,6 +625,7 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                     .dst = try reader.takeInt(u32, .little),
                     .src = try reader.takeInt(u32, .little),
                     .to_float = (try reader.takeByte()) != 0,
+                    .reinterpret = if (has_convert_reinterpret) (try reader.takeByte()) != 0 else false,
                 } }),
                 .bitwise => try instructions.append(.{ .bitwise = .{
                     .dst = try reader.takeInt(u32, .little),

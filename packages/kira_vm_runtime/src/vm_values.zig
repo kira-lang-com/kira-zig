@@ -266,7 +266,30 @@ fn floatToIntTruncate(f: f64) i64 {
 
 // `Int(x)` / `Float(x)` numeric cast. `to_float` selects the target. A cast to
 // a value's existing kind is an identity copy; Float->Int truncates toward zero.
-pub fn convertValue(vm: anytype, src: runtime_abi.Value, to_float: bool) !runtime_abi.Value {
+pub fn convertValue(vm: anytype, src: runtime_abi.Value, to_float: bool, reinterpret: bool) !runtime_abi.Value {
+    if (reinterpret) {
+        // Bit-reinterpret (Float<->bits), not a numeric convert. Kira Float is
+        // f64 and Kira integers are stored in an i64 slot, so the bit pattern is
+        // preserved exactly in both directions.
+        if (to_float) {
+            return switch (src) {
+                .integer => |value| .{ .float = @bitCast(value) },
+                .float => src,
+                else => {
+                    vm.rememberError("vm bitsToFloat expects an integer operand");
+                    return error.RuntimeFailure;
+                },
+            };
+        }
+        return switch (src) {
+            .float => |value| .{ .integer = @bitCast(value) },
+            .integer => src,
+            else => {
+                vm.rememberError("vm floatToBits expects a Float operand");
+                return error.RuntimeFailure;
+            },
+        };
+    }
     if (to_float) {
         return switch (src) {
             .float => src,

@@ -339,6 +339,8 @@ jobs:
     steps:
       - name: Check out Kira
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -361,16 +363,19 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
 
-          # Header + the matching CHANGELOG.md section (everything between this
-          # version's heading and the next "## [" heading).
-          printf '## Kira %s\n\n' "$VERSION" > /tmp/notes.md
+          # The matching CHANGELOG.md section (everything between this version's
+          # heading and the next "## [" heading), captured before the header so the
+          # empty-section fallback can actually trigger.
           awk -v ver="$VERSION" '
             index($0, "## [" ver "]") == 1 { capture = 1; next }
             capture && index($0, "## [") == 1 { exit }
             capture { print }
-          ' CHANGELOG.md >> /tmp/notes.md
+          ' CHANGELOG.md > /tmp/section.md
 
-          if ! grep -q '[^[:space:]]' /tmp/notes.md; then
+          printf '## Kira %s\n\n' "$VERSION" > /tmp/notes.md
+          if grep -q '[^[:space:]]' /tmp/section.md; then
+            cat /tmp/section.md >> /tmp/notes.md
+          else
             printf 'Kira %s release.\n' "$VERSION" >> /tmp/notes.md
           fi
 

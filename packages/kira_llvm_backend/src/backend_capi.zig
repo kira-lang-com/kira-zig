@@ -72,212 +72,67 @@ fn functionSymbolName(allocator: std.mem.Allocator, function_decl: ir.Function, 
     };
 }
 
-pub const Types = struct {
-    api: *const llvm.Api,
-    context: llvm.c.LLVMContextRef,
-    bool_ty: llvm.c.LLVMTypeRef,
-    i8: llvm.c.LLVMTypeRef,
-    i16: llvm.c.LLVMTypeRef,
-    i32: llvm.c.LLVMTypeRef,
-    i64: llvm.c.LLVMTypeRef,
-    double_ty: llvm.c.LLVMTypeRef,
-    float_ty: llvm.c.LLVMTypeRef,
-    void_ty: llvm.c.LLVMTypeRef,
-    ptr_ty: llvm.c.LLVMTypeRef,
-    string_ty: llvm.c.LLVMTypeRef,
-    bridge_ty: llvm.c.LLVMTypeRef,
+// LLVM type + runtime-declaration scaffolding lives in backend_capi_types.zig
+// (Core Law #5 split); re-export the public surface so callers keep using
+// `capi.Types` / `capi.RuntimeDecls`.
+const capi_types = @import("backend_capi_types.zig");
+pub const Types = capi_types.Types;
+pub const RuntimeDecls = capi_types.RuntimeDecls;
 
-    fn init(api: *const llvm.Api, context: llvm.c.LLVMContextRef) Types {
-        const ptr_ty = api.LLVMPointerTypeInContext(context, 0);
-        const i64_ty = api.LLVMInt64TypeInContext(context);
-        const i8_ty = api.LLVMInt8TypeInContext(context);
-        var string_fields = [_]llvm.c.LLVMTypeRef{ ptr_ty, i64_ty };
-        // Matches the runtime KiraBridgeValue: { tag:i8, pad:[7 x i8], payload:i64, extra:i64 }.
-        var bridge_fields = [_]llvm.c.LLVMTypeRef{ i8_ty, api.LLVMArrayType2(i8_ty, 7), i64_ty, i64_ty };
-        return .{
-            .api = api,
-            .context = context,
-            .bool_ty = api.LLVMInt1TypeInContext(context),
-            .i8 = i8_ty,
-            .i16 = api.LLVMInt16TypeInContext(context),
-            .i32 = api.LLVMInt32TypeInContext(context),
-            .i64 = i64_ty,
-            .double_ty = api.LLVMDoubleTypeInContext(context),
-            .float_ty = api.LLVMFloatTypeInContext(context),
-            .void_ty = api.LLVMVoidTypeInContext(context),
-            .ptr_ty = ptr_ty,
-            .string_ty = api.LLVMStructTypeInContext(context, &string_fields, string_fields.len, 0),
-            .bridge_ty = api.LLVMStructTypeInContext(context, &bridge_fields, bridge_fields.len, 0),
-        };
+// Which parts of the program a single LLVM module should DEFINE. All modules
+// DECLARE the full scaffold (runtime externs, struct types, dtor/dispatcher
+// symbols, every user function) so that any body can reference any symbol; the
+// plan only controls which BODIES are emitted and which functions/dispatchers are
+// declared, so the emitted objects partition the program with no duplicate defs.
+//
+//   - Whole-program (default `.{}`): every user-function body + all support
+//     bodies. This is the original, unchanged codegen path.
+//   - Support CGU: `.{ .emit_bodies = <empty>, .emit_support = true }` — the
+//     shared dtor/dispatcher bodies, host main, hybrid trampolines, no user bodies.
+//   - Per-function CGU: `.{ .emit_bodies = {id}, .declare_functions = {id ∪
+//     callees}, .emit_support = false }` — one user-function body; helpers referenced
+//     as externs resolved against the support CGU at link time.
+pub const ModulePlan = struct {
+    /// User-function ids whose bodies to emit. `null` = every lowerable function
+    /// (whole-program). An empty set emits no user bodies (support CGU).
+    emit_bodies: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
+    /// Emit the shared support definitions (dtor/closure/enum/dynamic bodies,
+    /// call_value dispatcher bodies, host main, hybrid trampolines). When false,
+    /// those symbols are only declared, to be linked against the support CGU.
+    emit_support: bool = true,
+    /// User-function ids to DECLARE in this module. `null` declares every lowerable
+    /// function (whole-program and the support CGU). A per-function CGU passes exactly
+    /// the functions its body can look up during lowering (from
+    /// `backend_capi_calls.collectBodyFunctionRefs`), so each module declares
+    /// O(refs) functions instead of the whole program.
+    declare_functions: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
+
+    fn emitsBody(self: ModulePlan, id: u32) bool {
+        const set = self.emit_bodies orelse return true;
+        return set.contains(id);
     }
 
-    // Mirrors backend_utils.llvmValueTypeText: Kira `Float` is 64-bit (double);
-    // only the F32 named float is 32-bit. Pointers and aggregates are carried as
-    // i64 in the register ABI, matching the text backend so cross-backend calls
-    // and the runtime helpers stay binary-compatible.
-    pub fn llvmType(self: Types, value_type: ir.ValueType) llvm.c.LLVMTypeRef {
-        return switch (value_type.kind) {
-            .void => self.void_ty,
-            .integer => self.i64,
-            .float => if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32")) self.float_ty else self.double_ty,
-            .string => self.string_ty,
-            .boolean => self.bool_ty,
-            .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => self.i64,
-        };
-    }
-
-    pub fn functionType(self: Types, allocator: std.mem.Allocator, function_decl: ir.Function) !llvm.c.LLVMTypeRef {
-        const params = try allocator.alloc(llvm.c.LLVMTypeRef, function_decl.param_types.len);
-        defer allocator.free(params);
-        for (function_decl.param_types, 0..) |param_type, index| params[index] = self.llvmType(param_type);
-        const ret = self.llvmType(function_decl.return_type);
-        return self.api.LLVMFunctionType(ret, params.ptr, @intCast(params.len), 0);
+    fn declares(self: ModulePlan, id: u32) bool {
+        const set = self.declare_functions orelse return true;
+        return set.contains(id);
     }
 };
-
-pub const RuntimeDecls = struct {
-    print_i64: Decl,
-    print_f64: Decl,
-    print_string: Decl,
-    call_runtime: ?Decl,
-    malloc: Decl,
-    free: Decl,
-    strlen: Decl,
-    memcpy: Decl,
-    memcmp: Decl,
-    array_alloc: Decl,
-    array_len: Decl,
-    array_load: Decl,
-    array_take: Decl,
-    array_store: Decl,
-    array_store_release: Decl,
-    array_append: Decl,
-    array_release: Decl,
-    array_clone: Decl,
-    state_alloc: Decl,
-    state_payload: Decl,
-    state_recover: Decl,
-    state_free: Decl,
-    struct_alloc: Decl,
-    struct_type_id: Decl,
-    struct_free: Decl,
-    // No-newline writers for composing aggregate (struct/enum/array) output.
-    write_i64: Decl,
-    write_f64: Decl,
-    write_string: Decl,
-    write_ptr: Decl,
-    write_newline: Decl,
-    bool_true: llvm.c.LLVMValueRef,
-    bool_false: llvm.c.LLVMValueRef,
-
-    pub const Decl = struct { ty: llvm.c.LLVMTypeRef, fn_value: llvm.c.LLVMValueRef };
-
-    fn declare(api: *const llvm.Api, module_ref: llvm.c.LLVMModuleRef, types: Types, mode: backend_api.BackendMode) RuntimeDecls {
-        var i64_args = [_]llvm.c.LLVMTypeRef{types.i64};
-        const print_i64_ty = api.LLVMFunctionType(types.void_ty, &i64_args, i64_args.len, 0);
-        var f64_args = [_]llvm.c.LLVMTypeRef{types.double_ty};
-        const print_f64_ty = api.LLVMFunctionType(types.void_ty, &f64_args, f64_args.len, 0);
-        var str_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64 };
-        const print_string_ty = api.LLVMFunctionType(types.void_ty, &str_args, str_args.len, 0);
-        // kira_hybrid_call_runtime(i32 function_id, ptr args, i32 arg_count, ptr result)
-        var rt_args = [_]llvm.c.LLVMTypeRef{ types.i32, types.ptr_ty, types.i32, types.ptr_ty };
-        const call_runtime_ty = if (mode == .hybrid) api.LLVMFunctionType(types.void_ty, &rt_args, rt_args.len, 0) else null;
-        var malloc_args = [_]llvm.c.LLVMTypeRef{types.i64};
-        const malloc_ty = api.LLVMFunctionType(types.ptr_ty, &malloc_args, malloc_args.len, 0);
-        var free_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const free_ty = api.LLVMFunctionType(types.void_ty, &free_args, free_args.len, 0);
-        var strlen_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const strlen_ty = api.LLVMFunctionType(types.i64, &strlen_args, strlen_args.len, 0);
-        var memcpy_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.i64 };
-        const memcpy_ty = api.LLVMFunctionType(types.ptr_ty, &memcpy_args, memcpy_args.len, 0);
-        var memcmp_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.i64 };
-        const memcmp_ty = api.LLVMFunctionType(types.i32, &memcmp_args, memcmp_args.len, 0);
-        var alloc_args = [_]llvm.c.LLVMTypeRef{types.i64};
-        const array_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &alloc_args, alloc_args.len, 0);
-        var len_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const array_len_ty = api.LLVMFunctionType(types.i64, &len_args, len_args.len, 0);
-        var load_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.ptr_ty };
-        const array_load_ty = api.LLVMFunctionType(types.void_ty, &load_args, load_args.len, 0);
-        var store_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.ptr_ty };
-        const array_store_ty = api.LLVMFunctionType(types.void_ty, &store_args, store_args.len, 0);
-        var store_release_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.ptr_ty, types.ptr_ty };
-        const array_store_release_ty = api.LLVMFunctionType(types.void_ty, &store_release_args, store_release_args.len, 0);
-        var append_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty };
-        const array_append_ty = api.LLVMFunctionType(types.void_ty, &append_args, append_args.len, 0);
-        var release_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty };
-        const array_release_ty = api.LLVMFunctionType(types.void_ty, &release_args, release_args.len, 0);
-        var clone_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty };
-        const array_clone_ty = api.LLVMFunctionType(types.ptr_ty, &clone_args, clone_args.len, 0);
-        var state_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.i64 };
-        const state_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &state_alloc_args, state_alloc_args.len, 0);
-        var state_payload_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const state_payload_ty = api.LLVMFunctionType(types.ptr_ty, &state_payload_args, state_payload_args.len, 0);
-        var state_recover_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64 };
-        const state_recover_ty = api.LLVMFunctionType(types.ptr_ty, &state_recover_args, state_recover_args.len, 0);
-        var state_free_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const state_free_ty = api.LLVMFunctionType(types.void_ty, &state_free_args, state_free_args.len, 0);
-        var struct_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.i64 };
-        const struct_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &struct_alloc_args, struct_alloc_args.len, 0);
-        var struct_type_id_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const struct_type_id_ty = api.LLVMFunctionType(types.i64, &struct_type_id_args, struct_type_id_args.len, 0);
-        const struct_free_ty = api.LLVMFunctionType(types.void_ty, &struct_type_id_args, struct_type_id_args.len, 0);
-        const write_newline_ty = api.LLVMFunctionType(types.void_ty, null, 0, 0);
-
-        return .{
-            .print_i64 = .{ .ty = print_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.print_i64, print_i64_ty) },
-            .print_f64 = .{ .ty = print_f64_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.print_f64, print_f64_ty) },
-            .print_string = .{ .ty = print_string_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.print_string, print_string_ty) },
-            .call_runtime = if (call_runtime_ty) |ty| .{ .ty = ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.call_runtime, ty) } else null,
-            .malloc = .{ .ty = malloc_ty, .fn_value = api.LLVMAddFunction(module_ref, "malloc", malloc_ty) },
-            .free = .{ .ty = free_ty, .fn_value = api.LLVMAddFunction(module_ref, "free", free_ty) },
-            .strlen = .{ .ty = strlen_ty, .fn_value = api.LLVMAddFunction(module_ref, "strlen", strlen_ty) },
-            .memcpy = .{ .ty = memcpy_ty, .fn_value = api.LLVMAddFunction(module_ref, "memcpy", memcpy_ty) },
-            .memcmp = .{ .ty = memcmp_ty, .fn_value = api.LLVMAddFunction(module_ref, "memcmp", memcmp_ty) },
-            .array_alloc = .{ .ty = array_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.array_alloc, array_alloc_ty) },
-            .array_len = .{ .ty = array_len_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.array_len, array_len_ty) },
-            .array_load = .{ .ty = array_load_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.array_load, array_load_ty) },
-            .array_take = .{ .ty = array_load_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.array_take, array_load_ty) },
-            .array_store = .{ .ty = array_store_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.array_store, array_store_ty) },
-            .array_store_release = .{ .ty = array_store_release_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_store_release", array_store_release_ty) },
-            .array_append = .{ .ty = array_append_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_append", array_append_ty) },
-            .array_release = .{ .ty = array_release_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_release", array_release_ty) },
-            .array_clone = .{ .ty = array_clone_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_clone", array_clone_ty) },
-            .state_alloc = .{ .ty = state_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_alloc, state_alloc_ty) },
-            .state_payload = .{ .ty = state_payload_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_payload, state_payload_ty) },
-            .state_recover = .{ .ty = state_recover_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_recover, state_recover_ty) },
-            .state_free = .{ .ty = state_free_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_free, state_free_ty) },
-            .struct_alloc = .{ .ty = struct_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_alloc, struct_alloc_ty) },
-            .struct_type_id = .{ .ty = struct_type_id_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_type_id, struct_type_id_ty) },
-            .struct_free = .{ .ty = struct_free_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.struct_free, struct_free_ty) },
-            .write_i64 = .{ .ty = print_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_i64", print_i64_ty) },
-            .write_f64 = .{ .ty = print_f64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_f64", print_f64_ty) },
-            .write_string = .{ .ty = print_string_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_string", print_string_ty) },
-            .write_ptr = .{ .ty = print_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_ptr", print_i64_ty) },
-            .write_newline = .{ .ty = write_newline_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_native_write_newline", write_newline_ty) },
-            .bool_true = boolGlobal(api, module_ref, types, "true", "kira.capi.bool.true"),
-            .bool_false = boolGlobal(api, module_ref, types, "false", "kira.capi.bool.false"),
-        };
-    }
-};
-
-fn boolGlobal(api: *const llvm.Api, module_ref: llvm.c.LLVMModuleRef, types: Types, text: []const u8, name: [:0]const u8) llvm.c.LLVMValueRef {
-    const array_ty = api.LLVMArrayType2(types.i8, text.len + 1);
-    const global = api.LLVMAddGlobal(module_ref, array_ty, name.ptr);
-    api.LLVMSetLinkage(global, llvm.c.LLVMPrivateLinkage);
-    api.LLVMSetGlobalConstant(global, 1);
-    api.LLVMSetInitializer(global, api.LLVMConstStringInContext2(types.context, text.ptr, text.len, 0));
-    const zero = api.LLVMConstInt(types.i32, 0, 0);
-    var indices = [_]llvm.c.LLVMValueRef{ zero, zero };
-    const data_ptr = api.LLVMConstInBoundsGEP2(array_ty, global, &indices, indices.len);
-    var fields = [_]llvm.c.LLVMValueRef{ data_ptr, api.LLVMConstInt(types.i64, text.len, 0) };
-    return api.LLVMConstNamedStruct(types.string_ty, &fields, fields.len);
-}
 
 pub fn buildModule(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
     request: backend_api.CompileRequest,
     triple: []const u8,
+) !Lowered {
+    return buildModulePlanned(allocator, api, request, triple, .{});
+}
+
+pub fn buildModulePlanned(
+    allocator: std.mem.Allocator,
+    api: *const llvm.Api,
+    request: backend_api.CompileRequest,
+    triple: []const u8,
+    plan: ModulePlan,
 ) !Lowered {
     const context = api.LLVMContextCreate();
     const module_name = try allocator.dupeZ(u8, request.module_name);
@@ -304,40 +159,51 @@ pub fn buildModule(
     // KIRA_CAPI_DROP while it is validated; with drop off, the destroy helpers are simply
     // never called, so generating them is free of behavior change or double-free risk.
     const drop_enabled = dropEnabled();
-    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode);
+    // Support CGU defines the dtor bodies; per-function CGUs only declare them.
+    var dtors: drop.Destructors = try drop.build(allocator, api, module_ref, types, &struct_types, request.program.programPtr(), runtime_decls, request.mode, !plan.emit_support);
     defer dtors.deinit(allocator);
 
-    // Per-closure typed capture teardown/clone: build the kira_capi_closure_release /
-    // kira_capi_closure_clone bodies (their declarations live in dtors) and, on the
-    // native path with drop on, install the release as the kira_destroy_closure hook
-    // via a global constructor so every owned-closure drop point frees captures too.
-    {
-        const shapes = try closure_dtors.collectShapes(allocator, request.program.programPtr());
-        defer closure_dtors.freeShapes(allocator, shapes);
-        try closure_dtors.build(
-            allocator,
-            api,
-            module_ref,
-            types,
-            request.program.programPtr(),
-            runtime_decls,
-            &dtors,
-            shapes,
-            request.mode == .llvm_native and drop_enabled,
-        );
+    // Shared helper BODIES belong to the support CGU only. Per-function CGUs
+    // reference these symbols (already declared in `dtors`) as externs.
+    if (plan.emit_support) {
+        // Per-closure typed capture teardown/clone: build the kira_capi_closure_release /
+        // kira_capi_closure_clone bodies (their declarations live in dtors) and, on the
+        // native path with drop on, install the release as the kira_destroy_closure hook
+        // via a global constructor so every owned-closure drop point frees captures too.
+        {
+            const shapes = try closure_dtors.collectShapes(allocator, request.program.programPtr());
+            defer closure_dtors.freeShapes(allocator, shapes);
+            try closure_dtors.build(
+                allocator,
+                api,
+                module_ref,
+                types,
+                request.program.programPtr(),
+                runtime_decls,
+                &dtors,
+                shapes,
+                request.mode == .llvm_native and drop_enabled,
+            );
+        }
+
+        // Typed enum destroy/clone bodies (string-payload boxes; declarations live
+        // in dtors.enum_map, empty in hybrid).
+        try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
+
+        // Runtime-typed dynamic dispatchers for type-erased values and native-state
+        // interiors (declarations live in dtors; referenced only on the native path).
+        try dynamic_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
     }
-
-    // Typed enum destroy/clone bodies (string-payload boxes; declarations live
-    // in dtors.enum_map, empty in hybrid).
-    try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
-
-    // Runtime-typed dynamic dispatchers for type-erased values and native-state
-    // interiors (declarations live in dtors; referenced only on the native path).
-    try dynamic_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
 
     // Declare one dispatcher function per distinct call_value signature; bodies are
     // generated after the concrete functions are declared.
-    const dispatcher_sigs = try dispatch.collectCallValueDispatchers(allocator, request.program.programPtr().*);
+    // Support CGU declares every dispatcher (its bodies live here); a per-function
+    // CGU declares only the dispatchers its own emitted body calls.
+    const dispatcher_sigs = try dispatch.collectCallValueDispatchersFiltered(
+        allocator,
+        request.program.programPtr().*,
+        if (plan.emit_support) null else plan.emit_bodies,
+    );
     defer allocator.free(dispatcher_sigs);
     var dispatchers = std.AutoHashMapUnmanaged(u64, dispatch.DispatcherDecl){};
     defer dispatchers.deinit(allocator);
@@ -375,6 +241,9 @@ pub fn buildModule(
 
     for (request.program.programPtr().functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+        // Per-function CGUs declare only the functions their body can reference
+        // (collectBodyFunctionRefs); the support/whole-program module declares all.
+        if (!plan.declares(function_decl.id)) continue;
         // Extern functions are real C symbols: declare them with their C ABI signature so
         // call sites (lowered through backend_capi_ffi) match the declaration.
         const function_ty = if (function_decl.is_extern)
@@ -407,6 +276,9 @@ pub fn buildModule(
     for (request.program.programPtr().functions) |function_decl| {
         if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
         if (function_decl.is_extern) continue;
+        // Per-function CGUs emit only their own body; every other function stays a
+        // declaration here and is resolved from its own object at link time.
+        if (!plan.emitsBody(function_decl.id)) continue;
         const function_value = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
         var fc = codegen.FunctionCodegen{
             .allocator = allocator,
@@ -427,29 +299,33 @@ pub fn buildModule(
         try fc.lower();
     }
 
-    // Generate the dispatcher bodies now that all concrete functions exist.
-    for (dispatcher_sigs) |sig| {
-        const decl = dispatchers.get(sig.hash).?;
-        try dispatch.buildDispatcher(allocator, api, builder, types, request, &functions, runtime_decls, &struct_types, sig, decl.fn_value);
-    }
-
-    // Hybrid mode: emit the kira_native_fn_{id} trampoline the VM calls for each
-    // native function, wrapping the kira_native_impl_{id} body.
-    if (request.mode == .hybrid) {
-        for (request.program.programPtr().functions) |function_decl| {
-            if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
-            if (function_decl.is_extern) continue;
-            const impl_fn = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
-            const impl_ty = try types.functionType(allocator, function_decl);
-            try dispatch.buildHybridTrampoline(allocator, api, builder, module_ref, types, &struct_types, runtime_decls.malloc, function_decl, impl_fn, impl_ty);
+    // Dispatcher bodies, hybrid trampolines, and the host main are shared support
+    // definitions: emitted once in the support CGU, declared-only elsewhere.
+    if (plan.emit_support) {
+        // Generate the dispatcher bodies now that all concrete functions exist.
+        for (dispatcher_sigs) |sig| {
+            const decl = dispatchers.get(sig.hash).?;
+            try dispatch.buildDispatcher(allocator, api, builder, types, request, &functions, runtime_decls, &struct_types, sig, decl.fn_value);
         }
-    }
 
-    if (request.mode == .llvm_native) {
-        const entry_decl = request.program.programPtr().functions[request.program.programPtr().entry_index];
-        if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
-        const entry_value = functions.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
-        try buildHostMain(allocator, api, builder, module_ref, types, entry_decl, entry_value);
+        // Hybrid mode: emit the kira_native_fn_{id} trampoline the VM calls for each
+        // native function, wrapping the kira_native_impl_{id} body.
+        if (request.mode == .hybrid) {
+            for (request.program.programPtr().functions) |function_decl| {
+                if (!shouldLowerFunction(function_decl.execution, request.mode)) continue;
+                if (function_decl.is_extern) continue;
+                const impl_fn = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
+                const impl_ty = try types.functionType(allocator, function_decl);
+                try dispatch.buildHybridTrampoline(allocator, api, builder, module_ref, types, &struct_types, runtime_decls.malloc, function_decl, impl_fn, impl_ty);
+            }
+        }
+
+        if (request.mode == .llvm_native) {
+            const entry_decl = request.program.programPtr().functions[request.program.programPtr().entry_index];
+            if (!shouldLowerFunction(entry_decl.execution, request.mode)) return error.RuntimeEntrypointInNativeBuild;
+            const entry_value = functions.get(entry_decl.id) orelse return error.MissingFunctionDeclaration;
+            try buildHostMain(allocator, api, builder, module_ref, types, entry_decl, entry_value);
+        }
     }
 
     if (std.c.getenv("KIRA_CAPI_DUMP") != null) {

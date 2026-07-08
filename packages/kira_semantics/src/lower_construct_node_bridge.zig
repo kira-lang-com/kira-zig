@@ -135,15 +135,71 @@ pub fn returnsConcreteType(ctx: *shared.Context, field: syntax.ast.FieldDecl) bo
     return ctx.construct_headers != null and ctx.construct_headers.?.get(leaf) != null;
 }
 
-// Turn a computed-member block into a function body that returns its value: if the final
-// statement is a bare expression, wrap it in a `return`. Blocks that already `return` are kept.
+// Turn a computed-member block into a function body that returns its value. The
+// trailing statement is value-producing: a bare expression becomes `return <expr>`,
+// and a trailing `if`/`match`/`switch` threads the return into each branch's tail
+// (so `body { if c { A } else { B } }` returns A or B). Blocks that already `return`
+// are kept. Paths that produce no value (a non-expression tail, or an `if` with no
+// `else`) are left as-is; the mid-IR return check reports any path that fails to
+// yield a value, so a malformed body errors cleanly instead of emitting bad IR.
 fn returnize(ctx: *shared.Context, block: syntax.ast.Block) !syntax.ast.Block {
     if (block.statements.len == 0) return block;
     const last = block.statements[block.statements.len - 1];
-    if (last != .expr_stmt) return block;
+    const rewritten = (try returnizeTail(ctx, last)) orelse return block;
 
     var statements = std.array_list.Managed(syntax.ast.Statement).init(ctx.allocator);
     try statements.appendSlice(block.statements[0 .. block.statements.len - 1]);
-    try statements.append(.{ .return_stmt = .{ .value = last.expr_stmt.expr, .span = last.expr_stmt.span } });
+    try statements.append(rewritten);
     return .{ .statements = try statements.toOwnedSlice(), .span = block.span };
+}
+
+// Rewrite one tail-position statement so its produced value becomes a `return`.
+// Returns null when the statement is not value-producing in tail position, leaving
+// the enclosing block untouched. Recurses through control-flow branches so a widget
+// body can be `if`/`match`/`switch` whose arms each yield the returned widget.
+fn returnizeTail(ctx: *shared.Context, stmt: syntax.ast.Statement) anyerror!?syntax.ast.Statement {
+    switch (stmt) {
+        .expr_stmt => |expr_stmt| return syntax.ast.Statement{
+            .return_stmt = .{ .value = expr_stmt.expr, .span = expr_stmt.span },
+        },
+        .if_stmt => |if_stmt| return syntax.ast.Statement{ .if_stmt = .{
+            .condition = if_stmt.condition,
+            .then_block = try returnize(ctx, if_stmt.then_block),
+            .else_block = if (if_stmt.else_block) |else_block| try returnize(ctx, else_block) else null,
+            .span = if_stmt.span,
+        } },
+        .match_stmt => |match_stmt| {
+            const arms = try ctx.allocator.alloc(syntax.ast.MatchArm, match_stmt.arms.len);
+            for (match_stmt.arms, 0..) |arm, index| {
+                arms[index] = .{
+                    .patterns = arm.patterns,
+                    .guard = arm.guard,
+                    .body = try returnize(ctx, arm.body),
+                    .span = arm.span,
+                };
+            }
+            return syntax.ast.Statement{ .match_stmt = .{
+                .subject = match_stmt.subject,
+                .arms = arms,
+                .span = match_stmt.span,
+            } };
+        },
+        .switch_stmt => |switch_stmt| {
+            const cases = try ctx.allocator.alloc(syntax.ast.SwitchCase, switch_stmt.cases.len);
+            for (switch_stmt.cases, 0..) |case_node, index| {
+                cases[index] = .{
+                    .pattern = case_node.pattern,
+                    .body = try returnize(ctx, case_node.body),
+                    .span = case_node.span,
+                };
+            }
+            return syntax.ast.Statement{ .switch_stmt = .{
+                .subject = switch_stmt.subject,
+                .cases = cases,
+                .default_block = if (switch_stmt.default_block) |default_block| try returnize(ctx, default_block) else null,
+                .span = switch_stmt.span,
+            } };
+        },
+        else => return null,
+    }
 }
