@@ -34,20 +34,33 @@ const max_copyable_depth: u32 = 64;
 /// on the rare allocation failure the depth cap still guarantees termination.
 pub const TypeClass = struct {
     allocator: std.mem.Allocator,
-    copyable: std.StringHashMapUnmanaged(bool) = .{},
-    contains_any: std.StringHashMapUnmanaged(bool) = .{},
-    copyable_visiting: std.StringHashMapUnmanaged(void) = .{},
-    contains_any_visiting: std.StringHashMapUnmanaged(void) = .{},
+    // Caches are split by type KIND, not just name. An array element enum is
+    // reconstructed as `.named` (see resolvedTypeFromStorageText), so a single
+    // name-keyed map would let a struct-resolver `false` for `[E]` mask a later
+    // direct `.enum_instance E` payload check — and vice versa. Keying by kind
+    // makes that collision impossible.
+    copyable_named: std.StringHashMapUnmanaged(bool) = .{},
+    copyable_enum: std.StringHashMapUnmanaged(bool) = .{},
+    copyable_visiting_named: std.StringHashMapUnmanaged(void) = .{},
+    copyable_visiting_enum: std.StringHashMapUnmanaged(void) = .{},
+    contains_any_named: std.StringHashMapUnmanaged(bool) = .{},
+    contains_any_enum: std.StringHashMapUnmanaged(bool) = .{},
+    contains_any_visiting_named: std.StringHashMapUnmanaged(void) = .{},
+    contains_any_visiting_enum: std.StringHashMapUnmanaged(void) = .{},
 
     pub fn init(allocator: std.mem.Allocator) TypeClass {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *TypeClass) void {
-        self.copyable.deinit(self.allocator);
-        self.contains_any.deinit(self.allocator);
-        self.copyable_visiting.deinit(self.allocator);
-        self.contains_any_visiting.deinit(self.allocator);
+        self.copyable_named.deinit(self.allocator);
+        self.copyable_enum.deinit(self.allocator);
+        self.copyable_visiting_named.deinit(self.allocator);
+        self.copyable_visiting_enum.deinit(self.allocator);
+        self.contains_any_named.deinit(self.allocator);
+        self.contains_any_enum.deinit(self.allocator);
+        self.contains_any_visiting_named.deinit(self.allocator);
+        self.contains_any_visiting_enum.deinit(self.allocator);
     }
 };
 
@@ -72,17 +85,26 @@ fn isCopyableTypeDepth(self: *const Checker, ty: model.ResolvedType, depth: u32)
         .enum_instance, .named => blk: {
             const name = ty.name orelse break :blk false;
             const cache = self.type_class;
-            if (cache.copyable.get(name)) |cached| break :blk cached;
+            const is_enum = ty.kind == .enum_instance;
+            const memo = if (is_enum) &cache.copyable_enum else &cache.copyable_named;
+            const visiting = if (is_enum) &cache.copyable_visiting_enum else &cache.copyable_visiting_named;
+            if (memo.get(name)) |cached| break :blk cached;
             // Cycle: a type referenced while still being classified is conservatively
             // non-copyable, matching the former depth-cap behaviour.
-            if (cache.copyable_visiting.contains(name)) break :blk false;
-            cache.copyable_visiting.put(cache.allocator, name, {}) catch {};
-            const result = if (ty.kind == .enum_instance)
+            if (visiting.contains(name)) break :blk false;
+            visiting.put(cache.allocator, name, {}) catch {};
+            // A `.named` type may be a genuine struct OR an enum reconstructed
+            // from array storage text (resolvedTypeFromStorageText yields
+            // `.named` for a bare name), so it must consult BOTH tables. Names
+            // are unique across structs and enums, so the non-matching resolver
+            // returns false and the OR yields the correct kind's answer. A
+            // `.enum_instance` only ever names a real enum.
+            const result = if (is_enum)
                 isCopyableEnumType(self, ty, depth)
             else
-                isCopyableStructType(self, ty, depth);
-            _ = cache.copyable_visiting.remove(name);
-            cache.copyable.put(cache.allocator, name, result) catch {};
+                isCopyableStructType(self, ty, depth) or isCopyableEnumType(self, ty, depth);
+            _ = visiting.remove(name);
+            memo.put(cache.allocator, name, result) catch {};
             break :blk result;
         },
         else => false,
@@ -127,16 +149,25 @@ fn containsConstructAnyDepth(self: *const Checker, ty: model.ResolvedType, depth
         .named, .enum_instance => blk: {
             const name = ty.name orelse break :blk false;
             const cache = self.type_class;
-            if (cache.contains_any.get(name)) |cached| break :blk cached;
+            const is_enum = ty.kind == .enum_instance;
+            const memo = if (is_enum) &cache.contains_any_enum else &cache.contains_any_named;
+            const visiting = if (is_enum) &cache.contains_any_visiting_enum else &cache.contains_any_visiting_named;
+            if (memo.get(name)) |cached| break :blk cached;
             // Cycle: conservatively "does not contain", matching the depth-cap default.
-            if (cache.contains_any_visiting.contains(name)) break :blk false;
-            cache.contains_any_visiting.put(cache.allocator, name, {}) catch {};
-            const result = if (ty.kind == .named)
-                containsConstructAnyStructType(self, ty, depth)
+            if (visiting.contains(name)) break :blk false;
+            visiting.put(cache.allocator, name, {}) catch {};
+            // A `.named` type may be a genuine struct OR an enum reconstructed
+            // from array storage text; consult BOTH tables (unique names mean
+            // the non-matching resolver returns false). Without this, an array
+            // of an `any`-carrying enum reconstructs as `.named`, hits only the
+            // struct resolver, and is wrongly classified as construct-any-free —
+            // relaxing an ownership move to an alias.
+            const result = if (is_enum)
+                containsConstructAnyEnumType(self, ty, depth)
             else
-                containsConstructAnyEnumType(self, ty, depth);
-            _ = cache.contains_any_visiting.remove(name);
-            cache.contains_any.put(cache.allocator, name, result) catch {};
+                containsConstructAnyStructType(self, ty, depth) or containsConstructAnyEnumType(self, ty, depth);
+            _ = visiting.remove(name);
+            memo.put(cache.allocator, name, result) catch {};
             break :blk result;
         },
         else => false,

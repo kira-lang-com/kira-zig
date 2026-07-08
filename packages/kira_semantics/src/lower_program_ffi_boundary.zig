@@ -48,6 +48,7 @@ fn externIndex(
 ) !*const std.AutoHashMapUnmanaged(u32, shared.FunctionHeader) {
     if (ctx.extern_headers_by_id == null) {
         var map = std.AutoHashMapUnmanaged(u32, shared.FunctionHeader){};
+        errdefer map.deinit(ctx.allocator);
         var it = all_headers.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.is_extern) {
