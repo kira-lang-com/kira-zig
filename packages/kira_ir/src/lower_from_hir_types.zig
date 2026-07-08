@@ -8,7 +8,46 @@ pub fn lowerResolvedTypeSlice(allocator: std.mem.Allocator, program: model.Progr
     return lowered;
 }
 
+// Tracks the FFI-alias names currently being resolved so that a self- or
+// mutually-referential alias (e.g. the autobound `@FFI.Alias { target: X }
+// struct X {}`) is lowered to an opaque type instead of recursing forever.
+const VisitedNames = struct {
+    buf: [64][]const u8 = undefined,
+    len: usize = 0,
+
+    fn contains(self: *const VisitedNames, name: []const u8) bool {
+        for (self.buf[0..self.len]) |seen| {
+            if (std.mem.eql(u8, seen, name)) return true;
+        }
+        return false;
+    }
+
+    fn push(self: *VisitedNames, name: []const u8) void {
+        if (self.len < self.buf.len) {
+            self.buf[self.len] = name;
+            self.len += 1;
+        }
+    }
+};
+
+// An FFI type that can only be treated opaquely: a `*_ptr` binding is a raw
+// pointer, anything else is an opaque foreign struct value.
+fn opaqueFfiType(name: []const u8) ir.ValueType {
+    if (std.mem.endsWith(u8, name, "_ptr")) return .{ .kind = .raw_ptr, .name = name };
+    return .{ .kind = .ffi_struct, .name = name };
+}
+
 pub fn lowerResolvedType(program: model.Program, ty: model.ResolvedType) !ir.ValueType {
+    var seen = VisitedNames{};
+    return lowerResolvedTypeInner(program, ty, &seen);
+}
+
+pub fn lowerNamedType(program: model.Program, name: []const u8) anyerror!ir.ValueType {
+    var seen = VisitedNames{};
+    return lowerNamedTypeInner(program, name, &seen);
+}
+
+fn lowerResolvedTypeInner(program: model.Program, ty: model.ResolvedType, seen: *VisitedNames) anyerror!ir.ValueType {
     return switch (ty.kind) {
         .void => .{ .kind = .void },
         .integer => .{ .kind = .integer, .name = ty.name },
@@ -19,18 +58,24 @@ pub fn lowerResolvedType(program: model.Program, ty: model.ResolvedType) !ir.Val
         .array => .{ .kind = .array, .name = ty.name },
         .raw_ptr, .c_string, .callback, .native_state, .native_state_view => .{ .kind = .raw_ptr, .name = ty.name },
         .enum_instance => .{ .kind = .enum_instance, .name = ty.name },
-        .named => if (ty.name) |name| lowerNamedType(program, name) else return error.UnsupportedType,
+        .named => if (ty.name) |name| lowerNamedTypeInner(program, name, seen) else return error.UnsupportedType,
         .ffi_struct, .unknown => return error.UnsupportedType,
     };
 }
 
-pub fn lowerNamedType(program: model.Program, name: []const u8) anyerror!ir.ValueType {
+fn lowerNamedTypeInner(program: model.Program, name: []const u8, seen: *VisitedNames) anyerror!ir.ValueType {
     for (program.types) |type_decl| {
         if (!std.mem.eql(u8, type_decl.name, name)) continue;
         if (type_decl.ffi) |ffi_info| {
             return switch (ffi_info) {
                 .pointer, .callback => .{ .kind = .raw_ptr, .name = name },
-                .alias => |value| lowerResolvedType(program, value.target),
+                .alias => |value| blk: {
+                    // A degenerate self-referential alias (or an A -> B -> A
+                    // cycle) has no concrete target; treat it as opaque.
+                    if (seen.contains(name)) break :blk opaqueFfiType(name);
+                    seen.push(name);
+                    break :blk lowerResolvedTypeInner(program, value.target, seen);
+                },
                 .ffi_struct => .{ .kind = .ffi_struct, .name = name },
                 .array => .{ .kind = .raw_ptr, .name = name },
             };
