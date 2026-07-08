@@ -145,10 +145,10 @@ fn usage() void {
         \\  status                     content diff (fork vs upstream, local vs fork)
         \\  commit [-m "subject"]      stage all + signed commit (auto message if no -m)
         \\  push                       push current branch to the fork over SSH
-        \\  open-fork-pr [title]       open a fork-internal PR
+        \\  open-fork-pr [title]       open ONE PR against upstream (single-stage)
         \\  request-reviews <pr> [--codex]
         \\  wait-reviews <pr> [--codex]
-        \\  land <pr> [--codex]        land PR (after reviews) + resync local branch
+        \\  land <pr> [--codex]        squash-merge upstream PR (merge subject) + mirror fork + resync
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr [title]   fork default -> upstream default
     );
