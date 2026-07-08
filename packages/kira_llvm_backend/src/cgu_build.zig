@@ -312,9 +312,14 @@ pub fn compileExecutable(
     defer api.close();
 
     const program = request.program.programPtr();
+    // The EFFECTIVE optimization pipeline (honors KIRA_NATIVE_OPT and the
+    // KIRA_CGU_PASSES override) keys both the cache and the emit, so changing either
+    // env var invalidates cached objects instead of reusing ones built with a
+    // different pipeline.
+    const passes = passPipeline(runtime_utils.nativeOptFlag());
     const config = cgu_hash.CguConfig{
         .triple = triple,
-        .opt_flag = runtime_utils.nativeOptFlag(),
+        .opt_flag = std.mem.span(passes),
         .mode = request.mode,
         .drop_enabled = dropEnabled(),
     };
@@ -404,8 +409,15 @@ pub fn compileExecutable(
     const rebuilt = pending.items.len;
     const stats = std.c.getenv("KIRA_INCREMENTAL_STATS") != null;
     const emit_start = nowNs();
-    try emitPending(allocator, &api, request, triple, passPipeline(config.opt_flag), pending.items);
+    try emitPending(allocator, &api, request, triple, passes, pending.items);
     const emit_ns = nowNs() - emit_start;
+
+    // The CGU objects so far (support + per-function) are the Kira module's code.
+    // Relocatable-link them into the whole-program `object_path` so a native build
+    // still reports a `native_object` artifact and the build cache — which stores and
+    // restores that `.o` — keeps working under incremental.
+    const cgu_object_count = objects.items.len;
+    try linker.combineObjects(allocator, request.emit.object_path, objects.items[0..cgu_object_count], request.target_selector);
 
     // Runtime + dynamic-FFI helper objects, then full relink of the live set.
     const link_start = nowNs();
@@ -425,6 +437,7 @@ pub fn compileExecutable(
     }
 
     var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
+    try artifacts.append(.{ .kind = .native_object, .path = try allocator.dupe(u8, request.emit.object_path) });
     try artifacts.append(.{ .kind = .executable, .path = try allocator.dupe(u8, executable_path) });
     return .{ .artifacts = try artifacts.toOwnedSlice() };
 }
