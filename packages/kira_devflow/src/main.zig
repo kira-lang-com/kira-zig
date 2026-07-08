@@ -8,7 +8,7 @@
 //!   open-fork-pr [t]   fork-internal PR, empty body (CodeRabbit writes it)
 //!   request-reviews N  always CodeRabbit; --codex to also ping Codex
 //!   wait-reviews N     block until reviewers posted + threads resolved
-//!   land N             squash-merge + resync local default branch
+//!   land N             merge-commit + resync local default branch
 //!   sync               resync local default branch to the fork
 //!   open-upstream-pr   fork default -> upstream default (needs upstream remote)
 
@@ -148,7 +148,7 @@ fn usage() void {
         \\  open-fork-pr [title]       open a fork-internal PR
         \\  request-reviews <pr> [--codex]
         \\  wait-reviews <pr> [--codex]
-        \\  land <pr> [--codex]        squash-merge (after reviews) + resync local branch
+        \\  land <pr> [--codex]        merge-commit (after reviews) + resync local branch
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr [title]   fork default -> upstream default
     );
