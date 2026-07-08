@@ -175,6 +175,9 @@ pub const BuildSystem = struct {
                 .test_mode = request.test_mode,
                 .synthesize_test_driver = request.synthesize_test_driver,
                 .package_execution_defaults = request.target.execution == .hybrid,
+                // The build path lowers + verifies again in llvm_backend.compile, so the
+                // analysis-only native validate pass here is pure redundant work.
+                .skip_llvm_backend_validate = true,
             },
         );
     }
