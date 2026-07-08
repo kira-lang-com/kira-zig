@@ -312,6 +312,29 @@ pub fn build(b: *std.Build) void {
     const fetch_libffi_step = b.step("fetch-libffi", "Download and install the pinned LibFFI toolchain");
     fetch_libffi_step.dependOn(&fetch_libffi_run.step);
 
+    const devflow_module = b.createModule(.{
+        .root_source_file = b.path("packages/kira_devflow/src/main.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    devflow_module.link_libc = true;
+    const devflow_tool = b.addExecutable(.{ .name = "devflow", .root_module = devflow_module });
+    const devflow_run = b.addRunArtifact(devflow_tool);
+    if (b.args) |args| devflow_run.addArgs(args);
+    const devflow_step = b.step("devflow", "Run the fork/upstream PR flow automation");
+    devflow_step.dependOn(&devflow_run.step);
+
+    const devflow_test_module = b.createModule(.{
+        .root_source_file = b.path("packages/kira_devflow/src/main.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    devflow_test_module.link_libc = true;
+    const devflow_test = b.addTest(.{ .root_module = devflow_test_module });
+    const devflow_test_run = b.addRunArtifact(devflow_test);
+    const devflow_test_step = b.step("devflow-test", "Run devflow unit tests");
+    devflow_test_step.dependOn(&devflow_test_run.step);
+
     const live_support_step = b.step("live-runner-support", "Build the generic live runner support static library");
     live_support_step.dependOn(&install_live_support.step);
     const live_desktop_step = b.step("live-desktop-runner", "Build the generic desktop live runner executable");
