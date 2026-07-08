@@ -546,6 +546,57 @@ pub fn lowerCallExpr(
         return;
     }
 
+    // `floatToBits(x)` / `bitsToFloat(x)` — bit-reinterpret between a Float and
+    // its raw bits (Kira Float is f64, so the bit pattern is a U64). Unlike the
+    // numeric casts below these preserve the exact bit pattern, and like them they
+    // are builtins, not user-callable functions, so an un-shadowed call is always
+    // the builtin.
+    if (scope.get(callee_name) == null) reinterpret_cast: {
+        const is_ftb = std.mem.eql(u8, callee_name, "floatToBits");
+        const is_btf = std.mem.eql(u8, callee_name, "bitsToFloat");
+        if (!is_ftb and !is_btf) break :reinterpret_cast;
+        if (node.args.len != 1 or node.args[0].label != null) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM118",
+                .title = "invalid bit reinterpret",
+                .message = try std.fmt.allocPrint(ctx.allocator, "`{s}(...)` takes exactly one positional argument.", .{callee_name}),
+                .labels = &.{diagnostics.primaryLabel(node.span, "reinterpret call has the wrong arguments")},
+                .help = "Write it as `floatToBits(value)` or `bitsToFloat(value)` with a single argument.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        const operand = try lowerExpr(ctx, node.args[0].value, imports, scope, function_headers);
+        const operand_ty = model.hir.exprType(operand.*);
+        const want_float_operand = is_btf;
+        const ok = if (want_float_operand) operand_ty.kind == .integer else operand_ty.kind == .float;
+        if (!ok) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM118",
+                .title = "invalid bit reinterpret",
+                .message = if (is_ftb)
+                    try std.fmt.allocPrint(ctx.allocator, "`floatToBits(...)` expects a `Float` value.", .{})
+                else
+                    try std.fmt.allocPrint(ctx.allocator, "`bitsToFloat(...)` expects an integer value.", .{}),
+                .labels = &.{diagnostics.primaryLabel(node.span, "operand has the wrong type")},
+                .help = "floatToBits takes a Float and returns U64 bits; bitsToFloat takes U64 bits and returns a Float.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        const target_type = if (is_ftb)
+            (shared.numericCastTargetType("U64") orelse unreachable)
+        else
+            (shared.numericCastTargetType("Float") orelse unreachable);
+        lowered.* = .{ .cast = .{
+            .operand = operand,
+            .ty = target_type,
+            .span = node.span,
+            .reinterpret = true,
+        } };
+        return;
+    }
+
     // `Int(x)` / `Float(x)` / width-specific (`U64(x)`, `I32(x)`, `F32(x)`, …)
     // numeric casts. Recognized before ordinary function and constructor
     // resolution: these are primitive type names, not user-callable functions,

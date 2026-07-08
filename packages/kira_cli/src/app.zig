@@ -255,7 +255,12 @@ test "version prints standalone binary identity" {
     );
 
     try std.testing.expectEqual(@as(u8, 0), exit_code);
-    try std.testing.expectEqualStrings("kira-bootstrapper 0.1.0\n", stdout.buffered());
+    // Assert against the same build-options constants the --version printer uses
+    // (app.zig:109) rather than a hardcoded version literal, so bumping the
+    // toolchain version can never rot this test.
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "{s} {s}\n", .{ support.binaryName(), support.versionString() });
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, stdout.buffered());
     try std.testing.expectEqualStrings("", stderr.buffered());
 }
 
