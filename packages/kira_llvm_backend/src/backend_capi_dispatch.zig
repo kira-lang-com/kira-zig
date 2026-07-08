@@ -74,8 +74,23 @@ pub fn dispatcherSymbolName(allocator: std.mem.Allocator, hash: u64) ![:0]u8 {
 
 // Collect the distinct call_value signatures the program needs dispatchers for.
 pub fn collectCallValueDispatchers(allocator: std.mem.Allocator, program: ir.Program) ![]DispatcherSig {
+    return collectCallValueDispatchersFiltered(allocator, program, null);
+}
+
+/// Like `collectCallValueDispatchers`, but when `only_ids` is non-null, scans only
+/// the functions whose id is in the set. A per-function codegen unit needs to
+/// declare only the dispatchers its own emitted body calls, so it passes its
+/// emit-bodies set here — avoiding an O(whole-program) instruction scan per CGU.
+pub fn collectCallValueDispatchersFiltered(
+    allocator: std.mem.Allocator,
+    program: ir.Program,
+    only_ids: ?*const std.AutoHashMapUnmanaged(u32, void),
+) ![]DispatcherSig {
     var out = std.array_list.Managed(DispatcherSig).init(allocator);
     for (program.functions) |function_decl| {
+        if (only_ids) |set| {
+            if (!set.contains(function_decl.id)) continue;
+        }
         for (function_decl.instructions) |instruction| {
             if (instruction != .call_value) continue;
             const cv = instruction.call_value;

@@ -6,6 +6,7 @@ const backend_api = @import("kira_backend_api");
 const llvm = @import("llvm_c.zig");
 const toolchain = @import("toolchain.zig");
 const linker = @import("link.zig");
+const cgu_build = @import("cgu_build.zig");
 pub const emscripten = @import("emscripten.zig");
 const runtime_symbols = @import("runtime_symbols.zig");
 const backend_utils = @import("backend_utils.zig");
@@ -77,6 +78,15 @@ fn compileViaCApi(
     request: backend_api.CompileRequest,
     triple: []const u8,
 ) !backend_api.CompileResult {
+    // Flag-gated incremental path (KIRA_INCREMENTAL): per-function + support CGUs
+    // cached by content hash, full relink. Native executable links only; every
+    // other request falls through to the whole-program build below.
+    if (cgu_build.enabled() and cgu_build.handles(request)) {
+        try ensureParentDir(request.emit.object_path);
+        if (request.emit.executable_path) |path| try ensureParentDir(path);
+        return cgu_build.compileExecutable(allocator, request, triple);
+    }
+
     try ensureParentDir(request.emit.object_path);
     if (request.emit.executable_path) |path| try ensureParentDir(path);
     if (request.emit.shared_library_path) |path| try ensureParentDir(path);

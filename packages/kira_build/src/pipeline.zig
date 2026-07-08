@@ -121,6 +121,11 @@ pub const CompileOptions = struct {
     /// every `Test` and prints PASS/FAIL/SKIP, so the suite executes as ordinary
     /// Kira on the selected backend instead of through a Zig comparison runner.
     synthesize_test_driver: bool = false,
+    /// Skip the analysis-only `llvm_backend.validate` pass for the native target.
+    /// Set by callers that will immediately `llvm_backend.compile` (the build path),
+    /// where validate is a redundant second whole-program LLVM lowering. Analysis-only
+    /// callers (`check`) leave it false to get backend diagnostics without emitting.
+    skip_llvm_backend_validate: bool = false,
 };
 
 pub fn compileFileToIrForTargetWithOptions(
@@ -459,28 +464,36 @@ pub fn compileFileForBackendWithOptions(
             };
         },
         .llvm_native, .wasm32_emscripten => {
-            const llvm_start = nowNs();
-            llvm_backend.validate(allocator, .{
-                .mode = .llvm_native,
-                .program = &verified_program,
-                .module_name = std.fs.path.stem(path),
-                .emit = dummyNativeEmitOptions(),
-                .target_selector = effective_selector,
-                .resolved_native_libraries = merged_native_libraries,
-            }) catch |err| {
-                const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
-                timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
-                timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
-                return .{
-                    .source = frontend.source,
-                    .diagnostics = backend_diagnostics,
-                    .ir_program = ir_program,
-                    .bytecode_module = null,
-                    .native_libraries = merged_native_libraries,
-                    .failure_stage = .backend_prepare,
+            // `validate` re-lowers the whole program through the LLVM backend and throws it
+            // away just to surface backend errors as diagnostics. When the caller will
+            // immediately `llvm_backend.compile` (the build path), that is a second full
+            // whole-program lowering whose verification the compile already performs — pure
+            // redundant work (~1s on the project-matter editor). Skip it there; `check` and
+            // other analysis-only callers leave it on to get diagnostics without emitting.
+            if (!options.skip_llvm_backend_validate) {
+                const llvm_start = nowNs();
+                llvm_backend.validate(allocator, .{
+                    .mode = .llvm_native,
+                    .program = &verified_program,
+                    .module_name = std.fs.path.stem(path),
+                    .emit = dummyNativeEmitOptions(),
+                    .target_selector = effective_selector,
+                    .resolved_native_libraries = merged_native_libraries,
+                }) catch |err| {
+                    const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
+                    timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
+                    timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
+                    return .{
+                        .source = frontend.source,
+                        .diagnostics = backend_diagnostics,
+                        .ir_program = ir_program,
+                        .bytecode_module = null,
+                        .native_libraries = merged_native_libraries,
+                        .failure_stage = .backend_prepare,
+                    };
                 };
-            };
-            timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
+                timingPrint("[kira:timing] llvm_backend.validate path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(llvm_start) });
+            }
             timingPrint("[kira:timing] compileFileForBackend.total path={s} backend={s} ns={d}\n", .{ path, @tagName(target), elapsedNs(total_start) });
             return .{
                 .source = frontend.source,
