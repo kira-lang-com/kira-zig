@@ -73,7 +73,7 @@ commits in GitHub's flat list) and never `--rebase` (flattens all N onto the lin
 An HTTPS push via an OAuth token without the `workflow` scope is **rejected** for
 any commit that adds/edits a workflow file:
 
-```
+```text
 refusing to allow an OAuth App to ... workflow ... without `workflow` scope
 ```
 
