@@ -9,6 +9,7 @@
 //! See docs/incremental_native_codegen.md.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ir = @import("kira_ir");
 const backend_api = @import("kira_backend_api");
 const native = @import("kira_native_lib_definition");
@@ -45,7 +46,23 @@ pub fn enabled() bool {
 pub fn handles(request: backend_api.CompileRequest) bool {
     return request.mode == .llvm_native and
         request.emit.executable_path != null and
-        !emscripten.isSelector(request.target_selector);
+        !emscripten.isSelector(request.target_selector) and
+        isHostTarget(request.target_selector);
+}
+
+/// The in-process incremental emitter registers only the HOST LLVM backend
+/// (toolchain `initSymbols()` keys on `builtin.cpu.arch`) and builds target
+/// machines with `LLVMGetHostCPUName()`/features. An explicit cross-arch or
+/// cross-OS native selector (e.g. an arm64 iOS-simulator build from an x86_64
+/// host) must therefore fall back to the whole-program clang-driver path, which
+/// handles cross targets. A null selector is a plain host build and stays on
+/// the incremental path.
+fn isHostTarget(target_selector: ?native.TargetSelector) bool {
+    const value = target_selector orelse return true;
+    const arch = std.meta.stringToEnum(std.Target.Cpu.Arch, value.architecture) orelse return false;
+    if (arch != builtin.cpu.arch) return false;
+    const os = std.meta.stringToEnum(std.Target.Os.Tag, value.operating_system) orelse return false;
+    return os == builtin.os.tag;
 }
 
 fn dropEnabled() bool {
@@ -430,7 +447,12 @@ pub fn compileExecutable(
     const link_ns = nowNs() - link_start;
 
     // Reclaim objects for functions that were deleted, renamed, or changed.
-    _ = cache.collectGarbage() catch 0;
+    _ = cache.collectGarbage() catch |err| blk: {
+        // Don't fail the build on GC trouble, but don't hide it either: an
+        // unbounded object cache (permissions, disk) needs an operator signal.
+        if (stats) std.debug.print("kira incremental: garbage collection failed: {s}\n", .{@errorName(err)});
+        break :blk 0;
+    };
 
     if (stats) {
         std.debug.print("kira incremental: {d} CGUs reused, {d} rebuilt; emit {d}ms, link {d}ms\n", .{ reused, rebuilt, @divTrunc(emit_ns, std.time.ns_per_ms), @divTrunc(link_ns, std.time.ns_per_ms) });
