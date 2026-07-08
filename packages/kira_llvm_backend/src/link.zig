@@ -54,6 +54,26 @@ fn compileHelperSource(
     try runCommand(allocator, argv.items);
 }
 
+/// Relocatable-link (`-r`) the given objects into a single native object. The
+/// incremental path uses this to produce the whole-program `object_path` artifact
+/// from its per-function + support CGU objects, so native builds still report a
+/// `native_object` and the build cache (which stores/restores that `.o`) works.
+pub fn combineObjects(
+    allocator: std.mem.Allocator,
+    output_object_path: []const u8,
+    object_paths: []const []const u8,
+    selector: ?native.TargetSelector,
+) !void {
+    try ensureParentDir(output_object_path);
+    const driver_path = try compilerDriverPathForSelector(allocator, selector);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    try argv.append(driver_path);
+    try clang_driver.appendClangDriverArgs(allocator, &argv, selector);
+    try argv.appendSlice(&.{ "-r", "-nostdlib", "-o", output_object_path });
+    for (object_paths) |path| try argv.append(path);
+    try runCommand(allocator, argv.items);
+}
+
 pub fn linkExecutable(
     allocator: std.mem.Allocator,
     executable_path: []const u8,

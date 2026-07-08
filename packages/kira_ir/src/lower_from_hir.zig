@@ -19,8 +19,6 @@ pub const lowerEnumTypeDecls = program_impl.lowerEnumTypeDecls;
 pub const lowerConstructs = program_impl.lowerConstructs;
 pub const lowerConstructImplementations = program_impl.lowerConstructImplementations;
 pub const markReachableFunction = program_impl.markReachableFunction;
-pub const markReachableStatement = program_impl.markReachableStatement;
-pub const markReachableExpr = program_impl.markReachableExpr;
 pub const markReferencedType = program_impl.markReferencedType;
 pub const lowerFieldTypes = program_impl.lowerFieldTypes;
 pub const lowerFfiTypeInfo = program_impl.lowerFfiTypeInfo;
@@ -883,7 +881,7 @@ pub const Lowerer = struct {
                 const src = try self.lowerExpr(instructions, node.operand);
                 const target_vt = try lowerResolvedType(self.program, node.ty);
                 const dst = self.freshRegister();
-                try instructions.append(.{ .convert = .{ .dst = dst, .src = src, .target = target_vt.kind } });
+                try instructions.append(.{ .convert = .{ .dst = dst, .src = src, .target = target_vt.kind, .reinterpret = node.reinterpret } });
                 break :blk dst;
             },
             .conditional => |node| try expr_stmt_impl.lowerConditionalExpr(self, instructions, node),

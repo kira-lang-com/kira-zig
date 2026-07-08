@@ -156,6 +156,51 @@ fn constructMethodId(program: ir.Program, type_name: []const u8, method_name: []
     return null;
 }
 
+/// Every user-function id `function`'s body could look up via `functions.get`
+/// during lowering: direct/extern calls (`call.callee`), function-value and
+/// callback consts (`const_function`/`const_closure`), and virtual/family dispatch
+/// — resolved to method ids EXACTLY as `lowerCallVirtual` does (static: the named
+/// method on the static type; family: the method on every satisfying construct
+/// implementation). Plus `function` itself, which its CGU both declares and emits.
+///
+/// MUST stay in sync with the lowerers above: a per-function codegen unit declares
+/// only this set, so an omission makes that module under-declare and fail loudly
+/// with `MissingFunctionDeclaration` (never a silent miscompile). Over-inclusion is
+/// harmless — an unreferenced extern declaration is dropped by the optimizer.
+pub fn collectBodyFunctionRefs(
+    allocator: std.mem.Allocator,
+    program: *const ir.Program,
+    function: ir.Function,
+    out: *std.AutoHashMapUnmanaged(u32, void),
+) !void {
+    try out.put(allocator, function.id, {});
+    for (function.instructions) |instruction| {
+        switch (instruction) {
+            .call => |c| try out.put(allocator, c.callee, {}),
+            .const_function => |c| try out.put(allocator, c.function_id, {}),
+            .const_closure => |c| try out.put(allocator, c.function_id, {}),
+            .call_virtual => |v| {
+                if (utils.findTypeDecl(program, v.static_type_name)) |type_decl| {
+                    for (type_decl.methods) |method_decl| {
+                        if (std.mem.eql(u8, method_decl.name, v.method_name)) {
+                            try out.put(allocator, method_decl.function_id, {});
+                            break;
+                        }
+                    }
+                } else {
+                    for (program.construct_implementations) |implementation| {
+                        if (!implementationSatisfiesFamily(implementation, v.static_type_name)) continue;
+                        if (constructMethodId(program.*, implementation.type_name, v.method_name)) |method_id| {
+                            try out.put(allocator, method_id, {});
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
 pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
     const api = fc.api;
     const callee_decl = functionById(fc.request.program.programPtr().*, call.callee) orelse return error.UnknownFunction;

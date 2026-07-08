@@ -169,6 +169,12 @@ pub fn build(
     program: *const ir.Program,
     runtime: capi.RuntimeDecls,
     mode: backend_api.BackendMode,
+    // When true, only DECLARE the helper symbols (name + type, no bodies) and
+    // return the populated Destructors. Used by per-function incremental CGUs,
+    // whose calls resolve against the support CGU's definitions at link time.
+    // The default (false) path is byte-identical to before this knob existed:
+    // every declaration still happens, then every body is emitted.
+    declare_only: bool,
 ) !Destructors {
     var ptr_param = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
     const void_ptr_ty = api.LLVMFunctionType(types.void_ty, &ptr_param, ptr_param.len, 0);
@@ -219,6 +225,10 @@ pub fn build(
     const builder = api.LLVMCreateBuilderInContext(types.context);
     defer api.LLVMDisposeBuilder(builder);
 
+    // Fixed-helper bodies. A declare-only CGU stops after the declarations above
+    // and the type/enum-helper declarations below; it references every helper as
+    // an extern resolved against the support CGU at link time.
+    if (!declare_only) {
     {
         const entry = api.LLVMAppendBasicBlockInContext(types.context, destroy_raw, "entry");
         api.LLVMPositionBuilderAtEnd(builder, entry);
@@ -280,6 +290,7 @@ pub fn build(
         _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
         _ = api.LLVMBuildRet(builder, dst);
     }
+    }
 
     // Pass 1: declare all type helpers so bodies can reference each other.
     for (program.types) |type_decl| {
@@ -336,17 +347,19 @@ pub fn build(
         }
     }
 
-    // Pass 2: build bodies.
-    for (program.types) |type_decl| {
-        if (type_decl.ffi) |ffi_info| {
-            if (ffi_info != .ffi_struct) continue;
+    // Pass 2: build bodies (skipped for declare-only CGUs).
+    if (!declare_only) {
+        for (program.types) |type_decl| {
+            if (type_decl.ffi) |ffi_info| {
+                if (ffi_info != .ffi_struct) continue;
+            }
+            const struct_ty = struct_types.get(type_decl.name) orelse continue;
+            const helpers = result.map.get(type_decl.name).?;
+            try buildReleaseContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.release_contents.fn_value);
+            try buildDestroy(api, builder, types, runtime, struct_ty, helpers.release_contents, helpers.destroy.fn_value);
+            try buildCloneContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.clone_contents.fn_value);
+            try buildClone(api, builder, types, runtime, struct_ty, type_decl.name, helpers.clone_contents, helpers.clone.fn_value);
         }
-        const struct_ty = struct_types.get(type_decl.name) orelse continue;
-        const helpers = result.map.get(type_decl.name).?;
-        try buildReleaseContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.release_contents.fn_value);
-        try buildDestroy(api, builder, types, runtime, struct_ty, helpers.release_contents, helpers.destroy.fn_value);
-        try buildCloneContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.clone_contents.fn_value);
-        try buildClone(api, builder, types, runtime, struct_ty, type_decl.name, helpers.clone_contents, helpers.clone.fn_value);
     }
 
     return result;
