@@ -21,21 +21,21 @@ zig build devflow -- push                # always via the fork SSH remote
 zig build devflow -- open-fork-pr [t]    # fork-internal PR, empty body
 zig build devflow -- request-reviews N [--codex]
 zig build devflow -- wait-reviews N [--codex]   # blocks until threads resolved
-zig build devflow -- land N              # squash-merge + resync local main
+zig build devflow -- land N              # merge-commit + resync local main
 zig build devflow -- sync                # resync local main if it drifted
 zig build devflow -- open-upstream-pr [t]
 ```
 
 Two rules the tool enforces that must never be broken by hand either:
 
-1. **Never trust ahead/behind commit counts.** After a squash-merge the SHAs are
-   rewritten, so "N ahead" is a lie; only `git diff <a> <b>` (empty = identical)
-   tells the truth. `devflow status` uses exactly this.
-2. **After any squash-merge, resync the local default branch to the merged
-   remote in the same session.** Skipping this is what strands local `main` on
-   pre-squash commits and makes the next session think the fork diverged.
-   `devflow land` does it automatically (with a backup ref); use `devflow sync`
-   if a land happened elsewhere.
+1. **Never trust ahead/behind commit counts.** After a PR merges (a squash rewrites
+   SHAs; a merge commit or cross-fork cherry-pick adds new ones), "N ahead" lies;
+   only `git diff <a> <b>` (empty = identical) tells the truth. `devflow status`
+   uses exactly this.
+2. **After any merge, resync the local default branch to the merged remote in the
+   same session.** Skipping this strands local `main` on the pre-merge commits and
+   makes the next session think the fork diverged. `devflow land` does it
+   automatically (with a backup ref); use `devflow sync` if a land happened elsewhere.
 
 The manual procedure below remains the reference for what the tool does and for
 cases the tool does not cover.
@@ -60,20 +60,32 @@ So the choice is real:
 | **Merge commit (no-ff)** | merge commit **+ all N individuals** | merge commit per PR | yes (in the DAG) |
 | Rebase and merge | all N individuals | all N individuals | yes (flattened) |
 
-If the goal is "I only ever see one thing per PR in GitHub," that is **squash and
-merge** — it is the only method that collapses a PR to a single flat-list entry.
-It is not technically a merge commit and it discards the individual commit
-messages, keeping only the squash message.
+The owner wants the **`apple/swift` look**: the flat list reads as
+`Merge pull request #N from <owner>/<branch>` entries (PR title as body), one merge
+per PR, authored by the PR author. That is the **merge commit** method — it does
+re-expose the PR's individual commits, so it only stays clean if each PR is curated
+to a few meaningful commits first (which is why the "curate first" half of the rule
+below is non-negotiable).
 
-## Default for this repo: squash-merge BOTH stages
+## Default for this repo: merge-commit BOTH stages (apple/swift style)
 
-The repo owner's standing rule is **one entry per PR in GitHub's UI, everywhere** —
-so **squash and merge every PR, fork AND upstream**. Squash is the only method that
-collapses a PR to a single flat-list entry, and the owner wants that for both the
-fork-internal PR and the upstream PR. This deliberately overrides the older
-"no-fast-forward merge commit for upstream" guidance — record the override in the
-PR when you land it. Never `--merge` (a real merge commit re-exposes the individual
-commits in GitHub's flat list) and never `--rebase` (flattens all N onto the line).
+The repo owner's standing rule is the **`apple/swift` history look**: every PR lands
+as a **merge commit** whose subject is GitHub's default
+`Merge pull request #N from <owner>/<branch>` with the PR title as the body, authored
+by the PR author — fork AND upstream. So **`gh pr merge <n> --merge` for both stages**
+(never `--squash`, never `--rebase`). This supersedes the earlier squash-only policy
+(`f940a50`).
+
+The catch that made squash tempting: a merge commit ALSO re-exposes the PR's
+individual commits in GitHub's flat commit list. Swift stays clean because each PR is
+**curated to a few meaningful commits** (fixups squashed into logical parents) before
+merging. So the rule has two halves — do not skip the first:
+
+1. **Curate the PR branch first**: rebase onto the latest base, squash fixup/WIP
+   commits into coherent logical commits with imperative messages. Aim for one commit
+   per logical change; a large PR may keep a handful of independently-reviewable ones.
+2. **Merge with a merge commit** (`--merge`), giving the `Merge pull request #N from …`
+   header plus those curated commits.
 
 ## Procedure
 
@@ -84,21 +96,21 @@ commits in GitHub's flat list) and never `--rebase` (flattens all N onto the lin
    - If a review never appeared, the review App is likely not installed on the
      fork — surface that, do not land unreviewed.
 
-2. **Fork-internal PR — squash and merge.** One commit per PR:
+2. **Curate, then fork-internal PR — merge commit.** First curate the branch to a
+   few clean logical commits (rebase onto base, squash fixups). Then:
    ```sh
-   gh pr merge <n> --repo <fork> --squash --delete-branch
+   gh pr merge <n> --repo <fork> --merge --delete-branch
    ```
-   Edit the squash commit's title/body to a single imperative summary (the PR
-   title is a good default). Confirm it landed as one commit:
-   `git log --oneline <base> -3`.
+   This records `Merge pull request #N from <owner>/<branch>` with the PR title as
+   body. Confirm: `git log --oneline --first-parent <base> -3` reads one merge per PR.
 
-3. **Upstream PR — also squash and merge.** After the fork PR is merged into fork
-   `main`, open the upstream PR from fork `main` and land it the same way:
+3. **Upstream PR — also a merge commit.** After the fork PR merges into fork `main`,
+   open the upstream PR from fork `main` and land it the same way:
    ```sh
-   gh pr merge <n> --repo kira-lang-com/kira --squash --delete-branch
+   gh pr merge <n> --repo kira-lang-com/kira --merge --delete-branch
    ```
-   `--squash` (never `--merge`, never `--rebase`) so upstream `main` also reads as
-   one flat-list entry per landed unit.
+   `--merge` (never `--squash`, never `--rebase`) so upstream `main` gets the same
+   `Merge pull request #N from …` header per landed unit.
 
 ## Pushing branches that touch `.github/workflows/`
 

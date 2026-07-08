@@ -1,7 +1,7 @@
 //! GitHub operations for devflow, via the `gh` CLI. Every query uses `--jq` so
 //! the extraction happens in gh and this module stays free of JSON parsing.
 //! Guards baked in here: PRs open against an explicit base with an empty body
-//! (CodeRabbit authors the description), and merges are squash-only.
+//! (CodeRabbit authors the description), and merges create a merge commit (apple/swift look).
 
 const std = @import("std");
 const proc = @import("proc.zig");
@@ -128,12 +128,14 @@ pub fn isMerged(ctx: Context, slug: []const u8, number: u32) !bool {
     return std.mem.eql(u8, out, "MERGED");
 }
 
-/// Squash-merge the PR so `main` records exactly one commit per landed unit.
-pub fn squashMerge(ctx: Context, slug: []const u8, number: u32) !void {
+/// Merge the PR with a MERGE COMMIT (`apple/swift` history look): `main` records
+/// `Merge pull request #N from <owner>/<branch>` with the PR title as body. The
+/// PR must be curated to a few clean commits first so the flat list stays readable.
+pub fn mergeCommit(ctx: Context, slug: []const u8, number: u32) !void {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "merge", num_str, "-R", slug, "--squash",
+        "gh", "pr", "merge", num_str, "-R", slug, "--merge",
     });
 }
 
