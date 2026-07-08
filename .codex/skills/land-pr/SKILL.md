@@ -8,6 +8,38 @@ description: "Land a reviewed PR onto its base with a clean, single-entry-per-PR
 Use when a PR is ready to merge and the history must stay readable — one entry
 per landed unit, not a wall of individual commits.
 
+## Preferred: the `devflow` tool (guards baked in)
+
+The recurring fork-flow failures (phantom "ahead" counts, stranded local main,
+workflow-scope push rejections) are automated away by `packages/kira_devflow`.
+Prefer it over hand-run git/gh — the guards are structural, not advisory:
+
+```sh
+zig build devflow -- status              # content diff, NOT ahead/behind counts
+zig build devflow -- commit [-m "..."]   # stage all + signed commit
+zig build devflow -- push                # always via the fork SSH remote
+zig build devflow -- open-fork-pr [t]    # fork-internal PR, empty body
+zig build devflow -- request-reviews N [--codex]
+zig build devflow -- wait-reviews N [--codex]   # blocks until threads resolved
+zig build devflow -- land N              # squash-merge + resync local main
+zig build devflow -- sync                # resync local main if it drifted
+zig build devflow -- open-upstream-pr [t]
+```
+
+Two rules the tool enforces that must never be broken by hand either:
+
+1. **Never trust ahead/behind commit counts.** After a squash-merge the SHAs are
+   rewritten, so "N ahead" is a lie; only `git diff <a> <b>` (empty = identical)
+   tells the truth. `devflow status` uses exactly this.
+2. **After any squash-merge, resync the local default branch to the merged
+   remote in the same session.** Skipping this is what strands local `main` on
+   pre-squash commits and makes the next session think the fork diverged.
+   `devflow land` does it automatically (with a backup ref); use `devflow sync`
+   if a land happened elsewhere.
+
+The manual procedure below remains the reference for what the tool does and for
+cases the tool does not cover.
+
 ## The GitHub-UI reality (read first)
 
 There is no merge method that shows *only* merge commits in every GitHub view.
