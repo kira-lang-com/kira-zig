@@ -142,7 +142,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .op = @enumFromInt(@intFromEnum(value.op)),
                     .unsigned = value.unsigned,
                 } }),
-                .convert => |value| try instructions.append(.{ .convert = .{ .dst = value.dst, .src = value.src, .to_float = value.target == .float } }),
+                .convert => |value| try instructions.append(.{ .convert = .{ .dst = value.dst, .src = value.src, .to_float = value.target == .float, .reinterpret = value.reinterpret } }),
                 .compare => |value| try instructions.append(.{ .compare = .{
                     .dst = value.dst,
                     .lhs = value.lhs,

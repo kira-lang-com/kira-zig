@@ -58,6 +58,12 @@ pub const Context = struct {
     /// ordinary runtime functions through LibFFI, so the KSEM093 "@Native"
     /// requirement is lifted. Set per-target by the build pipeline.
     allow_runtime_direct_ffi: bool = false,
+    /// Lazily built index of extern function headers keyed by function id, so the
+    /// direct-FFI boundary check resolves a callee's extern header in O(1) instead
+    /// of scanning every function header per call expression (which made that check
+    /// O(call sites x functions) — a real cost on FFI-heavy programs). Built once
+    /// from `function_headers` on first use and stable for the rest of lowering.
+    extern_headers_by_id: ?std.AutoHashMapUnmanaged(u32, FunctionHeader) = null,
     /// Current depth of the recursive expression walkers (enum registration and
     /// type lowering). Bounded by `max_lower_depth` so a pathologically deep
     /// expression tree (e.g. a long flat `1 + 1 + 1 + ...` chain, which the parser

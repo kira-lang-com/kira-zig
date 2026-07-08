@@ -1,7 +1,7 @@
 .{
     .name = .kirac,
     .version = "2026.7.2",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .fingerprint = 0x91c6dff2296cf7af,
     .dependencies = .{
         .cli = .{

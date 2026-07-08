@@ -649,6 +649,9 @@ pub const CastExpr = struct {
     operand: *Expr,
     ty: ResolvedType,
     span: source_pkg.Span,
+    // `floatToBits` / `bitsToFloat` set this: reinterpret the operand's bits as
+    // the destination type instead of a value-preserving numeric conversion.
+    reinterpret: bool = false,
 };
 
 pub const ConditionalExpr = struct {

@@ -297,6 +297,9 @@ pub const Convert = struct {
     dst: u32,
     src: u32,
     target: ValueType.Kind,
+    // When true this is a bit-reinterpret (Float<->bits), not a value-preserving
+    // numeric convert: the bit pattern is kept and only the type tag changes.
+    reinterpret: bool = false,
 };
 
 pub const BitOp = enum {

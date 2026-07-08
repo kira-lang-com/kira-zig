@@ -170,6 +170,10 @@ pub fn lowerProgramWithOptions(
         .imported_globals = imported_globals,
         .allow_runtime_direct_ffi = options.allow_runtime_direct_ffi,
     };
+    // The direct-FFI boundary check lazily builds this extern-header-by-id index on
+    // ctx (see lower_program_ffi_boundary.externIndex); it is context-owned, so free
+    // it here — the other header maps below are locals with their own defers.
+    defer if (ctx.extern_headers_by_id) |*map| map.deinit(allocator);
 
     const imports = try lowerImports(&ctx, program);
 

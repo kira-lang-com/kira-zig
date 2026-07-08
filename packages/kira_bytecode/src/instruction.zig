@@ -142,7 +142,7 @@ pub const Instruction = union(OpCode) {
     // Numeric cast; `to_float` selects the target (true => Int->Float, false =>
     // Float->Int, truncating/saturating). Placed after `ret` to match the
     // OpCode enum's serialization-stable ordering.
-    convert: struct { dst: u32, src: u32, to_float: bool },
+    convert: struct { dst: u32, src: u32, to_float: bool, reinterpret: bool = false },
     bitwise: struct { dst: u32, lhs: u32, rhs: u32, op: BitOp, unsigned: bool = false },
     free_native_state: struct { state: u32 },
     // VM-internal fused forms; see the OpCode comment above.

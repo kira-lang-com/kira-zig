@@ -36,7 +36,7 @@ pub fn writeTextFile(path: []const u8, data: []const u8) !void {
 
 // Optimization level for the Kira-generated native object. Defaults to -O2; a developer
 // can set KIRA_NATIVE_OPT=0/1/2/3/s/z to override (e.g. -O0 for readable disassembly).
-fn nativeOptFlag() [:0]const u8 {
+pub fn nativeOptFlag() [:0]const u8 {
     const raw = std.c.getenv("KIRA_NATIVE_OPT") orelse return "-O2";
     const level = std.mem.span(raw);
     if (level.len == 1) {

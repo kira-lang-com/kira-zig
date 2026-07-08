@@ -256,196 +256,283 @@ pub fn lowerTypeDecls(
     return types.toOwnedSlice();
 }
 
+// Reachability walk state. The former walk re-derived every callee id, type decl, and
+// virtual-dispatch impl with `for (program.functions)` / `functionIdByName` /
+// `typeDeclByName` linear scans on EACH expression, making reachability
+// O(expressions x (functions + types)). On the project-matter editor (2273 functions,
+// dense virtual dispatch) that was ~24s — 65% of a one-line-edit native rebuild.
+//
+// `Reach` builds id/name/type indices once and memoizes virtual-dispatch and class-method
+// expansion (each distinct `(static_type, method)` and each class type is expanded once,
+// not once per call/expression site), turning the walk into ~O(expressions + functions +
+// types). This preserves the exact reachable set — the memo sets only skip work whose
+// result (functions already marked) is identical.
+const Reach = struct {
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    fn_by_id: std.AutoHashMapUnmanaged(u32, model.Function) = .{},
+    id_by_name: std.StringHashMapUnmanaged(u32) = .{},
+    type_by_name: std.StringHashMapUnmanaged(model.TypeDecl) = .{},
+    // Owned composite keys "type\x00family"; membership answers formSatisfiesFamily.
+    family_pairs: std.StringHashMapUnmanaged(void) = .{},
+    // Owned composite keys "static_type\x00method"; each virtual dispatch expanded once.
+    virtual_done: std.StringHashMapUnmanaged(void) = .{},
+    // Borrowed type-name keys (into program); each class's method set expanded once.
+    class_done: std.StringHashMapUnmanaged(void) = .{},
+    // Scratch for building lookup keys without allocating per query.
+    key_buf: std.array_list.Managed(u8),
+
+    fn init(
+        allocator: std.mem.Allocator,
+        program: model.Program,
+        reachable: *std.AutoHashMapUnmanaged(u32, void),
+    ) !Reach {
+        var self = Reach{
+            .allocator = allocator,
+            .program = program,
+            .reachable = reachable,
+            .key_buf = std.array_list.Managed(u8).init(allocator),
+        };
+        for (program.functions) |function_decl| {
+            try self.fn_by_id.put(allocator, function_decl.id, function_decl);
+            // functionIdByName returned the FIRST match; preserve that by keeping first.
+            if (!self.id_by_name.contains(function_decl.name)) {
+                try self.id_by_name.put(allocator, function_decl.name, function_decl.id);
+            }
+        }
+        for (program.types) |type_decl| {
+            if (!self.type_by_name.contains(type_decl.name)) {
+                try self.type_by_name.put(allocator, type_decl.name, type_decl);
+            }
+        }
+        for (program.forms) |form_decl| {
+            for (form_decl.families) |family| {
+                const key = try compositeKey(allocator, form_decl.name, family);
+                if (self.family_pairs.contains(key)) {
+                    allocator.free(key);
+                } else {
+                    try self.family_pairs.put(allocator, key, {});
+                }
+            }
+        }
+        return self;
+    }
+
+    fn deinit(self: *Reach) void {
+        self.fn_by_id.deinit(self.allocator);
+        self.id_by_name.deinit(self.allocator);
+        self.type_by_name.deinit(self.allocator);
+        freeKeys(self.allocator, &self.family_pairs);
+        freeKeys(self.allocator, &self.virtual_done);
+        self.class_done.deinit(self.allocator);
+        self.key_buf.deinit();
+    }
+
+    fn freeKeys(allocator: std.mem.Allocator, map: *std.StringHashMapUnmanaged(void)) void {
+        var it = map.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        map.deinit(allocator);
+    }
+
+    fn compositeKey(allocator: std.mem.Allocator, a: []const u8, b: []const u8) ![]u8 {
+        const key = try allocator.alloc(u8, a.len + 1 + b.len);
+        @memcpy(key[0..a.len], a);
+        key[a.len] = 0;
+        @memcpy(key[a.len + 1 ..], b);
+        return key;
+    }
+
+    fn satisfiesFamily(self: *Reach, type_name: []const u8, family: []const u8) !bool {
+        self.key_buf.clearRetainingCapacity();
+        try self.key_buf.appendSlice(type_name);
+        try self.key_buf.append(0);
+        try self.key_buf.appendSlice(family);
+        return self.family_pairs.contains(self.key_buf.items);
+    }
+
+    fn markFunction(self: *Reach, function_id: u32) anyerror!void {
+        if (self.reachable.contains(function_id)) return;
+        try self.reachable.put(self.allocator, function_id, {});
+        const function_decl = self.fn_by_id.get(function_id) orelse return;
+        if (function_decl.is_extern) return;
+        for (function_decl.body) |statement| try self.markStatement(statement);
+    }
+
+    fn markStatement(self: *Reach, statement: model.Statement) anyerror!void {
+        switch (statement) {
+            .let_stmt => |node| if (node.value) |value| try self.markExpr(value),
+            .assign_stmt => |node| {
+                try self.markExpr(node.target);
+                try self.markExpr(node.value);
+            },
+            .expr_stmt => |node| try self.markExpr(node.expr),
+            .if_stmt => |node| {
+                try self.markExpr(node.condition);
+                for (node.then_body) |inner| try self.markStatement(inner);
+                if (node.else_body) |else_body| for (else_body) |inner| try self.markStatement(inner);
+            },
+            .for_stmt => |node| {
+                try self.markExpr(node.iterator);
+                for (node.body) |inner| try self.markStatement(inner);
+            },
+            .while_stmt => |node| {
+                try self.markExpr(node.condition);
+                for (node.body) |inner| try self.markStatement(inner);
+            },
+            .break_stmt, .continue_stmt => {},
+            .match_stmt => |node| {
+                try self.markExpr(node.subject);
+                for (node.arms) |arm| {
+                    try markReachablePattern(self.allocator, self.program, self.reachable, arm.pattern);
+                    if (arm.guard) |guard| try self.markExpr(guard);
+                    for (arm.body) |inner| try self.markStatement(inner);
+                }
+            },
+            .switch_stmt => |node| {
+                try self.markExpr(node.subject);
+                for (node.cases) |case_node| {
+                    try self.markExpr(case_node.pattern);
+                    for (case_node.body) |inner| try self.markStatement(inner);
+                }
+                if (node.default_body) |default_body| for (default_body) |inner| try self.markStatement(inner);
+            },
+            .return_stmt => |node| if (node.value) |value| try self.markExpr(value),
+        }
+    }
+
+    fn markExpr(self: *Reach, expr: *model.Expr) anyerror!void {
+        try self.markClassMethods(expr);
+        switch (expr.*) {
+            .construct => |node| {
+                for (node.fields) |field| try self.markExpr(field.value);
+            },
+            .construct_enum_variant => |node| {
+                if (node.payload) |payload| try self.markExpr(payload);
+            },
+            .native_state => |node| try self.markExpr(node.value),
+            .native_user_data => |node| try self.markExpr(node.state),
+            .native_recover => |node| try self.markExpr(node.value),
+            .native_state_free => |node| try self.markExpr(node.state),
+            .call => |node| {
+                if (node.function_id) |function_id| try self.markFunction(function_id);
+                for (node.args) |arg| try self.markExpr(arg);
+            },
+            .virtual_call => |node| {
+                try self.markVirtualMethods(node.static_type_name, node.method_name);
+                try self.markExpr(node.receiver);
+                for (node.args) |arg| try self.markExpr(arg);
+            },
+            .function_ref => |node| try self.markFunction(node.function_id),
+            .namespace_ref => |node| {
+                if (self.id_by_name.get(node.path)) |function_id| {
+                    try self.markFunction(function_id);
+                }
+            },
+            .callback => |node| {
+                for (node.body) |statement| try self.markStatement(statement);
+            },
+            .builder_array => |node| try self.markBuilderBlock(node.builder),
+            .call_value => |node| {
+                try self.markExpr(node.callee);
+                for (node.args) |arg| try self.markExpr(arg);
+            },
+            .parent_view => |node| try self.markExpr(node.object),
+            .c_string_to_string => |node| try self.markExpr(node.value),
+            .array_len => |node| try self.markExpr(node.object),
+            .string_len => |node| try self.markExpr(node.object),
+            .field => |node| try self.markExpr(node.object),
+            .binary => |node| {
+                try self.markExpr(node.lhs);
+                try self.markExpr(node.rhs);
+            },
+            .conditional => |node| {
+                try self.markExpr(node.condition);
+                try self.markExpr(node.then_expr);
+                try self.markExpr(node.else_expr);
+            },
+            .unary => |node| try self.markExpr(node.operand),
+            .cast => |node| try self.markExpr(node.operand),
+            .array => |node| for (node.elements) |element| try self.markExpr(element),
+            .index => |node| {
+                try self.markExpr(node.object);
+                try self.markExpr(node.index);
+            },
+            else => {},
+        }
+    }
+
+    fn markBuilderBlock(self: *Reach, builder: model.BuilderBlock) anyerror!void {
+        for (builder.items) |item| {
+            switch (item) {
+                .expr => |expr_item| try self.markExpr(expr_item.expr),
+                .if_item => |if_item| {
+                    try self.markExpr(if_item.condition);
+                    try self.markBuilderBlock(if_item.then_block);
+                    if (if_item.else_block) |else_block| try self.markBuilderBlock(else_block);
+                },
+                .for_item => |for_item| {
+                    try self.markExpr(for_item.iterator);
+                    try self.markBuilderBlock(for_item.body);
+                },
+                .switch_item => |switch_item| {
+                    try self.markExpr(switch_item.subject);
+                    for (switch_item.cases) |case_node| {
+                        try self.markExpr(case_node.pattern);
+                        try self.markBuilderBlock(case_node.body);
+                    }
+                    if (switch_item.default_block) |default_block| try self.markBuilderBlock(default_block);
+                },
+            }
+        }
+    }
+
+    fn markVirtualMethods(self: *Reach, static_type_name: []const u8, method_name: []const u8) anyerror!void {
+        const key = try compositeKey(self.allocator, static_type_name, method_name);
+        if (self.virtual_done.contains(key)) {
+            self.allocator.free(key);
+            return;
+        }
+        try self.virtual_done.put(self.allocator, key, {});
+        for (self.program.types) |type_decl| {
+            const participates = std.mem.eql(u8, type_decl.name, static_type_name) or
+                try self.satisfiesFamily(type_decl.name, static_type_name);
+            if (!participates) continue;
+            for (type_decl.methods) |method_decl| {
+                if (!std.mem.eql(u8, method_decl.name, method_name)) continue;
+                if (self.id_by_name.get(method_decl.full_name)) |function_id| {
+                    try self.markFunction(function_id);
+                }
+            }
+        }
+    }
+
+    fn markClassMethods(self: *Reach, expr: *model.Expr) anyerror!void {
+        const expr_ty = model.hir.exprType(expr.*);
+        if (expr_ty.kind != .named or expr_ty.name == null) return;
+        const class_name = expr_ty.name.?;
+        // Borrowed key (program outlives the walk); expand each class type once.
+        if (self.class_done.contains(class_name)) return;
+        try self.class_done.put(self.allocator, class_name, {});
+        const type_decl = self.type_by_name.get(class_name) orelse return;
+        if (type_decl.kind != .class) return;
+        for (type_decl.methods) |method_decl| {
+            if (self.id_by_name.get(method_decl.full_name)) |function_id| {
+                try self.markFunction(function_id);
+            }
+        }
+    }
+};
+
 pub fn markReachableFunction(
     allocator: std.mem.Allocator,
     program: model.Program,
     reachable: *std.AutoHashMapUnmanaged(u32, void),
     function_id: u32,
 ) anyerror!void {
-    if (reachable.contains(function_id)) return;
-    try reachable.put(allocator, function_id, {});
-
-    for (program.functions) |function_decl| {
-        if (function_decl.id != function_id) continue;
-        if (function_decl.is_extern) return;
-        for (function_decl.body) |statement| try markReachableStatement(allocator, program, reachable, statement);
-        return;
-    }
-}
-
-pub fn markReachableStatement(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    statement: model.Statement,
-) anyerror!void {
-    switch (statement) {
-        .let_stmt => |node| if (node.value) |value| try markReachableExpr(allocator, program, reachable, value),
-        .assign_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.target);
-            try markReachableExpr(allocator, program, reachable, node.value);
-        },
-        .expr_stmt => |node| try markReachableExpr(allocator, program, reachable, node.expr),
-        .if_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.condition);
-            for (node.then_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-            if (node.else_body) |else_body| for (else_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-        },
-        .for_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.iterator);
-            for (node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-        },
-        .while_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.condition);
-            for (node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-        },
-        .break_stmt, .continue_stmt => {},
-        .match_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.subject);
-            for (node.arms) |arm| {
-                try markReachablePattern(allocator, program, reachable, arm.pattern);
-                if (arm.guard) |guard| try markReachableExpr(allocator, program, reachable, guard);
-                for (arm.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-            }
-        },
-        .switch_stmt => |node| {
-            try markReachableExpr(allocator, program, reachable, node.subject);
-            for (node.cases) |case_node| {
-                try markReachableExpr(allocator, program, reachable, case_node.pattern);
-                for (case_node.body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-            }
-            if (node.default_body) |default_body| for (default_body) |inner| try markReachableStatement(allocator, program, reachable, inner);
-        },
-        .return_stmt => |node| if (node.value) |value| try markReachableExpr(allocator, program, reachable, value),
-    }
-}
-
-pub fn markReachableExpr(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    expr: *model.Expr,
-) anyerror!void {
-    try markReachableClassMethodsForExpr(allocator, program, reachable, expr);
-    switch (expr.*) {
-        .construct => |node| {
-            for (node.fields) |field| try markReachableExpr(allocator, program, reachable, field.value);
-        },
-        .construct_enum_variant => |node| {
-            if (node.payload) |payload| try markReachableExpr(allocator, program, reachable, payload);
-        },
-        .native_state => |node| try markReachableExpr(allocator, program, reachable, node.value),
-        .native_user_data => |node| try markReachableExpr(allocator, program, reachable, node.state),
-        .native_recover => |node| try markReachableExpr(allocator, program, reachable, node.value),
-        .native_state_free => |node| try markReachableExpr(allocator, program, reachable, node.state),
-        .call => |node| {
-            if (node.function_id) |function_id| try markReachableFunction(allocator, program, reachable, function_id);
-            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
-        },
-        .virtual_call => |node| {
-            try markReachableVirtualMethods(allocator, program, reachable, node.static_type_name, node.method_name);
-            try markReachableExpr(allocator, program, reachable, node.receiver);
-            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
-        },
-        .function_ref => |node| try markReachableFunction(allocator, program, reachable, node.function_id),
-        .namespace_ref => |node| {
-            if (functionIdByName(program, node.path)) |function_id| {
-                try markReachableFunction(allocator, program, reachable, function_id);
-            }
-        },
-        .callback => |node| {
-            for (node.body) |statement| try markReachableStatement(allocator, program, reachable, statement);
-        },
-        .builder_array => |node| try markReachableBuilderBlock(allocator, program, reachable, node.builder),
-        .call_value => |node| {
-            try markReachableExpr(allocator, program, reachable, node.callee);
-            for (node.args) |arg| try markReachableExpr(allocator, program, reachable, arg);
-        },
-        .parent_view => |node| try markReachableExpr(allocator, program, reachable, node.object),
-        .c_string_to_string => |node| try markReachableExpr(allocator, program, reachable, node.value),
-        .array_len => |node| try markReachableExpr(allocator, program, reachable, node.object),
-        .string_len => |node| try markReachableExpr(allocator, program, reachable, node.object),
-        .field => |node| try markReachableExpr(allocator, program, reachable, node.object),
-        .binary => |node| {
-            try markReachableExpr(allocator, program, reachable, node.lhs);
-            try markReachableExpr(allocator, program, reachable, node.rhs);
-        },
-        .conditional => |node| {
-            try markReachableExpr(allocator, program, reachable, node.condition);
-            try markReachableExpr(allocator, program, reachable, node.then_expr);
-            try markReachableExpr(allocator, program, reachable, node.else_expr);
-        },
-        .unary => |node| try markReachableExpr(allocator, program, reachable, node.operand),
-        .cast => |node| try markReachableExpr(allocator, program, reachable, node.operand),
-        .array => |node| for (node.elements) |element| try markReachableExpr(allocator, program, reachable, element),
-        .index => |node| {
-            try markReachableExpr(allocator, program, reachable, node.object);
-            try markReachableExpr(allocator, program, reachable, node.index);
-        },
-        else => {},
-    }
-}
-
-fn markReachableBuilderBlock(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    builder: model.BuilderBlock,
-) anyerror!void {
-    for (builder.items) |item| {
-        switch (item) {
-            .expr => |expr_item| try markReachableExpr(allocator, program, reachable, expr_item.expr),
-            .if_item => |if_item| {
-                try markReachableExpr(allocator, program, reachable, if_item.condition);
-                try markReachableBuilderBlock(allocator, program, reachable, if_item.then_block);
-                if (if_item.else_block) |else_block| try markReachableBuilderBlock(allocator, program, reachable, else_block);
-            },
-            .for_item => |for_item| {
-                try markReachableExpr(allocator, program, reachable, for_item.iterator);
-                try markReachableBuilderBlock(allocator, program, reachable, for_item.body);
-            },
-            .switch_item => |switch_item| {
-                try markReachableExpr(allocator, program, reachable, switch_item.subject);
-                for (switch_item.cases) |case_node| {
-                    try markReachableExpr(allocator, program, reachable, case_node.pattern);
-                    try markReachableBuilderBlock(allocator, program, reachable, case_node.body);
-                }
-                if (switch_item.default_block) |default_block| try markReachableBuilderBlock(allocator, program, reachable, default_block);
-            },
-        }
-    }
-}
-
-fn markReachableVirtualMethods(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    static_type_name: []const u8,
-    method_name: []const u8,
-) anyerror!void {
-    for (program.types) |type_decl| {
-        const participates = if (std.mem.eql(u8, type_decl.name, static_type_name))
-            true
-        else
-            formSatisfiesFamily(program, type_decl.name, static_type_name);
-        if (!participates) continue;
-        for (type_decl.methods) |method_decl| {
-            if (!std.mem.eql(u8, method_decl.name, method_name)) continue;
-            if (functionIdByName(program, method_decl.full_name)) |function_id| {
-                try markReachableFunction(allocator, program, reachable, function_id);
-            }
-        }
-    }
-}
-
-fn formSatisfiesFamily(program: model.Program, type_name: []const u8, family: []const u8) bool {
-    for (program.forms) |form_decl| {
-        if (!std.mem.eql(u8, form_decl.name, type_name)) continue;
-        for (form_decl.families) |candidate| {
-            if (std.mem.eql(u8, candidate, family)) return true;
-        }
-    }
-    return false;
+    var reach = try Reach.init(allocator, program, reachable);
+    defer reach.deinit();
+    try reach.markFunction(function_id);
 }
 
 pub fn markReferencedType(
@@ -485,30 +572,6 @@ pub fn markReferencedType(
         }
         break;
     }
-}
-
-fn markReachableClassMethodsForExpr(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    expr: *model.Expr,
-) anyerror!void {
-    const expr_ty = model.hir.exprType(expr.*);
-    if (expr_ty.kind != .named or expr_ty.name == null) return;
-    const type_decl = typeDeclByName(program, expr_ty.name.?) orelse return;
-    if (type_decl.kind != .class) return;
-    for (type_decl.methods) |method_decl| {
-        if (functionIdByName(program, method_decl.full_name)) |function_id| {
-            try markReachableFunction(allocator, program, reachable, function_id);
-        }
-    }
-}
-
-fn typeDeclByName(program: model.Program, name: []const u8) ?model.TypeDecl {
-    for (program.types) |type_decl| {
-        if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
-    }
-    return null;
 }
 
 pub fn lowerFieldTypes(allocator: std.mem.Allocator, program: model.Program, fields: []const model.Field) ![]ir.Field {
