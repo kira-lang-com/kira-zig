@@ -97,6 +97,12 @@ pub fn openForkPr(ctx: Context, title_opt: ?[]const u8) !void {
 
     const title = title_opt orelse branch;
     if (ctx.hasUpstream()) {
+        // Idempotent: if the upstream PR for this branch already exists (retry/
+        // resume), report it instead of erroring on `gh pr create`.
+        if (try gh.prNumberOn(ctx, ctx.upstream_slug, branch)) |existing| {
+            out.print("devflow: PR #{d} already open on {s} for {s}\n", .{ existing, ctx.upstream_slug, branch });
+            return;
+        }
         const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, title);
         out.print("devflow: opened PR #{d} on {s} ({s}:{s} -> {s})\n", .{ number, ctx.upstream_slug, ownerLogin(ctx.fork_slug), branch, ctx.default_branch });
         return;
