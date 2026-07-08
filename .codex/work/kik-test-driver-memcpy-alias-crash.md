@@ -1,7 +1,8 @@
 # VM crash surfaced by kik-corpus migration: `@memcpy arguments alias` in vm_values addValues
 
 Discovered 2026-07-08 while migrating tests/pass/run/ownership_enum_string_payload_free_parity
-into tests-kik/corpus/ownership-b (Test-construct form).
+into the kik harness (Test-construct form); now at
+tests-kik/harness/app/runparity/OwyTests.kira.
 
 ## Symptom
 Panic `@memcpy arguments alias` in `packages/.../vm_values.zig` `addValues`.
@@ -20,7 +21,7 @@ execution path, not general VM codegen.
 ## Current workaround in the migrated test
 Declare the struct once OUTSIDE the loop and mutate it inside instead — same
 enum-payload free/reassign coverage, avoids the aliasing memcpy. See
-tests-kik/corpus/ownership-b/app/OwyTests.kira.
+tests-kik/harness/app/runparity/OwyTests.kira.
 
 ## TODO (real fix, not yet done)
 - Reduce to a standalone repro under tests-kik/harness/known-bugs/.

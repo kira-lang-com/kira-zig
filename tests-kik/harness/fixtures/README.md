@@ -23,7 +23,7 @@ through the driver, at test time.
 ## Layout
 
 - `app/main.kira` — `@Main` entry (imports Foundation) + package docs.
-- `app/FailTests.kira` — the `Test` declarations (prefix `fh`/`Fh`).
+- `app/runparity/FailDriverTests.kira` — the `Test` declarations (prefix `fh`/`Fh`).
 - `fixtures/reject_unknown_name/` — MUST FAIL: references an undefined name.
 - `fixtures/reject_arg_type/` — MUST FAIL: argument type mismatch.
 - `fixtures/accept_trivial/` — MUST COMPILE: positive control.
@@ -32,7 +32,7 @@ through the driver, at test time.
 
 ```sh
 # Run from the repo root: the fixture paths in FailTests.kira are repo-relative.
-kira test tests-kik/fail-harness
+kira test tests-kik/harness
 ```
 
 Expected: `4 passed; 0 failed`.
@@ -40,7 +40,7 @@ Expected: `4 passed; 0 failed`.
 ## Adding a case
 
 1. Add a fixture package `fixtures/<name>/` (`kira.toml` + `app/main.kira`).
-2. Add a `Test` in `FailTests.kira` calling `fhRejected(...)` (for a MUST-FAIL
+2. Add a `Test` in `FailDriverTests.kira` calling `fhRejected(...)` (for a MUST-FAIL
    case) or `fhAccepted(...)` (for a MUST-COMPILE case) with the repo-relative
    fixture path, asserting `Result.Ok(1)`.
 
