@@ -136,33 +136,29 @@ pub const Dispatcher = struct {
         if (self.libraries.getPtr(name)) |existing| return existing;
         // A registered path is only "explicit" if it is non-empty. Native
         // libraries that ship no standalone artifact register an empty
-        // `dynamic_lib` path (e.g. the in-process `kira_main` developer API),
-        // which must fall through to process-image resolution below. An
-        // unregistered name is distinct: it must NOT silently resolve against
-        // the process image, or a typo/missing library could bind to any
-        // same-named symbol already exported by the Kira process or libc.
+        // `dynamic_lib` path (e.g. the in-process `kira_main` developer API).
         const registration = self.library_paths.get(name);
-        const registered_empty = if (registration) |value| value.len == 0 else false;
-        const registered_path: ?[]const u8 = if (registration) |value|
-            (if (value.len == 0) null else value)
-        else
-            null;
-        const load_path = registered_path orelse name;
-        const library = dynamic_ffi.DynamicLibrary.open(self.allocator, load_path) catch |err| blk: {
-            // No external shared object for this name. Fall back to the current
-            // process image ONLY for a library explicitly registered with an
-            // empty path — a statically-linked native library (e.g. the
-            // in-process `kira_main` developer/compiler API used by `kira
-            // test`). A registered-but-failing path, or an unregistered name,
-            // is a real error and stays fatal.
-            if (registered_empty) {
-                break :blk dynamic_ffi.DynamicLibrary.openProcess(self.allocator) catch {
-                    self.rememberError("could not load native library '{s}' (path '{s}'): {s}", .{ name, load_path, @errorName(err) });
-                    return error.NativeLibraryUnavailable;
-                };
-            }
-            self.rememberError("could not load native library '{s}' (path '{s}'): {s}", .{ name, load_path, @errorName(err) });
-            return error.NativeLibraryUnavailable;
+        const in_process = if (registration) |value| value.len == 0 else false;
+        const library = if (in_process) blk: {
+            // Registered in-process library: resolve directly from the current
+            // process image. Attempting `open(name)` on disk first would risk
+            // binding a stale or partial library the platform loader happens to
+            // find under that name instead of the statically-linked driver.
+            break :blk dynamic_ffi.DynamicLibrary.openProcess(self.allocator) catch {
+                self.rememberError("could not resolve in-process native library '{s}'", .{name});
+                return error.NativeLibraryUnavailable;
+            };
+        } else blk: {
+            // A registered non-empty path loads that artifact; an unregistered
+            // name is loaded by name. Either way a load failure is fatal: an
+            // unregistered or missing library must NOT silently resolve against
+            // the process image, or a typo could bind to any same-named symbol
+            // already exported by the Kira process or libc.
+            const load_path = if (registration) |value| value else name;
+            break :blk dynamic_ffi.DynamicLibrary.open(self.allocator, load_path) catch |err| {
+                self.rememberError("could not load native library '{s}' (path '{s}'): {s}", .{ name, load_path, @errorName(err) });
+                return error.NativeLibraryUnavailable;
+            };
         };
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
