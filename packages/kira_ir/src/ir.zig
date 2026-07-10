@@ -128,6 +128,7 @@ pub const ForeignFunction = struct {
 pub const Function = struct {
     id: u32,
     name: []const u8,
+    is_async: bool = false,
     execution: runtime_abi.FunctionExecution,
     is_extern: bool = false,
     foreign: ?ForeignFunction = null,
@@ -190,6 +191,39 @@ pub const Instruction = union(enum) {
     call_virtual: VirtualCall,
     call_value: CallValue,
     ret: Return,
+    // Async task spine (deferred execution). `task_spawn` captures the callee +
+    // eagerly-evaluated args into a task object WITHOUT calling; the call runs
+    // when the task is first driven (`task_await` joins it and yields the
+    // result; `task_detach` drives and discards). `task_cancel` sets the
+    // cooperative flag — a cancel observed before the first drive prevents the
+    // call from running, and a later await traps. `task_spawn_ready` wraps a
+    // pure, already-evaluated value as a completed task.
+    task_spawn: TaskSpawn,
+    task_spawn_ready: TaskSpawnReady,
+    task_await: TaskAwait,
+    task_cancel: TaskCancel,
+    task_detach: TaskDetach,
+    // Cooperative progress point: the executor runs the next queued task (if
+    // any) before the current body continues.
+    task_yield: TaskYield,
+    // Task-frame slot access for state-machine (suspendable) task bodies: the
+    // async transform externalizes a suspendable body's locals into a heap
+    // frame (16-byte tag+payload slots on native, Value slots on the VM) so
+    // the body can suspend by returning and later resume with its state
+    // intact. `frame` is the register holding the frame pointer (the body's
+    // single parameter); `slot` is a static index.
+    frame_get: FrameGet,
+    frame_set: FrameSet,
+    // True when the task is no longer pending (complete, consumed, or
+    // cancel-requested): joining it will not need to drive the executor. Used
+    // by the async transform to turn `handle.await` inside a suspendable body
+    // into a park-until-complete suspend point.
+    task_is_complete: TaskIsComplete,
+    // Park the current task for at least `ms` milliseconds (executor wakes it
+    // when the deadline passes); blocks the thread outside a suspendable body.
+    // Inside suspendable bodies the async transform pairs it with a
+    // store-state + SUSPENDED return.
+    task_sleep: TaskSleep,
     // Scope markers for drop elaboration. `scope_enter` opens a droppable scope
     // (loop body); `scope_exit` closes it, dropping owned values created within the
     // scope (loop-body locals + register temporaries) at iteration end so they are
@@ -197,6 +231,76 @@ pub const Instruction = union(enum) {
     // them as no-ops (the VM reclaims via its own native-layout destructors).
     scope_enter: ScopeEnter,
     scope_exit: ScopeExit,
+};
+
+pub const TaskSpawn = struct {
+    dst: u32,
+    callee: u32,
+    args: []const u32,
+    /// The task's result type (the callee's return type).
+    result_ty: ValueType,
+    /// True when the callee was rewritten by the async state-machine
+    /// transform: it takes a single frame pointer, returns a status
+    /// (0 complete / 1 suspended), and the runtime must allocate a frame of
+    /// `frame_slots` slots, seed slot 0 (resume state) with 0, and copy the
+    /// args into slots 2.. before the first drive.
+    suspendable: bool = false,
+    frame_slots: u32 = 0,
+};
+
+/// Task-frame layout constants shared by the async transform and both
+/// backends' runtimes: slot 0 = resume state, slot 1 = return value,
+/// slots 2.. = the body's params then locals.
+pub const frame_state_slot: u32 = 0;
+pub const frame_result_slot: u32 = 1;
+pub const frame_first_data_slot: u32 = 2;
+/// Status values returned by a transformed suspendable body.
+pub const task_status_complete: i64 = 0;
+pub const task_status_suspended: i64 = 1;
+
+pub const TaskSpawnReady = struct {
+    dst: u32,
+    value: u32,
+    ty: ValueType,
+};
+
+pub const TaskAwait = struct {
+    dst: u32,
+    task: u32,
+    ty: ValueType,
+};
+
+pub const TaskCancel = struct {
+    task: u32,
+};
+
+pub const TaskDetach = struct {
+    task: u32,
+};
+
+pub const TaskYield = struct {};
+
+pub const TaskIsComplete = struct {
+    dst: u32,
+    task: u32,
+};
+
+pub const TaskSleep = struct {
+    milliseconds: u32,
+};
+
+pub const FrameGet = struct {
+    dst: u32,
+    frame: u32,
+    slot: u32,
+    ty: ValueType,
+};
+
+pub const FrameSet = struct {
+    frame: u32,
+    slot: u32,
+    src: u32,
+    ty: ValueType,
 };
 
 pub const ScopeEnter = struct {};

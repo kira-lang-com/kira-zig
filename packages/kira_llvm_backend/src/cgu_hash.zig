@@ -66,10 +66,14 @@ const backend_api = @import("kira_backend_api");
 const dispatch = @import("backend_capi_dispatch.zig");
 const closure_dtors = @import("backend_capi_closure_dtors.zig");
 const fresh_any = @import("backend_capi_fresh_any.zig");
+const array_dtors = @import("backend_capi_array_dtors.zig");
 
 /// Bump when codegen logic changes in a way that can alter emitted objects for
 /// otherwise-identical IR (new lowering, changed ABI handling, symbol scheme, ...).
-pub const codegen_format_version: u64 = 1;
+/// 2: async task lowering (task_spawn/await/cancel/detach thunks + void-result fix).
+/// 3: executor-integrated tasks (host main emits kira_task_drain_all).
+/// 4: task frames/state machines + KiraBridgeValue stride fix (24, not 16).
+pub const codegen_format_version: u64 = 4;
 
 pub const Digest = [32]u8;
 
@@ -216,6 +220,15 @@ pub const CguHasher = struct {
     /// or type layout. Folded into every function so membership changes invalidate
     /// callers. Precomputed once.
     construct_family_digest: Digest = undefined,
+    /// Digest of the inner-array wrapper key set (the nested-array element
+    /// teardown/clone helpers, "[Int]", "[Message]", ...). This set is derived
+    /// from BODY IR (array-of-array ValueTypes anywhere: fields, enum payloads,
+    /// params/returns/locals, and instructions), not just type layouts, so it is
+    /// a distinct input. The wrapper BODIES live in the support object; a body
+    /// edit that introduces a new nested-array type must rebuild support (else its
+    /// symbol is undefined). Folded into every function too (over-invalidating,
+    /// like types_digest) — a per-function CGU declares the whole set. Precomputed.
+    array_wrappers_digest: Digest = undefined,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ir.Program, config: CguConfig) !CguHasher {
         var self = CguHasher{ .allocator = allocator, .program = program, .config = config };
@@ -226,6 +239,7 @@ pub const CguHasher = struct {
         self.signatures_digest = try computeSignaturesDigest(allocator, program);
         self.fresh_any_digest = try computeFreshAnyDigest(allocator, program);
         self.construct_family_digest = try computeConstructFamilyDigest(allocator, program);
+        self.array_wrappers_digest = try computeArrayWrappersDigest(allocator, program);
         return self;
     }
 
@@ -262,6 +276,10 @@ pub const CguHasher = struct {
         // membership (virtual dispatch tables). Neither is captured by (3)/(4)/(5).
         h.raw(&self.fresh_any_digest);
         h.raw(&self.construct_family_digest);
+
+        // (7) the inner-array wrapper key set — a body-derived helper set whose
+        // declarations a per-function CGU emits; not captured by (3)/(4)/(5).
+        h.raw(&self.array_wrappers_digest);
 
         return h.final();
     }
@@ -349,9 +367,26 @@ pub const CguHasher = struct {
             hashReflect(&h, @TypeOf(shape.capture_ownership), shape.capture_ownership);
         }
 
+        // (6) inner-array wrapper key set. The support object holds the
+        // kira_destroy_arr_<K> / kira_clone_arr_<K> BODIES; the set is derived from
+        // array-of-array ValueTypes in bodies (not just layouts), so a body edit
+        // that introduces a new nested-array type must rebuild support.
+        h.bytes("array-wrappers");
+        h.raw(&self.array_wrappers_digest);
+
         return h.final();
     }
 };
+
+/// Digest of the inner-array wrapper key set (name-sorted). See array_dtors.collectKeys.
+fn computeArrayWrappersDigest(allocator: std.mem.Allocator, program: *const ir.Program) !Digest {
+    var h = Hasher.init();
+    const keys = try array_dtors.collectKeys(allocator, program);
+    defer allocator.free(keys);
+    h.int(@as(u64, keys.len));
+    for (keys) |key| h.bytes(key);
+    return h.final();
+}
 
 /// Digest of every function's signature, sorted by id. Folded into each function's
 /// hash so a callee's signature change invalidates its callers, without having to
@@ -452,129 +487,8 @@ fn sortedIndicesByName(allocator: std.mem.Allocator, comptime T: type, items: []
     return indices;
 }
 
-// ---------------------------------------------------------------------------
-// Tests: the four invalidation properties the incremental cache depends on.
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-const runtime_abi = @import("kira_runtime_abi");
-
-const test_config = CguConfig{
-    .triple = "arm64-apple-macosx",
-    .opt_flag = "-O2",
-    .mode = .llvm_native,
-    .drop_enabled = false,
-};
-
-fn testFunction(id: u32, name: []const u8, instructions: []ir.Instruction) ir.Function {
-    return .{
-        .id = id,
-        .name = name,
-        .execution = .native,
-        .return_type = .{ .kind = .integer, .name = "I64" },
-        .register_count = 2,
-        .local_count = 0,
-        .local_types = &.{},
-        .instructions = instructions,
-    };
-}
-
-fn hashOne(program: *const ir.Program, id: u32) !Digest {
-    var hasher = try CguHasher.init(testing.allocator, program, test_config);
-    defer hasher.deinit();
-    for (program.functions) |function| {
-        if (function.id == id) return hasher.hashFunction(function);
-    }
-    return error.NotFound;
-}
-
-test "editing one function body invalidates exactly that CGU" {
-    var f0_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 1 } }, .{ .ret = .{ .src = 0 } } };
-    var f1_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 2 } }, .{ .ret = .{ .src = 0 } } };
-    var functions = [_]ir.Function{ testFunction(0, "f0", &f0_body), testFunction(1, "f1", &f1_body) };
-    const program = ir.Program{ .functions = &functions, .entry_index = 0 };
-
-    const f0_before = try hashOne(&program, 0);
-    const f1_before = try hashOne(&program, 1);
-
-    // Change only f0's body (the constant it returns).
-    f0_body[0] = .{ .const_int = .{ .dst = 0, .value = 999 } };
-    const f0_after = try hashOne(&program, 0);
-    const f1_after = try hashOne(&program, 1);
-
-    try testing.expect(!std.mem.eql(u8, &f0_before, &f0_after)); // edited CGU changed
-    try testing.expectEqualSlices(u8, &f1_before, &f1_after); // untouched CGU stable
-}
-
-test "changing a struct layout invalidates functions that use the program's types" {
-    var body = [_]ir.Instruction{.{ .ret = .{ .src = 0 } }};
-    var functions = [_]ir.Function{testFunction(0, "f0", &body)};
-    var fields = [_]ir.Field{.{ .name = "x", .ty = .{ .kind = .integer, .name = "I64" } }};
-    var types = [_]ir.TypeDecl{.{ .name = "Point", .fields = &fields }};
-    const program = ir.Program{ .functions = &functions, .types = &types, .entry_index = 0 };
-
-    const before = try hashOne(&program, 0);
-
-    // Change Point's field type (a layout change).
-    fields[0] = .{ .name = "x", .ty = .{ .kind = .integer, .name = "I8" } };
-    const after = try hashOne(&program, 0);
-
-    try testing.expect(!std.mem.eql(u8, &before, &after));
-}
-
-test "callee signature change invalidates caller; body change does not" {
-    // f0 references f1 via const_function (a direct callee).
-    var caller_body = [_]ir.Instruction{
-        .{ .const_function = .{ .dst = 0, .function_id = 1 } },
-        .{ .ret = .{ .src = 0 } },
-    };
-    var callee_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 1 } }, .{ .ret = .{ .src = 0 } } };
-    var functions = [_]ir.Function{ testFunction(0, "f0", &caller_body), testFunction(1, "f1", &callee_body) };
-    const program = ir.Program{ .functions = &functions, .entry_index = 0 };
-
-    const caller_before = try hashOne(&program, 0);
-
-    // (a) Change f1's BODY only — caller must NOT be invalidated.
-    functions[1].instructions[0] = .{ .const_int = .{ .dst = 0, .value = 42 } };
-    const caller_after_body = try hashOne(&program, 0);
-    try testing.expectEqualSlices(u8, &caller_before, &caller_after_body);
-
-    // (b) Change f1's SIGNATURE (return type) — caller MUST be invalidated.
-    functions[1].return_type = .{ .kind = .integer, .name = "I8" };
-    const caller_after_sig = try hashOne(&program, 0);
-    try testing.expect(!std.mem.eql(u8, &caller_before, &caller_after_sig));
-}
-
-test "hashing is deterministic across independent hasher instances" {
-    var body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 7 } }, .{ .ret = .{ .src = 0 } } };
-    var functions = [_]ir.Function{testFunction(0, "f0", &body)};
-    const program = ir.Program{ .functions = &functions, .entry_index = 0 };
-    try testing.expectEqualSlices(u8, &(try hashOne(&program, 0)), &(try hashOne(&program, 0)));
-}
-
-fn hashSupportOf(program: *const ir.Program) !Digest {
-    var hasher = try CguHasher.init(testing.allocator, program, test_config);
-    defer hasher.deinit();
-    return hasher.hashSupport();
-}
-
-test "support CGU stays cached across a pure body edit, rebuilds on signature change" {
-    var f0_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 1 } }, .{ .ret = .{ .src = 0 } } };
-    var f1_body = [_]ir.Instruction{ .{ .const_int = .{ .dst = 0, .value = 2 } }, .{ .ret = .{ .src = 0 } } };
-    var functions = [_]ir.Function{ testFunction(0, "f0", &f0_body), testFunction(1, "f1", &f1_body) };
-    const program = ir.Program{ .functions = &functions, .entry_index = 0 };
-
-    const support_before = try hashSupportOf(&program);
-
-    // (a) Pure body edit (constant f1 returns) — support has no user bodies, and
-    // this changes no signature/dispatcher/closure shape, so it MUST stay cached.
-    f1_body[0] = .{ .const_int = .{ .dst = 0, .value = 999 } };
-    const support_after_body = try hashSupportOf(&program);
-    try testing.expectEqualSlices(u8, &support_before, &support_after_body);
-
-    // (b) Signature change (f1's return type) — the support object holds f1's
-    // extern declaration, so it MUST rebuild.
-    functions[1].return_type = .{ .kind = .integer, .name = "I8" };
-    const support_after_sig = try hashSupportOf(&program);
-    try testing.expect(!std.mem.eql(u8, &support_before, &support_after_sig));
+// Tests for the four invalidation properties live in cgu_hash_tests.zig
+// (Core Law #5 split); pull them into this module's test build.
+test {
+    _ = @import("cgu_hash_tests.zig");
 }

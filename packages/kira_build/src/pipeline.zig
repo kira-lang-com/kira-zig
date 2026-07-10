@@ -721,6 +721,15 @@ pub fn backendDiagnostics(allocator: std.mem.Allocator, source_path: []const u8,
     return items;
 }
 
+/// A single-item diagnostic list reporting a manifest `assets` entry that does
+/// not exist on disk. Surfaced so a wasm build fails loudly instead of shipping
+/// a package missing its declared assets.
+pub fn missingAssetDiagnostics(allocator: std.mem.Allocator, missing_entry: []const u8) ![]diagnostics.Diagnostic {
+    const items = try allocator.alloc(diagnostics.Diagnostic, 1);
+    items[0] = try diag_messages.PackageMessages.missingAssetDirectory(allocator, missing_entry);
+    return items;
+}
+
 fn backendDiagnosticsForVm(
     allocator: std.mem.Allocator,
     source_path: []const u8,

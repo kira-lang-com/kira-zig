@@ -80,6 +80,7 @@ pub fn linkExecutable(
     object_paths: []const []const u8,
     native_libraries: []const native.ResolvedNativeLibrary,
     selector: ?native.TargetSelector,
+    assets: []const native.AssetMount,
 ) !void {
     try ensureParentDir(executable_path);
     const driver_path = try compilerDriverPathForSelector(allocator, selector);
@@ -90,6 +91,8 @@ pub fn linkExecutable(
     if (windowsConsoleSubsystemArg(selector)) |subsystem_arg| {
         try argv.append(subsystem_arg);
     }
+    try appendEmscriptenExecutableFlags(&argv, selector);
+    try appendPreloadedAssets(allocator, &argv, selector, assets);
     try appendNativeLibraryPaths(allocator, &argv);
     for (object_paths) |path| try argv.append(path);
 
@@ -101,6 +104,7 @@ pub fn linkExecutable(
         for (library.link.frameworks) |framework| {
             try argv.appendSlice(&.{ "-framework", framework });
         }
+        for (library.link.linker_flags) |flag| try argv.append(flag);
     }
     try appendDefaultSystemLibraries(&argv, selector);
 
@@ -131,10 +135,53 @@ pub fn linkSharedLibrary(
         for (library.link.frameworks) |framework| {
             try argv.appendSlice(&.{ "-framework", framework });
         }
+        for (library.link.linker_flags) |flag| try argv.append(flag);
     }
     try appendDefaultSystemLibraries(&argv, selector);
 
     try runCommand(allocator, argv.items);
+}
+
+/// Bundle build-time asset directories into a self-contained wasm package. Only
+/// the Emscripten link understands `--preload-file`; every other target reads
+/// its assets straight from disk at runtime, so the list is ignored there. Each
+/// mount is emitted as `--preload-file <host>@<mount>`, placing the on-disk
+/// directory at its project-relative path inside the browser MEMFS so a
+/// runtime-relative `fopen` (resolved against MEMFS cwd `/`) still finds it.
+fn appendPreloadedAssets(
+    allocator: std.mem.Allocator,
+    argv: *std.array_list.Managed([]const u8),
+    selector: ?native.TargetSelector,
+    assets: []const native.AssetMount,
+) !void {
+    if (!emscripten.isSelector(selector)) return;
+    for (assets) |asset| {
+        try argv.append("--preload-file");
+        try argv.append(try std.fmt.allocPrint(allocator, "{s}@{s}", .{ asset.host_path, asset.mount_path }));
+    }
+}
+
+/// Emscripten executable links keep Emscripten's default 16MB INITIAL_MEMORY but
+/// enable ALLOW_MEMORY_GROWTH so the wasm heap can `sbrk`/`emscripten_resize_heap`
+/// past that ceiling at runtime. Real Kira apps (UI Foundation dashboards, the
+/// Kira graphics path) allocate well beyond 16MB per frame; without growth the
+/// first large allocation aborts the module. Only the final executable link (emcc
+/// linking to a `.js`/`.wasm` bundle) understands `-s` settings — object compiles
+/// and relocatable links must not receive them.
+///
+/// GROWABLE_ARRAYBUFFERS=0 pairs with growth: with the default (=1) Emscripten
+/// auto-detects the growable-views Web platform feature and backs `WebAssembly.
+/// Memory` with a RESIZABLE `ArrayBuffer`. `TextDecoder.decode` rejects any view
+/// over a resizable buffer on current V8 ("The provided ArrayBuffer value must not
+/// be resizable"), which aborts every `UTF8ToString` — e.g. `fopen`'s path string
+/// in Kira's FreeType font discovery during layout. Disabling growable views
+/// makes growth use the classic detach-and-refresh path, where the active heap
+/// view is a plain non-resizable `ArrayBuffer` that TextDecoder accepts. (Setting
+/// does nothing unless ALLOW_MEMORY_GROWTH is set.)
+fn appendEmscriptenExecutableFlags(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {
+    if (!emscripten.isSelector(selector)) return;
+    try argv.append("-sALLOW_MEMORY_GROWTH=1");
+    try argv.append("-sGROWABLE_ARRAYBUFFERS=0");
 }
 
 fn appendDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {
@@ -237,6 +284,75 @@ test "windows console subsystem only applies to native windows targets" {
         .operating_system = "emscripten",
         .abi = "unknown",
     }));
+}
+
+test "preload-file args are emitted only for the emscripten target" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const assets = [_]native.AssetMount{
+        .{ .host_path = "/proj/generated/Shaders", .mount_path = "/generated/Shaders" },
+        .{ .host_path = "/proj/fonts", .mount_path = "/fonts" },
+    };
+
+    // Emscripten selector: each asset becomes a `--preload-file host@mount` pair.
+    var wasm_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendPreloadedAssets(allocator, &wasm_argv, .{
+        .architecture = "wasm32",
+        .operating_system = "emscripten",
+        .abi = "unknown",
+    }, &assets);
+    try std.testing.expectEqual(@as(usize, 4), wasm_argv.items.len);
+    try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[0]);
+    try std.testing.expectEqualStrings("/proj/generated/Shaders@/generated/Shaders", wasm_argv.items[1]);
+    try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[2]);
+    try std.testing.expectEqualStrings("/proj/fonts@/fonts", wasm_argv.items[3]);
+
+    // Non-emscripten target: assets are read from disk, so nothing is emitted.
+    var host_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendPreloadedAssets(allocator, &host_argv, .{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    }, &assets);
+    try std.testing.expectEqual(@as(usize, 0), host_argv.items.len);
+
+    // Null selector (host default) likewise emits nothing.
+    var default_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendPreloadedAssets(allocator, &default_argv, null, &assets);
+    try std.testing.expectEqual(@as(usize, 0), default_argv.items.len);
+}
+
+test "ALLOW_MEMORY_GROWTH is emitted only for emscripten executable links" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Emscripten selector: the growth flag is appended.
+    var wasm_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendEmscriptenExecutableFlags(&wasm_argv, .{
+        .architecture = "wasm32",
+        .operating_system = "emscripten",
+        .abi = "unknown",
+    });
+    try std.testing.expectEqual(@as(usize, 2), wasm_argv.items.len);
+    try std.testing.expectEqualStrings("-sALLOW_MEMORY_GROWTH=1", wasm_argv.items[0]);
+    try std.testing.expectEqualStrings("-sGROWABLE_ARRAYBUFFERS=0", wasm_argv.items[1]);
+
+    // Native target: no emscripten `-s` settings.
+    var host_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendEmscriptenExecutableFlags(&host_argv, .{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    });
+    try std.testing.expectEqual(@as(usize, 0), host_argv.items.len);
+
+    // Null selector (host default) likewise emits nothing.
+    var default_argv = std.array_list.Managed([]const u8).init(allocator);
+    try appendEmscriptenExecutableFlags(&default_argv, null);
+    try std.testing.expectEqual(@as(usize, 0), default_argv.items.len);
 }
 
 test "windows console subsystem flag matches windows toolchain abi" {

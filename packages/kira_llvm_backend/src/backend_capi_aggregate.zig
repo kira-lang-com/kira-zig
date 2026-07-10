@@ -156,9 +156,9 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                     const sptr = api.LLVMBuildExtractValue(b, src, 0, "store.cstr.src");
                     const slen = api.LLVMBuildExtractValue(b, src, 1, "store.cstr.len");
                     const total = api.LLVMBuildAdd(b, slen, api.LLVMConstInt(fc.types.i64, 1, 0), "store.cstr.total");
-                    var margs = [_]llvm.c.LLVMValueRef{total};
+                    var margs = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, total)};
                     const buf = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "store.cstr.buf");
-                    var cargs = [_]llvm.c.LLVMValueRef{ buf, sptr, slen };
+                    var cargs = [_]llvm.c.LLVMValueRef{ buf, sptr, fc.types.sizeArg(b, slen) };
                     _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &cargs, cargs.len, "");
                     var nul_idx = [_]llvm.c.LLVMValueRef{slen};
                     const nul_ptr = api.LLVMBuildInBoundsGEP2(b, fc.types.i8, buf, &nul_idx, nul_idx.len, "store.cstr.nul");
@@ -178,7 +178,18 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                 // stored through this path passes through unchanged and the old value
                 // is only freed when it is a real closure. Self-store guard: storing
                 // the value the field already holds must neither destroy nor clone.
-                const old = api.LLVMBuildLoad2(b, fc.types.i64, ptr, "store.clos.old");
+                // A closure-typed field is a full i64 slot (fieldStorageType): load and
+                // store the whole word so the bit-63 closure tag survives on wasm32.
+                // Other raw_ptr fields stay at pointer storage width — a raw i64 load
+                // of those would over-read the adjacent field on wasm32 (4-byte ptr)
+                // and set garbage tag bits, misfiring the tag-safe destroy.
+                const closure_field = utils.isClosureValueType(v.ty);
+                const old = if (closure_field)
+                    api.LLVMBuildLoad2(b, fc.types.i64, ptr, "store.clos.old")
+                else blk: {
+                    const old_ptr = api.LLVMBuildLoad2(b, fc.types.ptr_ty, ptr, "store.clos.oldptr");
+                    break :blk api.LLVMBuildPtrToInt(b, old_ptr, fc.types.i64, "store.clos.old");
+                };
                 const same = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, old, src, "store.clos.same");
                 const work_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.clos.work");
                 const done_block = api.LLVMAppendBasicBlockInContext(fc.types.context, fc.function_value, "store.clos.done");
@@ -188,13 +199,23 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
                 _ = api.LLVMBuildCall2(b, fc.dtors.destroy_closure.ty, fc.dtors.destroy_closure.fn_value, &dargs, dargs.len, "");
                 var cargs = [_]llvm.c.LLVMValueRef{src};
                 const clone = api.LLVMBuildCall2(b, fc.dtors.closure_clone.ty, fc.dtors.closure_clone.fn_value, &cargs, cargs.len, "store.clos.clone");
-                const clone_ptr = api.LLVMBuildIntToPtr(b, clone, fc.types.ptr_ty, "store.clos.cloneptr");
-                _ = api.LLVMBuildStore(b, clone_ptr, ptr);
+                if (closure_field) {
+                    _ = api.LLVMBuildStore(b, clone, ptr);
+                } else {
+                    const clone_ptr = api.LLVMBuildIntToPtr(b, clone, fc.types.ptr_ty, "store.clos.cloneptr");
+                    _ = api.LLVMBuildStore(b, clone_ptr, ptr);
+                }
                 _ = api.LLVMBuildBr(b, done_block);
                 api.LLVMPositionBuilderAtEnd(b, done_block);
             } else {
-                const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
-                _ = api.LLVMBuildStore(b, value, ptr);
+                // Closure-typed fields are i64 slots (tag-preserving, see
+                // fieldStorageType); everything else stores at pointer width.
+                if (utils.isClosureValueType(v.ty)) {
+                    _ = api.LLVMBuildStore(b, src, ptr);
+                } else {
+                    const value = api.LLVMBuildIntToPtr(b, src, fc.types.ptr_ty, "store.rawptr");
+                    _ = api.LLVMBuildStore(b, value, ptr);
+                }
                 // A closure/enum moved into a struct field on the non-deep paths is no
                 // longer ours to free (no destructor for it there, so it leaks rather
                 // than double-frees).
@@ -222,9 +243,58 @@ pub fn lowerArrayLen(fc: *FunctionCodegen, v: ir.ArrayLen) void {
     fc.registers[v.dst] = api.LLVMBuildCall2(b, fc.runtime_decls.array_len.ty, fc.runtime_decls.array_len.fn_value, &args, args.len, "array.len");
 }
 
+// `arr[i]` where `arr` is an @FFI.Array place (register = ADDRESS of the inline
+// storage; see lowerFfiFixedArraySet). A struct element reads as its in-place
+// pointer (a borrow — same repr the arr[i].field peepholes rely on); scalars
+// load and widen to the register representation. Returns false when the source
+// is not an FFI fixed array.
+fn lowerFfiFixedArrayGet(fc: *FunctionCodegen, v: ir.ArrayGet) !bool {
+    const api = fc.api;
+    const b = fc.builder;
+    if (v.array >= fc.register_types.len) return false;
+    const arr_ty = fc.register_types[v.array];
+    if (arr_ty.kind != .raw_ptr) return false;
+    const name = arr_ty.name orelse return false;
+    const type_decl = utils.findTypeDecl(fc.request.program.programPtr(), name) orelse return false;
+    const ffi_info = type_decl.ffi orelse return false;
+    const info = switch (ffi_info) {
+        .array => |value| value,
+        else => return false,
+    };
+    const elem_storage = try fc.storageType(info.element);
+    const base = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "ffiarr.getbase");
+    var idx = [_]llvm.c.LLVMValueRef{fc.registers[v.index]};
+    const elem_ptr = api.LLVMBuildInBoundsGEP2(b, elem_storage, base, &idx, idx.len, "ffiarr.getelem");
+    switch (info.element.kind) {
+        .ffi_struct => fc.registers[v.dst] = api.LLVMBuildPtrToInt(b, elem_ptr, fc.types.i64, "ffiarr.getptr"),
+        .integer => {
+            const raw = api.LLVMBuildLoad2(b, elem_storage, elem_ptr, "ffiarr.getint");
+            const unsigned = info.element.name != null and info.element.name.?.len > 0 and info.element.name.?[0] == 'U';
+            fc.registers[v.dst] = if (elem_storage == fc.types.i64)
+                raw
+            else if (unsigned)
+                api.LLVMBuildZExt(b, raw, fc.types.i64, "ffiarr.getzext")
+            else
+                api.LLVMBuildSExt(b, raw, fc.types.i64, "ffiarr.getsext");
+        },
+        .float => fc.registers[v.dst] = api.LLVMBuildLoad2(b, elem_storage, elem_ptr, "ffiarr.getfloat"),
+        .boolean => {
+            const raw = api.LLVMBuildLoad2(b, fc.types.i8, elem_ptr, "ffiarr.getbool8");
+            fc.registers[v.dst] = api.LLVMBuildTrunc(b, raw, fc.types.bool_ty, "ffiarr.getbool");
+        },
+        .raw_ptr => {
+            const raw = api.LLVMBuildLoad2(b, fc.types.ptr_ty, elem_ptr, "ffiarr.getraw");
+            fc.registers[v.dst] = api.LLVMBuildPtrToInt(b, raw, fc.types.i64, "ffiarr.getrawint");
+        },
+        else => return false,
+    }
+    return true;
+}
+
 pub fn lowerArrayGet(fc: *FunctionCodegen, v: ir.ArrayGet) !void {
     const api = fc.api;
     const b = fc.builder;
+    if (try lowerFfiFixedArrayGet(fc, v)) return;
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.getptr");
     const slot = fc.entryAlloca(fc.types.bridge_ty, "array.get.slot");
     var args = [_]llvm.c.LLVMValueRef{ arr, fc.registers[v.index], slot };
@@ -288,19 +358,105 @@ fn buildElementBridge(fc: *FunctionCodegen, src_reg: u32) !llvm.c.LLVMValueRef {
     return fc.packBridge(vt, fc.registers[src_reg]);
 }
 
+// `arr[i] = v` where `arr` is an @FFI.Array place. The array register holds the
+// ADDRESS of the inline `[count x element]` storage (a field_ptr — see
+// lowerMutableObject in lower_from_hir_places.zig), not a heap kira-array
+// handle, so the kira_array_store_* runtime helpers must not run: they would
+// read the inline bytes as a (null/garbage) KiraArray pointer, silently drop
+// the store, and orphan the element copy — the ffi_nested_fixed_array_assignment
+// leak. Lower a direct element store instead: GEP into the inline storage and
+// copy the element by value (C layout). A struct element releases the replaced
+// slot's owned contents first and deep-clones the stored copy's contents after,
+// mirroring copy_indirect's value semantics; the source register is NOT escaped
+// (it keeps ownership of its own storage and drops at scope exit). No bounds
+// check: the index range is FFI-boundary C semantics, same as native code
+// writing the array. Returns false when the destination is not an FFI fixed
+// array (callers fall through to the kira-array path).
+fn lowerFfiFixedArraySet(fc: *FunctionCodegen, v: ir.ArraySet) !bool {
+    const api = fc.api;
+    const b = fc.builder;
+    if (v.array >= fc.register_types.len) return false;
+    const arr_ty = fc.register_types[v.array];
+    if (arr_ty.kind != .raw_ptr) return false;
+    const name = arr_ty.name orelse return false;
+    const type_decl = utils.findTypeDecl(fc.request.program.programPtr(), name) orelse return false;
+    const ffi_info = type_decl.ffi orelse return false;
+    const info = switch (ffi_info) {
+        .array => |value| value,
+        else => return false,
+    };
+    const elem_storage = try fc.storageType(info.element);
+    const base = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "ffiarr.base");
+    var idx = [_]llvm.c.LLVMValueRef{fc.registers[v.index]};
+    const elem_ptr = api.LLVMBuildInBoundsGEP2(b, elem_storage, base, &idx, idx.len, "ffiarr.elem");
+    switch (info.element.kind) {
+        .ffi_struct => {
+            const elem_name = info.element.name orelse return false;
+            const helpers = if (fc.drop_enabled) fc.dtors.map.get(elem_name) else null;
+            // Drop-before-overwrite: the inline slot's owned contents (arrays,
+            // strings, nested structs) are discarded by the shallow store below.
+            if (helpers) |h| {
+                var rargs = [_]llvm.c.LLVMValueRef{elem_ptr};
+                _ = api.LLVMBuildCall2(b, h.release_contents.ty, h.release_contents.fn_value, &rargs, rargs.len, "");
+            }
+            const src_ptr = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "ffiarr.src");
+            const value = api.LLVMBuildLoad2(b, elem_storage, src_ptr, "ffiarr.val");
+            _ = api.LLVMBuildStore(b, value, elem_ptr);
+            // Deep-clone the stored copy's contents so the slot owns storage
+            // independent of the source (which keeps its own drop obligation).
+            if (helpers) |h| {
+                var cargs = [_]llvm.c.LLVMValueRef{elem_ptr};
+                _ = api.LLVMBuildCall2(b, h.clone_contents.ty, h.clone_contents.fn_value, &cargs, cargs.len, "");
+            }
+        },
+        .integer => {
+            const value = if (elem_storage == fc.types.i64)
+                fc.registers[v.src]
+            else
+                api.LLVMBuildTrunc(b, fc.registers[v.src], elem_storage, "ffiarr.trunc");
+            _ = api.LLVMBuildStore(b, value, elem_ptr);
+        },
+        .float => _ = api.LLVMBuildStore(b, fc.registers[v.src], elem_ptr),
+        .boolean => {
+            const value = api.LLVMBuildZExt(b, fc.registers[v.src], fc.types.i8, "ffiarr.bool");
+            _ = api.LLVMBuildStore(b, value, elem_ptr);
+        },
+        .raw_ptr => {
+            const value = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "ffiarr.ptr");
+            _ = api.LLVMBuildStore(b, value, elem_ptr);
+        },
+        // String/enum/array/Any elements inside an @FFI.Array have no defined
+        // C-layout store here; fall through to the kira-array path (which
+        // no-ops on the non-array pointer) rather than corrupt inline memory.
+        else => return false,
+    }
+    return true;
+}
+
 pub fn lowerArraySet(fc: *FunctionCodegen, v: ir.ArraySet) !void {
     const api = fc.api;
     const b = fc.builder;
+    if (try lowerFfiFixedArraySet(fc, v)) return;
     const arr = api.LLVMBuildIntToPtr(b, fc.registers[v.array], fc.types.ptr_ty, "array.setptr");
     const bv = try buildElementBridge(fc, v.src);
     const slot = fc.entryAlloca(fc.types.bridge_ty, "array.set.slot");
     _ = api.LLVMBuildStore(b, bv, slot);
     // Drop the element being overwritten when it owns heap contents (a struct element
-    // with its own arrays/sub-structs), or each overwrite orphans the prior occupant.
+    // with its own arrays/sub-structs, or a boxed inner array), or each overwrite
+    // orphans the prior occupant. The destructor is the ARRAY's element destructor
+    // (elementDestroy of the container type register_types[v.array]) — NOT the source
+    // element's own type. For struct/enum/string elements the two resolve identically
+    // (elementDestroy is name-keyed for those), but for a nested array `[[T]]` the
+    // container gives the inner-array wrapper (kira_destroy_arr_<[T]>) while the source
+    // `[T]` type would return the destructor for `[T]`'s OWN elements — the tag-safe
+    // closure no-op — leaking the replaced inner array (box + storage + contents).
     // kira_array_store_release guards old==new so storing a borrowed element back to its
     // own slot is a no-op, not a use-after-free. Primitive elements (no destructor) keep
     // the plain store.
-    const elem_destroy = if (fc.drop_enabled) fc.dtors.elementDestroy(fc.request.program.programPtr(), fc.register_types[v.src]) else null;
+    const elem_destroy = if (fc.drop_enabled and v.array < fc.register_types.len)
+        fc.dtors.elementDestroy(fc.request.program.programPtr(), fc.register_types[v.array])
+    else
+        null;
     // String elements own a cloned buffer that kira_array_store_release frees by
     // STRING tag (no RAW_PTR destructor needed). elementDestroy returns null for
     // them, so without forcing the release path a plain kira_array_store would
@@ -343,7 +499,7 @@ pub fn lowerArrayAppend(fc: *FunctionCodegen, v: ir.ArrayAppend) !void {
 pub fn lowerAllocEnum(fc: *FunctionCodegen, v: ir.AllocEnum) !void {
     const api = fc.api;
     const b = fc.builder;
-    var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 16, 0)};
+    var margs = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, api.LLVMConstInt(fc.types.i64, 16, 0))};
     const ptr = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "enum.alloc");
     var tag_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 0, 0)};
     const tag_slot = api.LLVMBuildInBoundsGEP2(b, fc.types.i64, ptr, &tag_idx, tag_idx.len, "enum.tag.slot");
@@ -401,7 +557,7 @@ pub fn enumPayloadAsI64(fc: *FunctionCodegen, value_type: ir.ValueType, value: l
             // enum's known leak class (kira_destroy_raw_ptr frees only the 16-byte
             // block — phase-2 per-enum destructors will free string payloads).
             const boxed_value = if (fc.drop_enabled) drop.cloneStringValue(fc, value) else value;
-            var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 16, 0)};
+            var margs = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, api.LLVMConstInt(fc.types.i64, 16, 0))};
             const box = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "enum.str.box");
             _ = api.LLVMBuildStore(b, boxed_value, box);
             break :blk api.LLVMBuildPtrToInt(b, box, fc.types.i64, "enum.str.int");

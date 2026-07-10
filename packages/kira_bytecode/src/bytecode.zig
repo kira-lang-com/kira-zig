@@ -48,6 +48,7 @@ pub const ForeignFunction = struct {
 pub const Function = struct {
     id: u32,
     name: []const u8,
+    is_async: bool = false,
     param_count: u32 = 0,
     param_ownership: []const OwnershipMode = &.{},
     /// Declared parameter types. Carries the precise FFI primitive name (e.g.

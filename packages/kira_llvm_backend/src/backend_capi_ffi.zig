@@ -149,9 +149,9 @@ fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32, cstr
                 const str_ptr = api.LLVMBuildExtractValue(b, arg, 0, "carg.str.ptr");
                 const str_len = api.LLVMBuildExtractValue(b, arg, 1, "carg.str.len");
                 const alloc_len = api.LLVMBuildAdd(b, str_len, api.LLVMConstInt(fc.types.i64, 1, 0), "carg.str.alloclen");
-                var malloc_args = [_]llvm.c.LLVMValueRef{alloc_len};
+                var malloc_args = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, alloc_len)};
                 const buf = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &malloc_args, malloc_args.len, "carg.buf");
-                var copy_args = [_]llvm.c.LLVMValueRef{ buf, str_ptr, str_len };
+                var copy_args = [_]llvm.c.LLVMValueRef{ buf, str_ptr, fc.types.sizeArg(b, str_len) };
                 _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &copy_args, copy_args.len, "carg.memcpy");
                 var nul_idx = [_]llvm.c.LLVMValueRef{str_len};
                 const nul_slot = api.LLVMBuildInBoundsGEP2(b, fc.types.i8, buf, &nul_idx, nul_idx.len, "carg.nul.slot");
@@ -275,8 +275,18 @@ pub fn lowerExternCall(fc: *FunctionCodegen, call: ir.Call, callee_decl: ir.Func
 
     // An owned aggregate passed to the extern escapes Kira's tracking (the C side may
     // retain it); stop tracking so we neither free-while-live nor double-free.
+    // EXCEPT a String marshalled to a CString parameter: the callee only ever saw the
+    // transient NUL-dup freed above, never the Kira buffer, so the caller keeps
+    // ownership and its string_buf slot frees it at scope exit. Escaping it orphaned
+    // one read-clone per extern call with a string arg (the uiBatchStateLoadFont /
+    // editor 48 B font-path leak).
     if (fc.drop_enabled) {
-        for (call.args) |arg| drop.onEscape(fc, arg);
+        for (call.args, 0..) |arg, index| {
+            const param_type = if (index < callee_decl.param_types.len) callee_decl.param_types[index] else fc.register_types[arg];
+            const arg_kind = if (arg < fc.register_types.len) fc.register_types[arg].kind else param_type.kind;
+            if (arg_kind == .string and param_type.name != null and std.mem.eql(u8, param_type.name.?, "CString")) continue;
+            drop.onEscape(fc, arg);
+        }
     }
 
     if (call.dst) |dst| try storeResult(fc, dst, callee_decl.return_type, result, sret_ptr);

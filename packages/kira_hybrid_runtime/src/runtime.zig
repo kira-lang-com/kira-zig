@@ -76,6 +76,15 @@ pub const HybridRuntime = struct {
             .native => _ = try native_calls.callNativeFunction(self, self.manifest.entry_function_id, &.{}),
             .inherited => unreachable,
         }
+        // Detached tasks outlive their handles: run whatever is still queued on
+        // the VM-side task executor before the runtime shuts down (mirrors
+        // Vm.runMainWithHooks and the native host main's kira_task_drain_all).
+        try vm_runtime.drainTasks(&self.vm, &self.module, writer, .{
+            .context = @as(?*anyopaque, @ptrCast(&runtime_context)),
+            .call_native = nativeCallHook(Context),
+            .resolve_function = resolveFunctionHook(Context),
+            .copy_struct_args_by_value = false,
+        });
     }
 
     /// Invoke a single @Runtime function by id, writing its output to `writer`,

@@ -10,6 +10,8 @@ const value_impl = @import("vm_values.zig");
 const vm_prepare = @import("vm_prepare.zig");
 const interpreter = @import("vm_interpreter.zig");
 const native_bridge = @import("vm_native_bridge.zig");
+const vm_tasks = @import("vm_tasks.zig");
+const vm_interpreter_tasks = @import("vm_interpreter_tasks.zig");
 const vm_types = @import("vm_types.zig");
 
 const ArrayObject = ownership.ArrayObject;
@@ -38,6 +40,19 @@ pub const Vm = struct {
     // pointer-keyed dedup cache would hand the new closure the stale block (FF1).
     // Every export creates a fresh block instead.
     exported_native_closures: std.ArrayListUnmanaged(ExportedNativeClosure) = .empty,
+    // Async task objects spawned by `task_spawn`/`task_spawn_ready` (see
+    // vm_tasks.zig). Freed at deinit, not at join, so a duplicate join is a
+    // clean trap instead of a use-after-free.
+    live_tasks: std.ArrayListUnmanaged(*vm_tasks.VmTask) = .empty,
+    // Cooperative executor ready-queue (FIFO): spawn enqueues, `task_await`
+    // pops-and-runs until its target completes, and the run entrypoint drains
+    // the remainder at exit (detached tasks outliving their handles).
+    // `task_queue_head` is the pop cursor into the append-only list.
+    task_queue: std.ArrayListUnmanaged(*vm_tasks.VmTask) = .empty,
+    task_queue_head: usize = 0,
+    // The suspendable task currently being driven (runOne); `task_sleep` sets
+    // its wake deadline instead of blocking the thread.
+    current_task: ?*vm_tasks.VmTask = null,
     last_error_buffer: [256]u8 = [_]u8{0} ** 256,
     last_error_len: usize = 0,
     // Decoded form of the current module (resolved branch targets, function
@@ -218,6 +233,8 @@ pub const Vm = struct {
             self.allocator.free(words[0..word_count]);
         }
         self.exported_native_closures.deinit(self.allocator);
+        vm_tasks.deinitTasks(self.allocator, &self.live_tasks);
+        self.task_queue.deinit(self.allocator);
         native_bridge.deinitTrackedNativeStates(self);
         self.heap.deinit();
         self.native_state_materialized_types.deinit();
@@ -321,6 +338,9 @@ pub const Vm = struct {
         };
         const result = try self.runFunctionById(module, entry_function_id, &.{}, writer, hooks);
         self.heap.dropValue(result);
+        // Detached tasks outlive their handles: run whatever is still queued
+        // (skipping cancelled tasks) before the runtime shuts down.
+        try vm_interpreter_tasks.drainAll(self, module, writer, hooks);
     }
 
     pub fn runFunctionById(

@@ -20,7 +20,10 @@ const Context = shared.Context;
 // shell teardown must not free it again (the editor content-forward
 // double-free). Borrowed roots are left untouched — the mid-IR KIR002 gate
 // rejects moving Any out of a borrow. No-op for non-field values and
-// non-Any-storage types.
+// non-Any-storage types. (An ARRAY field move into an owned position is tagged
+// separately in lowerMoveExpr — arrays null-on-read without recording the KSEM
+// partial move, so the whole-struct-reuse diagnostic stays KIR002; a copyable
+// enum field is a COPY value and is never tagged.)
 pub fn markAnyFieldMovedIntoOwned(ctx: *Context, scope: *model.Scope, value: *model.Expr, span: @import("kira_source").Span) void {
     if (value.* != .field) return;
     const field_node = &value.field;

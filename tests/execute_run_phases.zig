@@ -11,6 +11,7 @@ const discovery = @import("discovery.zig");
 const leak_check = @import("leak_check.zig");
 const reporting = @import("reporting.zig");
 const support = @import("execute_support.zig");
+const wasm_support = @import("wasm_support.zig");
 
 const PhaseProfile = reporting.PhaseProfile;
 
@@ -177,6 +178,65 @@ pub fn runLlvmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, ca
     return .{
         .result = .pass,
         .stdout = child.stdout,
+        .profile = .{
+            .kind = .executed,
+            .duration_ns = support.elapsedNs(start),
+            .cache_status = result.cache_status,
+            .cache_restore_ns = result.cache_restore_ns,
+            .cache_store_ns = result.cache_store_ns,
+        },
+    };
+}
+
+// Build the case through the real wasm32-emscripten pipeline (same BuildSystem
+// the CLI uses), then execute the emitted `.js` loader under node and capture
+// its stdout for the shared stdout comparison. Callers guarantee the emcc/node
+// toolchain is available before dispatching a wasm run (missing tooling SKIPs
+// the wasm matrix upstream), so a build/run failure here is a real backend gap.
+pub fn runWasmPhase(allocator: std.mem.Allocator, system: *build.BuildSystem, case: discovery.Case) !PhaseActual {
+    support.process_state_lock.lockShared();
+    defer support.process_state_lock.unlockShared();
+
+    var tmp = try support.makeTmpDir(allocator);
+    defer tmp.cleanup();
+
+    const start = support.nowTimestamp();
+    const output_path = try support.makeBackendOutputPath(allocator, tmp, "wasm", ".js");
+    const result = try system.build(.{
+        .source_path = case.source_path,
+        .output_path = output_path,
+        .target = .{ .execution = .wasm32_emscripten },
+    });
+    if (result.failed() or result.diagnostics.len != 0) {
+        return actualFromBuildOutcome(result, support.elapsedNs(start));
+    }
+
+    const js_path = wasm_support.firstArtifactWithExtension(result.artifacts, ".js") orelse
+        return error.MissingWasmLoaderArtifact;
+    const run_cwd = try support.runtimeCwdForCase(allocator, case);
+    defer allocator.free(run_cwd);
+
+    const child = try wasm_support.runNode(allocator, js_path, run_cwd);
+    defer allocator.free(child.stderr);
+    if (support.expectExitedZero(child.term)) |_| {} else |_| {
+        return .{
+            .result = .fail,
+            .stdout = child.stdout,
+            .stderr = child.stderr,
+            .trace = try reporting.childTrace(allocator, "wasm", child.term, child.stdout, child.stderr),
+            .profile = .{
+                .kind = .executed,
+                .duration_ns = support.elapsedNs(start),
+                .cache_status = result.cache_status,
+                .cache_restore_ns = result.cache_restore_ns,
+                .cache_store_ns = result.cache_store_ns,
+            },
+        };
+    }
+    return .{
+        .result = .pass,
+        .stdout = child.stdout,
+        .stderr = child.stderr,
         .profile = .{
             .kind = .executed,
             .duration_ns = support.elapsedNs(start),

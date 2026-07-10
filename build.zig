@@ -431,6 +431,10 @@ pub fn build(b: *std.Build) void {
     run_corpus_module.addImport("kira_build_definition", modules.get("kira_build_definition").?);
     run_corpus_module.addImport("kira_diagnostics", modules.get("kira_diagnostics").?);
     run_corpus_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
+    // Corpus wasm matrix (tests/wasm_support.zig) reuses the emscripten
+    // availability check from the LLVM backend to SKIP wasm jobs cleanly when the
+    // emcc toolchain is absent.
+    run_corpus_module.addImport("kira_llvm_backend", modules.get("kira_llvm_backend").?);
     run_corpus_module.addImport("kira_source", modules.get("kira_source").?);
     run_corpus_module.addImport("kira_vm_runtime", modules.get("kira_vm_runtime").?);
     run_corpus_module.link_libc = true;

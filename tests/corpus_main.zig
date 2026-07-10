@@ -3,6 +3,8 @@ const std = @import("std");
 const discovery = @import("discovery.zig");
 const execute = @import("execute.zig");
 const reporting = @import("reporting.zig");
+const reporting_json = @import("reporting_json.zig");
+const wasm_support = @import("wasm_support.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -33,10 +35,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const stable = try envFlag(allocator, init.environ, "KIRA_CORPUS_STABLE");
     const worker_count = if (stable) @as(usize, @intCast(@min(jobs.len, 1))) else resolveWorkerCount(allocator, init.environ, jobs.len);
     const retries = resolveRetries(allocator, init.environ, stable);
+
+    // Detect the wasm32-emscripten toolchain once, only when the wasm backend is
+    // actually selected. Missing emcc/node then SKIPs wasm jobs with a note.
+    var wasm_tooling: wasm_support.Tooling = .{};
+    if (backendSelected(backends, .wasm)) {
+        wasm_tooling = wasm_support.detect(allocator);
+    }
+
     const options: execute.Options = .{
         .hybrid_runner_path = args[1],
         .profile = profile_enabled,
         .phases = phases,
+        .wasm_tooling = wasm_tooling,
     };
 
     const start = nowTimestamp();
@@ -62,20 +73,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var passed: usize = 0;
     var failed: usize = 0;
+    var skipped: usize = 0;
     var failures = std.array_list.Managed(reporting.FailureRecord).init(allocator);
+    var skips = std.array_list.Managed(reporting.SkipRecord).init(allocator);
     for (results) |result| {
         passed += result.report.passed;
         failed += result.report.failed;
+        skipped += result.report.skipped;
         for (result.report.failures) |failure| try failures.append(failure);
+        for (result.report.skips) |skip| try skips.append(skip);
     }
 
     const suite_report: reporting.SuiteReport = .{
         .total = passed + failed,
         .passed = passed,
         .failed = failed,
+        .skipped = skipped,
         .failures = failures.items,
+        .skips = skips.items,
     };
-    try reporting.writeJsonReportFile(allocator, suite_report);
+    try reporting_json.writeJsonReportFile(allocator, suite_report);
     var human_report: std.Io.Writer.Allocating = .init(allocator);
     try reporting.writeHumanReport(allocator, &human_report.writer, suite_report);
     std.debug.print("{s}", .{try human_report.toOwnedSlice()});
@@ -244,6 +261,8 @@ fn backendPriority(backend: discovery.Backend) u8 {
         .llvm => 0,
         .hybrid => 1,
         .vm => 2,
+        // wasm runs last: each job invokes emcc + node and is the slowest.
+        .wasm => 3,
     };
 }
 
@@ -262,10 +281,14 @@ fn backendSelected(backends: []const discovery.Backend, backend: discovery.Backe
 }
 
 fn resolveBackends(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const discovery.Backend {
-    const raw = environ.getAlloc(allocator, "KIRA_CORPUS_BACKENDS") catch return allocator.dupe(discovery.Backend, &.{ .vm, .llvm, .hybrid });
+    // `all` (and the unset default) selects every backend including the opt-in
+    // wasm target: only cases whose expect.toml lists "wasm" produce wasm jobs,
+    // and those SKIP cleanly when the emcc/node toolchain is missing.
+    const all_backends = &[_]discovery.Backend{ .vm, .llvm, .hybrid, .wasm };
+    const raw = environ.getAlloc(allocator, "KIRA_CORPUS_BACKENDS") catch return allocator.dupe(discovery.Backend, all_backends);
     defer allocator.free(raw);
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "all")) return allocator.dupe(discovery.Backend, &.{ .vm, .llvm, .hybrid });
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "all")) return allocator.dupe(discovery.Backend, all_backends);
 
     var parsed = std.array_list.Managed(discovery.Backend).init(allocator);
     var parts = std.mem.splitScalar(u8, trimmed, ',');
@@ -278,6 +301,8 @@ fn resolveBackends(allocator: std.mem.Allocator, environ: std.process.Environ) !
             .llvm
         else if (std.mem.eql(u8, part, "hybrid"))
             .hybrid
+        else if (std.mem.eql(u8, part, "wasm"))
+            .wasm
         else
             return error.InvalidBackendFilter;
         if (!backendSelected(parsed.items, backend)) try parsed.append(backend);
@@ -363,6 +388,7 @@ fn backendName(backend: discovery.Backend) []const u8 {
         .vm => "vm",
         .llvm => "llvm",
         .hybrid => "hybrid",
+        .wasm => "wasm",
     };
 }
 

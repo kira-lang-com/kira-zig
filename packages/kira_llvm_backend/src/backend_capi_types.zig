@@ -18,6 +18,15 @@ pub const Types = struct {
     i16: llvm.c.LLVMTypeRef,
     i32: llvm.c.LLVMTypeRef,
     i64: llvm.c.LLVMTypeRef,
+    // The C ABI's pointer-sized integer (`size_t` / `uintptr_t`) for the TARGET.
+    // 64-bit on all native targets; 32-bit on wasm32 (emscripten), where a `ptr`
+    // and `size_t` are 32-bit. Every C-boundary size/pointer-width parameter of a
+    // libc or Kira runtime helper (malloc, memcpy, memcmp, strlen, kira_struct_alloc,
+    // ...) must use this width, or the emitted call signature disagrees with the
+    // wasm32 libc and wasm-ld traps with a `function signature mismatch`. Kira's
+    // internal `Int`/pointer registers stay i64 regardless (see `llvmType`); this
+    // type is ONLY for declaring/calling the C boundary.
+    usize_ty: llvm.c.LLVMTypeRef,
     double_ty: llvm.c.LLVMTypeRef,
     float_ty: llvm.c.LLVMTypeRef,
     void_ty: llvm.c.LLVMTypeRef,
@@ -25,10 +34,15 @@ pub const Types = struct {
     string_ty: llvm.c.LLVMTypeRef,
     bridge_ty: llvm.c.LLVMTypeRef,
 
-    pub fn init(api: *const llvm.Api, context: llvm.c.LLVMContextRef) Types {
+    pub fn init(api: *const llvm.Api, context: llvm.c.LLVMContextRef, triple: []const u8) Types {
         const ptr_ty = api.LLVMPointerTypeInContext(context, 0);
         const i64_ty = api.LLVMInt64TypeInContext(context);
         const i8_ty = api.LLVMInt8TypeInContext(context);
+        // wasm32-* targets have 32-bit pointers/size_t; everything else here is 64-bit.
+        const usize_ty = if (std.mem.startsWith(u8, triple, "wasm32"))
+            api.LLVMInt32TypeInContext(context)
+        else
+            i64_ty;
         var string_fields = [_]llvm.c.LLVMTypeRef{ ptr_ty, i64_ty };
         // Matches the runtime KiraBridgeValue: { tag:i8, pad:[7 x i8], payload:i64, extra:i64 }.
         var bridge_fields = [_]llvm.c.LLVMTypeRef{ i8_ty, api.LLVMArrayType2(i8_ty, 7), i64_ty, i64_ty };
@@ -40,6 +54,7 @@ pub const Types = struct {
             .i16 = api.LLVMInt16TypeInContext(context),
             .i32 = api.LLVMInt32TypeInContext(context),
             .i64 = i64_ty,
+            .usize_ty = usize_ty,
             .double_ty = api.LLVMDoubleTypeInContext(context),
             .float_ty = api.LLVMFloatTypeInContext(context),
             .void_ty = api.LLVMVoidTypeInContext(context),
@@ -70,6 +85,23 @@ pub const Types = struct {
         for (function_decl.param_types, 0..) |param_type, index| params[index] = self.llvmType(param_type);
         const ret = self.llvmType(function_decl.return_type);
         return self.api.LLVMFunctionType(ret, params.ptr, @intCast(params.len), 0);
+    }
+
+    // Narrow a Kira i64-register size/pointer value to the C ABI's `usize` width
+    // for passing as a `size_t`/`uintptr_t` argument. Identity on 64-bit targets
+    // (usize_ty aliases i64, so the same TypeRef — no instruction emitted); a
+    // truncation to i32 on wasm32. The value is always a real byte count or a
+    // 32-bit-representable pointer here, so the high bits dropped are zero.
+    pub fn sizeArg(self: Types, b: llvm.c.LLVMBuilderRef, value: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+        if (self.usize_ty == self.i64) return value;
+        return self.api.LLVMBuildTrunc(b, value, self.usize_ty, "cabi.usize");
+    }
+
+    // Widen a C ABI `usize`-typed return (e.g. strlen's `size_t`) back to Kira's
+    // i64 register width. Identity on 64-bit; a zero-extend on wasm32.
+    pub fn sizeRet(self: Types, b: llvm.c.LLVMBuilderRef, value: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+        if (self.usize_ty == self.i64) return value;
+        return self.api.LLVMBuildZExt(b, value, self.i64, "cabi.usize.ret");
     }
 };
 
@@ -120,15 +152,19 @@ pub const RuntimeDecls = struct {
         // kira_hybrid_call_runtime(i32 function_id, ptr args, i32 arg_count, ptr result)
         var rt_args = [_]llvm.c.LLVMTypeRef{ types.i32, types.ptr_ty, types.i32, types.ptr_ty };
         const call_runtime_ty = if (mode == .hybrid) api.LLVMFunctionType(types.void_ty, &rt_args, rt_args.len, 0) else null;
-        var malloc_args = [_]llvm.c.LLVMTypeRef{types.i64};
+        // libc/runtime helpers whose C prototypes use size_t/uintptr_t take the
+        // TARGET's pointer-width integer (i32 on wasm32, i64 elsewhere). Kira's own
+        // register values stay i64 and are narrowed at each call site via
+        // Types.sizeArg (identity on 64-bit).
+        var malloc_args = [_]llvm.c.LLVMTypeRef{types.usize_ty};
         const malloc_ty = api.LLVMFunctionType(types.ptr_ty, &malloc_args, malloc_args.len, 0);
         var free_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
         const free_ty = api.LLVMFunctionType(types.void_ty, &free_args, free_args.len, 0);
         var strlen_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
-        const strlen_ty = api.LLVMFunctionType(types.i64, &strlen_args, strlen_args.len, 0);
-        var memcpy_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.i64 };
+        const strlen_ty = api.LLVMFunctionType(types.usize_ty, &strlen_args, strlen_args.len, 0);
+        var memcpy_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.usize_ty };
         const memcpy_ty = api.LLVMFunctionType(types.ptr_ty, &memcpy_args, memcpy_args.len, 0);
-        var memcmp_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.i64 };
+        var memcmp_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty, types.usize_ty };
         const memcmp_ty = api.LLVMFunctionType(types.i32, &memcmp_args, memcmp_args.len, 0);
         var alloc_args = [_]llvm.c.LLVMTypeRef{types.i64};
         const array_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &alloc_args, alloc_args.len, 0);
@@ -154,7 +190,9 @@ pub const RuntimeDecls = struct {
         const state_recover_ty = api.LLVMFunctionType(types.ptr_ty, &state_recover_args, state_recover_args.len, 0);
         var state_free_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
         const state_free_ty = api.LLVMFunctionType(types.void_ty, &state_free_args, state_free_args.len, 0);
-        var struct_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.i64 };
+        // kira_struct_alloc(uint64_t type_id, size_t size): type_id is a Kira 64-bit
+        // domain value, size is a C size_t (target width).
+        var struct_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.usize_ty };
         const struct_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &struct_alloc_args, struct_alloc_args.len, 0);
         var struct_type_id_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
         const struct_type_id_ty = api.LLVMFunctionType(types.i64, &struct_type_id_args, struct_type_id_args.len, 0);

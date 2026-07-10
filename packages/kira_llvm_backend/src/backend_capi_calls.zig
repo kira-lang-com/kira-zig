@@ -22,10 +22,12 @@ pub fn lowerCStringToString(fc: *FunctionCodegen, v: ir.CStringToString) !llvm.c
     const b = fc.builder;
     const cptr = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "cstr.ptr");
     var len_args = [_]llvm.c.LLVMValueRef{cptr};
-    const len = api.LLVMBuildCall2(b, fc.runtime_decls.strlen.ty, fc.runtime_decls.strlen.fn_value, &len_args, len_args.len, "cstr.len");
-    var malloc_args = [_]llvm.c.LLVMValueRef{len};
+    // strlen returns size_t (i32 on wasm32); widen to the i64 register domain, then
+    // narrow again per C call below (both identity on 64-bit).
+    const len = fc.types.sizeRet(b, api.LLVMBuildCall2(b, fc.runtime_decls.strlen.ty, fc.runtime_decls.strlen.fn_value, &len_args, len_args.len, "cstr.len"));
+    var malloc_args = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, len)};
     const copy = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &malloc_args, malloc_args.len, "cstr.copy");
-    var copy_args = [_]llvm.c.LLVMValueRef{ copy, cptr, len };
+    var copy_args = [_]llvm.c.LLVMValueRef{ copy, cptr, fc.types.sizeArg(b, len) };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &copy_args, copy_args.len, "cstr.memcpy");
     var s = api.LLVMGetUndef(fc.types.string_ty);
     s = api.LLVMBuildInsertValue(b, s, copy, 0, "cstr.s.ptr");
@@ -179,6 +181,8 @@ pub fn collectBodyFunctionRefs(
             .call => |c| try out.put(allocator, c.callee, {}),
             .const_function => |c| try out.put(allocator, c.function_id, {}),
             .const_closure => |c| try out.put(allocator, c.function_id, {}),
+            // A deferred spawn's callee is called from the generated task thunk.
+            .task_spawn => |c| try out.put(allocator, c.callee, {}),
             .call_virtual => |v| {
                 if (utils.findTypeDecl(program, v.static_type_name)) |type_decl| {
                     for (type_decl.methods) |method_decl| {
