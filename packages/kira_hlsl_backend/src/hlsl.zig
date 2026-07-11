@@ -207,12 +207,26 @@ fn emitStatement(writer: anytype, statement: shader_ir.Statement, indent_level: 
         .let_stmt => |let_stmt| {
             try writer.print("{s} {s}", .{ hlslTypeName(let_stmt.ty), sanitizeName(let_stmt.name) });
             if (let_stmt.value) |value| {
+                if (isAtomicAddCall(value)) {
+                    try writer.writeAll(";\n");
+                    try emitIndent(writer, indent_level);
+                    try emitAtomicAdd(writer, value);
+                    try writer.writeAll(sanitizeName(let_stmt.name));
+                    try writer.writeAll(");\n");
+                    return;
+                }
                 try writer.writeAll(" = ");
                 try emitExpr(writer, value);
             }
             try writer.writeAll(";\n");
         },
         .assign_stmt => |assign_stmt| {
+            if (isAtomicAddCall(assign_stmt.value)) {
+                try emitAtomicAdd(writer, assign_stmt.value);
+                try emitExpr(writer, assign_stmt.target);
+                try writer.writeAll(");\n");
+                return;
+            }
             try emitExpr(writer, assign_stmt.target);
             try writer.writeAll(" = ");
             try emitExpr(writer, assign_stmt.value);
@@ -250,6 +264,25 @@ fn emitStatement(writer: anytype, statement: shader_ir.Statement, indent_level: 
             try writer.writeAll("\n");
         },
     }
+}
+
+fn isAtomicAddCall(expr: *const shader_ir.Expr) bool {
+    if (expr.node != .call) return false;
+    const call_expr = expr.node.call;
+    return call_expr.callee == .intrinsic and call_expr.callee.intrinsic == .atomic_add;
+}
+
+// HLSL atomics are statement-form. The KSL intrinsic returns the original value,
+// so direct let/assignment uses lower to InterlockedAdd's third out-parameter.
+fn emitAtomicAdd(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
+    const call_expr = expr.node.call;
+    try writer.writeAll("InterlockedAdd(");
+    try emitExpr(writer, call_expr.args[0]);
+    try writer.writeByte('[');
+    try emitExpr(writer, call_expr.args[1]);
+    try writer.writeAll("], ");
+    try emitExpr(writer, call_expr.args[2]);
+    try writer.writeAll(", ");
 }
 
 fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
@@ -345,14 +378,9 @@ fn emitExpr(writer: anytype, expr: *const shader_ir.Expr) anyerror!void {
                     try writer.writeAll(", 0))");
                 },
                 .atomic_add => {
-                    // HLSL `InterlockedAdd` is a STATEMENT with an out-parameter for
-                    // the original value; it cannot be a valid inline expression, and
-                    // the D3D backend is unverified. Emitting an undefined
-                    // `kira_atomic_add(...)` helper produced HLSL that downstream
-                    // compilation must reject while the KSL build reported pass — a
-                    // Core Law #2 smoke surface. Fail clearly instead (Codex review):
-                    // GLSL/MSL/WGSL emit real atomic builtins; HLSL rejects until it
-                    // has real statement-form lowering.
+                    // Direct let/assignment forms are lowered by emitStatement so
+                    // InterlockedAdd can write its original value to an out-parameter.
+                    // A nested atomic expression still cannot be represented inline.
                     return error.UnsupportedShaderIntrinsic;
                 },
             },

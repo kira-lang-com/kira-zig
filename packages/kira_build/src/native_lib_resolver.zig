@@ -106,6 +106,7 @@ fn resolveLinkExtras(allocator: std.mem.Allocator, manifest_path: []const u8, ex
         .defines = try cloneStrings(allocator, extras.defines),
         .frameworks = try cloneStrings(allocator, extras.frameworks),
         .system_libs = try cloneStrings(allocator, extras.system_libs),
+        .linker_flags = try cloneStrings(allocator, extras.linker_flags),
     };
 }
 
@@ -239,4 +240,42 @@ test "resolveNativeManifestFile marks library unavailable when a required env va
         resolved.unavailable.?.reason,
     );
     try std.testing.expectEqualStrings(unset_env_probe, resolved.unavailable.?.detail);
+}
+
+test "resolveNativeManifestFile carries per-target compiler and linker flags through resolution" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "sokol.toml",
+        .data =
+        \\[library]
+        \\name = "sokol"
+        \\link_mode = "static"
+        \\abi = "c"
+        \\
+        \\[build]
+        \\sources = ["sokol_impl.c"]
+        \\
+        \\[target.wasm32-emscripten-unknown]
+        \\static_lib = "libsokol.a"
+        \\compiler_flags = ["--use-port=emdawnwebgpu"]
+        \\linker_flags = ["--use-port=emdawnwebgpu", "-sERROR_ON_UNDEFINED_SYMBOLS=0"]
+        \\
+        ,
+    });
+
+    const manifest_path = try tmp.dir.realPathFileAlloc(std.testing.io, "sokol.toml", allocator);
+    const selector = try native.TargetSelector.parse(allocator, "wasm32-emscripten-unknown");
+    const resolved = try resolveNativeManifestFile(allocator, manifest_path, selector);
+
+    try std.testing.expectEqual(@as(usize, 1), resolved.compiler_flags.len);
+    try std.testing.expectEqualStrings("--use-port=emdawnwebgpu", resolved.compiler_flags[0]);
+    try std.testing.expectEqual(@as(usize, 2), resolved.link.linker_flags.len);
+    try std.testing.expectEqualStrings("--use-port=emdawnwebgpu", resolved.link.linker_flags[0]);
+    try std.testing.expectEqualStrings("-sERROR_ON_UNDEFINED_SYMBOLS=0", resolved.link.linker_flags[1]);
 }

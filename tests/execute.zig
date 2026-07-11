@@ -6,10 +6,15 @@ const discovery = @import("discovery.zig");
 const reporting = @import("reporting.zig");
 const run_phases = @import("execute_run_phases.zig");
 const support = @import("execute_support.zig");
+const wasm_support = @import("wasm_support.zig");
 pub const Options = struct {
     hybrid_runner_path: ?[]const u8 = null,
     profile: bool = false,
     phases: PhaseSet = .all,
+    // Detected once by the driver when the wasm backend is selected. When the
+    // emcc/node toolchain is missing, wasm jobs are SKIPped (not failed) with a
+    // per-case note instead of running any wasm phase.
+    wasm_tooling: wasm_support.Tooling = .{},
 };
 pub const JobReport = reporting.JobReport;
 const PhaseProfile = reporting.PhaseProfile;
@@ -52,6 +57,15 @@ fn runBackendMatrix(
     options: Options,
     profiles: *[3]PhaseProfile,
 ) !void {
+    // The opt-in wasm matrix requires the emcc/node toolchain. When it is absent
+    // the whole wasm entry for this case is SKIPped with a per-case note, rather
+    // than failing or silently pretending it ran. Reporters that cannot record a
+    // skip simply omit the wasm entry (neither pass nor fail).
+    if (backend == .wasm and !options.wasm_tooling.available()) {
+        skipBackend(allocator, case, backend, reporter, options);
+        return;
+    }
+
     var stopped = false;
     if (options.phases.includes(.check) and case.expectation.check.result == .pass and case.expectation.build.result == .pass) {
         profiles[phaseIndex(.check)] = .{ .kind = .assumed_pass };
@@ -210,6 +224,7 @@ fn runRunPhase(
         .vm => run_phases.runVmPhase(allocator, system, case),
         .llvm => run_phases.runLlvmPhase(allocator, system, case),
         .hybrid => run_phases.runHybridPhase(allocator, system, case, options.hybrid_runner_path),
+        .wasm => run_phases.runWasmPhase(allocator, system, case),
     };
 }
 
@@ -312,6 +327,22 @@ fn comparePhase(
         .blocked => unreachable,
     }
     reporter.pass(label);
+}
+
+fn skipBackend(
+    allocator: std.mem.Allocator,
+    case: discovery.Case,
+    backend: discovery.Backend,
+    reporter: anytype,
+    options: Options,
+) void {
+    const Reporter = @TypeOf(reporter.*);
+    if (@hasDecl(Reporter, "skip")) {
+        const label = support.backendLabel(allocator, case.name, backend) catch return;
+        reporter.skip(label, options.wasm_tooling.note()) catch {};
+    }
+    // Reporters without a `skip` method omit the wasm entry entirely; the case is
+    // neither counted as passed nor failed.
 }
 
 fn reportFailure(reporter: anytype, label: []const u8, err: anyerror, detail: reporting.FailureDetail) void {

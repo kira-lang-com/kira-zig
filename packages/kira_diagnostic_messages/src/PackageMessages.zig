@@ -49,6 +49,21 @@ pub fn noBuildableTarget(allocator: std.mem.Allocator, source_root: []const u8) 
     });
 }
 
+pub fn missingAssetDirectory(allocator: std.mem.Allocator, entry: []const u8) !diagnostics.Diagnostic {
+    return message.build(.{
+        .code = .KPK025_MissingAssetDirectory,
+        .domain = .package,
+        .phase = .backend_prepare,
+        .title = "declared asset does not exist",
+        .message = try std.fmt.allocPrint(
+            allocator,
+            "The manifest `assets` entry `{s}` was not found under the project root.",
+            .{entry},
+        ),
+        .help = "Create the directory/file, generate it before building (e.g. `kira shader build`), or remove the entry from the `assets` list in `kira.toml`.",
+    });
+}
+
 pub fn unknownProfile(allocator: std.mem.Allocator, profile: []const u8) !diagnostics.Diagnostic {
     return message.build(.{
         .code = .KPK015_UnknownProfile,

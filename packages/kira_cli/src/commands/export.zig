@@ -5,7 +5,7 @@ const diag_messages = @import("kira_diagnostic_messages");
 const manifest = @import("kira_manifest");
 const kira_project = @import("kira_project");
 const kira_toolchain = @import("kira_toolchain");
-const kira_wasm_runtime = @import("kira_wasm_runtime");
+const kira_live = @import("kira_live");
 const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
@@ -34,7 +34,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         .apple, .macos, .ios, .tvos, .visionos => try apple_export.run(allocator, stdout, stderr, parsed.family, exports_root, parsed.input_path),
         .windows => try exportWindows(allocator, stdout, stderr, exports_root, project_name),
         .android => try exportAndroid(allocator, stdout, stderr, exports_root, project_name, selected_app_path),
-        .web => try exportWeb(allocator, stdout, stderr, exports_root, project_name, parsed.surface),
+        .web => try exportWeb(allocator, stdout, stderr, exports_root, project_name, parsed.surface, target.source_path, root),
         .linux => try exportLinux(allocator, stdout, stderr, exports_root, project_name),
     }
 }
@@ -121,22 +121,38 @@ fn exportAndroid(allocator: std.mem.Allocator, stdout: anytype, stderr: anytype,
     }
 }
 
-fn exportWeb(allocator: std.mem.Allocator, stdout: anytype, stderr: anytype, exports_root: []const u8, project_name: []const u8, surface: manifest.WebSurface) !void {
+fn exportWeb(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    stderr: anytype,
+    exports_root: []const u8,
+    project_name: []const u8,
+    surface: manifest.WebSurface,
+    source_path: ?[]const u8,
+    project_root: []const u8,
+) !void {
     if (surface == .hybrid) {
         try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(allocator, surface.label(), "The hybrid web surface is modeled, but it still needs a browser VM/native boundary runner."));
         return error.CommandFailed;
     }
-    const requirements = manifest.webSurfaceRequirements(surface);
+    const entrypoint = source_path orelse {
+        try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.exportNotImplemented(allocator, surface.label(), "The web export target requires an app or example entrypoint to compile to wasm32-emscripten."));
+        return error.CommandFailed;
+    };
     const root = try std.fs.path.join(allocator, &.{ exports_root, "web" });
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
-    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "index.html" }), try webIndex(allocator, project_name, surface));
-    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "kira-browser-ffi.generated.js" }), webGeneratedFfiJs());
-    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "kira-wasm.js" }), webRuntimeJs(surface));
-    const wasm = try kira_wasm_runtime.buildModule(allocator, .{ .app_name = project_name, .surface = surface.label() });
-    if (!kira_wasm_runtime.validateModule(wasm) or kira_wasm_runtime.isHeaderOnly(wasm)) return error.InvalidWasmArtifact;
-    try writeBytesFile(try std.fs.path.join(allocator, &.{ root, "kira-app.wasm" }), wasm);
-    try writeTextFile(try std.fs.path.join(allocator, &.{ root, "manifest.json" }), try webManifestJson(allocator, project_name, requirements));
-    try stdout.print("exported Kira Wasm {s} runtime at {s}\n", .{ surface.label(), root });
+    const build_dir = try std.fs.path.join(allocator, &.{ exports_root, "web-build" });
+    const bundle = kira_live.web_bundle.buildWebApp(allocator, .{
+        .source_path = entrypoint,
+        .project_root = project_root,
+        .project_name = project_name,
+        .surface = surface,
+        .web_root = root,
+        .build_dir = build_dir,
+    }, stderr) catch |err| switch (err) {
+        error.WebAppBuildFailed => return error.CommandFailed,
+        else => return err,
+    };
+    try stdout.print("exported Kira Wasm {s} app at {s} (loader {s}, module {s})\n", .{ surface.label(), root, bundle.js_path, bundle.wasm_path });
 }
 
 fn writeCmakeScaffold(allocator: std.mem.Allocator, root: []const u8, project_name: []const u8, platform: []const u8) !void {
@@ -176,282 +192,7 @@ fn runnerConfigToml(allocator: std.mem.Allocator, runner: []const u8, project_na
     );
 }
 
-fn webIndex(allocator: std.mem.Allocator, project_name: []const u8, surface: manifest.WebSurface) ![]const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<!doctype html>
-        \\<html><head><meta charset="utf-8"><title>{s}</title></head>
-        \\<body data-kira-runner="web" data-kira-surface="{s}"><script src="./kira-browser-ffi.generated.js"></script><script src="./kira-wasm.js"></script></body></html>
-        \\
-    , .{ project_name, surface.label() });
-}
-
-fn webGeneratedFfiJs() []const u8 {
-    return
-    \\// generated by Kira Foundation.Web FFI binding generator
-    \\const KiraBrowserCallbackRegistry = (() => {
-    \\  let nextId = 1;
-    \\  const callbacks = new Map();
-    \\  const timers = new Map();
-    \\  const events = new Map();
-    \\  function register(fn, label = "callback") {
-    \\    if (typeof fn !== "function") throw new TypeError("Kira callback registration requires a function");
-    \\    const id = nextId++;
-    \\    callbacks.set(id, { fn, label });
-    \\    return id;
-    \\  }
-    \\  function invoke(id, ...args) {
-    \\    const record = callbacks.get(id);
-    \\    if (!record) throw new Error("Kira callback " + id + " is not registered");
-    \\    try {
-    \\      return record.fn(...args);
-    \\    } catch (error) {
-    \\      console.error("Kira callback " + id + " failed", error);
-    \\      throw error;
-    \\    }
-    \\  }
-    \\  function remove(id) {
-    \\    clearTimer(id);
-    \\    removeEvent(id);
-    \\    return callbacks.delete(id);
-    \\  }
-    \\  function setTimer(fnOrId, ms) {
-    \\    const id = typeof fnOrId === "function" ? register(fnOrId, "timer") : fnOrId;
-    \\    const timer = globalThis.setTimeout(() => {
-    \\      try {
-    \\        invoke(id);
-    \\      } finally {
-    \\        timers.delete(id);
-    \\        callbacks.delete(id);
-    \\      }
-    \\    }, ms);
-    \\    timers.set(id, timer);
-    \\    return id;
-    \\  }
-    \\  function clearTimer(id) {
-    \\    if (!timers.has(id)) return false;
-    \\    globalThis.clearTimeout(timers.get(id));
-    \\    timers.delete(id);
-    \\    return true;
-    \\  }
-    \\  function addEvent(node, eventName, fnOrId) {
-    \\    const id = typeof fnOrId === "function" ? register(fnOrId, eventName) : fnOrId;
-    \\    const listener = (event) => invoke(id, event);
-    \\    node.addEventListener(eventName, listener);
-    \\    events.set(id, { node, eventName, listener });
-    \\    return id;
-    \\  }
-    \\  function removeEvent(id) {
-    \\    const record = events.get(id);
-    \\    if (!record) return false;
-    \\    record.node.removeEventListener(record.eventName, record.listener);
-    \\    events.delete(id);
-    \\    return true;
-    \\  }
-    \\  function clearAll() {
-    \\    for (const id of Array.from(timers.keys())) clearTimer(id);
-    \\    for (const id of Array.from(events.keys())) removeEvent(id);
-    \\    callbacks.clear();
-    \\  }
-    \\  return { register, invoke, remove, setTimer, clearTimer, addEvent, removeEvent, clearAll, activeCount: () => callbacks.size };
-    \\})();
-    \\
-    \\globalThis.KiraBrowserCallbackRegistry = KiraBrowserCallbackRegistry;
-    \\
-    \\globalThis.KiraBrowserFFI = {
-    \\  documentBody: () => document.body,
-    \\  createElement: (tag) => document.createElement(tag),
-    \\  setText: (node, text) => { node.textContent = text; },
-    \\  appendChild: (parent, child) => parent.appendChild(child),
-    \\  setAttribute: (node, name, value) => node.setAttribute(name, value),
-    \\  setStyle: (node, name, value) => { node.style[name] = value; },
-    \\  addClass: (node, name) => node.classList.add(name),
-    \\  removeClass: (node, name) => node.classList.remove(name),
-    \\  registerCallback: (fn, label) => KiraBrowserCallbackRegistry.register(fn, label),
-    \\  invokeCallback: (id, ...args) => KiraBrowserCallbackRegistry.invoke(id, ...args),
-    \\  removeCallback: (id) => KiraBrowserCallbackRegistry.remove(id),
-    \\  clearCallbacks: () => KiraBrowserCallbackRegistry.clearAll(),
-    \\  activeCallbackCount: () => KiraBrowserCallbackRegistry.activeCount(),
-    \\  addEventListener: (node, eventName, fnOrId) => KiraBrowserCallbackRegistry.addEvent(node, eventName, fnOrId),
-    \\  removeEventListener: (id) => KiraBrowserCallbackRegistry.removeEvent(id),
-    \\  onClick: (node, fnOrId) => KiraBrowserCallbackRegistry.addEvent(node, "click", fnOrId),
-    \\  consoleLog: (text) => console.log(text),
-    \\  userAgent: () => navigator.userAgent,
-    \\  href: () => location.href,
-    \\  setTimeout: (fnOrId, ms) => KiraBrowserCallbackRegistry.setTimer(fnOrId, ms),
-    \\  clearTimeout: (id) => KiraBrowserCallbackRegistry.clearTimer(id),
-    \\  createCanvas: () => document.createElement("canvas"),
-    \\  detectWebGPU: async () => ({ available: !!navigator.gpu, adapter: navigator.gpu ? await navigator.gpu.requestAdapter() : null }),
-    \\};
-    \\
-    ;
-}
-
-fn webRuntimeJs(surface: manifest.WebSurface) []const u8 {
-    return switch (surface) {
-        .dom => webDomRuntimeJs(),
-        .webgpu => webGpuRuntimeJs(),
-        .hybrid => webDomRuntimeJs(),
-    };
-}
-
-fn webDomRuntimeJs() []const u8 {
-    return
-    \\(async () => {
-    \\const ffi = globalThis.KiraBrowserFFI;
-    \\const wasmBytes = await fetch("./kira-app.wasm").then((response) => response.arrayBuffer());
-    \\const wasm = await WebAssembly.instantiate(wasmBytes, {});
-    \\const exports = wasm.instance.exports;
-    \\const wasmModuleLoaded = exports.kira_wasm_module_loaded();
-    \\const runtimeStarted = exports.kira_runtime_started();
-    \\const appEntrypointInvoked = exports.kira_app_entrypoint_invoked();
-    \\const appStarted = exports.kira_app_start();
-    \\globalThis.KiraWasmRuntime = { exports, wasmModuleLoaded, runtimeStarted, appEntrypointInvoked, appStarted, retainedTreeInitialized: exports.kira_retained_tree_initialized() };
-    \\if (wasmModuleLoaded) ffi.consoleLog("KIRA_WASM_MODULE_LOADED");
-    \\if (runtimeStarted) ffi.consoleLog("KIRA_RUNTIME_STARTED");
-    \\if (appEntrypointInvoked) ffi.consoleLog("KIRA_APP_ENTRYPOINT_INVOKED");
-    \\ffi.consoleLog("Kira Wasm runtime instantiated");
-    \\const root = ffi.documentBody();
-    \\const title = ffi.createElement("h1");
-    \\ffi.setText(title, "Hello from Kira Wasm");
-    \\ffi.appendChild(root, title);
-    \\const details = ffi.createElement("p");
-    \\ffi.setText(details, "Location: " + ffi.href() + " | UA: " + ffi.userAgent());
-    \\ffi.appendChild(root, details);
-    \\const button = ffi.createElement("button");
-    \\ffi.setText(button, "Click me");
-    \\ffi.appendChild(root, button);
-    \\const status = ffi.createElement("p");
-    \\ffi.setText(status, "Waiting for DOM update");
-    \\ffi.appendChild(root, status);
-    \\const clickId = ffi.registerCallback(() => ffi.setText(status, "Kira DOM updated"), "button.click");
-    \\const clickHandle = ffi.onClick(button, clickId);
-    \\const timerId = ffi.registerCallback(() => ffi.setText(status, "Kira DOM updated"), "timer.status");
-    \\ffi.setTimeout(timerId, 250);
-    \\globalThis.KiraWebHostProbe = { clickHandle, timerId, teardown: () => ffi.clearCallbacks(), activeCallbacks: () => ffi.activeCallbackCount() };
-    \\ffi.consoleLog("HOST_BROWSER_API_CALL_SUCCEEDED");
-    \\})();
-    \\
-    ;
-}
-
-fn webGpuRuntimeJs() []const u8 {
-    return
-    \\(async () => {
-    \\const ffi = globalThis.KiraBrowserFFI;
-    \\const wasmBytes = await fetch("./kira-app.wasm").then((response) => response.arrayBuffer());
-    \\const wasm = await WebAssembly.instantiate(wasmBytes, {});
-    \\const exports = wasm.instance.exports;
-    \\const wasmModuleLoaded = exports.kira_wasm_module_loaded();
-    \\const runtimeStarted = exports.kira_runtime_started();
-    \\const appEntrypointInvoked = exports.kira_app_entrypoint_invoked();
-    \\const uiFoundationStarted = exports.kira_ui_foundation_app_started();
-    \\const uiTreeBuilt = exports.kira_ui_tree_built();
-    \\const uiRetainedTreeReady = exports.kira_ui_retained_tree_ready();
-    \\const uiLayoutNonEmpty = exports.kira_ui_layout_non_empty();
-    \\const uiDrawCommandsSubmitted = exports.kira_ui_draw_commands_submitted();
-    \\const graphicsWebgpuInitialized = exports.kira_graphics_webgpu_initialized();
-    \\const appStarted = exports.kira_app_start();
-    \\const retainedTreeInitialized = exports.kira_retained_tree_initialized();
-    \\const layoutRan = exports.kira_layout_ran();
-    \\const renderCommandsGenerated = exports.kira_render_commands_generated();
-    \\globalThis.KiraWasmRuntime = { exports, wasmModuleLoaded, runtimeStarted, appEntrypointInvoked, uiFoundationStarted, uiTreeBuilt, uiRetainedTreeReady, uiLayoutNonEmpty, uiDrawCommandsSubmitted, graphicsWebgpuInitialized, appStarted, retainedTreeInitialized, layoutRan, renderCommandsGenerated };
-    \\if (wasmModuleLoaded) ffi.consoleLog("KIRA_WASM_MODULE_LOADED");
-    \\if (runtimeStarted) ffi.consoleLog("KIRA_RUNTIME_STARTED");
-    \\if (appEntrypointInvoked) ffi.consoleLog("KIRA_APP_ENTRYPOINT_INVOKED");
-    \\if (uiFoundationStarted) ffi.consoleLog("KIRA_UI_FOUNDATION_APP_STARTED");
-    \\if (uiTreeBuilt) ffi.consoleLog("KIRA_UI_TREE_BUILT");
-    \\if (uiRetainedTreeReady) ffi.consoleLog("KIRA_UI_RETAINED_TREE_READY");
-    \\if (uiLayoutNonEmpty) ffi.consoleLog("KIRA_UI_LAYOUT_NON_EMPTY");
-    \\if (uiDrawCommandsSubmitted) ffi.consoleLog("KIRA_UI_DRAW_COMMANDS_SUBMITTED");
-    \\if (graphicsWebgpuInitialized) ffi.consoleLog("KIRA_GRAPHICS_WEBGPU_INITIALIZED");
-    \\ffi.consoleLog("Kira Wasm runtime instantiated");
-    \\if (retainedTreeInitialized) ffi.consoleLog("Kira UI Foundation retained tree initialized");
-    \\if (layoutRan) ffi.consoleLog("Kira UI Foundation layout ran");
-    \\if (renderCommandsGenerated) ffi.consoleLog("Kira UI Foundation render commands generated");
-    \\const root = ffi.documentBody();
-    \\const title = ffi.createElement("h1");
-    \\ffi.setText(title, "Kira WebGPU surface");
-    \\ffi.appendChild(root, title);
-    \\const canvas = ffi.createCanvas();
-    \\ffi.setAttribute(canvas, "width", "640");
-    \\ffi.setAttribute(canvas, "height", "360");
-    \\ffi.setStyle(canvas, "border", "1px solid #222");
-    \\ffi.appendChild(root, canvas);
-    \\const status = ffi.createElement("p");
-    \\ffi.setText(status, "Detecting WebGPU");
-    \\ffi.appendChild(root, status);
-    \\try {
-    \\  const info = await ffi.detectWebGPU();
-    \\  if (!info.available || !info.adapter) {
-    \\    ffi.setText(status, "WebGPU unavailable in this browser");
-    \\    return;
-    \\  }
-    \\  const device = await info.adapter.requestDevice();
-    \\  const context = canvas.getContext("webgpu");
-    \\  const format = navigator.gpu.getPreferredCanvasFormat();
-    \\  context.configure({ device, format, alphaMode: "opaque" });
-    \\  const shader = device.createShaderModule({ code: `
-    \\    @vertex fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4f {
-    \\      var positions = array<vec2f, 3>(vec2f(0.0, 0.7), vec2f(-0.7, -0.7), vec2f(0.7, -0.7));
-    \\      let p = positions[vertexIndex];
-    \\      return vec4f(p, 0.0, 1.0);
-    \\    }
-    \\    @fragment fn fs_main() -> @location(0) vec4f {
-    \\      return vec4f(0.16, 0.62, 0.52, 1.0);
-    \\    }
-    \\  ` });
-    \\  const pipeline = device.createRenderPipeline({
-    \\    layout: "auto",
-    \\    vertex: { module: shader, entryPoint: "vs_main" },
-    \\    fragment: { module: shader, entryPoint: "fs_main", targets: [{ format }] },
-    \\    primitive: { topology: "triangle-list" },
-    \\  });
-    \\  const encoder = device.createCommandEncoder();
-    \\  const pass = encoder.beginRenderPass({
-    \\    colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: { r: 0.04, g: 0.05, b: 0.07, a: 1.0 }, loadOp: "clear", storeOp: "store" }],
-    \\  });
-    \\  pass.setPipeline(pipeline);
-    \\  pass.draw(3);
-    \\  pass.end();
-    \\  device.queue.submit([encoder.finish()]);
-    \\  globalThis.KiraWebGpuHostCapability = { device: true, context: true, pipeline: true, frameSubmitted: true };
-    \\  ffi.setText(status, "Host WebGPU frame submitted");
-    \\  ffi.consoleLog("HOST_WEBGPU_AVAILABLE");
-    \\  ffi.consoleLog("HOST_WEBGPU_PIPELINE_CREATED");
-    \\  ffi.consoleLog("HOST_WEBGPU_FRAME_SUBMITTED");
-    \\} catch (error) {
-    \\  ffi.setText(status, "WebGPU detection failed");
-    \\  throw error;
-    \\}
-    \\})();
-    \\
-    ;
-}
-
-fn webManifestJson(allocator: std.mem.Allocator, project_name: []const u8, requirements: manifest.WebSurfaceRequirements) ![]const u8 {
-    const capability = if (requirements.graphics_capability) |capability_value| capability_value.label() else "none";
-    return std.fmt.allocPrint(
-        allocator,
-        "{{\"runner\":\"web\",\"runtime\":\"kira-wasm\",\"artifact\":\"kira-app.wasm\",\"artifact_kind\":\"generated-runtime-module\",\"placeholder\":false,\"surface\":\"{s}\",\"rendering_model\":\"{s}\",\"graphics_capability\":\"{s}\",\"requires_canvas\":{},\"requires_browser_detection\":{},\"app\":\"{s}\"}}\n",
-        .{
-            requirements.surface.label(),
-            requirements.rendering_model.label(),
-            capability,
-            requirements.requires_canvas,
-            requirements.requires_browser_detection,
-            project_name,
-        },
-    );
-}
-
 fn writeTextFile(path: []const u8, data: []const u8) !void {
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(path) orelse ".");
-    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
-    defer file.close(std.Options.debug_io);
-    try file.writeStreamingAll(std.Options.debug_io, data);
-}
-
-fn writeBytesFile(path: []const u8, data: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(path) orelse ".");
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
@@ -549,32 +290,6 @@ fn androidSdkToolExistsUnderRoot(allocator: std.mem.Allocator, root: []const u8,
         return true;
     }
     return false;
-}
-
-test "web export FFI uses stable tracked callback handles" {
-    const js = webGeneratedFfiJs();
-    try std.testing.expect(std.mem.indexOf(u8, js, "KiraBrowserCallbackRegistry") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "registerCallback") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "invokeCallback") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "removeCallback") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "clearCallbacks") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "activeCallbackCount") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "addEventListener") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "removeEventListener") != null);
-    try std.testing.expect(std.mem.indexOf(u8, js, "clearTimeout") != null);
-}
-
-test "web export manifest models WebGPU canvas requirements" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const requirements = manifest.webSurfaceRequirements(.webgpu);
-    const json = try webManifestJson(arena.allocator(), "KiraApp", requirements);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"surface\":\"webgpu\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"rendering_model\":\"graphics-canvas\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"graphics_capability\":\"webgpu\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_canvas\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_browser_detection\":true") != null);
 }
 
 test "Android application ids are valid without manual replacement" {

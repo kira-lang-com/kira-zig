@@ -224,6 +224,49 @@ const WindowsPollFd = extern struct {
 
 extern "ws2_32" fn WSAPoll(fd_array: [*]WindowsPollFd, fds: u32, timeout: c_int) callconv(.winapi) c_int;
 
+/// Spawn the desktop live runner with `posix_spawn` instead of the fork()+exec()
+/// that `std.process.spawn` uses. The supervisor is multithreaded (its
+/// `std.Io.Threaded` server), and forking a multithreaded process on macOS
+/// leaves the child unable to establish a WindowServer/GPU connection — every
+/// `[NSApplication sharedApplication]` and `MTLCreateSystemDefaultDevice` in the
+/// spawned runner then hangs (the desktop-live KCL038). `posix_spawn` performs
+/// the spawn in the kernel without the userspace fork, so the runner starts as
+/// a clean GUI-capable process. Returns a `std.process.Child` carrying only the
+/// pid — enough for the kill/poll/wait paths, which use `child.id`.
+///
+/// The child inherits the current process environment (so set any extra vars,
+/// e.g. KIRA_LIVE_QUIT_AFTER_NS, with `std.c.setenv` before calling); stdin is
+/// redirected from /dev/null and stdout/stderr are inherited.
+pub fn posixSpawnRunner(allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8) !std.process.Child {
+    if (builtin.os.tag != .macos and builtin.os.tag != .ios) return error.UnsupportedPlatform;
+    var actions: std.c.posix_spawn_file_actions_t = undefined;
+    if (std.c.posix_spawn_file_actions_init(&actions) != 0) return error.SpawnFailed;
+    defer _ = std.c.posix_spawn_file_actions_destroy(&actions);
+
+    const cwd_z = try allocator.dupeZ(u8, cwd);
+    _ = std.c.posix_spawn_file_actions_addchdir_np(&actions, cwd_z.ptr);
+    // Inherit stdin/stdout/stderr (no file actions for 0/1/2). Detaching the
+    // runner from the controlling terminal (stdin <- /dev/null) severs its
+    // association with the GUI/audit session, after which WindowServer/Metal
+    // connections hang — the desktop-live KCL038. `kira run` works precisely
+    // because the bootstrapper spawns it with inherited stdin.
+
+    const argv_buf = try allocator.allocSentinel(?[*:0]const u8, argv.len, null);
+    for (argv, 0..) |arg, index| argv_buf[index] = (try allocator.dupeZ(u8, arg)).ptr;
+
+    var pid: std.c.pid_t = 0;
+    const rc = std.c.posix_spawn(&pid, argv_buf[0].?, &actions, null, argv_buf.ptr, @ptrCast(std.c.environ));
+    if (rc != 0) return error.SpawnFailed;
+    return .{
+        .id = pid,
+        .thread_handle = {},
+        .stdin = null,
+        .stdout = null,
+        .stderr = null,
+        .request_resource_usage_statistics = false,
+    };
+}
+
 pub fn pollChildExited(child: *std.process.Child) !bool {
     const pid = child.id orelse return true;
     switch (builtin.os.tag) {

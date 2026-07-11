@@ -89,6 +89,43 @@ function enumsSection() -> Int {
     acc = acc + enChain(100, 0, 2)
     acc = acc + enChain(0 - 4, 2, 1)
 
+    // Native drop-elaboration leak-guard churn (types live in
+    // runparity/EmxTests.kira; app/ is one flat package). Each loop leaks
+    // per-iteration on the LLVM binary if the typed enum teardown regresses,
+    // so the harness leak run catches it while the checksum pins parity.
+    //
+    // 1. Array-of-enum with String payloads moved into an owning struct field
+    //    (typed element destroy: enum block + payload box + buffer).
+    var k = 0
+    while k < 40 {
+        let tags = [EmxTag.Named("a" + "b"), EmxTag.Anon, EmxTag.Named("c" + "d")]
+        let bag = EmxBag { tags: move tags }
+        acc = acc + emxCountNamed(bag)
+        k = k + 1
+    }
+    // 2. Struct-payload enum defaults in class-field arrays (typed payload
+    //    destroy via kira_destroy_<T> / clone via kira_clone_<T>).
+    var m = 0
+    while m < 40 {
+        let card = EmxCard()
+        acc = acc + emxPaintScore(card.paint)
+        var e = 0
+        while e < card.effects.count {
+            acc = acc + emxPaintScore(card.effects[e])
+            e = e + 1
+        }
+        m = m + 1
+    }
+    // 3. Construct_any-payload enum (typed destroy through the runtime-typed
+    //    dispatcher; move-only per KIR002, clone arm traps).
+    var q = 0
+    while q < 40 {
+        let cells = [EmxCell.Filled(EmxCircle(r: 3)), EmxCell.Empty, EmxCell.Filled(EmxSquare(s: 4))]
+        let grid = EmxGrid { cells: move cells }
+        acc = acc + grid.cells.count + emxTotalArea(grid)
+        q = q + 1
+    }
+
     return acc
 }
 

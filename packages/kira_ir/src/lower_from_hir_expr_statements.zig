@@ -141,6 +141,14 @@ pub fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Manag
             } });
         },
         .callback => return error.UnsupportedExecutableFeature,
+        // A bare value in statement position is a no-op: reading a local has no
+        // side effect, so nothing is emitted.
+        .local => {},
+        // Task operations in statement position: cancel/detach are the common
+        // forms; a discarded spawn or await still evaluates for its effects.
+        .task_cancel, .task_detach, .task_spawn, .task_spawn_ready, .task_await, .task_yield, .task_sleep => {
+            _ = try lowerer.lowerExpr(instructions, expr);
+        },
         else => return error.UnsupportedExecutableFeature,
     }
 }

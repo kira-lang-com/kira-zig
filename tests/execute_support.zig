@@ -116,6 +116,7 @@ pub fn buildOutputPath(allocator: std.mem.Allocator, tmp: TmpDir, backend: disco
         .vm => makeBackendOutputPath(allocator, tmp, "vm", ".kbc"),
         .llvm => makeBackendOutputPath(allocator, tmp, "llvm", build.executableExtension()),
         .hybrid => makeBackendOutputPath(allocator, tmp, "hybrid", ".khm"),
+        .wasm => makeBackendOutputPath(allocator, tmp, "wasm", ".js"),
     };
 }
 
@@ -160,6 +161,7 @@ pub fn backendName(backend: discovery.Backend) []const u8 {
         .vm => "vm",
         .llvm => "llvm",
         .hybrid => "hybrid",
+        .wasm => "wasm",
     };
 }
 
@@ -195,6 +197,7 @@ pub fn executionTarget(backend: discovery.Backend) build_def.ExecutionTarget {
         .vm => .vm,
         .llvm => .llvm_native,
         .hybrid => .hybrid,
+        .wasm => .wasm32_emscripten,
     };
 }
 

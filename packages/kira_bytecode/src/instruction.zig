@@ -60,6 +60,32 @@ pub const OpCode = enum(u8) {
     // (`nativeStateFree`). Appended after `bitwise` so no earlier serialized
     // tag shifts. Carried by KBC9.
     free_native_state,
+    // Async task spine (deferred execution). Appended after `free_native_state`
+    // so no earlier serialized tag shifts (the fused block below is never
+    // serialized, so shifting ITS tags is safe). `task_spawn` captures callee +
+    // eagerly-evaluated args without calling; `task_await` first-drives the
+    // task (runs the deferred call) and yields its result — joining a
+    // cancelled task or joining twice traps; `task_cancel` sets the
+    // cooperative flag; `task_detach` drives and discards. `task_spawn_ready`
+    // wraps a pure value as a completed task. Carried by KBCB.
+    task_spawn,
+    task_spawn_ready,
+    task_await,
+    task_cancel,
+    task_detach,
+    // Cooperative progress point: run the next queued task (if any) before the
+    // current body continues. Carried by KBCC with the other task opcodes.
+    task_yield,
+    // Task-frame slot access for state-machine (suspendable) task bodies
+    // (see the async transform in kira_ir). Carried by KBCC.
+    frame_get,
+    frame_set,
+    // True when a task is no longer pending (park-until-complete join checks).
+    // Carried by KBCC.
+    task_is_complete,
+    // Park the current task for at least N milliseconds (blocking sleep
+    // outside a suspendable body). Carried by KBCC.
+    task_sleep,
     // --- VM-internal fused instructions ------------------------------------
     // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
     // private per-function code copies. They never appear in compiler output
@@ -145,6 +171,21 @@ pub const Instruction = union(OpCode) {
     convert: struct { dst: u32, src: u32, to_float: bool, reinterpret: bool = false },
     bitwise: struct { dst: u32, lhs: u32, rhs: u32, op: BitOp, unsigned: bool = false },
     free_native_state: struct { state: u32 },
+    // `native=true` when the callee is LLVM-compiled (hybrid): the deferred
+    // call dispatches through the VM's native-call hook at first drive.
+    // `suspendable=true` when the callee is a state-machine body: allocate a
+    // `frame_slots` frame, seed the resume state, copy args into slots 2..,
+    // and drive by status until complete.
+    task_spawn: struct { dst: u32, callee: u32, args: []const u32, result_ty: TypeRef = .{ .kind = .void }, native: bool = false, suspendable: bool = false, frame_slots: u32 = 0 },
+    task_spawn_ready: struct { dst: u32, value: u32, ty: TypeRef = .{ .kind = .void } },
+    task_await: struct { dst: u32, task: u32, ty: TypeRef = .{ .kind = .void } },
+    task_cancel: struct { task: u32 },
+    task_detach: struct { task: u32 },
+    task_yield: struct {},
+    frame_get: struct { dst: u32, frame: u32, slot: u32, ty: TypeRef = .{ .kind = .void } },
+    frame_set: struct { frame: u32, slot: u32, src: u32, ty: TypeRef = .{ .kind = .void } },
+    task_is_complete: struct { dst: u32, task: u32 },
+    task_sleep: struct { milliseconds: u32 },
     // VM-internal fused forms; see the OpCode comment above.
     // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
     fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },

@@ -1,0 +1,40 @@
+// Native task-runtime leak guard: every spawn lifecycle (joined, cancelled,
+// detached, dropped-without-join) must leave the LLVM binary leak-clean.
+// Task structs stay allocated until process exit so a duplicate join traps
+// instead of use-after-free; the task registry's atexit teardown frees the
+// survivors, the unrun ctx/frame of a cancelled task, and the queue storage.
+
+async function add(a: Int, b: Int) -> Int {
+    return a + b
+}
+
+async function factorial(n: Int) -> Int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+@Main
+function main() {
+    var total = 0
+    var i = 0
+    while i < 50 {
+        // Joined: result consumed, task struct reclaimed at exit.
+        let joined = Task { add(20, 22) }
+        // Cancelled before first drive: the call never runs; its captured
+        // ctx is freed on the cancel branch, the struct at teardown.
+        let cancelled = Task { add(1, 1) }
+        cancelled.requestCancel()
+        // Detached: runs at drain with the result discarded.
+        let detached = Task { add(2, 2) }
+        detached.detach()
+        // Dropped without join/detach/cancel: runs at the end-of-run drain;
+        // the orphaned handle's allocations are the registry's to reclaim.
+        let dropped = Task { factorial(5) }
+        total = total + joined.await
+        i = i + 1
+    }
+    print(total)
+    return
+}

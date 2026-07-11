@@ -27,6 +27,7 @@ const dispatch = @import("backend_capi_dispatch.zig");
 const drop = @import("backend_capi_drop.zig");
 const closure_dtors = @import("backend_capi_closure_dtors.zig");
 const enum_dtors = @import("backend_capi_enum_dtors.zig");
+const array_dtors = @import("backend_capi_array_dtors.zig");
 const dynamic_dtors = @import("backend_capi_dynamic_dtors.zig");
 const ffi = @import("backend_capi_ffi.zig");
 
@@ -145,7 +146,7 @@ pub fn buildModulePlanned(
     const builder = api.LLVMCreateBuilderInContext(context);
     defer api.LLVMDisposeBuilder(builder);
 
-    const types = Types.init(api, context);
+    const types = Types.init(api, context, triple);
     const runtime_decls = RuntimeDecls.declare(api, module_ref, types, request.mode);
 
     var struct_types = std.StringHashMapUnmanaged(llvm.c.LLVMTypeRef){};
@@ -189,6 +190,11 @@ pub fn buildModulePlanned(
         // Typed enum destroy/clone bodies (string-payload boxes; declarations live
         // in dtors.enum_map, empty in hybrid).
         try enum_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
+
+        // Typed inner-array wrapper bodies (nested-array element leak: free /
+        // deep-copy a `[[T]]`'s boxed inner arrays; declarations live in
+        // dtors.array_map, empty in hybrid).
+        try array_dtors.build(api, types, request.program.programPtr(), runtime_decls, &dtors);
 
         // Runtime-typed dynamic dispatchers for type-erased values and native-state
         // interiors (declarations live in dtors; referenced only on the native path).
@@ -392,6 +398,16 @@ pub fn fieldStorageType(
         .float => if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32")) types.float_ty else types.double_ty,
         .array => types.ptr_ty,
         .construct_any, .raw_ptr, .enum_instance => blk: {
+            // A closure-typed field stores the full Kira closure i64 (bit 63 is the
+            // heap-closure tag). A ptr-width slot truncates the tag on wasm32 (4-byte
+            // pointers), so the dispatcher then misreads the block address as a direct
+            // function id: a runtime `unreachable`, or LLVM folding the call to a wrong
+            // known callee via the dispatcher's unreachable default. i64 is layout-
+            // identical on 64-bit targets. Only pure-Kira structs can carry such a
+            // field (FFI struct fields are identifier-named C types), so C layout is
+            // unaffected. Every load/store of these fields matches this width (see
+            // value_repr.loadConverted, aggregate.lowerStoreIndirect, struct_dtors).
+            if (utils.isClosureValueType(value_type)) break :blk types.i64;
             // An inline fixed FFI array (`@FFI.Array`) is laid out as `[count x element]`
             // and an FFI alias forwards to its target, mirroring the text backend's
             // llvmFieldAbiTypeText so the two backends agree on C struct layout.
@@ -438,6 +454,12 @@ fn buildHostMain(
     api.LLVMPositionBuilderAtEnd(builder, entry_block);
     const entry_fn_ty = try Types.functionType(types, allocator, entry_decl);
     _ = api.LLVMBuildCall2(builder, entry_fn_ty, entry_value, null, 0, "");
+    // Detached tasks outlive their handles: run whatever is still queued on
+    // the C task executor before the process exits (runtime_helpers.c).
+    const drain_ty = api.LLVMFunctionType(types.void_ty, null, 0, 0);
+    const drain_fn = api.LLVMGetNamedFunction(module_ref, "kira_task_drain_all") orelse
+        api.LLVMAddFunction(module_ref, "kira_task_drain_all", drain_ty);
+    _ = api.LLVMBuildCall2(builder, drain_ty, drain_fn, null, 0, "");
     _ = api.LLVMBuildRet(builder, api.LLVMConstInt(types.i32, 0, 0));
 }
 

@@ -29,3 +29,6 @@ dynamic_lib = ""
 
 [target.aarch64-ios-simulator]
 dynamic_lib = ""
+
+[target.wasm32-emscripten-unknown]
+dynamic_lib = ""

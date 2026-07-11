@@ -10,6 +10,11 @@ pub const Backend = enum {
     vm,
     llvm,
     hybrid,
+    // Opt-in only: cases that list "wasm" additionally build through the real
+    // wasm32-emscripten pipeline and execute the emitted .js under node. When
+    // emcc or node is missing the corpus runner SKIPs the wasm entry (with a
+    // per-case note) instead of failing.
+    wasm,
 };
 
 pub const Stage = enum {
@@ -326,6 +331,7 @@ fn parseBackend(text: []const u8) !Backend {
     if (std.mem.eql(u8, text, "vm")) return .vm;
     if (std.mem.eql(u8, text, "llvm")) return .llvm;
     if (std.mem.eql(u8, text, "hybrid")) return .hybrid;
+    if (std.mem.eql(u8, text, "wasm")) return .wasm;
     return error.InvalidExpectation;
 }
 
@@ -344,6 +350,7 @@ fn validateBackendPolicy(backends: []const Backend) !void {
     var saw_hybrid = false;
     var saw_vm = false;
     var saw_llvm = false;
+    var saw_wasm = false;
     for (backends) |backend| {
         switch (backend) {
             .hybrid => {
@@ -358,9 +365,17 @@ fn validateBackendPolicy(backends: []const Backend) !void {
                 if (saw_llvm) return error.InvalidExpectation;
                 saw_llvm = true;
             },
+            .wasm => {
+                if (saw_wasm) return error.InvalidExpectation;
+                saw_wasm = true;
+            },
         }
     }
-    if (saw_vm and !saw_hybrid and !saw_llvm) return;
+    // `wasm` is an additive, opt-in target: it must accompany the shared language
+    // matrix (which always includes hybrid), never stand alone. The only matrix
+    // permitted without hybrid remains the pure VM/LibFFI exception below.
+    if (saw_wasm and !saw_hybrid) return error.InvalidExpectation;
+    if (saw_vm and !saw_hybrid and !saw_llvm and !saw_wasm) return;
     if (!saw_hybrid) return error.InvalidExpectation;
 }
 

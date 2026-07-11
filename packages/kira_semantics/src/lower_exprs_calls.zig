@@ -6,6 +6,7 @@ const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
 const function_types = @import("function_types.zig");
 const comptime_eval = @import("lower_exprs_comptime.zig");
+const async_spine = @import("lower_exprs_async.zig");
 const parent = @import("lower_exprs.zig");
 const lowerExpr = parent.lowerExpr;
 const lowerExpectedValue = parent.lowerExpectedValue;
@@ -421,8 +422,20 @@ pub fn lowerCallExpr(
         });
         return error.DiagnosticsEmitted;
     }
+    if (async_spine.isTaskSpawn(node)) {
+        return async_spine.lowerTaskSpawn(ctx, lowered, node, imports, scope, function_headers);
+    }
+    if (async_spine.isTaskYield(node) and scope.get("taskYield") == null and (function_headers == null or shared.findFunctionHeader(ctx, function_headers.?, "taskYield") == null)) {
+        return async_spine.lowerTaskYield(ctx, lowered, node);
+    }
+    if (async_spine.isTaskSleep(node) and scope.get("taskSleep") == null and (function_headers == null or shared.findFunctionHeader(ctx, function_headers.?, "taskSleep") == null)) {
+        return async_spine.lowerTaskSleep(ctx, lowered, node, imports, scope, function_headers);
+    }
     if (node.callee.* == .member) {
         const member = node.callee.member;
+        if (async_spine.isHandleNoopMethod(member)) {
+            return async_spine.lowerHandleNoop(ctx, lowered, node, member, imports, scope, function_headers);
+        }
         if (try lowerParentQualifiedMethodCall(ctx, node, imports, scope, function_headers)) |call_expr| {
             lowered.* = call_expr;
             return;

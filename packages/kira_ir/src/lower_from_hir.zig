@@ -11,6 +11,7 @@ const places_impl = @import("lower_from_hir_places.zig");
 const function_impl = @import("lower_from_hir_functions.zig");
 const callback_impl = @import("lower_from_hir_callbacks.zig");
 const expr_stmt_impl = @import("lower_from_hir_expr_statements.zig");
+const tasks_impl = @import("lower_from_hir_tasks.zig");
 
 const FunctionLoweringState = function_impl.FunctionLoweringState;
 
@@ -139,7 +140,7 @@ pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Prog
         }
     }
 
-    return .{
+    var lowered_program: ir.Program = .{
         .constructs = constructs,
         .construct_implementations = construct_implementations,
         .types = types,
@@ -150,6 +151,12 @@ pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Prog
             return error.UnsupportedExecutableFeature;
         },
     };
+    // Saved-frame suspension: rewrite eligible yielding async bodies into
+    // resumable state machines (async_state_machine.zig). Runs on the shared
+    // IR so every backend compiles identical semantics; ineligible bodies keep
+    // the nested-drive yield.
+    try @import("async_state_machine.zig").run(allocator, &lowered_program);
+    return lowered_program;
 }
 
 fn markReachableFunctionByName(
@@ -541,6 +548,25 @@ pub const Lowerer = struct {
                 } });
                 break :blk dst;
             },
+            // Async task nodes lower in lower_from_hir_tasks.zig (Core Law #5).
+            .task_spawn => |node| try tasks_impl.lowerTaskSpawn(self, instructions, node),
+            .task_spawn_ready => |node| try tasks_impl.lowerTaskSpawnReady(self, instructions, node),
+            .task_await => |node| try tasks_impl.lowerTaskAwait(self, instructions, node),
+            .task_cancel => |node| try tasks_impl.lowerTaskCancel(self, instructions, node),
+            .task_detach => |node| try tasks_impl.lowerTaskDetach(self, instructions, node),
+            .task_yield => blk: {
+                try instructions.append(.{ .task_yield = .{} });
+                const dst = self.freshRegister();
+                try instructions.append(.{ .const_int = .{ .dst = dst, .value = 0 } });
+                break :blk dst;
+            },
+            .task_sleep => |node| blk: {
+                const ms_reg = try self.lowerExpr(instructions, node.milliseconds);
+                try instructions.append(.{ .task_sleep = .{ .milliseconds = ms_reg } });
+                const dst = self.freshRegister();
+                try instructions.append(.{ .const_int = .{ .dst = dst, .value = 0 } });
+                break :blk dst;
+            },
             .unary => |node| blk: {
                 const src = try self.lowerExpr(instructions, node.operand);
                 const operand_ty = model.hir.exprType(node.operand.*);
@@ -797,6 +823,11 @@ pub const Lowerer = struct {
                     .field_ty = field_ty,
                 } });
                 if (field_ty.kind == .ffi_struct) break :blk field_ptr;
+                // An @FFI.Array field is INLINE fixed storage: reads of the field
+                // yield its ADDRESS (like ffi_struct fields), so array_get/array_set
+                // on it lower to real inline element accesses in the backend instead
+                // of misreading the first inline bytes as a kira-array handle.
+                if (places_impl.isFfiFixedArrayType(self.program, field_ty)) break :blk field_ptr;
                 const dst = self.freshRegister();
                 try instructions.append(.{ .load_indirect = .{
                     .dst = dst,

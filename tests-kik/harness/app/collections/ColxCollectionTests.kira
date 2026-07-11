@@ -1322,3 +1322,78 @@ Test ColxTrapFibOOBDirect {
     }
     expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
 }
+
+// ---------------------------------------------------------------------------
+// Nested arrays ([[T]]): the inner-array element teardown/clone leak. Array
+// elements are tag-5 RAW_PTR bridge values, so a [[Int]]/[[String]]'s boxed
+// inner arrays are freed by a per-element wrapper (kira_destroy_arr_<[T]>); the
+// overwrite path drops the replaced inner array through the ARRAY's element
+// destructor, and a struct copy deep-clones the outer nested array so box and
+// copy own independent inner arrays. String payloads prove the inner OWNED
+// contents (byte buffers) free too. Guards the fix under the harness leak run
+// (a per-iteration inner-array box + storage leak scales) and cross-backend
+// parity (the checksum must be byte-identical on vm/llvm/hybrid).
+// ---------------------------------------------------------------------------
+
+struct ColxNestBox {
+    var rows: [[Int]]
+}
+
+function colxSumNest(b: borrow ColxNestBox) -> Int {
+    var total = 0
+    var gi = 0
+    while gi < b.rows.count {
+        var gj = 0
+        while gj < b.rows[gi].count {
+            total = total + b.rows[gi][gj]
+            gj = gj + 1
+        }
+        gi = gi + 1
+    }
+    return total
+}
+
+Test ColxNestedArrayFree {
+    test {
+        var total = 0
+        var i = 0
+        while i < 200 {
+            // [[Int]]: build 4x4, move inner arrays in.
+            var grid: [[Int]] = []
+            var r = 0
+            while r < 4 {
+                var row: [Int] = []
+                var c = 0
+                while c < 4 {
+                    row.append(r * 4 + c)
+                    c = c + 1
+                }
+                grid.append(move row)
+                r = r + 1
+            }
+            // Overwrite/replace an inner array (the drop-replaced element path).
+            var repl: [Int] = []
+            repl.append(100)
+            grid[0] = move repl
+            // A struct copy deep-clones the outer nested array (independent inners).
+            let box = ColxNestBox { rows: move grid }
+            let copy = box
+            total = total + colxSumNest(box) + colxSumNest(copy)
+            // [[String]]: inner arrays own heap string buffers that must free too.
+            var words: [[String]] = []
+            var w = 0
+            while w < 3 {
+                var line: [String] = []
+                line.append("a" + "b")
+                line.append("c" + "d")
+                words.append(move line)
+                w = w + 1
+            }
+            total = total + words.count + words[0].count + words[0][0].count
+            i = i + 1
+        }
+        return total
+    }
+    // per iteration: 2*214 + 3 + 2 + 2 = 435; 200 * 435 = 87000
+    expect { let e: Result<Int, TestFailure> = Result.Ok(87000); return e }
+}

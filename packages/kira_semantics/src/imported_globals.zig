@@ -29,6 +29,11 @@ pub const ImportedAnnotation = struct {
     span: @import("kira_source").Span = .{ .start = 0, .end = 0 },
 };
 
+pub const ImportedAlias = struct {
+    name: []const u8,
+    target: model.ResolvedType,
+};
+
 pub const ImportedField = struct {
     name: []const u8,
     storage: model.FieldStorage,
@@ -41,6 +46,7 @@ pub const ImportedGlobals = struct {
     callables: []const []const u8 = &.{},
     functions: []const ImportedFunction = &.{},
     types: []const ImportedType = &.{},
+    aliases: []const ImportedAlias = &.{},
     annotations: []const ImportedAnnotation = &.{},
 
     pub fn hasConstruct(self: ImportedGlobals, name: []const u8) bool {
@@ -61,6 +67,13 @@ pub const ImportedGlobals = struct {
     pub fn findType(self: ImportedGlobals, name: []const u8) ?ImportedType {
         for (self.types) |type_decl| {
             if (std.mem.eql(u8, type_decl.name, name)) return type_decl;
+        }
+        return null;
+    }
+
+    pub fn findAlias(self: ImportedGlobals, name: []const u8) ?ImportedAlias {
+        for (self.aliases) |alias_decl| {
+            if (std.mem.eql(u8, alias_decl.name, name)) return alias_decl;
         }
         return null;
     }

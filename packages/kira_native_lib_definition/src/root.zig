@@ -2,6 +2,7 @@ pub const LinkExtras = @import("link_extras.zig").LinkExtras;
 pub const NativeSymbol = @import("ffi_symbol.zig").NativeSymbol;
 pub const TargetSelector = @import("target_resolution.zig").TargetSelector;
 pub const ResolvedNativeLibrary = @import("target_resolution.zig").ResolvedNativeLibrary;
+pub const AssetMount = @import("target_resolution.zig").AssetMount;
 pub const Unavailable = @import("target_resolution.zig").Unavailable;
 pub const resolveLibrary = @import("target_resolution.zig").resolveLibrary;
 pub const NativeLibrarySpec = @import("native_library.zig").NativeLibrarySpec;

@@ -175,11 +175,62 @@ pub fn reflectedLayout(allocator: std.mem.Allocator, class: []const u8, layout: 
     };
 }
 
+// Reports the stages that actually reference `resource_name`. Accurate visibility
+// matters for backends that bind a uniform per stage (the Sokol/WebGPU backend
+// creates one uniform block per visible stage, and WebGPU requires each block's
+// @group(0) binding to be unique — so over-reporting a vertex-only uniform as
+// also-fragment collides). When a resource cannot be attributed to any stage by
+// direct reference (e.g. it is used only through a helper function), fall back to
+// marking every stage visible rather than risk under-reporting a real use.
 pub fn resourceDeclVisibility(allocator: std.mem.Allocator, stages: []const shader_ir.StageDecl, resource_name: []const u8) ![]const shader_model.Stage {
-    _ = resource_name;
     var items = std.array_list.Managed(shader_model.Stage).init(allocator);
-    for (stages) |stage_decl| try items.append(stage_decl.kind);
+    for (stages) |stage_decl| {
+        if (blockReferencesResource(stage_decl.entry.body, resource_name)) {
+            try items.append(stage_decl.kind);
+        }
+    }
+    if (items.items.len == 0) {
+        for (stages) |stage_decl| try items.append(stage_decl.kind);
+    }
     return items.toOwnedSlice();
+}
+
+fn blockReferencesResource(block: shader_ir.Block, resource_name: []const u8) bool {
+    for (block.statements) |statement| {
+        if (statementReferencesResource(statement, resource_name)) return true;
+    }
+    return false;
+}
+
+fn statementReferencesResource(statement: shader_ir.Statement, resource_name: []const u8) bool {
+    return switch (statement) {
+        .let_stmt => |let_stmt| if (let_stmt.value) |value| exprReferencesResource(value, resource_name) else false,
+        .assign_stmt => |assign_stmt| exprReferencesResource(assign_stmt.target, resource_name) or exprReferencesResource(assign_stmt.value, resource_name),
+        .expr_stmt => |expr_stmt| exprReferencesResource(expr_stmt.expr, resource_name),
+        .return_stmt => |return_stmt| if (return_stmt.value) |value| exprReferencesResource(value, resource_name) else false,
+        .if_stmt => |if_stmt| exprReferencesResource(if_stmt.condition, resource_name) or
+            blockReferencesResource(if_stmt.then_block, resource_name) or
+            (if (if_stmt.else_block) |else_block| blockReferencesResource(else_block, resource_name) else false),
+        .while_stmt => |while_stmt| exprReferencesResource(while_stmt.condition, resource_name) or
+            blockReferencesResource(while_stmt.body, resource_name),
+    };
+}
+
+fn exprReferencesResource(expr: *const shader_ir.Expr, resource_name: []const u8) bool {
+    return switch (expr.node) {
+        .const_value => false,
+        .name => |name_ref| name_ref.kind == .resource and std.mem.eql(u8, name_ref.name, resource_name),
+        .unary => |unary| exprReferencesResource(unary.operand, resource_name),
+        .binary => |binary| exprReferencesResource(binary.left, resource_name) or exprReferencesResource(binary.right, resource_name),
+        .call => |call| blk: {
+            for (call.args) |arg| {
+                if (exprReferencesResource(arg, resource_name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .member => |member| exprReferencesResource(member.object, resource_name),
+        .index => |index| exprReferencesResource(index.object, resource_name) or exprReferencesResource(index.index, resource_name),
+    };
 }
 
 pub fn intrinsicFromName(name: []const u8) ?shader_ir.Intrinsic {

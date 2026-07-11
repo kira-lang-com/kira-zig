@@ -21,7 +21,17 @@ struct Pass {
 function main() {
     var pass = Pass {}
     var colorAction = ColorAction {}
+    colorAction.load_action = 7
+    // An @FFI.Array field is inline fixed C storage: the element store must
+    // write into `pass`'s own bytes (regression: it lowered to a kira-array
+    // runtime store against the inline bytes, silently dropping the store and
+    // leaking the cloned element shell).
     pass.action.colors[0] = colorAction
+    pass.action.colors[2] = colorAction
+    // Read-back proves the inline store persisted; the untouched slot stays
+    // zero-initialized.
+    print(pass.action.colors[0].load_action)
+    print(pass.action.colors[1].load_action)
+    print(pass.action.colors[2].load_action)
     return
 }
-

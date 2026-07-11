@@ -63,6 +63,22 @@ after the closure + enum-payload models):
 | project-matter `apps/editor` (120 and 300 frames) | 9,270 leaks / ~1.19 MB | frame-flat (identical at 120 and 300); was 11,207/1.30 MB |
 | editor + 10 scripted clicks (120 frames) | 9,381 leaks / 1.17 MB | **click-flat to ~11 leaks/click** (was ~1,950/click); classes #2/#3 resolved |
 
+2026-07-10 re-measurement (worktree with partial moves + consuming receivers,
+reports in kira-zig `.codex/tmp/editor-leaks-{120,600}.txt`):
+
+| Program | Residual | Notes |
+|---|---|---|
+| project-matter `apps/editor` (120 and 600 frames) | **428 leaks / ~297 KB** | byte-identical at 120 and 600 frames — fully frame-flat |
+
+The entire §3 widget-tree/Any conservative residual is ABSENT in this build:
+zero `kira_struct_alloc` roots, zero closure blocks, zero enum payload boxes.
+What remains is one-time setup only: ~83% FreeType/text-engine
+(`kira_text_face_load` tree ~247 KB — class #5), ~16.5% Metal host objects
+(pipelines/shaders/samplers/queues via `metalContextAlloc` and friends —
+`kira_dynamic_alloc` appearing there is the graphics context block, NOT a §3
+widget leak), plus ~1.2 KB of dispatch-source retain cycles and one 48 B
+font-path string clone held by font-load state.
+
 Closure-model proof: 20k-iteration returned-closure churn, struct-field +
 array-of-closure churn (8k each), and all 12 `ownership_closure_*` corpus
 cases measure **0 leaks / 0 bytes**; `ownership_string_deep_value_parity` and
@@ -102,7 +118,94 @@ click runs complete end-to-end (`120` frames returns a real readback value;
 of growing toward tens of GB). Re-run `leaks --atExit` separately for updated
 residual counts; the key result here is that the runaway growth path is gone.
 
-## Remaining leak classes (the actual TODO)
+## 2026-07-10: corpus-visible drop gaps + task runtime destroyed
+
+Forced sweep (`KIRA_CORPUS_CHECK_LEAKS=1 zig build test-full`) is green again
+at 2373/0 after fixing, on the async worktree:
+
+- **Array-of-enum element teardown**: `Destructors.elementDestroy`/`elementClone`
+  (backend_capi_destructors.zig) got an enum branch routing RAW_PTR-tagged enum
+  elements to the typed `kira_destroy_enum_<T>`/clone pair (was: tag-safe
+  closure no-op → whole element + payload leaked). Guard: kik harness
+  `EmxArrayEnumStringPayloadFree` churn test (memory_validation pins it).
+- **Enum payloads that own heap**: `backend_capi_enum_dtors.zig` extends typed
+  destroy/clone beyond string payloads to `.ffi_struct` (free/clone via the
+  struct's typed pair) and `.construct_any` (destroy via
+  `kira_capi_dynamic_destroy`; the CLONE arm TRAPS — a contains-any enum is
+  move-only per KIR002, so a clone is unreachable and must stay loud). The
+  shared `payloadOwnsHeap` filter drives destroy, clone, and the `needs_typed`
+  gate so pairing stays sound. Fixed `field_override_enum_payload_defaults`
+  and `enum_kind_split_cache_parity`.
+- **@FFI.Array struct fields are INLINE `[count x element]` C storage** (see
+  fieldStorageType): the old store path fed the inline bytes to
+  `kira_array_store_release` as a (null) array handle — a silently lost store
+  that orphaned the cloned element shell. Real fix: FFI-array fields yield
+  their ADDRESS (lower_from_hir_places `isFfiFixedArrayType`), and
+  `lowerFfiFixedArraySet`/`Get` (backend_capi_aggregate.zig) GEP into the
+  inline storage, release-replacing old element contents and cloning in
+  (value semantics; no escape). `backend_capi_struct_dtors.zig`
+  (`ffiArrayElement`) SKIPS these fields in release/clone — nothing
+  array-shaped to free, and the closure fallback must not read element bytes
+  as a pointer.
+- **Rejected array stores**: `kira_array_store_release` on a null/inactive
+  array or out-of-range index dropped the OWNED incoming element on the floor;
+  it now releases it through the same typed paths (native only). This was the
+  last leak in `ffi_nested_fixed_array_assignment` (store into a zero-init
+  @FFI.Array field).
+- **Native task runtime** (runtime_helpers.c): every spawned `KiraTask` leaked
+  permanently (calloc'd, never freed — joined/detached/cancelled alike), and
+  the ready-queue array was never freed. Now: `kira_task_registry` owns every
+  spawn, atexit teardown frees survivors + unrun ctx/frames + queue storage,
+  preserving the tasks-alive-until-exit duplicate-join trap semantics. Same
+  fix on the (currently uncalled) Zig `kira_async_*` surface
+  (async_runtime.zig live-task registry + executor deinit). Guard corpus:
+  `task_spawn_lifecycle_leak_parity` (joined/cancelled/detached/dropped).
+- Destructor body builders split out per Core Law #5:
+  `backend_capi_struct_dtors.zig` (was inside backend_capi_destructors.zig).
+- **Nested arrays (`[[T]]`)**: elements are RAW_PTR-tagged inner KiraArray*
+  that fell through to the closure no-op. `backend_capi_array_dtors.zig`
+  generates typed wrapper pairs `kira_destroy_arr_<K>`/`kira_clone_arr_<K>`
+  per bracketed element name (collected transitively at build(), declare-only
+  aware, folded into cgu_hash), dispatched from elementDestroy/elementClone.
+  Plus: `lowerArraySet` overwrite dtor now derives from the ARRAY's type (not
+  the source element's), and `move obj.field` on an array field tags the read
+  `.moved` (was a double-free once inner arrays actually freed). Guard: kik
+  `ColxNestedArrayFree`.
+- **Enum `.array` payloads** (`Result<[Int], E>.Ok`): moved-in KiraArray*
+  released via `kira_array_release` + typed element dtor in
+  `kira_destroy_enum_<T>`, deep-copied via `kira_array_clone` in the clone —
+  `payloadOwnsHeap`/`needs_typed` extended to `.array`. Was the kik-harness
+  genRange class (22 leaks). Guard: kik `EmxArrayPayloadEnumFree`.
+
+Sibling repos, same session: ui-foundation `NativeLibs/Text/kira_text.c` got
+an engine/face registry + atexit sweep (faces before engines; explicit destroy
+unlinks) — the class #5 FreeType tree is gone (95 leaks/156 KB → 0 on the
+font repro). kira-graphics released transient Metal descriptors/compile
+options/functions at creation and completed `metalContextFree` (pipelines,
+libraries, samplers, depth, command queue, registry block; device singleton
+deliberately NOT released) — metal_triangle 63/18 KB → 0/0, 9/9 self-tests.
+
+The last 48 B (the font-path string clone, initially misread as a by-design
+state-store leak) was an **extern-call escape bug**: `lowerExternCall`
+(backend_capi_ffi.zig) escaped EVERY argument, including a String marshalled
+to a `CString` parameter — but the C side only ever sees the transient NUL
+dup (freed after the call), never the Kira buffer, so escaping the string
+orphaned one read-clone per extern call with a string arg. The escape loop
+now skips string→CString args; the caller's string_buf slot frees the clone
+at scope exit. Guard corpus: `ffi_extern_cstring_arg_leak_regression`
+(hybrid+llvm, check_leaks, 100×3 extern probes).
+
+Dev-loop gotcha discovered on the way: `.kira-build` case caches do NOT
+invalidate when the dev toolchain snapshot is rebuilt under the SAME version
+(2026.07.2) — a post-`zig build` `kirac build` can hand back a binary from
+the OLD compiler. `rm -rf <case>/.kira-build` before measuring a compiler
+change through kirac directly (corpus `zig build test-*` is unaffected).
+
+End-of-session measurements: forced corpus sweep **2370/0**, kik harness
+llvm binary **0 leaks / 0 B** (1162/0 tests, vm/llvm/hybrid checksums
+identical), ui-foundation leak-harness 0/0, project-matter editor
+**0 leaks / 0 B** (offscreen 120 frames). No known remaining native leaks
+anywhere in the stack.
 
 1. ~~Native String drop gap~~ — RESOLVED 2026-07-06 (see model above).
 2. ~~Closure capture leaks~~ — RESOLVED 2026-07-06. **Closures are deep
@@ -145,17 +248,35 @@ residual counts; the key result here is that the runaway growth path is gone.
    The remaining 19–33 GB add-entity blow-up was traced to sibling
    `kira-graphics` / `project-matter` code, not to this Any model; only the
    post-fix residual leak counts still need a fresh `leaks --atExit` pass.
-4. ~~Enum payload boxes~~ — RESOLVED 2026-07-06 for string payloads. **Typed
-   enum teardown** (`backend_capi_enum_dtors.zig`): per-enum generated
+4. ~~Enum payload boxes~~ — RESOLVED 2026-07-06 for string payloads; extended
+   2026-07-10 to struct + construct_any payloads and array-of-enum elements.
+   **Typed enum teardown** (`backend_capi_enum_dtors.zig`): per-enum generated
    `kira_destroy_enum_<T>` / `kira_clone_enum_<T>` switch on the tag and
-   free/deep-copy the string-payload box + buffer. Sound because every
-   destroy AND clone site dispatches typed-or-generic through the same
-   `Destructors.enum_map` (`enumDestroyFn`/`enumCloneFn`) — a type is
-   deep-cloned everywhere iff deep-destroyed everywhere, so the box is never
-   shared into a typed free. Native only (hybrid map empty → shallow pair).
-   Non-string heap payloads (nested enum/array/struct) still leak the payload
-   — extend the same switch when they show up in measurements. Guard:
-   corpus `ownership_enum_string_payload_free_parity` (check_leaks).
+   free/deep-copy owning payloads — string box + buffer, nested enum block,
+   struct shell + contents (`kira_destroy_<T>`/`kira_clone_<T>`), and
+   construct_any trees (`kira_capi_dynamic_destroy`; that variant's CLONE arm
+   TRAPS — contains-any enums are move-only per KIR002, so no clone site can
+   reach it). The `payloadOwnsHeap` filter is shared by destroy, clone, and
+   the `needs_typed` gate. Arrays of enums tear down/clone typed too:
+   `Destructors.elementDestroy/elementClone` resolve enum element types
+   (`arrayEnumElement`, native only — RAW_PTR-tagged enum elements previously
+   fell through to the tag-safe closure no-op and leaked block + payload).
+   Sound because every destroy AND clone site dispatches typed-or-generic
+   through the same `Destructors.enum_map` (`enumDestroyFn`/`enumCloneFn`) —
+   a type is deep-cloned everywhere iff deep-destroyed everywhere, so the box
+   is never shared into a typed free. Native only (hybrid map empty → shallow
+   pair). Guards: corpus `ownership_enum_string_payload_free_parity` +
+   `enum_kind_split_cache_parity` (check_leaks); kik harness
+   `EmxArrayEnumStringPayloadFree` / `EmxStructPayloadEnumDefaultsFree` /
+   `EmxConstructAnyPayloadEnumChurn` Tests + enumsSection churn.
+   Related 2026-07-10 fix: `@FFI.Array` fields are INLINE fixed C storage —
+   element get/set now lower to real inline accesses
+   (`lowerFfiFixedArraySet/Get` in backend_capi_aggregate.zig; place lowering
+   returns the field ADDRESS via `isFfiFixedArrayType`). The old path fed the
+   inline bytes to `kira_array_store_release` as a bogus array handle: silent
+   lost store + orphaned element clone (the ffi_nested_fixed_array_assignment
+   leak). Guards: that corpus case (check_leaks + read-back stdout) and kik
+   ffi-harness `FfaInlineArrayStoreReadback`/`FfaInlineArrayChurn`.
 5. **Font-engine setup** (`ft_add_renderer` etc.) in ui-foundation — one-time,
    low priority.
 6. **`[U8]` storage amplification** (perf, not a leak): every byte element is a

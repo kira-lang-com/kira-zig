@@ -6,10 +6,13 @@ const ownership = @import("ownership.zig");
 const native_layout = @import("native_layout.zig");
 const helper_impl = @import("vm_helpers.zig");
 const clone_impl = @import("vm_value_clone.zig");
+const struct_copy_impl = @import("vm_struct_copy.zig");
 const value_impl = @import("vm_values.zig");
 const vm_prepare = @import("vm_prepare.zig");
 const interpreter = @import("vm_interpreter.zig");
 const native_bridge = @import("vm_native_bridge.zig");
+const vm_tasks = @import("vm_tasks.zig");
+const vm_interpreter_tasks = @import("vm_interpreter_tasks.zig");
 const vm_types = @import("vm_types.zig");
 
 const ArrayObject = ownership.ArrayObject;
@@ -38,6 +41,19 @@ pub const Vm = struct {
     // pointer-keyed dedup cache would hand the new closure the stale block (FF1).
     // Every export creates a fresh block instead.
     exported_native_closures: std.ArrayListUnmanaged(ExportedNativeClosure) = .empty,
+    // Async task objects spawned by `task_spawn`/`task_spawn_ready` (see
+    // vm_tasks.zig). Freed at deinit, not at join, so a duplicate join is a
+    // clean trap instead of a use-after-free.
+    live_tasks: std.ArrayListUnmanaged(*vm_tasks.VmTask) = .empty,
+    // Cooperative executor ready-queue (FIFO): spawn enqueues, `task_await`
+    // pops-and-runs until its target completes, and the run entrypoint drains
+    // the remainder at exit (detached tasks outliving their handles).
+    // `task_queue_head` is the pop cursor into the append-only list.
+    task_queue: std.ArrayListUnmanaged(*vm_tasks.VmTask) = .empty,
+    task_queue_head: usize = 0,
+    // The suspendable task currently being driven (runOne); `task_sleep` sets
+    // its wake deadline instead of blocking the thread.
+    current_task: ?*vm_tasks.VmTask = null,
     last_error_buffer: [256]u8 = [_]u8{0} ** 256,
     last_error_len: usize = 0,
     // Decoded form of the current module (resolved branch targets, function
@@ -45,6 +61,10 @@ pub const Vm = struct {
     // module pointer is executed; fresh Vms are created per run/reload, so
     // stale-address reuse within one Vm lifetime does not occur in practice.
     prepared_cache: ?*vm_prepare.PreparedModule = null,
+    // Prepared programs retired by a live hot reload (invalidateModuleCaches):
+    // kept alive because the parked entrypoint frame still points into them;
+    // freed at deinit.
+    retired_prepared: std.ArrayListUnmanaged(*vm_prepare.PreparedModule) = .empty,
     // LIFO pool of frame storage buffers (combined register+local value/owned
     // arrays). The interpreter reuses these instead of malloc/free-ing per call.
     // Pooled buffers are kept alive (only their *capacity* slice is stored), so any
@@ -127,6 +147,34 @@ pub const Vm = struct {
         const prepared = try vm_prepare.prepare(self.allocator, module);
         self.prepared_cache = prepared;
         return prepared;
+    }
+
+    /// Invalidate every module-derived cache (prepared code + type caches).
+    /// Live hot reload swaps the module CONTENTS at the same address
+    /// (`&HybridRuntime.module`), so the pointer-identity checks in
+    /// preparedFor/ensureTypeCaches never fire — the swap must invalidate
+    /// explicitly or the VM keeps executing the retired program's decoded
+    /// instructions and TypeDecls.
+    ///
+    /// The current PreparedModule is RETIRED, not freed: the app entrypoint's
+    /// interpreter frame is parked inside the native event loop for the whole
+    /// session holding pointers into it (`runPrepared` captures `prepared`
+    /// across native calls), and it resumes those instructions when the app
+    /// quits. Retired programs are freed at deinit.
+    pub fn invalidateModuleCaches(self: *Vm) void {
+        if (self.prepared_cache) |prepared| {
+            self.retired_prepared.append(self.allocator, prepared) catch {
+                // Could not track it: leak rather than free under a parked
+                // frame (dev-session bounded, freed by the OS at exit).
+            };
+            self.prepared_cache = null;
+        }
+        self.type_cache.clearRetainingCapacity();
+        self.type_ptr_cache.clearRetainingCapacity();
+        self.element_type_cache.clearRetainingCapacity();
+        self.enum_cache.clearRetainingCapacity();
+        self.enum_ptr_cache.clearRetainingCapacity();
+        self.type_cache_module = null;
     }
 
     /// (Re)builds the per-module type caches when a different module pointer is
@@ -218,6 +266,8 @@ pub const Vm = struct {
             self.allocator.free(words[0..word_count]);
         }
         self.exported_native_closures.deinit(self.allocator);
+        vm_tasks.deinitTasks(self.allocator, &self.live_tasks);
+        self.task_queue.deinit(self.allocator);
         native_bridge.deinitTrackedNativeStates(self);
         self.heap.deinit();
         self.native_state_materialized_types.deinit();
@@ -225,6 +275,11 @@ pub const Vm = struct {
             prepared.deinit(self.allocator);
             self.allocator.destroy(prepared);
         }
+        for (self.retired_prepared.items) |prepared| {
+            prepared.deinit(self.allocator);
+            self.allocator.destroy(prepared);
+        }
+        self.retired_prepared.deinit(self.allocator);
         for (self.frame_pool.items) |buf| {
             self.allocator.free(buf.values);
             self.allocator.free(buf.owned);
@@ -321,6 +376,9 @@ pub const Vm = struct {
         };
         const result = try self.runFunctionById(module, entry_function_id, &.{}, writer, hooks);
         self.heap.dropValue(result);
+        // Detached tasks outlive their handles: run whatever is still queued
+        // (skipping cancelled tasks) before the runtime shuts down.
+        try vm_interpreter_tasks.drainAll(self, module, writer, hooks);
     }
 
     pub fn runFunctionById(
@@ -665,50 +723,14 @@ pub const Vm = struct {
         return std.mem.indexOf(u8, name, "->") != null;
     }
 
+    // Struct/array/enum deep-copy semantics live in vm_struct_copy.zig
+    // (Core Law #5 extraction); these delegates keep call sites stable.
     pub fn resolveStructValuePointer(self: *Vm, expected_type_name: []const u8, ptr: usize) !usize {
-        if (ptr == 0) {
-            self.rememberError("struct value pointer is null");
-            return error.RuntimeFailure;
-        }
-        if (self.isManagedStructPointer(ptr)) return ptr;
-        _ = expected_type_name;
-
-        const slot_ptr: *const runtime_abi.Value = @ptrFromInt(ptr);
-        const value = slot_ptr.*;
-        if (value != .raw_ptr) {
-            // Some lowered paths hand us a direct pointer to inline struct field storage
-            // instead of a slot containing a managed struct pointer. Treat that as an
-            // already-resolved struct pointer and let downstream field access validate it.
-            return ptr;
-        }
-        if (value.raw_ptr == 0) return 0;
-        if (!self.isManagedStructPointer(value.raw_ptr)) {
-            self.rememberError("struct pointer slot does not contain a managed struct value");
-            return error.RuntimeFailure;
-        }
-        return value.raw_ptr;
+        return struct_copy_impl.resolveStructValuePointer(self, expected_type_name, ptr);
     }
 
     pub fn ensureStructDestinationPointer(self: *Vm, module: *const bytecode.Module, expected_type_name: []const u8, ptr: usize) !usize {
-        if (ptr == 0) {
-            self.rememberError("struct destination pointer is null");
-            return error.RuntimeFailure;
-        }
-        if (self.isManagedStructPointer(ptr)) return ptr;
-
-        const slot_ptr: *runtime_abi.Value = @ptrFromInt(ptr);
-        if (slot_ptr.* == .raw_ptr and slot_ptr.raw_ptr != 0) {
-            if (!self.isManagedStructPointer(slot_ptr.raw_ptr)) {
-                self.rememberError("struct destination slot does not contain a managed struct value");
-                return error.RuntimeFailure;
-            }
-            return slot_ptr.raw_ptr;
-        }
-
-        const old = slot_ptr.*;
-        slot_ptr.* = .{ .raw_ptr = try self.allocateStruct(module, expected_type_name) };
-        self.heap.dropValue(old);
-        return slot_ptr.raw_ptr;
+        return struct_copy_impl.ensureStructDestinationPointer(self, module, expected_type_name, ptr);
     }
 
     pub fn copyStructValueInto(
@@ -718,42 +740,11 @@ pub const Vm = struct {
         dst_raw_ptr: usize,
         src_value: runtime_abi.Value,
     ) !void {
-        const type_decl = self.findTypeCached(module, type_name) orelse {
-            self.rememberError("struct type could not be resolved");
-            return error.RuntimeFailure;
-        };
-        const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_raw_ptr);
-        if (src_value == .raw_ptr and src_value.raw_ptr != 0) {
-            if (self.isManagedStructPointer(src_value.raw_ptr)) {
-                const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_value.raw_ptr);
-                try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
-            } else {
-                try self.copyStructFromNativeLayoutInto(module, type_name, dst_raw_ptr, src_value.raw_ptr);
-            }
-            return;
-        }
-        if (src_value == .raw_ptr and src_value.raw_ptr == 0) {
-            const default_ptr = try self.allocateStruct(module, type_name);
-            defer self.heap.dropValue(.{ .raw_ptr = default_ptr });
-            const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(default_ptr);
-            try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
-            return;
-        }
-        self.rememberError("struct copy source must be a struct value");
-        return error.RuntimeFailure;
+        return struct_copy_impl.copyStructValueInto(self, module, type_name, dst_raw_ptr, src_value);
     }
 
     pub fn cloneStructValue(self: *Vm, module: *const bytecode.Module, type_name: []const u8, src_raw_ptr: usize) !usize {
-        const type_decl = self.findTypeCached(module, type_name) orelse {
-            self.rememberError("struct type could not be resolved");
-            return error.RuntimeFailure;
-        };
-        const fresh = try self.allocateStruct(module, type_name);
-        errdefer self.heap.dropValue(.{ .raw_ptr = fresh });
-        const dst_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(fresh);
-        const src_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(src_raw_ptr);
-        try self.copyStruct(module, type_decl, dst_ptr, src_ptr);
-        return fresh;
+        return struct_copy_impl.cloneStructValue(self, module, type_name, src_raw_ptr);
     }
 
     pub fn cloneBorrowedValueForStore(
@@ -802,44 +793,7 @@ pub const Vm = struct {
         dst_ptr: [*]align(1) runtime_abi.Value,
         src_ptr: [*]align(1) runtime_abi.Value,
     ) !void {
-        for (type_decl.fields, 0..) |field_decl, index| {
-            if (field_decl.ty.kind == .ffi_struct) {
-                const nested_name = field_decl.ty.name orelse {
-                    self.rememberError("struct field type is missing a name");
-                    return error.RuntimeFailure;
-                };
-                const nested_type = self.findTypeCached(module, nested_name) orelse {
-                    self.rememberError("struct type could not be resolved");
-                    return error.RuntimeFailure;
-                };
-                if (src_ptr[index] != .raw_ptr) {
-                    self.rememberFmt(
-                        "nested struct copy source must be a pointer: {s}.{s}",
-                        .{ type_decl.name, field_decl.name },
-                    );
-                    return error.RuntimeFailure;
-                }
-                if (dst_ptr[index] != .raw_ptr or dst_ptr[index].raw_ptr == 0) {
-                    const old = dst_ptr[index];
-                    dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-                    self.heap.dropValue(old);
-                }
-                if (src_ptr[index].raw_ptr == 0) {
-                    // Treat null nested pointers as zero/default nested structs.
-                    const old = dst_ptr[index];
-                    dst_ptr[index] = .{ .raw_ptr = try self.allocateStruct(module, nested_name) };
-                    self.heap.dropValue(old);
-                    continue;
-                }
-                const nested_dst: [*]align(1) runtime_abi.Value = @ptrFromInt(dst_ptr[index].raw_ptr);
-                const nested_src: [*]align(1) runtime_abi.Value = @ptrFromInt(src_ptr[index].raw_ptr);
-                try self.copyStruct(module, nested_type, nested_dst, nested_src);
-            } else {
-                const old = dst_ptr[index];
-                dst_ptr[index] = try self.cloneBorrowedValueForStore(module, field_decl.ty, src_ptr[index]);
-                self.heap.dropValue(old);
-            }
-        }
+        return struct_copy_impl.copyStruct(self, module, type_decl, dst_ptr, src_ptr);
     }
 
     /// Deep-clone a managed array value so the result shares no backing storage
@@ -852,97 +806,11 @@ pub const Vm = struct {
         element_ty: bytecode.TypeRef,
         src_value: runtime_abi.Value,
     ) anyerror!runtime_abi.Value {
-        if (src_value != .raw_ptr or src_value.raw_ptr == 0) return src_value;
-        const src_array: *const ArrayObject = @ptrFromInt(src_value.raw_ptr);
-        const len = src_array.len;
-        const dst_ptr = try self.allocateArray(len);
-        const dst_array: *ArrayObject = @ptrFromInt(dst_ptr);
-        var index: usize = 0;
-        while (index < len) : (index += 1) {
-            const element = runtime_abi.bridgeValueToValue(src_array.items[index]);
-            const cloned = switch (element_ty.kind) {
-                .ffi_struct => blk: {
-                    if (element != .raw_ptr or element.raw_ptr == 0) break :blk element;
-                    const nested_name = element_ty.name orelse break :blk element;
-                    if (!self.isManagedStructPointer(element.raw_ptr)) {
-                        break :blk runtime_abi.Value{ .raw_ptr = try self.copyStructFromNativeLayout(module, nested_name, element.raw_ptr) };
-                    }
-                    const fresh = try self.allocateStruct(module, nested_name);
-                    const nested_type = self.findTypeCached(module, nested_name) orelse {
-                        self.heap.dropValue(.{ .raw_ptr = fresh });
-                        self.rememberError("array element struct type could not be resolved");
-                        return error.RuntimeFailure;
-                    };
-                    const fresh_fields: [*]align(1) runtime_abi.Value = @ptrFromInt(fresh);
-                    const src_fields: [*]align(1) runtime_abi.Value = @ptrFromInt(element.raw_ptr);
-                    try self.copyStruct(module, nested_type, fresh_fields, src_fields);
-                    break :blk runtime_abi.Value{ .raw_ptr = fresh };
-                },
-                .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, element_ty), element),
-                .enum_instance => blk: {
-                    if (element != .raw_ptr or element.raw_ptr == 0) break :blk element;
-                    const enum_name = element_ty.name orelse break :blk element;
-                    break :blk try self.cloneEnumValue(module, enum_name, element);
-                },
-                .construct_any => try self.cloneBorrowedValueForStore(module, element_ty, element),
-                else => element,
-            };
-            dst_array.items[index] = runtime_abi.bridgeValueFromValue(cloned);
-        }
-        return .{ .raw_ptr = dst_ptr };
+        return struct_copy_impl.cloneArrayValueDeep(self, module, element_ty, src_value);
     }
 
     pub fn cloneEnumValue(self: *Vm, module: *const bytecode.Module, type_name: []const u8, value: runtime_abi.Value) anyerror!runtime_abi.Value {
-        if (value != .raw_ptr or value.raw_ptr == 0) return value;
-        if (!self.isManagedStructPointer(value.raw_ptr)) {
-            var native_candidate = value.raw_ptr;
-            var depth: usize = 0;
-            while (depth < 8) : (depth += 1) {
-                const native_words: [*]const u64 = @ptrFromInt(native_candidate);
-                if (native_bridge.enumNativeVariant(self, module, type_name, native_words[0])) |_| {
-                    return .{ .raw_ptr = try self.copyEnumFromNativeLayout(module, type_name, native_candidate) };
-                }
-                const next_candidate: usize = @intCast(native_words[0]);
-                if (next_candidate == 0 or next_candidate == native_candidate or next_candidate % @alignOf(u64) != 0) break;
-                native_candidate = next_candidate;
-            }
-        }
-        const src: [*]align(1) const runtime_abi.Value = @ptrFromInt(value.raw_ptr);
-        if (src[0] == .raw_ptr and src[0].raw_ptr != 0 and src[0].raw_ptr != value.raw_ptr) {
-            return self.cloneEnumValue(module, type_name, src[0]);
-        }
-        if (src[0] != .integer) {
-            const native_words: [*]const u64 = @ptrFromInt(value.raw_ptr);
-            var chain_candidate: usize = value.raw_ptr;
-            var chain_words = [_]u64{0} ** 4;
-            var chain_index: usize = 0;
-            while (chain_index < chain_words.len) : (chain_index += 1) {
-                const chain_ptr: [*]const u64 = @ptrFromInt(chain_candidate);
-                chain_words[chain_index] = chain_ptr[0];
-                const next_candidate: usize = @intCast(chain_ptr[0]);
-                if (next_candidate == 0 or next_candidate == chain_candidate or next_candidate % @alignOf(u64) != 0) break;
-                chain_candidate = next_candidate;
-            }
-            self.rememberFmt(
-                "enum clone requires an integer tag slot: type={s} ptr=0x{x} first_word=0x{x} chain=0x{x},0x{x},0x{x},0x{x}",
-                .{ type_name, value.raw_ptr, native_words[0], chain_words[0], chain_words[1], chain_words[2], chain_words[3] },
-            );
-            return error.RuntimeFailure;
-        }
-        const payload_ty = native_bridge.enumPayloadType(self, module, type_name, @intCast(src[0].integer)) orelse bytecode.TypeRef{ .kind = .void };
-        const slots = try self.allocator.alloc(runtime_abi.Value, 2);
-        errdefer self.allocator.free(slots);
-        slots[0] = src[0];
-        slots[1] = switch (payload_ty.kind) {
-            .ffi_struct => blk: {
-                if (src[1] != .raw_ptr or src[1].raw_ptr == 0) break :blk src[1];
-                break :blk .{ .raw_ptr = try self.cloneStructValue(module, payload_ty.name orelse type_name, src[1].raw_ptr) };
-            },
-            .array => try self.cloneArrayValueDeep(module, try self.arrayElementType(module, payload_ty), src[1]),
-            .enum_instance => try self.cloneEnumValue(module, payload_ty.name orelse type_name, src[1]),
-            else => src[1],
-        };
-        return .{ .raw_ptr = try self.heap.registerStruct(type_name, slots) };
+        return struct_copy_impl.cloneEnumValue(self, module, type_name, value);
     }
 };
 

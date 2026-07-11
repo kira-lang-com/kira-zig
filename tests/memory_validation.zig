@@ -50,7 +50,7 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     // Native affine-ownership invariants for the render-loop leak fixes. Each guards a
     // distinct ownership rule whose removal reintroduces a measured leak / double free.
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "kira_enum_clone", "structs own their enum fields (deep clone on copy)");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", ".enum_instance => {", "struct destructor frees enum fields");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", ".enum_instance => {", "struct destructor frees enum fields");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.arr.work", "array field self-store is a no-op (no orphaning clone)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "moveOrCloneToHeap", "owned struct args are moved (heap-stable) into the callee");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_ffi.zig", "cstr_temps", "transient String->CString extern buffers are freed after the call");
@@ -80,8 +80,8 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     // double free (see backend_capi_drop.zig's string_buf comment for the model).
     try requireBackends(allocator, &failures, "tests/pass/run/ownership_string_deep_value_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "kira_capi_string_clone", "the string buffer deep-copy primitive exists");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.strfield", "struct destructors free owned string field buffers (native)");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "cc.strfield", "struct clones deep-copy string field buffers");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "rc.strfield", "struct destructors free owned string field buffers (native)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "cc.strfield", "struct clones deep-copy string field buffers");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.str.old", "string field stores drop the replaced buffer before the clone");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_drop_slots.zig", "drop.cstr.slot", "CString→String coercion buffers are tracked for scope-exit free");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_codegen.zig", "cloneStringOnRead", "aggregate string reads clone (readers never alias aggregate buffers)");
@@ -104,8 +104,8 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_array_elements_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireBackends(allocator, &failures, "tests/pass/run/ownership_closure_struct_array_parity/expect.toml", &.{ "vm", "llvm", "hybrid" });
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_closure_dtors.zig", "kira_capi_closure_release", "the per-closure typed capture teardown dispatcher exists");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.closfield", "struct destructors free owned closure fields (tag-safe, native)");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "cc.closfield", "struct clones deep-copy closure fields");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "rc.closfield", "struct destructors free owned closure fields (tag-safe, native)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "cc.closfield", "struct clones deep-copy closure fields");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "store.clos.old", "closure field stores drop the replaced block before the clone (self-store guarded)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_returns.zig", "ret.clos.clone", "borrowed closure returns deep-clone (returned closures are always fresh owned blocks)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "call.clos.clone", "borrowed closures passed to owned params deep-clone (array-element double-free)");
@@ -121,6 +121,64 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "enumCloneFn", "every enum clone site dispatches typed-or-generic through the shared enum_map");
     try requireContains(allocator, &failures, "tests/pass/run/ownership_enum_string_payload_free_parity/expect.toml", "check_leaks = true", "enum payload case runs under the harness leak check");
 
+    // Array-of-enum element teardown: a RAW_PTR-tagged enum element resolves to
+    // the typed kira_destroy_enum_<T> (frees the block + payload), paired with the
+    // typed clone. Native only (hybrid enum blocks are VM-owned). Guarded by the
+    // kik-harness churn test (harness leak run + parity checksum).
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "arrayEnumElement", "array elements that resolve to an enum tear down through the typed enum destroy/clone");
+    try requireContains(allocator, &failures, "tests-kik/harness/app/runparity/EmxTests.kira", "Test EmxArrayEnumStringPayloadFree", "the array-of-String-payload-enum teardown churn guard exists in the kik harness");
+
+    // Enum payloads that own heap beyond the block: struct payloads free/clone
+    // through kira_destroy_<T>/kira_clone_<T>, and construct_any payloads free
+    // through the runtime-typed destroy. A contains-any enum is move-only (KIR002)
+    // so its clone arm is unreachable and TRAPS rather than sharing the shell.
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "payloadOwnsHeap", "the string/enum/struct/construct_any payload filter is shared by destroy, clone, and the needs_typed gate");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "structDestroyFn", "struct-payload enum variants free the shell + contents via the typed struct destroy");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "dynamic_destroy", "construct_any-payload enum variants free the type-erased tree via the runtime-typed destroy");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "LLVMBuildUnreachable", "the construct_any clone arm traps (a contains-any enum is move-only and never cloned)");
+    try requireContains(allocator, &failures, "tests/pass/check/field_override_enum_payload_defaults/expect.toml", "result = \"pass\"", "the struct-payload-enum array class-field case exists");
+    try requireContains(allocator, &failures, "tests/pass/run/enum_kind_split_cache_parity/expect.toml", "check_leaks = true", "the construct_any-payload enum teardown case runs under the harness leak check");
+    try requireContains(allocator, &failures, "tests-kik/harness/app/runparity/EmxTests.kira", "Test EmxStructPayloadEnumDefaultsFree", "the struct-payload-enum defaults churn guard exists in the kik harness");
+    try requireContains(allocator, &failures, "tests-kik/harness/app/runparity/EmxTests.kira", "Test EmxConstructAnyPayloadEnumChurn", "the construct_any-payload enum churn guard exists in the kik harness");
+    // Array-payload enum variants (e.g. Result<[Int], E>.Ok) own a moved-in
+    // KiraArray*: destroy releases it with the typed element destructor and the
+    // clone arm deep-copies it, keeping the pairing invariant.
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "array_release", "array-payload enum variants release the owned KiraArray* with its typed element destructor");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_enum_dtors.zig", "array_clone", "array-payload enum variants deep-copy the owned KiraArray* (paired with the release)");
+    try requireContains(allocator, &failures, "tests-kik/harness/app/runparity/EmxTests.kira", "Test EmxArrayPayloadEnumFree", "the array-payload enum churn guard exists in the kik harness");
+
+    // @FFI.Array fields are INLINE fixed C storage: element get/set lower to
+    // real inline accesses (never the kira-array runtime helpers, which would
+    // silently drop the store against the inline bytes and orphan the cloned
+    // element — the ffi_nested_fixed_array_assignment leak).
+    try requireContains(allocator, &failures, "packages/kira_ir/src/lower_from_hir_places.zig", "isFfiFixedArrayType", "FFI fixed-array places lower to the inline storage address");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "lowerFfiFixedArraySet", "FFI fixed-array element stores write the inline storage (release-replaced + clone_contents value semantics)");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "lowerFfiFixedArrayGet", "FFI fixed-array element reads borrow the inline element in place");
+    try requireContains(allocator, &failures, "tests/fail/pipeline/ffi_nested_fixed_array_assignment/expect.toml", "check_leaks = true", "the FFI fixed-array assignment case runs under the harness leak check");
+    try requireContains(allocator, &failures, "tests-kik/ffi-harness/app/structs/FfaFixedArrayTests.kira", "Test FfaInlineArrayStoreReadback", "the FFI fixed-array store/read-back guard exists in the kik ffi-harness");
+
+    // Nested-array element teardown ([[T]]): array elements are tag-5 RAW_PTR, so
+    // a `[[Int]]`/`[[String]]`'s boxed inner arrays free/deep-copy through a typed
+    // per-element wrapper (kira_destroy_arr_<[T]> / kira_clone_arr_<[T]>), keyed by
+    // the inner array's bracketed name and closed transitively for arbitrary depth.
+    // Without it every inner array (box + storage + owned contents) fell through to
+    // the tag-safe closure no-op and leaked; elementClone mirrors it (a deep-cloned
+    // outer array would otherwise ALIAS its inner arrays). Native only; hybrid inner
+    // arrays are VM-owned (empty array_map). Sound by the same array_map on both
+    // sides (deep-cloned everywhere iff deep-destroyed everywhere, §7).
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_array_dtors.zig", "kira_array_release", "the inner-array wrapper releases a boxed inner array through its element destructor");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_array_dtors.zig", "collectKeys", "the inner-array wrapper key set is collected (transitively closed) from every array-of-array ValueType in the program");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "arrayElementWrapper", "elementDestroy and elementClone both dispatch nested-array elements through the shared array_map");
+    // The overwrite drop uses the ARRAY's element destructor (container type), not
+    // the source element's own type — the latter returns the destructor for the
+    // inner array's OWN elements (a no-op) and orphans the replaced inner array.
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_aggregate.zig", "register_types[v.array]", "array element overwrite drops the replaced element through the ARRAY's element destructor (nested-array box leak)");
+    // The support digest folds the inner-array wrapper set so a body edit that
+    // introduces a new nested-array type rebuilds the support object (its wrapper
+    // bodies), never linking against a stale support CGU.
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/cgu_hash.zig", "array_wrappers_digest", "the inner-array wrapper set feeds the CGU support + per-function digests");
+    try requireContains(allocator, &failures, "tests-kik/harness/app/collections/ColxCollectionTests.kira", "Test ColxNestedArrayFree", "the nested-array teardown churn guard exists in the kik harness");
+
     // Type-erased (construct_any / Any) values: move-only ownership is now
     // enforced through direct values plus aggregates that recursively contain
     // them, and native struct fields / [Any] elements tear down through the
@@ -131,8 +189,8 @@ fn verify(allocator: std.mem.Allocator, print_success: bool) !void {
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_dynamic_dtors.zig", "kira_capi_dynamic_destroy", "the runtime-typed destroy dispatcher exists");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_dynamic_dtors.zig", "kira_capi_state_interior_release", "native-state interiors release through the type-id switch (VM freeNativeState parity)");
     try requireContains(allocator, &failures, "packages/kira_native_bridge/src/runtime_helpers.c", "kira_state_interior_release_fn", "kira_native_state_free runs the interior hook before the shallow free");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "rc.anyfield", "struct destructors free construct_any fields through the runtime-typed destroy");
-    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_destructors.zig", "cc.anynew", "struct clone_contents deep-clones construct_any fields when a struct copy is still legal");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "rc.anyfield", "struct destructors free construct_any fields through the runtime-typed destroy");
+    try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_struct_dtors.zig", "cc.anynew", "struct clone_contents deep-clones construct_any fields when a struct copy is still legal");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "recording again here", "call_virtual does not double-record construct_any results (widget-dispatch use-after-free)");
     try requireContains(allocator, &failures, "packages/kira_llvm_backend/src/backend_capi_calls.zig", "tracksFreshAnyResult(method_id)) drop.onAlloc", "construct-family virtual-call results are recorded exactly once (single-owner typed teardown)");
     // Plain-call Any results are tracked only for callees PROVEN to return a

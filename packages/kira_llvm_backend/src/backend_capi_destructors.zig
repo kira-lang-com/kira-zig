@@ -15,11 +15,24 @@ const capi = @import("backend_capi.zig");
 const findTypeDecl = utils.findTypeDecl;
 const allocPrintZ = utils.allocPrintZ;
 const fresh_any = @import("backend_capi_fresh_any.zig");
+// Per-struct destroy/release/clone body builders (pass 2 of build()); split out
+// under Core Law #5.
+const struct_dtors = @import("backend_capi_struct_dtors.zig");
+// Inner-array wrapper key collection + mangling (nested-array element leak);
+// bodies are built in the same module after this map's declarations exist.
+const array_dtors = @import("backend_capi_array_dtors.zig");
+// wasm32 C-ABI adapter thunks: wrap the i64-ABI clone/destroy helpers so they can be
+// passed as `void*(*)(void*)` / `void(*)(void*)` array element callbacks without a
+// call_indirect signature-mismatch trap. Identity (no thunk) on 64-bit targets.
+const wasm_cb = @import("backend_capi_wasm_cb_adapters.zig");
 pub const TypeHelpers = struct {
     release_contents: capi.RuntimeDecls.Decl,
     destroy: capi.RuntimeDecls.Decl,
     clone_contents: capi.RuntimeDecls.Decl,
     clone: capi.RuntimeDecls.Decl,
+    // The C-ABI-safe form of `clone` to pass as a kira_array_clone element callback.
+    // Equal to `clone` on 64-bit; a `(ptr)->ptr` thunk over it on wasm32.
+    clone_cb: capi.RuntimeDecls.Decl,
 };
 
 // Typed enum teardown/deep-clone (leak class #4: the 16-byte string-payload box
@@ -32,12 +45,30 @@ pub const EnumHelpers = struct {
     clone: capi.RuntimeDecls.Decl,
 };
 
+// Typed array-of-array element teardown/deep-clone (the nested-array element
+// leak): one destroy/clone pair per INNER array type ("[Int]", "[Message]", ...)
+// reachable in the program. `kira_destroy_arr_<K>` / `kira_clone_arr_<K>` free /
+// deep-copy a boxed inner array (its storage + owned contents) as an element
+// callback for kira_array_release / kira_array_clone. Bodies live in
+// backend_capi_array_dtors.zig. NATIVE only — hybrid inner arrays are VM-owned,
+// so the map is empty and elementDestroy/elementClone fall back to today's pair.
+pub const ArrayHelpers = struct {
+    destroy: capi.RuntimeDecls.Decl,
+    clone: capi.RuntimeDecls.Decl,
+};
+
 pub const Destructors = struct {
     map: std.StringHashMapUnmanaged(TypeHelpers) = .{},
     // Per-enum typed helpers (string-payload enums, NATIVE only — a hybrid enum's
     // payload box may be VM-written and must not be freed/cloned with libc).
     // Empty in hybrid, so every accessor falls back to the generic shallow pair.
     enum_map: std.StringHashMapUnmanaged(EnumHelpers) = .{},
+    // Per-inner-array-type teardown/clone wrappers (nested-array element leak,
+    // NATIVE only). Keyed by the inner array's bracketed text ("[Int]", ...) —
+    // the OUTER array's element name. Empty in hybrid, so elementDestroy/
+    // elementClone fall back to the tag-safe closure pair (kira_array_release
+    // itself already defers on hybrid).
+    array_map: std.StringHashMapUnmanaged(ArrayHelpers) = .{},
     destroy_raw_ptr: capi.RuntimeDecls.Decl,
     destroy_struct_ptr: capi.RuntimeDecls.Decl,
     // Tag-safe owned-closure drop (kira_destroy_closure(i64)): frees a heap closure
@@ -71,6 +102,15 @@ pub const Destructors = struct {
     dynamic_destroy: capi.RuntimeDecls.Decl,
     dynamic_clone: capi.RuntimeDecls.Decl,
     state_interior_release: capi.RuntimeDecls.Decl,
+    // C-ABI-safe (`void*`-parameter) forms of the i64-ABI dispatchers/closure helpers used
+    // as kira_array_release / kira_array_clone element callbacks. Equal to their base
+    // decls on 64-bit; wasm32 `(ptr)->void` / `(ptr)->ptr` thunks over them otherwise, so
+    // the runtime's call_indirect type-checks against the exact `void(*)(void*)` /
+    // `void*(*)(void*)` typedef and does not trap.
+    destroy_closure_cb: capi.RuntimeDecls.Decl,
+    closure_clone_cb: capi.RuntimeDecls.Decl,
+    dynamic_destroy_cb: capi.RuntimeDecls.Decl,
+    dynamic_clone_cb: capi.RuntimeDecls.Decl,
     // Whether string struct fields are freed by kira_release_contents_<T>. True on
     // the pure-native path. In HYBRID a native struct's string field may have been
     // written by the VM bridge with a VM-owned buffer, so release must not free it
@@ -88,6 +128,7 @@ pub const Destructors = struct {
     pub fn deinit(self: *Destructors, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
         self.enum_map.deinit(allocator);
+        self.array_map.deinit(allocator);
         self.fresh_any_returns.deinit(allocator);
     }
 
@@ -115,6 +156,27 @@ pub const Destructors = struct {
         return self.enum_clone;
     }
 
+    // Typed struct destroy (kira_destroy_<T>: shell + contents) for a struct-typed
+    // value, or the shallow kira_destroy_raw_ptr (block-only free) when no helper
+    // exists. Used for struct-payload enum variants, whose payload slot holds the
+    // shell pointer directly (moved in by enumPayloadAsI64).
+    pub fn structDestroyFn(self: Destructors, ty: ir.ValueType) capi.RuntimeDecls.Decl {
+        if (ty.name) |name| {
+            if (self.map.get(name)) |helpers| return helpers.destroy;
+        }
+        return self.destroy_raw_ptr;
+    }
+
+    // Typed struct deep-clone (kira_clone_<T>(i64)->i64), or null when no helper
+    // exists (every declared struct has one, so callers may treat null as
+    // "unreachable"). Paired with structDestroyFn for struct-payload enum clones.
+    pub fn structCloneFn(self: Destructors, ty: ir.ValueType) ?capi.RuntimeDecls.Decl {
+        if (ty.name) |name| {
+            if (self.map.get(name)) |helpers| return helpers.clone;
+        }
+        return null;
+    }
+
     // The per-element destroy function for an array type, or null for primitive
     // elements (whose buffer is freed without a per-element callback). When the
     // element type is not a struct decl, fall back to the tag-safe closure release
@@ -129,15 +191,62 @@ pub const Destructors = struct {
     // borrowed array store, a per-frame memory explosion (rolled back).
     pub fn elementDestroy(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
         if (self.structHelpers(program, array_ty)) |helpers| return helpers.destroy.fn_value;
-        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_destroy.fn_value;
-        if (self.deep_closures) return self.destroy_closure.fn_value;
+        // An array of an enum: each RAW_PTR-tagged element points at a heap
+        // 16-byte enum block the array owns (elements move in — buildElementBridge
+        // packs the pointer and lowerArraySet/Append escape the source). Without
+        // this branch the enum block AND any owned payload (string box, struct
+        // shell, construct_any tree) fell through to the tag-safe closure no-op
+        // and leaked. Native only: a hybrid enum block may be VM-owned.
+        if (self.arrayEnumElement(program, array_ty)) |enum_ty| return self.enumDestroyFn(enum_ty).fn_value;
+        // An array whose element is itself an array: each RAW_PTR-tagged element
+        // is a boxed inner array the outer array owns. The typed wrapper releases
+        // it (box + storage + its own owned contents); without it the inner array
+        // fell through to the tag-safe closure no-op and leaked. Native only —
+        // the map is empty on hybrid (VM-owned inner arrays).
+        if (self.arrayElementWrapper(array_ty)) |helpers| return helpers.destroy.fn_value;
+        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_destroy_cb.fn_value;
+        if (self.deep_closures) return self.destroy_closure_cb.fn_value;
         return null;
     }
 
     pub fn elementClone(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?llvm.c.LLVMValueRef {
-        if (self.structHelpers(program, array_ty)) |helpers| return helpers.clone.fn_value;
-        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_clone.fn_value;
-        if (self.deep_closures) return self.closure_clone.fn_value;
+        if (self.structHelpers(program, array_ty)) |helpers| return helpers.clone_cb.fn_value;
+        // Paired with elementDestroy's enum branch: a struct copy / borrowed→owned
+        // promotion of an array of enums deep-copies each element block (and its
+        // owned payload) so the copy owns it independently. A contains-any enum is
+        // move-only (KIR002) so this clone is never reached for it at runtime, and
+        // its typed clone traps on the construct_any variant (backend_capi_enum_dtors).
+        if (self.arrayEnumElement(program, array_ty)) |enum_ty| return self.enumCloneFn(enum_ty).fn_value;
+        // Paired with elementDestroy's array-element branch: a struct copy /
+        // borrowed→owned promotion of an array of arrays deep-copies each inner
+        // array (and its owned contents) so the copy owns it independently — never
+        // an alias. Same array_map, so deep-cloned iff deep-destroyed.
+        if (self.arrayElementWrapper(array_ty)) |helpers| return helpers.clone.fn_value;
+        if (arrayContainsDirectConstructAny(array_ty) and self.deep_closures) return self.dynamic_clone_cb.fn_value;
+        if (self.deep_closures) return self.closure_clone_cb.fn_value;
+        return null;
+    }
+
+    // When `array_ty`'s element is itself an array (its element-text name is
+    // bracketed, e.g. "[Int]"), the typed inner-array teardown/clone wrapper pair
+    // — or null when there is none (hybrid: empty map; or a plain array). Native
+    // only by construction: the map is only populated on the pure-native path.
+    fn arrayElementWrapper(self: Destructors, array_ty: ir.ValueType) ?ArrayHelpers {
+        const name = array_ty.name orelse return null;
+        if (name.len < 2 or name[0] != '[' or name[name.len - 1] != ']') return null;
+        return self.array_map.get(name);
+    }
+
+    // When `array_ty`'s element resolves to a declared enum, the enum ValueType to
+    // feed enumDestroyFn/enumCloneFn (typed teardown/clone). Native only — hybrid
+    // keeps VM-owned enum blocks (empty enum_map falls back to the shallow pair,
+    // but we must not even free the block with libc, so gate on deep_closures).
+    fn arrayEnumElement(self: Destructors, program: *const ir.Program, array_ty: ir.ValueType) ?ir.ValueType {
+        if (!self.deep_closures) return null;
+        const name = array_ty.name orelse return null;
+        for (program.enums) |enum_decl| {
+            if (std.mem.eql(u8, enum_decl.name, name)) return ir.ValueType{ .kind = .enum_instance, .name = name };
+        }
         return null;
     }
 
@@ -205,6 +314,22 @@ pub fn build(
     const dynamic_destroy = api.LLVMAddFunction(module_ref, "kira_capi_dynamic_destroy", ddestroy_ty);
     const dynamic_clone = api.LLVMAddFunction(module_ref, "kira_capi_dynamic_clone", cclone_ty);
     const state_interior_release = api.LLVMAddFunction(module_ref, "kira_capi_state_interior_release", void_ptr_ty);
+
+    // wasm32 C-ABI callback thunks over the i64-ABI dispatchers/closure helpers. On 64-bit
+    // a pointer and an i64 share the ABI so the raw helper is passed directly (no thunk);
+    // on wasm32 the runtime's `void*(*)(void*)` / `void(*)(void*)` element callbacks would
+    // trap call_indirect on an `(i64)->…` helper, so we hand it a `(ptr)->…` thunk instead.
+    // Declared here (in every CGU); bodies emitted below only in the support CGU.
+    const destroy_closure_decl = capi.RuntimeDecls.Decl{ .ty = void_i64_ty, .fn_value = destroy_closure };
+    const closure_clone_decl = capi.RuntimeDecls.Decl{ .ty = cclone_ty, .fn_value = closure_clone };
+    const dynamic_destroy_decl = capi.RuntimeDecls.Decl{ .ty = ddestroy_ty, .fn_value = dynamic_destroy };
+    const dynamic_clone_decl = capi.RuntimeDecls.Decl{ .ty = cclone_ty, .fn_value = dynamic_clone };
+    const wasm_cb_abi = wasm_cb.needed(types);
+    const destroy_closure_cb = if (wasm_cb_abi) wasm_cb.declarePtrVoid(api, module_ref, types, "kira_destroy_closure_wcb") else destroy_closure_decl;
+    const closure_clone_cb = if (wasm_cb_abi) wasm_cb.declarePtrPtr(api, module_ref, types, "kira_capi_closure_clone_wcb") else closure_clone_decl;
+    const dynamic_destroy_cb = if (wasm_cb_abi) wasm_cb.declarePtrVoid(api, module_ref, types, "kira_capi_dynamic_destroy_wcb") else dynamic_destroy_decl;
+    const dynamic_clone_cb = if (wasm_cb_abi) wasm_cb.declarePtrPtr(api, module_ref, types, "kira_capi_dynamic_clone_wcb") else dynamic_clone_decl;
+
     var result = Destructors{
         .destroy_raw_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_raw },
         .destroy_struct_ptr = .{ .ty = void_ptr_ty, .fn_value = destroy_struct },
@@ -214,9 +339,13 @@ pub fn build(
         .closure_release = .{ .ty = void_ptr_ty, .fn_value = closure_release },
         .closure_clone = .{ .ty = cclone_ty, .fn_value = closure_clone },
         .struct_type_id = runtime.struct_type_id,
-        .dynamic_destroy = .{ .ty = ddestroy_ty, .fn_value = dynamic_destroy },
-        .dynamic_clone = .{ .ty = cclone_ty, .fn_value = dynamic_clone },
+        .dynamic_destroy = dynamic_destroy_decl,
+        .dynamic_clone = dynamic_clone_decl,
         .state_interior_release = .{ .ty = void_ptr_ty, .fn_value = state_interior_release },
+        .destroy_closure_cb = destroy_closure_cb,
+        .closure_clone_cb = closure_clone_cb,
+        .dynamic_destroy_cb = dynamic_destroy_cb,
+        .dynamic_clone_cb = dynamic_clone_cb,
         .release_strings = mode != .hybrid,
         .deep_closures = mode != .hybrid,
         .fresh_any_returns = try fresh_any.compute(allocator, program),
@@ -259,9 +388,9 @@ pub fn build(
         api.LLVMPositionBuilderAtEnd(builder, null_block);
         _ = api.LLVMBuildRet(builder, api.LLVMConstNull(types.ptr_ty));
         api.LLVMPositionBuilderAtEnd(builder, copy_block);
-        var margs = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(types.i64, 16, 0)};
+        var margs = [_]llvm.c.LLVMValueRef{types.sizeArg(builder, api.LLVMConstInt(types.i64, 16, 0))};
         const dst = api.LLVMBuildCall2(builder, runtime.malloc.ty, runtime.malloc.fn_value, &margs, margs.len, "ec.dst");
-        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, api.LLVMConstInt(types.i64, 16, 0) };
+        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, types.sizeArg(builder, api.LLVMConstInt(types.i64, 16, 0)) };
         _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
         _ = api.LLVMBuildRet(builder, dst);
     }
@@ -284,11 +413,22 @@ pub fn build(
         api.LLVMPositionBuilderAtEnd(builder, copy_block);
         const is_zero = api.LLVMBuildICmp(builder, llvm.c.LLVMIntEQ, len, api.LLVMConstInt(types.i64, 0, 0), "sc.zero");
         const alloc_len = api.LLVMBuildSelect(builder, is_zero, api.LLVMConstInt(types.i64, 1, 0), len, "sc.alloclen");
-        var margs = [_]llvm.c.LLVMValueRef{alloc_len};
+        var margs = [_]llvm.c.LLVMValueRef{types.sizeArg(builder, alloc_len)};
         const dst = api.LLVMBuildCall2(builder, runtime.malloc.ty, runtime.malloc.fn_value, &margs, margs.len, "sc.dst");
-        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, len };
+        var cargs = [_]llvm.c.LLVMValueRef{ dst, src, types.sizeArg(builder, len) };
         _ = api.LLVMBuildCall2(builder, runtime.memcpy.ty, runtime.memcpy.fn_value, &cargs, cargs.len, "");
         _ = api.LLVMBuildRet(builder, dst);
+    }
+
+    // wasm32 C-ABI callback thunk bodies (the target dispatchers/closure helpers are
+    // declared above; their own bodies are emitted later in this support CGU by
+    // closure_dtors/dynamic_dtors — an extern reference until then is fine within one
+    // module). No-op on 64-bit, where wasm_cb_abi is false and no thunk was declared.
+    if (wasm_cb_abi) {
+        wasm_cb.definePtrVoid(api, builder, types, destroy_closure_cb, destroy_closure, void_i64_ty);
+        wasm_cb.definePtrPtr(api, builder, types, closure_clone_cb, closure_clone, cclone_ty);
+        wasm_cb.definePtrVoid(api, builder, types, dynamic_destroy_cb, dynamic_destroy, ddestroy_ty);
+        wasm_cb.definePtrPtr(api, builder, types, dynamic_clone_cb, dynamic_clone, cclone_ty);
     }
     }
 
@@ -307,11 +447,21 @@ pub fn build(
         defer allocator.free(c_name);
         var i64_param = [_]llvm.c.LLVMTypeRef{types.i64};
         const clone_ty = api.LLVMFunctionType(types.i64, &i64_param, i64_param.len, 0);
+        const clone_decl = capi.RuntimeDecls.Decl{ .ty = clone_ty, .fn_value = api.LLVMAddFunction(module_ref, c_name.ptr, clone_ty) };
+        // C-ABI-safe clone callback for kira_array_clone element cloning. On wasm32 the
+        // `(i64)->i64` kira_clone_<T> traps a `void*(*)(void*)` call_indirect, so declare a
+        // `(ptr)->ptr` thunk over it (body in pass 2); identity on 64-bit.
+        const clone_cb = if (wasm_cb_abi) blk: {
+            const cb_name = try allocPrintZ(allocator, "kira_clone_wcb_{s}", .{type_decl.name});
+            defer allocator.free(cb_name);
+            break :blk wasm_cb.declarePtrPtr(api, module_ref, types, cb_name);
+        } else clone_decl;
         try result.map.put(allocator, type_decl.name, .{
             .release_contents = .{ .ty = void_ptr_ty, .fn_value = api.LLVMAddFunction(module_ref, rc_name.ptr, void_ptr_ty) },
             .destroy = .{ .ty = void_ptr_ty, .fn_value = api.LLVMAddFunction(module_ref, d_name.ptr, void_ptr_ty) },
             .clone_contents = .{ .ty = void_ptr_ty, .fn_value = api.LLVMAddFunction(module_ref, cc_name.ptr, void_ptr_ty) },
-            .clone = .{ .ty = clone_ty, .fn_value = api.LLVMAddFunction(module_ref, c_name.ptr, clone_ty) },
+            .clone = clone_decl,
+            .clone_cb = clone_cb,
         });
     }
 
@@ -323,17 +473,21 @@ pub fn build(
     if (mode != .hybrid) {
         for (program.enums) |enum_decl| {
             // An enum needs the typed pair when a payload owns heap beyond the
-            // 16-byte block itself: a String payload (box + buffer) or a nested
-            // enum payload (its block, and transitively whatever IT owns — the
-            // nested payload dispatches through enumDestroyFn/enumCloneFn, which
-            // fall back to the shallow pair for enums that own nothing more).
-            // Same variant filter as buildDestroy/buildClone in
+            // 16-byte block itself: a String payload (box + buffer), a nested enum
+            // payload (its block + whatever IT owns), a struct payload (its shell +
+            // contents via kira_destroy_<T>/kira_clone_<T>), or a construct_any
+            // payload (a type-erased tree freed via kira_capi_dynamic_destroy; the
+            // clone arm traps because a contains-any enum is move-only — KIR002 —
+            // and never cloned). Same variant filter as buildDestroy/buildClone in
             // backend_capi_enum_dtors.zig, keeping the deep-cloned <=> deep-
             // destroyed pairing invariant.
             var needs_typed = false;
             for (enum_decl.variants) |variant| {
                 const pt = variant.payload_ty orelse continue;
-                if (pt.kind == .string or pt.kind == .enum_instance) needs_typed = true;
+                switch (pt.kind) {
+                    .string, .enum_instance, .ffi_struct, .construct_any, .array => needs_typed = true,
+                    else => {},
+                }
             }
             if (!needs_typed) continue;
             const ed_name = try allocPrintZ(allocator, "kira_destroy_enum_{s}", .{enum_decl.name});
@@ -347,6 +501,29 @@ pub fn build(
         }
     }
 
+    // Typed inner-array wrapper declarations (bodies in backend_capi_array_dtors.zig):
+    // one destroy/clone pair per inner array type ("[Int]", "[Message]", ...)
+    // reachable in the program, so elementDestroy/elementClone can free / deep-copy
+    // a `[[T]]`'s boxed inner arrays (and their owned contents). Declared here so a
+    // per-function CGU that drops/clones a nested array resolves the extern against
+    // the support CGU's body. Native only — hybrid inner arrays are VM-owned.
+    if (mode != .hybrid) {
+        const keys = try array_dtors.collectKeys(allocator, program);
+        defer allocator.free(keys);
+        for (keys) |key| {
+            const mangled = try array_dtors.mangle(allocator, key);
+            defer allocator.free(mangled);
+            const ad_name = try allocPrintZ(allocator, "kira_destroy_arr_{s}", .{mangled});
+            defer allocator.free(ad_name);
+            const ac_name = try allocPrintZ(allocator, "kira_clone_arr_{s}", .{mangled});
+            defer allocator.free(ac_name);
+            try result.array_map.put(allocator, key, .{
+                .destroy = .{ .ty = void_ptr_ty, .fn_value = api.LLVMAddFunction(module_ref, ad_name.ptr, void_ptr_ty) },
+                .clone = .{ .ty = ptr_ptr_ty, .fn_value = api.LLVMAddFunction(module_ref, ac_name.ptr, ptr_ptr_ty) },
+            });
+        }
+    }
+
     // Pass 2: build bodies (skipped for declare-only CGUs).
     if (!declare_only) {
         for (program.types) |type_decl| {
@@ -355,202 +532,14 @@ pub fn build(
             }
             const struct_ty = struct_types.get(type_decl.name) orelse continue;
             const helpers = result.map.get(type_decl.name).?;
-            try buildReleaseContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.release_contents.fn_value);
-            try buildDestroy(api, builder, types, runtime, struct_ty, helpers.release_contents, helpers.destroy.fn_value);
-            try buildCloneContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.clone_contents.fn_value);
-            try buildClone(api, builder, types, runtime, struct_ty, type_decl.name, helpers.clone_contents, helpers.clone.fn_value);
+            try struct_dtors.buildReleaseContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.release_contents.fn_value);
+            try struct_dtors.buildDestroy(api, builder, types, runtime, struct_ty, helpers.release_contents, helpers.destroy.fn_value);
+            try struct_dtors.buildCloneContents(api, builder, types, runtime, result, program, struct_ty, type_decl, helpers.clone_contents.fn_value);
+            try struct_dtors.buildClone(api, builder, types, runtime, struct_ty, type_decl.name, helpers.clone_contents, helpers.clone.fn_value);
+            // Emit the wasm32 `(ptr)->ptr` thunk body over kira_clone_<T> (declared in pass 1).
+            if (wasm_cb_abi) wasm_cb.definePtrPtr(api, builder, types, helpers.clone_cb, helpers.clone.fn_value, helpers.clone.ty);
         }
     }
 
     return result;
-}
-
-fn buildReleaseContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, dtors: Destructors, program: *const ir.Program, struct_ty: llvm.c.LLVMTypeRef, type_decl: ir.TypeDecl, fn_value: llvm.c.LLVMValueRef) !void {
-    const entry = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "entry");
-    const body = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "body");
-    const done = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "done");
-    api.LLVMPositionBuilderAtEnd(b, entry);
-    const value = api.LLVMGetParam(fn_value, 0);
-    // Null guard: a moved-out / escaped backing is passed as null and must be a no-op
-    // (callers release a struct's contents only when it still owns them).
-    const is_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, value, api.LLVMConstNull(types.ptr_ty), "rc.isnull");
-    _ = api.LLVMBuildCondBr(b, is_null, done, body);
-    api.LLVMPositionBuilderAtEnd(b, body);
-    for (type_decl.fields, 0..) |field, index| {
-        var idx = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(types.i32, 0, 0), api.LLVMConstInt(types.i32, @intCast(index), 0) };
-        switch (field.ty.kind) {
-            .ffi_struct => {
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.field");
-                const fh = dtors.map.get(field.ty.name orelse continue) orelse continue;
-                var args = [_]llvm.c.LLVMValueRef{field_ptr};
-                _ = api.LLVMBuildCall2(b, fh.release_contents.ty, fh.release_contents.fn_value, &args, args.len, "");
-            },
-            .array => {
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.arrfield");
-                const arr = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "rc.arr");
-                const elem = dtors.elementDestroy(program, field.ty);
-                var args = [_]llvm.c.LLVMValueRef{ arr, elem orelse api.LLVMConstNull(types.ptr_ty) };
-                _ = api.LLVMBuildCall2(b, runtime.array_release.ty, runtime.array_release.fn_value, &args, args.len, "");
-            },
-            .enum_instance => {
-                // An owned enum field is a heap block the struct owns; free it (free(null)
-                // is a safe no-op for an unset field). Paired with the enum clone below so
-                // every struct copy owns its enum and the frees stay balanced. A typed
-                // helper (string-payload enum, native) frees the payload box + buffer too.
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.enumfield");
-                const enum_ptr = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "rc.enum");
-                const destroy = dtors.enumDestroyFn(field.ty);
-                var args = [_]llvm.c.LLVMValueRef{enum_ptr};
-                _ = api.LLVMBuildCall2(b, destroy.ty, destroy.fn_value, &args, args.len, "");
-            },
-            .string => {
-                // A string field owns its byte buffer (every store into the field clones,
-                // see the strings-are-deep-values model in backend_capi_drop.zig); free it
-                // with the struct. free(null) covers a zero-initialized field. Native path
-                // only: in hybrid the VM may have written a VM-owned buffer into this field
-                // through the borrow-mut bridge, which must not be freed with libc.
-                if (!dtors.release_strings) continue;
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.strfield");
-                const str = api.LLVMBuildLoad2(b, types.string_ty, field_ptr, "rc.str");
-                const buf = api.LLVMBuildExtractValue(b, str, 0, "rc.str.ptr");
-                var args = [_]llvm.c.LLVMValueRef{buf};
-                _ = api.LLVMBuildCall2(b, runtime.free.ty, runtime.free.fn_value, &args, args.len, "");
-            },
-            .raw_ptr => {
-                // A closure field owns its block + captures (every store into the field
-                // clones, mirroring strings). kira_destroy_closure is TAG-SAFE: a plain
-                // FFI pointer field (CString, userdata handle — high bit clear) is left
-                // untouched, so this only reclaims real closure values. Native only.
-                if (!dtors.deep_closures) continue;
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.closfield");
-                const closure_val = api.LLVMBuildLoad2(b, types.i64, field_ptr, "rc.clos");
-                var args = [_]llvm.c.LLVMValueRef{closure_val};
-                _ = api.LLVMBuildCall2(b, dtors.destroy_closure.ty, dtors.destroy_closure.fn_value, &args, args.len, "");
-            },
-            .construct_any => {
-                if (!dtors.deep_closures) continue;
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "rc.anyfield");
-                const any_val = api.LLVMBuildLoad2(b, types.i64, field_ptr, "rc.any");
-                var args = [_]llvm.c.LLVMValueRef{any_val};
-                _ = api.LLVMBuildCall2(b, dtors.dynamic_destroy.ty, dtors.dynamic_destroy.fn_value, &args, args.len, "");
-            },
-            else => {},
-        }
-    }
-    _ = api.LLVMBuildBr(b, done);
-    api.LLVMPositionBuilderAtEnd(b, done);
-    _ = api.LLVMBuildRetVoid(b);
-}
-
-fn buildDestroy(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, struct_ty: llvm.c.LLVMTypeRef, rc: capi.RuntimeDecls.Decl, fn_value: llvm.c.LLVMValueRef) !void {
-    _ = struct_ty;
-    const entry = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "entry");
-    const body = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "body");
-    const done = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "done");
-    api.LLVMPositionBuilderAtEnd(b, entry);
-    const value = api.LLVMGetParam(fn_value, 0);
-    const is_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, value, api.LLVMConstNull(types.ptr_ty), "isnull");
-    _ = api.LLVMBuildCondBr(b, is_null, done, body);
-    api.LLVMPositionBuilderAtEnd(b, body);
-    var rc_args = [_]llvm.c.LLVMValueRef{value};
-    _ = api.LLVMBuildCall2(b, rc.ty, rc.fn_value, &rc_args, rc_args.len, "");
-    var free_args = [_]llvm.c.LLVMValueRef{value};
-    _ = api.LLVMBuildCall2(b, runtime.struct_free.ty, runtime.struct_free.fn_value, &free_args, free_args.len, "");
-    _ = api.LLVMBuildBr(b, done);
-    api.LLVMPositionBuilderAtEnd(b, done);
-    _ = api.LLVMBuildRetVoid(b);
-}
-
-fn buildCloneContents(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, dtors: Destructors, program: *const ir.Program, struct_ty: llvm.c.LLVMTypeRef, type_decl: ir.TypeDecl, fn_value: llvm.c.LLVMValueRef) !void {
-    const entry = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "entry");
-    api.LLVMPositionBuilderAtEnd(b, entry);
-    const value = api.LLVMGetParam(fn_value, 0);
-    for (type_decl.fields, 0..) |field, index| {
-        var idx = [_]llvm.c.LLVMValueRef{ api.LLVMConstInt(types.i32, 0, 0), api.LLVMConstInt(types.i32, @intCast(index), 0) };
-        switch (field.ty.kind) {
-            .ffi_struct => {
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.field");
-                const fh = dtors.map.get(field.ty.name orelse continue) orelse continue;
-                var args = [_]llvm.c.LLVMValueRef{field_ptr};
-                _ = api.LLVMBuildCall2(b, fh.clone_contents.ty, fh.clone_contents.fn_value, &args, args.len, "");
-            },
-            .array => {
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.arrfield");
-                const old = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "cc.old");
-                const elem = dtors.elementClone(program, field.ty);
-                var args = [_]llvm.c.LLVMValueRef{ old, elem orelse api.LLVMConstNull(types.ptr_ty) };
-                const new = api.LLVMBuildCall2(b, runtime.array_clone.ty, runtime.array_clone.fn_value, &args, args.len, "cc.new");
-                _ = api.LLVMBuildStore(b, new, field_ptr);
-            },
-            .enum_instance => {
-                // Deep-copy the owned enum block so the copy owns it independently
-                // (paired with the free in release_contents; typed clones also give
-                // the copy its own string-payload box). clone(null) = null.
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.enumfield");
-                const old = api.LLVMBuildLoad2(b, types.ptr_ty, field_ptr, "cc.enumold");
-                const clone_fn = dtors.enumCloneFn(field.ty);
-                var args = [_]llvm.c.LLVMValueRef{old};
-                const new = api.LLVMBuildCall2(b, clone_fn.ty, clone_fn.fn_value, &args, args.len, "cc.enumnew");
-                _ = api.LLVMBuildStore(b, new, field_ptr);
-            },
-            .string => {
-                // Deep-copy the string buffer so the struct copy owns it independently
-                // (paired with the free in release_contents). Runs in hybrid too: the
-                // clone is a fresh native buffer, safe regardless of who owned the source.
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.strfield");
-                const old = api.LLVMBuildLoad2(b, types.string_ty, field_ptr, "cc.strold");
-                const old_buf = api.LLVMBuildExtractValue(b, old, 0, "cc.strold.ptr");
-                const len = api.LLVMBuildExtractValue(b, old, 1, "cc.strold.len");
-                var args = [_]llvm.c.LLVMValueRef{ old_buf, len };
-                const new_buf = api.LLVMBuildCall2(b, dtors.string_clone.ty, dtors.string_clone.fn_value, &args, args.len, "cc.strnew");
-                const new = api.LLVMBuildInsertValue(b, old, new_buf, 0, "cc.strval");
-                _ = api.LLVMBuildStore(b, new, field_ptr);
-            },
-            .raw_ptr => {
-                // Deep-copy a closure field so the struct copy owns an independent block
-                // (paired with the release above). kira_capi_closure_clone is TAG-SAFE:
-                // plain FFI pointer fields pass through unchanged. Native only.
-                if (!dtors.deep_closures) continue;
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.closfield");
-                const old = api.LLVMBuildLoad2(b, types.i64, field_ptr, "cc.closold");
-                var args = [_]llvm.c.LLVMValueRef{old};
-                const new = api.LLVMBuildCall2(b, dtors.closure_clone.ty, dtors.closure_clone.fn_value, &args, args.len, "cc.closnew");
-                _ = api.LLVMBuildStore(b, new, field_ptr);
-            },
-            .construct_any => {
-                if (!dtors.deep_closures) continue;
-                const field_ptr = api.LLVMBuildInBoundsGEP2(b, struct_ty, value, &idx, idx.len, "cc.anyfield");
-                const old = api.LLVMBuildLoad2(b, types.i64, field_ptr, "cc.anyold");
-                var args = [_]llvm.c.LLVMValueRef{old};
-                const new = api.LLVMBuildCall2(b, dtors.dynamic_clone.ty, dtors.dynamic_clone.fn_value, &args, args.len, "cc.anynew");
-                _ = api.LLVMBuildStore(b, new, field_ptr);
-            },
-            else => {},
-        }
-    }
-    _ = api.LLVMBuildRetVoid(b);
-}
-
-fn buildClone(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: capi.Types, runtime: capi.RuntimeDecls, struct_ty: llvm.c.LLVMTypeRef, type_name: []const u8, cc: capi.RuntimeDecls.Decl, fn_value: llvm.c.LLVMValueRef) !void {
-    const entry = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "entry");
-    const nullret = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "nullret");
-    const body = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "body");
-    api.LLVMPositionBuilderAtEnd(b, entry);
-    const srcint = api.LLVMGetParam(fn_value, 0);
-    const src = api.LLVMBuildIntToPtr(b, srcint, types.ptr_ty, "clone.src");
-    const is_null = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, src, api.LLVMConstNull(types.ptr_ty), "clone.isnull");
-    _ = api.LLVMBuildCondBr(b, is_null, nullret, body);
-    api.LLVMPositionBuilderAtEnd(b, nullret);
-    _ = api.LLVMBuildRet(b, api.LLVMConstInt(types.i64, 0, 0));
-    api.LLVMPositionBuilderAtEnd(b, body);
-    var malloc_args = [_]llvm.c.LLVMValueRef{
-        api.LLVMConstInt(types.i64, ir.nativeStateTypeId(type_name), 0),
-        api.LLVMSizeOf(struct_ty),
-    };
-    const dst = api.LLVMBuildCall2(b, runtime.struct_alloc.ty, runtime.struct_alloc.fn_value, &malloc_args, malloc_args.len, "clone.dst");
-    const val = api.LLVMBuildLoad2(b, struct_ty, src, "clone.val");
-    _ = api.LLVMBuildStore(b, val, dst);
-    var cc_args = [_]llvm.c.LLVMValueRef{dst};
-    _ = api.LLVMBuildCall2(b, cc.ty, cc.fn_value, &cc_args, cc_args.len, "");
-    _ = api.LLVMBuildRet(b, api.LLVMBuildPtrToInt(b, dst, types.i64, "clone.dstint"));
 }

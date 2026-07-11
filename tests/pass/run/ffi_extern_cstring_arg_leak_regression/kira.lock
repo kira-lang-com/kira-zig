@@ -1,0 +1,7 @@
+version = 1
+
+[root]
+name = "ffi_extern_cstring_arg_leak_regression"
+version = "0.1.0"
+kind = "app"
+kira = "0.1.0"

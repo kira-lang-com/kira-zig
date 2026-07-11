@@ -5,6 +5,7 @@ const protocol = @import("protocol.zig");
 const live_args = @import("live_args.zig");
 const shared = @import("supervisor_shared.zig");
 const apple = @import("apple_runner.zig");
+const apple_session = @import("apple_session.zig");
 
 pub fn runDeviceAttempt(
     allocator: std.mem.Allocator,
@@ -67,7 +68,19 @@ pub fn runDeviceAttempt(
         },
         else => return err,
     };
-    try shared.rewriteRunnerManifestEndpoint(allocator, runner.manifest_path, connect_host, port);
+
+    // Listen BEFORE the endpoint is baked into the app: the port may rebind,
+    // and the manifest is code-signed into the bundle by the device build —
+    // this is what lets the iPhone find this machine with no flags. Bind all
+    // interfaces so the device can reach us over the LAN.
+    const listen_host = parsed.host orelse "0.0.0.0";
+    var server = shared.LiveServer.listen(allocator, listen_host, port, bundles.graph) catch {
+        try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveServerFailedToStart(allocator, listen_host, port));
+        return error.CommandFailed;
+    };
+    defer server.deinit();
+    try shared.rewriteRunnerManifestEndpoint(allocator, runner.manifest_path, connect_host, server.port);
+    try shared.emitEvent(stdout, "live.server.started", "host={s} port={d} runner=ios-device device_url=http://{s}:{d}", .{ listen_host, server.port, connect_host, server.port });
     try shared.emitEvent(stdout, "live.ios.runner.generated", "path={s}", .{runner.runner_dir});
 
     const developer_dir_capture = shared.runToolCapture(allocator, &.{ "xcode-select", "-p" }) catch {
@@ -135,11 +148,57 @@ pub fn runDeviceAttempt(
     };
 
     try shared.emitEvent(stdout, "live.ios.runner.device_build.succeeded", "device={s}", .{physical_device_id});
-    try shared.emitEvent(stdout, "live.ios.install.blocked", "reason=devicectl-install-loop-not-implemented", .{});
-    try shared.emitEvent(stdout, "live.ios.launch.blocked", "reason=devicectl-launch-loop-not-implemented", .{});
-    try shared.emitEvent(stdout, "live.ios.live_protocol.blocked", "reason=devicectl-launch-loop-not-implemented", .{});
-    try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.iosLiveUnsupported(allocator, parsed.platform.label(), "Device build succeeded, but install/launch/live protocol validation still needs the devicectl app launch loop."));
-    return error.CommandFailed;
+
+    // Install and launch through devicectl, then serve the same live session
+    // as every other runner. The app's embedded manifest already carries this
+    // machine's LAN endpoint, so the phone connects back with no flags and VM
+    // hot reload works exactly like desktop (the runner self-binds native
+    // code, so every source rebuild is an in-place hot patch on the device).
+    const app_path = try std.fs.path.join(allocator, &.{
+        derived_data_path, "Build", "Products", "Debug-iphoneos",
+        try std.fmt.allocPrint(allocator, "{s}.app", .{target.runner_display_name}),
+    });
+    shared.runTool(allocator, &.{ "xcrun", "devicectl", "device", "install", "app", "--device", physical_device_id, app_path }) catch {
+        try shared.emitEvent(stdout, "live.ios.install.blocked", "reason=devicectl-install-failed", .{});
+        try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.iosLiveUnsupported(allocator, parsed.platform.label(), "`xcrun devicectl device install app` failed; the iPhone may be locked or the provisioning profile rejected."));
+        return error.CommandFailed;
+    };
+    try shared.emitEvent(stdout, "live.ios.install.succeeded", "device={s}", .{physical_device_id});
+
+    const bundle_id = try apple.runnerBundleId(allocator, target, .xcode_ios);
+    shared.runTool(allocator, &.{ "xcrun", "devicectl", "device", "process", "launch", "--terminate-existing", "--device", physical_device_id, bundle_id }) catch {
+        try shared.emitEvent(stdout, "live.ios.launch.blocked", "reason=devicectl-launch-failed", .{});
+        try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.iosLiveUnsupported(allocator, parsed.platform.label(), "`xcrun devicectl device process launch` failed; unlock the iPhone and trust this developer profile."));
+        return error.CommandFailed;
+    };
+    try shared.emitEvent(stdout, "live.ios.launch.succeeded", "bundle={s}", .{bundle_id});
+
+    var connection = (try acceptDeviceClient(allocator, &server, target, stdout, stderr)) orelse return error.CommandFailed;
+    defer connection.close();
+    try apple_session.driveLiveSession(allocator, parsed, target, bundles, &connection, .{
+        .runner_label = "ios-device",
+        .selector = selector,
+        .embed_native_in_runner = false,
+    }, stdout, stderr);
+}
+
+/// The phone connects over Wi-Fi: give it longer than the loopback runners.
+fn acceptDeviceClient(
+    allocator: std.mem.Allocator,
+    server: *shared.LiveServer,
+    target: live.ResolvedLiveTarget,
+    stdout: anytype,
+    stderr: anytype,
+) !?shared.LiveConnection {
+    const start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
+    while (shared.elapsedSince(start) < 60 * std.time.ns_per_s) {
+        if (try shared.waitReadable(server.server.socket.handle, 250)) {
+            try shared.emitEvent(stdout, "live.client.connecting", "target={s}", .{target.target_root});
+            return try server.accept();
+        }
+    }
+    try shared.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.liveClientFailedToConnect(allocator, target.target_root));
+    return null;
 }
 
 fn auditIosSimulatorLiveOrDiagnose(

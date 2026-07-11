@@ -6,6 +6,7 @@ const protocol = @import("protocol.zig");
 const live_args = @import("live_args.zig");
 const shared = @import("supervisor_shared.zig");
 const workspace = @import("apple_workspace.zig");
+const apple_session = @import("apple_session.zig");
 
 pub const Platform = enum { macos, ios_simulator };
 
@@ -71,8 +72,8 @@ pub fn run(
     const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, source_manifest, allocator, .limited(1024 * 1024));
 
     switch (platform) {
-        .macos => try runMacOS(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, stdout, stderr),
-        .ios_simulator => try runIosSimulator(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, stdout, stderr),
+        .macos => try runMacOS(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, selector, stdout, stderr),
+        .ios_simulator => try runIosSimulator(allocator, parsed, target, bundles, developer_dir, project_path, scheme, derived_data, product_name, manifest_text, &server, generated.native_execution, selector, stdout, stderr),
     }
 }
 
@@ -89,6 +90,7 @@ fn runMacOS(
     manifest_text: []const u8,
     server: *shared.LiveServer,
     native_execution: bool,
+    selector: @import("kira_native_lib_definition").TargetSelector,
     stdout: anytype,
     stderr: anytype,
 ) !void {
@@ -135,7 +137,12 @@ fn runMacOS(
         return;
     };
     defer connection.close();
-    try driveSession(parsed, target, bundles, &connection, "macos", stdout);
+    try apple_session.driveLiveSession(allocator, parsed, target, bundles, &connection, .{
+        .runner_label = "macos",
+        .selector = selector,
+        .embed_native_in_runner = true,
+        .child = &child,
+    }, stdout, stderr);
 }
 
 fn acceptMacOSClientOrRunnerExit(
@@ -241,6 +248,7 @@ fn runIosSimulator(
     manifest_text: []const u8,
     server: *shared.LiveServer,
     native_execution: bool,
+    selector: @import("kira_native_lib_definition").TargetSelector,
     stdout: anytype,
     stderr: anytype,
 ) !void {
@@ -279,40 +287,15 @@ fn runIosSimulator(
 
     var connection = (try acceptSimulatorClient(allocator, server, target, stdout, stderr)) orelse return;
     defer connection.close();
-    try driveSession(parsed, target, bundles, &connection, "ios-simulator", stdout);
+    try apple_session.driveLiveSession(allocator, parsed, target, bundles, &connection, .{
+        .runner_label = "ios-simulator",
+        .selector = selector,
+        .embed_native_in_runner = true,
+    }, stdout, stderr);
 
     _ = shared.runToolCapture(allocator, &.{ "xcrun", "simctl", "terminate", device_name, bundle_id }) catch null;
     _ = shared.runToolCapture(allocator, &.{ "xcrun", "simctl", "spawn", device_name, "log", "show", "--last", "2m", "--style", "compact", "--predicate", try std.fmt.allocPrint(allocator, "process == \"{s}\"", .{product_name}) }) catch null;
     try shared.emitEvent(stdout, "live.ios.simulator.logs.captured", "source=simctl-log-show", .{});
-}
-
-fn driveSession(
-    parsed: live_args.ParsedArgs,
-    target: live.ResolvedLiveTarget,
-    bundles: live.BundleBuildArtifacts,
-    connection: *shared.LiveConnection,
-    runner_label: []const u8,
-    stdout: anytype,
-) !void {
-    try shared.emitEvent(stdout, "live.client.connected", "target={s}", .{target.target_root});
-    try shared.emitEvent(stdout, "live.bundle.requested", "client={s}", .{runner_label});
-    try connection.sendGraphAndBundles();
-    try shared.emitEvent(stdout, "live.bundle.graph.sent", "bundles={d}", .{bundles.graph.bundles.len});
-    try shared.emitEvent(stdout, "live.bundle.sent", "mode=initial", .{});
-    try shared.emitEvent(stdout, "live.bundle.served", "mode=initial", .{});
-    const require_frame = !parsed.headless;
-    const health_ok = try connection.waitForHealthMarkers(stdout, 60 * std.time.ns_per_s, require_frame);
-    if (!health_ok) return error.CommandFailed;
-    try shared.emitEvent(stdout, "live.session.ready", "target={s}", .{target.target_root});
-
-    if (parsed.run_for_ns) |duration_ns| {
-        try std.Options.debug_io.sleep(.fromNanoseconds(@intCast(@min(duration_ns, std.time.ns_per_s))), .awake);
-    }
-    try shared.emitEvent(stdout, "live.shutdown.started", "reason=quit-after", .{});
-    try protocol.writeFrame(&connection.writer.interface, .shutdown, "quit-after");
-    try connection.writer.interface.flush();
-    _ = try connection.waitForShutdownAck(stdout, 2 * std.time.ns_per_s);
-    try shared.emitEvent(stdout, "live.shutdown.finished", "reason=quit-after", .{});
 }
 
 fn acceptSimulatorClient(

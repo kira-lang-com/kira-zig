@@ -732,6 +732,20 @@ fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
         try exp.err("KMAC023", "ksl! produced no shader artifact", "The KSL file compiled but yielded no shader; it must declare a `shader { ... }`.", call.span, "no shader artifact", "Add a `shader Name { vertex { ... } fragment { ... } }` block to the .ksl file.");
         return null;
     }
+    // WGSL is best-effort: the WGSL backend lowers graphics shaders only, so a
+    // compute-only `.ksl` (which still produces valid MSL/HLSL/GLSL) yields no
+    // WGSL. Never fail the whole macro on that — leave the WGSL fields empty and
+    // let the engine fall back to another backend's source. A graphics shader
+    // that compiles to MSL/HLSL/GLSL but not WGSL is a real WGSL backend gap and
+    // is surfaced as empty WGSL here rather than a hard macro error.
+    const wgsl_result: ?shader_pipeline.ShaderBuildResult =
+        shader_pipeline.buildFileForTarget(exp.allocator, resolved_path, .wgsl) catch null;
+    const wa: ?shader_pipeline.LoweredShaderArtifact = blk: {
+        const wr = wgsl_result orelse break :blk null;
+        if (wr.artifacts.len == 0) break :blk null;
+        break :blk wr.artifacts[0];
+    };
+
     const ma = msl.artifacts[0];
     const ha = hlsl.artifacts[0];
     const ga = glsl.artifacts[0];
@@ -756,8 +770,22 @@ fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
     const fragment_entry = if (is_compute) "" else try std.fmt.allocPrint(exp.allocator, "{s}__fragment__main", .{ma.shader_name});
     const compute_entry = if (is_compute) try std.fmt.allocPrint(exp.allocator, "{s}__compute__main", .{ma.shader_name}) else "";
 
+    // WGSL entry names follow the same `{shader}__{stage}__main` convention as
+    // MSL, so the existing vertexEntry/fragmentEntry fields serve WGSL too; no
+    // separate WGSL entry fields are needed. Graphics shaders emit vertex/fragment
+    // WGSL; compute shaders (unsupported by the WGSL backend) leave these empty.
+    const vwgsl = if (wa) |a| (a.vertex_wgsl orelse "") else "";
+    const fwgsl = if (wa) |a| (a.fragment_wgsl orelse "") else "";
+
+    // Uniform-block reflection is backend-independent (names, std140 sizes,
+    // group/binding slots, per-stage visibility, member layout), so any target's
+    // artifact carries the same compact descriptor string; use the always-present
+    // MSL artifact. This is what makes the Sokol backend's uniform binding
+    // data-driven instead of hardcoded scene/object blocks.
+    const uniform_reflection = ma.uniform_reflection;
+
     const text = try std.fmt.allocPrint(exp.allocator,
-        "KslArtifact {{ shaderName: \"{s}\", vertexEntry: \"{s}\", fragmentEntry: \"{s}\", computeEntry: \"{s}\", combinedMsl: \"{s}\", vertexMsl: \"{s}\", fragmentMsl: \"{s}\", computeMsl: \"{s}\", vertexHlsl: \"{s}\", fragmentHlsl: \"{s}\", vertexGlsl: \"{s}\", fragmentGlsl: \"{s}\" }}",
+        "KslArtifact {{ shaderName: \"{s}\", vertexEntry: \"{s}\", fragmentEntry: \"{s}\", computeEntry: \"{s}\", combinedMsl: \"{s}\", vertexMsl: \"{s}\", fragmentMsl: \"{s}\", computeMsl: \"{s}\", vertexHlsl: \"{s}\", fragmentHlsl: \"{s}\", vertexGlsl: \"{s}\", fragmentGlsl: \"{s}\", vertexWgsl: \"{s}\", fragmentWgsl: \"{s}\", uniformReflection: \"{s}\" }}",
         .{
             try escapeKiraString(exp.allocator, ma.shader_name),
             try escapeKiraString(exp.allocator, vertex_entry),
@@ -771,6 +799,9 @@ fn expandKslBuiltin(exp: *Expander, call: ast.CallExpr) !?*ast.Expr {
             try escapeKiraString(exp.allocator, ha.fragment_hlsl orelse ""),
             try escapeKiraString(exp.allocator, ga.vertex_glsl orelse ""),
             try escapeKiraString(exp.allocator, ga.fragment_glsl orelse ""),
+            try escapeKiraString(exp.allocator, vwgsl),
+            try escapeKiraString(exp.allocator, fwgsl),
+            try escapeKiraString(exp.allocator, uniform_reflection),
         },
     );
 

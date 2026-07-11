@@ -1,0 +1,80 @@
+[76728:9283207:0711/033117.084404:WARNING:content/browser/child_process_task_port_provider_mac.cc:53] AppleMobileFileIntegrity is disabled. The browser will not collect child process task ports.
+[76728:9283207:0711/033117.277383:INFO:components/enterprise/browser/controller/chrome_browser_cloud_management_controller.cc:239] No machine level policy manager exists.
+[76728:9283394:0711/033117.573125:WARNING:chrome/browser/extensions/external_pref_loader.cc:294] You are using an old-style extension deployment method (external_extensions.json), which will soon be deprecated. (see http://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)
+[76728:9283207:0711/033118.753581:INFO:CONSOLE:18] "kira.wasm.runtime_initialized", source: http://127.0.0.1:8161/interact.html?stage=baseline (18)
+[76728:9283207:0711/033118.755068:INFO:CONSOLE:17] "kira: live.ui_foundation.app.started", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033118.794082:INFO:CONSOLE:17] "kira: live.kira_graphics.backend.initialized", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.854058:INFO:CONSOLE:17] "kira: live.kira_graphics.frame.submitted", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.882661:INFO:CONSOLE:17] "kira: live.ui_foundation.tree.built", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.882740:INFO:CONSOLE:17] "kira: live.ui_foundation.retained_tree.ready", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.909459:INFO:CONSOLE:17] "kira: live.ui_foundation.layout.non_empty", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.909783:INFO:CONSOLE:17] "kira: KiraGraphics: SQUIRCLE SURFACE CALLED w=17.000000 h=17.000000 radius=999.000000", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.936986:INFO:CONSOLE:17] "kira: live.ui_foundation.render_commands.generated", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.937209:INFO:CONSOLE:17] "kira: live.kira_graphics.visible_content.submitted", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.937239:INFO:CONSOLE:17] "kira: KIRA_UI_DRAW_COMMANDS_SUBMITTED", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283207:0711/033119.937254:INFO:CONSOLE:17] "kira: KIRA_APP_RENDERED_VISIBLE_CONTENT", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+Trying to load the allocator multiple times. This is *not* supported.
+[76728:9283400:0711/033123.937338:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[76728:9283400:0711/033123.937540:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[76728:9283400:0711/033123.937767:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[76728:9283207:0711/033124.612590:INFO:CONSOLE:54] "kira.demo.stage: baseline", source: http://127.0.0.1:8161/interact.html?stage=baseline (54)
+[76728:9283207:0711/033126.853812:INFO:CONSOLE:17] "kira: KiraGraphics: glyph atlas full — reset (v1 eviction)", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[76728:9283207:0711/033135.276718:INFO:CONSOLE:17] "kira: KiraGraphics: glyph atlas full — reset (v1 eviction)", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76902:9284489:0711/033136.457320:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake-all --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[76902:9284489:0711/033136.457541:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249290, parent pid: 76728
+[76902:9284489:0711/033136.460609:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 3973320704B (3.700GiB) / 245075738624B (228.245GiB)
+[76902:9284489:0711/033136.460641:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 3973320704B (3.700GiB) / 245075738624B (228.245GiB)
+[76902:9284489:0711/033136.460728:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[76904:9284493:0711/033136.469772:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[76904:9284493:0711/033136.469974:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249290, parent pid: 1
+[76904:9284493:0711/033136.472086:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 3973312512B (3.700GiB) / 245075738624B (228.245GiB)
+[76904:9284493:0711/033136.472107:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 3973312512B (3.700GiB) / 245075738624B (228.245GiB)
+[76904:9284493:0711/033136.472183:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[76902:9284489:0711/033136.472670:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[76902:9284489:0711/033136.473310:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[76902:9284489:0711/033136.473379:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[76902:9284489:0711/033136.473449:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[76902:9284489:0711/033136.473466:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[76902:9284489:0711/033136.473496:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[76902:9284489:0711/033136.473509:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[76902:9284501:0711/033136.473757:VERBOSE1:chrome/updater/app/app_wakeall.cc:58] Launching `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake`
+[76905:9284505:0711/033136.483407:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[76905:9284505:0711/033136.483604:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249290, parent pid: 76902
+[76905:9284505:0711/033136.485733:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 3973312512B (3.700GiB) / 245075738624B (228.245GiB)
+[76905:9284505:0711/033136.485776:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 3973312512B (3.700GiB) / 245075738624B (228.245GiB)
+[76905:9284505:0711/033136.485870:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[76907:9284509:0711/033136.494904:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[76907:9284509:0711/033136.495106:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249290, parent pid: 1
+[76907:9284509:0711/033136.498200:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 3973292032B (3.700GiB) / 245075738624B (228.245GiB)
+[76907:9284509:0711/033136.498222:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 3973292032B (3.700GiB) / 245075738624B (228.245GiB)
+[76907:9284509:0711/033136.498293:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[76905:9284505:0711/033136.498802:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[76905:9284505:0711/033136.499413:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[76905:9284505:0711/033136.499479:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[76905:9284505:0711/033136.499547:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[76905:9284505:0711/033136.499562:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[76905:9284505:0711/033136.499593:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[76905:9284505:0711/033136.499606:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[76905:9284505:0711/033136.499763:VERBOSE1:chrome/updater/ipc/update_service_internal_proxy_mojo.cc:61] Run
+[76728:9283207:0711/033142.732241:INFO:CONSOLE:17] "kira: KiraGraphics: glyph atlas full — reset (v1 eviction)", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283394:0711/033147.576884:INFO:chrome/browser/extensions/extension_garbage_collector.cc:188] Garbage collection for extensions on file thread is complete.
+[76728:9283400:0711/033151.636432:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[76905:9284505:0711/033154.423222:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[76905:9284505:0711/033154.424797:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[76905:9284505:0711/033154.424813:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake) returned 0.
+[76902:9284501:0711/033154.562777:VERBOSE1:chrome/updater/app/app_wakeall.cc:68] `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake` exited 0
+[76902:9284489:0711/033154.563008:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[76902:9284489:0711/033154.563389:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[76902:9284489:0711/033154.563444:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake-all) returned 0.
+[76907:9284509:0711/033204.445155:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[76907:9284509:0711/033204.445193:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[76904:9284493:0711/033204.446215:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[76904:9284493:0711/033204.446240:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[76728:9283400:0711/033236.244205:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[76728:9283207:0711/033345.489838:INFO:CONSOLE:17] "kira: KiraGraphics: glyph atlas full — reset (v1 eviction)", source: http://127.0.0.1:8161/interact.html?stage=baseline (17)
+[76728:9283400:0711/033400.822572:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+Trying to load the allocator multiple times. This is *not* supported.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1783733658.367112 9289049 environment.cc:558] Selected adapter: Apple M1, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU
+I0000 00:00:1783733658.386169 9289084 environment.cc:558] Selected adapter: Apple M1, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU

@@ -235,6 +235,7 @@ fn lowerFunction(
         return .{
             .id = function_decl.id,
             .name = function_decl.name,
+            .is_async = function_decl.is_async,
             .execution = function_decl.execution,
             .is_extern = true,
             .foreign = if (function_decl.foreign) |foreign| .{
@@ -289,6 +290,7 @@ fn lowerFunction(
     return .{
         .id = function_decl.id,
         .name = function_decl.name,
+        .is_async = function_decl.is_async,
         .execution = function_decl.execution,
         .is_extern = false,
         .foreign = null,
