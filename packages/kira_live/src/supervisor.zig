@@ -5,11 +5,14 @@ const protocol = @import("protocol.zig");
 const live_args = @import("live_args.zig");
 const apple_runner = @import("apple_runner.zig");
 const shared = @import("supervisor_shared.zig");
+const supervisor_reload = @import("supervisor_reload.zig");
 const web_live = @import("web_live.zig");
 const ios_live = @import("ios_live.zig");
 const apple_live = @import("apple_live.zig");
 const android_live = @import("android_live.zig");
 const SourceWatcher = @import("source_watcher.zig").SourceWatcher;
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const ParsedArgs = live_args.ParsedArgs;
 const PreparedRunner = apple_runner.PreparedRunner;
@@ -162,12 +165,12 @@ fn runDesktop(
 
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
     defer io_impl.deinit();
-    const process_environ = inheritedProcessEnviron();
-    var environ_map = try std.process.Environ.createMap(process_environ, allocator);
-    defer environ_map.deinit();
+    // The runner is spawned with posix_spawn (see posixSpawnRunner) so it starts
+    // as a clean GUI-capable process; it inherits this process's environment, so
+    // extra vars go through setenv rather than an environ_map.
     if (parsed.run_for_ns) |duration_ns| {
-        const duration_text = try std.fmt.allocPrint(allocator, "{d}", .{duration_ns});
-        try environ_map.put("KIRA_LIVE_QUIT_AFTER_NS", duration_text);
+        const duration_text = try std.fmt.allocPrintSentinel(allocator, "{d}", .{duration_ns}, 0);
+        _ = setenv("KIRA_LIVE_QUIT_AFTER_NS", duration_text.ptr, 1);
     }
     const io = io_impl.io();
     var runner_argv = std.array_list.Managed([]const u8).init(allocator);
@@ -184,23 +187,20 @@ fn runDesktop(
     }
     const session_start = std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake);
 
-    // Desktop hot reload relaunches the runner process per reload: sokol's macOS backend
-    // enters `[NSApp run]`, which never returns — `sapp_request_quit` terminates the whole
-    // process via `applicationWillTerminate` — so an in-process "quit and re-run the bundle"
-    // restart loop is impossible on macOS. Each reload generation spawns a fresh runner,
-    // re-accepts its connection, resends the rebuilt bundles, and re-verifies the full
-    // health-marker handshake (including `live.frame.presented`, the real first-frame
-    // evidence) before declaring the reload complete.
+    // Desktop reload has two tiers. Tier 1 (hot patch): a rebuild whose native
+    // library is unchanged is swapped INTO the running process between frames —
+    // same window, app state preserved (see supervisor_reload.zig and the
+    // runner's reload_listener.zig). Tier 2 (relaunch generation): when the
+    // native dylib changed, the edit is swap-incompatible, or the runner goes
+    // silent, fall back to killing the runner and spawning a fresh one — sokol's
+    // macOS backend enters `[NSApp run]`, which never returns, so a native-code
+    // reload cannot restart in-process. Each relaunch generation re-accepts the
+    // connection, resends bundles, and re-verifies the full health-marker
+    // handshake (including `live.frame.presented`).
     var reload_generation: u32 = 0;
+    var hotpatch_count: u32 = 0;
     session: while (true) : (reload_generation += 1) {
-        var child = try std.process.spawn(io, .{
-            .argv = runner_argv.items,
-            .cwd = .{ .path = target.target_root },
-            .environ_map = &environ_map,
-            .stdin = .ignore,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
+        var child = try shared.posixSpawnRunner(allocator, runner_argv.items, target.target_root);
         if (reload_generation == 0) {
             try emitEvent(stdout, "live.runner.launched", "pid={any}", .{child.id});
         } else {
@@ -218,6 +218,19 @@ fn runDesktop(
         try emitEvent(stdout, "live.bundle.served", "{s}", .{bundle_mode});
         const health_ok = try connection.waitForHealthMarkers(stdout, 30 * std.time.ns_per_s, require_frame);
         if (!health_ok) {
+            // Report whether the runner died on its own (and how) before we
+            // kill it, so a silent runner exit/crash surfaces its term instead
+            // of a bare KCL038 timeout.
+            if (try shared.pollChildTerm(&child)) |term| {
+                switch (term) {
+                    .exited => |code| try emitEvent(stdout, "live.runner.exited", "code={d}", .{code}),
+                    .signal => |sig| try emitEvent(stdout, "live.runner.signaled", "signal={d}", .{@intFromEnum(sig)}),
+                    .stopped => |sig| try emitEvent(stdout, "live.runner.stopped", "signal={d}", .{@intFromEnum(sig)}),
+                    .unknown => |raw| try emitEvent(stdout, "live.runner.terminated", "raw={d}", .{raw}),
+                }
+            } else {
+                try emitEvent(stdout, "live.runner.alive_at_timeout", "note=hang-not-exit", .{});
+            }
             killAndWait(&child, io);
             const diagnostic = if (reload_generation != 0)
                 try diag_messages.CliMessages.liveReloadTimedOut(allocator, target.target_root)
@@ -258,7 +271,20 @@ fn runDesktop(
                 try source_watcher.refresh();
                 if (rebuilt) |graph| {
                     server.graph = graph;
-                    try emitEvent(stdout, "live.reload.notified", "mode=relaunch", .{});
+                    connection.graph = graph;
+                    // Try the in-place hot swap first: same process, same
+                    // window, app state preserved. Only when the runner
+                    // reports it cannot swap (native code changed, layout
+                    // change, staging failure) — or goes silent — fall back
+                    // to the relaunch generation.
+                    try emitEvent(stdout, "live.reload.notified", "mode=hotpatch", .{});
+                    const outcome = try supervisor_reload.attemptHotReload(&connection, stdout, 20 * std.time.ns_per_s);
+                    if (outcome == .completed) {
+                        hotpatch_count += 1;
+                        try emitEvent(stdout, "live.reload.completed", "mode=hotpatch count={d}", .{hotpatch_count});
+                        continue;
+                    }
+                    try emitEvent(stdout, "live.reload.notified", "mode=relaunch reason={s}", .{outcome.text()});
                     killAndWait(&child, io);
                     continue :session;
                 } else |err| switch (err) {
@@ -296,32 +322,7 @@ fn finishQuitAfterSession(
     try emitEvent(stdout, "live.shutdown.finished", "reason=quit-after", .{});
 }
 
-fn createSourceWatcher(
-    allocator: std.mem.Allocator,
-    target: live.ResolvedLiveTarget,
-    bundles: live.BundleBuildArtifacts,
-) !SourceWatcher {
-    var watcher = SourceWatcher.init(allocator);
-    errdefer watcher.deinit();
-
-    // Main app directory
-    const main_app_dir = try std.fs.path.join(allocator, &.{ target.validation_app_root, "app" });
-    defer allocator.free(main_app_dir);
-    if (directoryExists(main_app_dir)) {
-        try watcher.addDirectory(main_app_dir);
-    }
-
-    // Dependency app directories
-    for (bundles.graph.bundles) |bundle| {
-        const app_dir = try std.fs.path.join(allocator, &.{ bundle.package_root, "app" });
-        defer allocator.free(app_dir);
-        if (directoryExists(app_dir)) {
-            try watcher.addDirectory(app_dir);
-        }
-    }
-
-    return watcher;
-}
+const createSourceWatcher = @import("watch_inputs.zig").createSourceWatcher;
 
 fn rebuildBundles(
     allocator: std.mem.Allocator,
@@ -338,12 +339,6 @@ fn rebuildBundles(
     try emitEvent(stdout, "live.rebuild.finished", "target={s}", .{target.target_root});
     try emitEvent(stdout, "live.bundle.rebuilt", "mode=full-bundle", .{});
     return rebuilt.graph;
-}
-
-fn directoryExists(path: []const u8) bool {
-    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false;
-    dir.close(std.Options.debug_io);
-    return true;
 }
 
 fn auditScaffoldedRunnerOrDiagnose(
