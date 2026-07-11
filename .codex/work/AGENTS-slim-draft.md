@@ -30,7 +30,7 @@ VM passed or "LLVM can come later".
 | a blocker / `compileError` | `.codex/skills/blocker-protocol/` |
 | LLVM / toolchain / launcher | `.codex/skills/llvm-toolchain/` |
 | where a change belongs (package map) | `.codex/skills/where-to-change/` |
-| opening a PR, landing, merge | `.codex/skills/land-pr/` |
+| opening a PR, landing, merge | `.codex/skills/working-with-git/` |
 
 ## Standing rules
 
