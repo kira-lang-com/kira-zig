@@ -82,11 +82,9 @@ pub fn nowNs() u64 {
 /// Block the current thread for `ns` nanoseconds (executor idle wait /
 /// blocking `taskSleep` outside a suspendable body).
 pub fn sleepNs(ns: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ns / std.time.ns_per_s),
-        .nsec = @intCast(ns % std.time.ns_per_s),
-    };
-    _ = std.c.nanosleep(&ts, null);
+    // Portable blocking sleep: `std.c.timespec`/`nanosleep` are POSIX-only
+    // (the fields are `void` on windows-msvc), so use the cross-platform Io path.
+    std.Options.debug_io.sleep(.fromNanoseconds(@intCast(@min(ns, std.math.maxInt(i64)))), .awake) catch {};
 }
 
 /// Allocate + register a task. The caller fills in kind-specific fields.
