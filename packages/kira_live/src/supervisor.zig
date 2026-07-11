@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const diag_messages = @import("kira_diagnostic_messages");
 const live = @import("root.zig");
 const protocol = @import("protocol.zig");
@@ -13,6 +14,17 @@ const android_live = @import("android_live.zig");
 const SourceWatcher = @import("source_watcher.zig").SourceWatcher;
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "kernel32" fn SetEnvironmentVariableA(name: [*:0]const u8, value: ?[*:0]const u8) callconv(.winapi) c_int;
+
+/// Portable process-env set. POSIX `setenv` has no Windows symbol (link fails),
+/// so route Windows through kernel32 like `kira_cli`'s run command does.
+fn setProcessEnv(name: [*:0]const u8, value: [*:0]const u8) void {
+    if (builtin.os.tag == .windows) {
+        _ = SetEnvironmentVariableA(name, value);
+    } else {
+        _ = setenv(name, value, 1);
+    }
+}
 
 const ParsedArgs = live_args.ParsedArgs;
 const PreparedRunner = apple_runner.PreparedRunner;
@@ -170,7 +182,7 @@ fn runDesktop(
     // extra vars go through setenv rather than an environ_map.
     if (parsed.run_for_ns) |duration_ns| {
         const duration_text = try std.fmt.allocPrintSentinel(allocator, "{d}", .{duration_ns}, 0);
-        _ = setenv("KIRA_LIVE_QUIT_AFTER_NS", duration_text.ptr, 1);
+        setProcessEnv("KIRA_LIVE_QUIT_AFTER_NS", duration_text.ptr);
     }
     const io = io_impl.io();
     var runner_argv = std.array_list.Managed([]const u8).init(allocator);
