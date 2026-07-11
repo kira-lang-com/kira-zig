@@ -188,6 +188,24 @@ pub fn inferRegisterTypes(allocator: std.mem.Allocator, program: ir.Program, fun
                 register_types[dst] = value.return_type;
             },
             .ret => {},
+            // A task handle is an opaque runtime pointer; await produces the
+            // task's result type. A void join still writes a placeholder zero
+            // register, so type it as an integer — `.void` is not a value type
+            // (llvmType has no lowering for it).
+            .task_spawn => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "Task" },
+            .task_spawn_ready => |value| register_types[value.dst] = .{ .kind = .raw_ptr, .name = "Task" },
+            .task_await => |value| register_types[value.dst] = if (value.ty.kind == .void)
+                .{ .kind = .integer, .name = "I64" }
+            else
+                value.ty,
+            .task_cancel, .task_detach, .task_yield => {},
+            .frame_get => |value| register_types[value.dst] = if (value.ty.kind == .void)
+                .{ .kind = .integer, .name = "I64" }
+            else
+                value.ty,
+            .frame_set => {},
+            .task_is_complete => |value| register_types[value.dst] = .{ .kind = .boolean },
+            .task_sleep => {},
             .scope_enter, .scope_exit => {},
         }
     }

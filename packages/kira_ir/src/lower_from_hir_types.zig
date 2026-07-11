@@ -22,11 +22,17 @@ const VisitedNames = struct {
         return false;
     }
 
-    fn push(self: *VisitedNames, name: []const u8) void {
+    /// Records `name` as in-progress. Returns false when the fixed buffer is
+    /// full: callers must fail closed (treat the type as opaque) rather than
+    /// recurse, otherwise an alias cycle longer than `buf.len` distinct names
+    /// would slip past `contains` and recurse until stack overflow.
+    fn push(self: *VisitedNames, name: []const u8) bool {
         if (self.len < self.buf.len) {
             self.buf[self.len] = name;
             self.len += 1;
+            return true;
         }
+        return false;
     }
 };
 
@@ -73,7 +79,9 @@ fn lowerNamedTypeInner(program: model.Program, name: []const u8, seen: *VisitedN
                     // A degenerate self-referential alias (or an A -> B -> A
                     // cycle) has no concrete target; treat it as opaque.
                     if (seen.contains(name)) break :blk opaqueFfiType(name);
-                    seen.push(name);
+                    // Fail closed if we can no longer track this name: an
+                    // untracked deep chain could otherwise recurse unbounded.
+                    if (!seen.push(name)) break :blk opaqueFfiType(name);
                     break :blk lowerResolvedTypeInner(program, value.target, seen);
                 },
                 .ffi_struct => .{ .kind = .ffi_struct, .name = name },

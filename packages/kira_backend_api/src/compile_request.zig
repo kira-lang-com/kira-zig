@@ -24,4 +24,8 @@ pub const CompileRequest = struct {
     emit: NativeEmitOptions,
     target_selector: ?native.TargetSelector = null,
     resolved_native_libraries: []const native.ResolvedNativeLibrary = &.{},
+    /// Build-time asset directories to bundle into the linked executable. Only
+    /// the `wasm32-emscripten` link honours these (via emcc `--preload-file`);
+    /// every other target ignores them because it reads assets from disk.
+    assets: []const native.AssetMount = &.{},
 };

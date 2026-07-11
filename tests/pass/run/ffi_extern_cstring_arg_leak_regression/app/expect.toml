@@ -1,0 +1,12 @@
+backends = ["hybrid", "llvm"]
+check_leaks = true
+
+[phases.check]
+result = "pass"
+
+[phases.build]
+result = "pass"
+
+[phases.run]
+result = "pass"
+stdout = "300\n"

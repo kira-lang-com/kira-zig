@@ -6,6 +6,7 @@ const runtime_abi = @import("kira_runtime_abi");
 const binder = @import("binder.zig");
 const vm_runtime = @import("kira_vm_runtime");
 const native_calls = @import("native_calls.zig");
+const hot_swap = @import("hot_swap.zig");
 const DirectStdoutWriter = @import("direct_stdout_writer.zig").DirectStdoutWriter;
 
 pub const HybridRuntime = struct {
@@ -14,6 +15,9 @@ pub const HybridRuntime = struct {
     module: bytecode.Module,
     vm: vm_runtime.Vm,
     bridge: native_bridge.NativeBridge,
+    // Live hot-reload state (staged module swap + retired programs); see
+    // hot_swap.zig. Inert unless a live runner stages a swap.
+    reload: hot_swap.ReloadState = .{},
     pending_callback_return_values: std.ArrayListUnmanaged(runtime_abi.Value) = .empty,
     pending_callback_native_arrays: std.ArrayListUnmanaged(NativeArrayReturn) = .empty,
     pending_callback_native_enums: std.ArrayListUnmanaged(NativeEnumReturn) = .empty,
@@ -48,6 +52,7 @@ pub const HybridRuntime = struct {
     }
 
     pub fn deinit(self: *HybridRuntime) void {
+        self.reload.deinit(self.allocator);
         self.cleanupPendingCallbackReturns();
         self.pending_callback_return_values.deinit(self.allocator);
         self.pending_callback_native_arrays.deinit(self.allocator);
@@ -76,6 +81,15 @@ pub const HybridRuntime = struct {
             .native => _ = try native_calls.callNativeFunction(self, self.manifest.entry_function_id, &.{}),
             .inherited => unreachable,
         }
+        // Detached tasks outlive their handles: run whatever is still queued on
+        // the VM-side task executor before the runtime shuts down (mirrors
+        // Vm.runMainWithHooks and the native host main's kira_task_drain_all).
+        try vm_runtime.drainTasks(&self.vm, &self.module, writer, .{
+            .context = @as(?*anyopaque, @ptrCast(&runtime_context)),
+            .call_native = nativeCallHook(Context),
+            .resolve_function = resolveFunctionHook(Context),
+            .copy_struct_args_by_value = false,
+        });
     }
 
     /// Invoke a single @Runtime function by id, writing its output to `writer`,
@@ -430,8 +444,17 @@ fn closureDestroyHook(comptime Context: type) *const fn (?*anyopaque, usize) voi
 
 fn runtimeInvoke(comptime Context: type) *const fn (?*anyopaque, u32, []const runtime_abi.BridgeValue, *runtime_abi.BridgeValue) anyerror!void {
     return struct {
-        fn invoke(context: ?*anyopaque, function_id: u32, args: []const runtime_abi.BridgeValue, out_result: *runtime_abi.BridgeValue) !void {
+        fn invoke(context: ?*anyopaque, requested_function_id: u32, args: []const runtime_abi.BridgeValue, out_result: *runtime_abi.BridgeValue) !void {
             const runtime_context: *Context = @ptrCast(@alignCast(context orelse return error.MissingHybridContext));
+            // Hot-reload boundary. This hook is the native->VM CALLBACK entry
+            // (frame/event handlers) — distinct from the entry-function
+            // invocation, which stays parked inside the native event loop for
+            // the whole session and must not count as callback depth. When
+            // this is the outermost callback and a swap is staged, apply it
+            // and translate the in-flight function id (the native caller read
+            // the pre-remap id from its closure block).
+            const function_id = hot_swap.enterCallback(runtime_context.runtime, requested_function_id);
+            defer hot_swap.exitCallback(runtime_context.runtime);
             runtime_context.runtime.invokeRuntime(runtime_context, function_id, args, out_result) catch |err| {
                 if (err == error.RuntimeFailure) {
                     if (runtime_context.runtime.vm.lastError()) |message| {
@@ -464,7 +487,7 @@ fn resolveFunctionHook(comptime Context: type) *const fn (?*anyopaque, u32) anye
     }.resolve;
 }
 
-fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.HybridModuleManifest) ![]hybrid.BridgeDescriptor {
+pub fn buildRuntimeDescriptors(allocator: std.mem.Allocator, manifest: hybrid.HybridModuleManifest) ![]hybrid.BridgeDescriptor {
     var descriptors = std.array_list.Managed(hybrid.BridgeDescriptor).init(allocator);
     for (manifest.functions) |function_decl| {
         if (function_decl.execution != .native) continue;

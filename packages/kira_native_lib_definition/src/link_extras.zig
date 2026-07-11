@@ -5,6 +5,10 @@ pub const LinkExtras = struct {
     defines: []const []const u8 = &.{},
     frameworks: []const []const u8 = &.{},
     system_libs: []const []const u8 = &.{},
+    /// Raw flags appended verbatim to the final program/library link command
+    /// (e.g. `--use-port=emdawnwebgpu`, `-sASYNCIFY`). Target-scoped and generic
+    /// across every backend.
+    linker_flags: []const []const u8 = &.{},
 
     pub fn clone(allocator: std.mem.Allocator, extras: LinkExtras) !LinkExtras {
         return .{
@@ -12,6 +16,7 @@ pub const LinkExtras = struct {
             .defines = try cloneStrings(allocator, extras.defines),
             .frameworks = try cloneStrings(allocator, extras.frameworks),
             .system_libs = try cloneStrings(allocator, extras.system_libs),
+            .linker_flags = try cloneStrings(allocator, extras.linker_flags),
         };
     }
 };

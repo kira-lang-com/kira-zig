@@ -112,7 +112,7 @@ fn compileViaCApi(
     if (request.emit.executable_path) |executable_path| {
         const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
         const dynamic_ffi_object = try linker.buildDynamicFfiHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
-        try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object, dynamic_ffi_object }, request.resolved_native_libraries, request.target_selector);
+        try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object, dynamic_ffi_object }, request.resolved_native_libraries, request.target_selector, request.assets);
         try artifacts.append(.{
             .kind = .executable,
             .path = try allocator.dupe(u8, executable_path),

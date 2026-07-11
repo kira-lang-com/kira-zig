@@ -5,6 +5,17 @@ const type_impl = @import("lower_from_hir_types.zig");
 
 const lowerResolvedType = type_impl.lowerResolvedType;
 
+/// Whether `ty` names an `@FFI.Array` declaration (an inline fixed C array,
+/// lowered to `.raw_ptr` by lower_from_hir_types.zig with the decl carrying the
+/// element/count info).
+pub fn isFfiFixedArrayType(program: model.Program, ty: ir.ValueType) bool {
+    if (ty.kind != .raw_ptr) return false;
+    const name = ty.name orelse return false;
+    const type_decl = type_impl.findTypeDeclByName(program, name) orelse return false;
+    const ffi_info = type_decl.ffi orelse return false;
+    return ffi_info == .array;
+}
+
 /// A deferred array-element write-back.
 ///
 /// When a mutation targets a place rooted at an array index, the VM materialises the
@@ -82,6 +93,14 @@ pub fn lowerMutableObject(
             // in place (`array_set`/`array_append`) and persisted by the parent
             // element's write-back.
             if (field_ty.kind == .ffi_struct) return field_ptr_reg;
+            // An @FFI.Array field is INLINE fixed storage ([count x element] in the
+            // C struct layout), not a heap kira-array handle: the mutable place is
+            // its ADDRESS. Loading it (the old path) read the first 8 inline bytes
+            // as a bogus array pointer, so `pass.colors[i] = v` silently no-op'd in
+            // the runtime store and orphaned the cloned element (native leak). The
+            // backend's array_set recognizes the FFI-array register type and lowers
+            // a real inline element store through this pointer.
+            if (isFfiFixedArrayType(lowerer.program, field_ty)) return field_ptr_reg;
             const dst = lowerer.freshRegister();
             try instructions.append(.{ .load_indirect = .{
                 .dst = dst,

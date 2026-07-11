@@ -96,6 +96,7 @@ pub fn registerGenericEnumInstantiations(ctx: *shared.Context, program: syntax.a
                     if (variant_decl.default_value) |default_value| try registerExpr(ctx, default_value);
                 }
             },
+            .type_alias_decl => |type_alias_decl| try registerTypeExpr(ctx, type_alias_decl.target.*),
             .function_decl => |function_decl| try registerFunctionDecl(ctx, function_decl),
             .type_decl => |type_decl| try registerTypeDecl(ctx, type_decl),
             .construct_decl => |construct_decl| try registerConstructDecl(ctx, construct_decl),
