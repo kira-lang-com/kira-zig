@@ -31,7 +31,7 @@ through the driver, at test time.
 ## Run
 
 ```sh
-# Run from the repo root: the fixture paths in FailTests.kira are repo-relative.
+# Run from the repo root: the fixture paths in FailDriverTests.kira are repo-relative.
 kira test tests-kik/harness
 ```
 

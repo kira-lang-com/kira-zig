@@ -170,7 +170,6 @@ function emxRewrap(w: EmxWrap) -> EmxWrap {
         One(failure) -> { return EmxWrap.Two(move failure) }
         Two(failure) -> { return EmxWrap.One(move failure) }
     }
-    return w
 }
 
 Test EmxPayloadMoveChainParity {

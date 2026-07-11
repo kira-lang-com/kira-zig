@@ -160,9 +160,11 @@ pub const Dispatcher = struct {
                 return error.NativeLibraryUnavailable;
             };
         };
+        var opened = library;
+        errdefer opened.close();
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
-        try self.libraries.put(self.allocator, name_copy, library);
+        try self.libraries.put(self.allocator, name_copy, opened);
         return self.libraries.getPtr(name).?;
     }
 
