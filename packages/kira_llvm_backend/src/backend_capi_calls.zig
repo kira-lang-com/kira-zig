@@ -8,6 +8,7 @@ const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const drop = @import("backend_capi_drop.zig");
 const ffi = @import("backend_capi_ffi.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 const functionById = utils.functionById;
@@ -22,10 +23,12 @@ pub fn lowerCStringToString(fc: *FunctionCodegen, v: ir.CStringToString) !llvm.c
     const b = fc.builder;
     const cptr = api.LLVMBuildIntToPtr(b, fc.registers[v.src], fc.types.ptr_ty, "cstr.ptr");
     var len_args = [_]llvm.c.LLVMValueRef{cptr};
-    const len = api.LLVMBuildCall2(b, fc.runtime_decls.strlen.ty, fc.runtime_decls.strlen.fn_value, &len_args, len_args.len, "cstr.len");
-    var malloc_args = [_]llvm.c.LLVMValueRef{len};
+    // strlen returns size_t (i32 on wasm32); widen to the i64 register domain, then
+    // narrow again per C call below (both identity on 64-bit).
+    const len = fc.types.sizeRet(b, api.LLVMBuildCall2(b, fc.runtime_decls.strlen.ty, fc.runtime_decls.strlen.fn_value, &len_args, len_args.len, "cstr.len"));
+    var malloc_args = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, len)};
     const copy = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &malloc_args, malloc_args.len, "cstr.copy");
-    var copy_args = [_]llvm.c.LLVMValueRef{ copy, cptr, len };
+    var copy_args = [_]llvm.c.LLVMValueRef{ copy, cptr, fc.types.sizeArg(b, len) };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &copy_args, copy_args.len, "cstr.memcpy");
     var s = api.LLVMGetUndef(fc.types.string_ty);
     s = api.LLVMBuildInsertValue(b, s, copy, 0, "cstr.s.ptr");
@@ -179,6 +182,8 @@ pub fn collectBodyFunctionRefs(
             .call => |c| try out.put(allocator, c.callee, {}),
             .const_function => |c| try out.put(allocator, c.function_id, {}),
             .const_closure => |c| try out.put(allocator, c.function_id, {}),
+            // A deferred spawn's callee is called from the generated task thunk.
+            .task_spawn => |c| try out.put(allocator, c.callee, {}),
             .call_virtual => |v| {
                 if (utils.findTypeDecl(program, v.static_type_name)) |type_decl| {
                     for (type_decl.methods) |method_decl| {
@@ -265,7 +270,18 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
             }
             const args = try fc.allocator.alloc(llvm.c.LLVMValueRef, call.args.len);
             defer fc.allocator.free(args);
-            for (call.args, 0..) |arg, index| args[index] = fc.registers[arg];
+            for (call.args, 0..) |arg, index| {
+                // A float argument must match the callee's declared parameter
+                // width: F32 params take a 32-bit float, Float params take f64,
+                // while the caller's register may carry either width. Identity
+                // for non-floats and width-matched arguments.
+                if (index < callee_decl.param_types.len) {
+                    const want = fc.types.llvmType(callee_decl.param_types[index]);
+                    args[index] = value_repr.coerceFloatWidth(fc, fc.registers[arg], want);
+                } else {
+                    args[index] = fc.registers[arg];
+                }
+            }
             const result = api.LLVMBuildCall2(fc.builder, fn_ty, callee_fn, args.ptr, @intCast(args.len), "");
             // Ownership across the call boundary follows the callee's parameter modes: an
             // argument passed to an owned/move parameter is consumed by the callee, so the

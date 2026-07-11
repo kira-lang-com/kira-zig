@@ -22,6 +22,9 @@ const value_impl = @import("vm_values.zig");
 const prologue = @import("vm_interpreter_prologue.zig");
 const fused = @import("vm_interpreter_fused.zig");
 const native_state = @import("vm_interpreter_native_state.zig");
+const vm_tasks = @import("vm_tasks.zig");
+const tasks_impl = @import("vm_interpreter_tasks.zig");
+const taskFromRegister = tasks_impl.taskFromRegister;
 const vm_prepare = @import("vm_prepare.zig");
 const vm_mod = @import("vm.zig");
 
@@ -729,6 +732,108 @@ pub fn runPrepared(
             var result = try callback(hooks.context, value.function_id, call_args);
             result = try vm.materializeNativeResultFromC(module, value.return_ty, result);
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_spawn => |value| {
+            // Deferred spawn (vm_interpreter_tasks.zig): capture the callee +
+            // args (or seed a state-machine frame) WITHOUT calling and enqueue
+            // on the executor FIFO.
+            const task = try tasks_impl.spawnTask(vm, value, registers);
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(task) });
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_spawn_ready => |value| {
+            const task = try vm_tasks.createTask(vm.allocator, &vm.live_tasks, .{
+                .kind = .ready,
+                .ready_value = registers[value.value],
+            });
+            try vm.task_queue.append(vm.allocator, task);
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(task) });
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_await => |value| {
+            const task = taskFromRegister(vm, registers[value.task]) orelse return error.RuntimeFailure;
+            const result = try tasks_impl.awaitTask(vm, prepared, module, task, writer, hooks);
+            setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], result);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_cancel => |value| {
+            const task = taskFromRegister(vm, registers[value.task]) orelse return error.RuntimeFailure;
+            // Cooperative flag; a no-op once the task has run or been joined.
+            if (task.state == .pending) task.cancel_requested = true;
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_detach => |value| {
+            const task = taskFromRegister(vm, registers[value.task]) orelse return error.RuntimeFailure;
+            // Stop waiting: the work still runs when the executor reaches the
+            // task (unless cancelled first); the result is discarded. A task
+            // that already completed drops its result now.
+            switch (task.state) {
+                .pending => task.detached = true,
+                .complete => {
+                    vm.heap.dropValue(task.result);
+                    task.result = .{ .void = {} };
+                    task.state = .consumed;
+                },
+                .consumed => {},
+            }
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_yield => {
+            // Cooperative progress point: run the next queued task (if any)
+            // before this body continues.
+            try tasks_impl.yieldOnce(vm, prepared, module, writer, hooks);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .frame_get => |value| {
+            const frame_value = registers[value.frame];
+            if (frame_value != .raw_ptr or frame_value.raw_ptr == 0) {
+                vm.rememberError("frame access requires a task frame pointer");
+                return error.RuntimeFailure;
+            }
+            const slots: [*]runtime_abi.Value = @ptrFromInt(frame_value.raw_ptr);
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], slots[value.slot]);
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .frame_set => |value| {
+            const frame_value = registers[value.frame];
+            if (frame_value != .raw_ptr or frame_value.raw_ptr == 0) {
+                vm.rememberError("frame access requires a task frame pointer");
+                return error.RuntimeFailure;
+            }
+            const slots: [*]runtime_abi.Value = @ptrFromInt(frame_value.raw_ptr);
+            slots[value.slot] = registers[value.src];
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_sleep => |value| {
+            const ms_value = registers[value.milliseconds];
+            const ms: u64 = if (ms_value == .integer and ms_value.integer > 0) @intCast(ms_value.integer) else 0;
+            if (vm.current_task) |task| {
+                // Suspendable body: park with a wake deadline; the transform's
+                // following store-state + SUSPENDED return hands control back.
+                task.wake_at_ns = vm_tasks.nowNs() + ms * std.time.ns_per_ms;
+            } else if (ms > 0) {
+                // Main or a nested-drive body: block the thread.
+                vm_tasks.sleepNs(ms * std.time.ns_per_ms);
+            }
+            pc += 1;
+            continue :dispatch code[pc];
+        },
+        .task_is_complete => |value| {
+            const task = taskFromRegister(vm, registers[value.task]) orelse return error.RuntimeFailure;
+            // Not pending = joining will not need to drive the executor
+            // (complete yields the value; consumed/cancelled joins trap).
+            const done = task.state != .pending or task.cancel_requested;
+            setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = done });
             pc += 1;
             continue :dispatch code[pc];
         },

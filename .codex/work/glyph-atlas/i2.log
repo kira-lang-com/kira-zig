@@ -1,0 +1,54 @@
+Trying to load the allocator multiple times. This is *not* supported.
+[78718:9293766:0711/033606.530538:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[79000:9295763:0711/033620.854684:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake-all --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[79000:9295763:0711/033620.855096:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249575, parent pid: 78718
+[79000:9295763:0711/033620.863959:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 9049554944B (8.428GiB) / 245075738624B (228.245GiB)
+[79000:9295763:0711/033620.863994:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 9049554944B (8.428GiB) / 245075738624B (228.245GiB)
+[79000:9295763:0711/033620.864132:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[79002:9295772:0711/033620.927914:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[79002:9295772:0711/033620.928190:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249575, parent pid: 1
+[79002:9295772:0711/033620.931483:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 9075642368B (8.452GiB) / 245075738624B (228.245GiB)
+[79002:9295772:0711/033620.931507:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 9075642368B (8.452GiB) / 245075738624B (228.245GiB)
+[79002:9295772:0711/033620.932314:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[79000:9295763:0711/033620.933271:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[79000:9295763:0711/033620.935898:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[79000:9295763:0711/033620.936003:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[79000:9295763:0711/033620.936115:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[79000:9295763:0711/033620.936133:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[79000:9295763:0711/033620.936197:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[79000:9295763:0711/033620.936262:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[79000:9295785:0711/033620.936806:VERBOSE1:chrome/updater/app/app_wakeall.cc:58] Launching `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake`
+[79003:9295789:0711/033620.950519:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[79003:9295789:0711/033620.950761:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249575, parent pid: 79000
+[79003:9295789:0711/033620.954435:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 9075625984B (8.452GiB) / 245075738624B (228.245GiB)
+[79003:9295789:0711/033620.954478:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 9075625984B (8.452GiB) / 245075738624B (228.245GiB)
+[79003:9295789:0711/033620.954830:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[79005:9295797:0711/033620.967507:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[79005:9295797:0711/033620.967733:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 249575, parent pid: 1
+[79005:9295797:0711/033620.970990:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 9075617792B (8.452GiB) / 245075738624B (228.245GiB)
+[79005:9295797:0711/033620.971025:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 9075617792B (8.452GiB) / 245075738624B (228.245GiB)
+[79005:9295797:0711/033620.971117:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[79003:9295789:0711/033620.971759:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[79003:9295789:0711/033620.972527:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[79003:9295789:0711/033620.972624:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[79003:9295789:0711/033620.972705:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[79003:9295789:0711/033620.972725:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[79003:9295789:0711/033620.972801:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[79003:9295789:0711/033620.972876:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[79003:9295789:0711/033620.973069:VERBOSE1:chrome/updater/ipc/update_service_internal_proxy_mojo.cc:61] Run
+[78718:9293766:0711/033631.926260:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[79003:9295789:0711/033638.070139:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[79003:9295789:0711/033638.072263:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[79003:9295789:0711/033638.072310:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake) returned 0.
+[79000:9295785:0711/033638.262762:VERBOSE1:chrome/updater/app/app_wakeall.cc:68] `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake` exited 0
+[79000:9295763:0711/033638.262992:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[79000:9295763:0711/033638.263436:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[79000:9295763:0711/033638.263452:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake-all) returned 0.
+[79005:9295797:0711/033648.091385:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[79005:9295797:0711/033648.091480:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[79002:9295772:0711/033648.094056:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[79002:9295772:0711/033648.094178:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[78718:9293766:0711/033718.921763:ERROR:google_apis/gcm/engine/connection_factory_impl.cc:484] ConnectionHandler failed with net error: -2
+[78718:9293688:0711/033718.940794:ERROR:content/browser/gpu/gpu_process_host.cc:1089] GPU process exited unexpectedly: exit_code=15
+[78718:9293688:0711/033719.109035:ERROR:content/browser/network_service_instance_impl.cc:721] Network service crashed or was terminated, restarting service.

@@ -1,4 +1,4 @@
-backends = ["vm", "llvm", "hybrid"]
+backends = ["vm", "llvm", "hybrid", "wasm"]
 check_leaks = true
 
 [phases.check]

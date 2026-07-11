@@ -22,6 +22,7 @@ pub const TokenKind = enum {
     kw_attempt,
     kw_try,
     kw_self_type,
+    kw_async,
     kw_function,
     kw_generated,
     kw_override,

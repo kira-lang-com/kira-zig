@@ -30,6 +30,10 @@ fn dumpDecl(writer: anytype, decl: ast.Decl, depth: usize) anyerror!void {
                 try writer.print("Variant {s}\n", .{variant_decl.name});
             }
         },
+        .type_alias_decl => |type_alias_decl| {
+            try indent(writer, depth);
+            try writer.print("TypeAlias {s}\n", .{type_alias_decl.name});
+        },
         .function_decl => |function_decl| {
             try indent(writer, depth);
             try writer.print("Function {s}\n", .{function_decl.name});

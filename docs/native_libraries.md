@@ -80,6 +80,37 @@ Important rules:
 - Kira source does not hardcode binary paths
 - `.bind.toml` sidecar files are no longer used
 
+## Per-Target Compiler and Linker Flags
+
+Each `[target.<triple>]` section may carry extra flags that are threaded through
+the native toolchain for that target only:
+
+```toml
+[target.wasm32-emscripten-unknown]
+static_lib = "generated/native/wasm32-emscripten-unknown/libwebgpu_shim.a"
+compiler_flags = ["--use-port=emdawnwebgpu"]
+linker_flags = ["--use-port=emdawnwebgpu", "-sASYNCIFY"]
+```
+
+- `compiler_flags` are appended to every source-compile command for this
+  library on this target (e.g. Emscripten ports, `-fno-exceptions`).
+- `linker_flags` are appended verbatim to the final program/library link.
+
+Both are generic across every backend, not just Emscripten.
+
+## WebAssembly / Emscripten Targets
+
+Declare a `[target.wasm32-emscripten-unknown]` section (architecture `wasm32`,
+OS `emscripten`, ABI `unknown`) to make a native library available under
+`kira build --target wasm32-emscripten`. Its sources compile with `emcc` (no
+`-target` flag — `emcc` implies `wasm32-emscripten`) and archive with `emar`,
+both discovered next to the active `emcc` (or on `PATH`). C++ translation units
+dispatch to `em++` by file extension.
+
+A library that omits a matching wasm target still reports diagnostic `KTC003`
+("unsupported native library target") for a wasm build, so Web/WASM support is
+opt-in per library and never silently skipped.
+
 ## Autobindings
 
 Clang parses the configured headers and the autobinder emits real Kira modules.

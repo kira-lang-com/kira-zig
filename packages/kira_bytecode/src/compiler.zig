@@ -278,6 +278,56 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                     .dst = value.dst,
                 } }),
                 .ret => |value| try instructions.append(.{ .ret = .{ .src = value.src } }),
+                .task_spawn => |value| {
+                    // Resolve the deferred callee's execution side exactly like a
+                    // direct `.call` would, so hybrid spawns dispatch correctly at
+                    // first drive.
+                    const callee_decl = functionById(program, value.callee) orelse return error.UnknownFunction;
+                    const callee_execution = functionExecutionById(program, value.callee) orelse return error.UnknownFunction;
+                    const resolved_callee_execution = if (callee_decl.is_extern)
+                        runtime_abi.FunctionExecution.native
+                    else
+                        resolveExecution(callee_execution, mode);
+                    try instructions.append(.{ .task_spawn = .{
+                        .dst = value.dst,
+                        .callee = value.callee,
+                        .args = value.args,
+                        .result_ty = lowerTypeRef(value.result_ty),
+                        .native = resolved_callee_execution == .native,
+                        .suspendable = value.suspendable,
+                        .frame_slots = value.frame_slots,
+                    } });
+                },
+                .task_spawn_ready => |value| try instructions.append(.{ .task_spawn_ready = .{
+                    .dst = value.dst,
+                    .value = value.value,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .task_await => |value| try instructions.append(.{ .task_await = .{
+                    .dst = value.dst,
+                    .task = value.task,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .task_cancel => |value| try instructions.append(.{ .task_cancel = .{ .task = value.task } }),
+                .task_detach => |value| try instructions.append(.{ .task_detach = .{ .task = value.task } }),
+                .task_yield => try instructions.append(.{ .task_yield = .{} }),
+                .frame_get => |value| try instructions.append(.{ .frame_get = .{
+                    .dst = value.dst,
+                    .frame = value.frame,
+                    .slot = value.slot,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .frame_set => |value| try instructions.append(.{ .frame_set = .{
+                    .frame = value.frame,
+                    .slot = value.slot,
+                    .src = value.src,
+                    .ty = lowerTypeRef(value.ty),
+                } }),
+                .task_is_complete => |value| try instructions.append(.{ .task_is_complete = .{
+                    .dst = value.dst,
+                    .task = value.task,
+                } }),
+                .task_sleep => |value| try instructions.append(.{ .task_sleep = .{ .milliseconds = value.milliseconds } }),
                 // Scope markers drive native (LLVM) drop elaboration only; the VM
                 // reclaims via its own native-layout destructors, so emit nothing.
                 .scope_enter, .scope_exit => {},
@@ -287,6 +337,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
         try functions.append(.{
             .id = function_decl.id,
             .name = function_decl.name,
+            .is_async = function_decl.is_async,
             .param_count = @as(u32, @intCast(function_decl.param_types.len)),
             .param_ownership = try lowerOwnershipModes(allocator, function_decl.param_ownership),
             .param_types = try lowerLocalTypes(allocator, function_decl.param_types),
@@ -320,6 +371,7 @@ fn externStub(allocator: std.mem.Allocator, function_decl: ir_pkg.Function) !byt
     return .{
         .id = function_decl.id,
         .name = function_decl.name,
+        .is_async = function_decl.is_async,
         .param_count = @as(u32, @intCast(function_decl.param_types.len)),
         .param_ownership = try lowerOwnershipModes(allocator, function_decl.param_ownership),
         .param_types = try lowerLocalTypes(allocator, function_decl.param_types),

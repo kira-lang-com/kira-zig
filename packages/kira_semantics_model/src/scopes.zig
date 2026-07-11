@@ -13,6 +13,12 @@ pub const LocalBinding = struct {
     initialized: bool = true,
     moved: bool = false,
     move_span: ?source_pkg.Span = null,
+    /// True when this binding holds a task handle produced by `Task { ... }`.
+    /// A task handle may only be joined (`.await`), cancelled
+    /// (`.requestCancel()`), or detached (`.detach()`); any other read is
+    /// rejected so no code can depend on the handle's transparent runtime
+    /// representation (which changes when the real executor lowering lands).
+    is_task_handle: bool = false,
     decl_span: source_pkg.Span,
     /// Top-level fields moved out of this binding (`let x = obj.field` on an
     /// aliasing aggregate). A binding with any moved field cannot be used as a

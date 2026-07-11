@@ -28,6 +28,8 @@ const closures = @import("backend_capi_closures.zig");
 const ffi = @import("backend_capi_ffi.zig");
 const calls = @import("backend_capi_calls.zig");
 const returns = @import("backend_capi_returns.zig");
+const tasks = @import("backend_capi_tasks.zig");
+const wasm_native_cb = @import("backend_capi_wasm_native_cb.zig");
 
 pub const FunctionCodegen = struct {
     allocator: std.mem.Allocator,
@@ -245,15 +247,18 @@ pub const FunctionCodegen = struct {
                     // previous iteration's buffer in loops).
                     drop.trackStringRegister(self, v.dst);
                 } else if (self.isFloat(v.lhs)) {
-                    self.registers[v.dst] = api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd");
+                    // Float arithmetic runs at f64 (VM parity): widen any F32-width
+                    // operand — mixed f32/f64 operands are invalid IR (see
+                    // value_repr.floatOperand).
+                    self.registers[v.dst] = api.LLVMBuildFAdd(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fadd");
                 } else {
                     self.registers[v.dst] = api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add");
                 }
             },
-            .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, self.registers[v.lhs], self.registers[v.rhs], "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
-            .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, self.registers[v.lhs], self.registers[v.rhs], "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
-            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
-            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
+            .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
+            .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
+            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
+            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
             .convert => |v| {
                 const src_is_float = self.isFloat(v.src);
                 if (v.reinterpret) {
@@ -273,8 +278,13 @@ pub const FunctionCodegen = struct {
                         self.registers[v.dst] = api.LLVMBuildBitCast(b, src, self.types.i64, "floatToBits");
                     }
                 } else if (v.target == .float) {
-                    // Int -> Float is sitofp; Float -> Float is identity.
-                    self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
+                    // Int -> Float is sitofp; Float -> Float converts width when the
+                    // destination is a named F32 (or the source is one) — plain
+                    // identity would leave an f32/f64 register mismatching its
+                    // declared type (invalid IR at the next typed use).
+                    const want = if (v.dst < self.register_types.len) self.types.llvmType(self.register_types[v.dst]) else self.types.double_ty;
+                    const as_float = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
+                    self.registers[v.dst] = value_repr.coerceFloatWidth(self, as_float, want);
                 } else {
                     // Float -> Int truncates toward zero; Int -> Int is identity.
                     self.registers[v.dst] = if (src_is_float) value_repr.lowerFloatToIntSaturating(self, self.registers[v.src]) else self.registers[v.src];
@@ -312,7 +322,11 @@ pub const FunctionCodegen = struct {
                     _ = api.LLVMBuildStore(b, cloned, self.locals[v.local]);
                     drop.onStoreLocalString(self, v.local, cloned);
                 } else {
-                    _ = api.LLVMBuildStore(b, self.registers[v.src], self.locals[v.local]);
+                    // An F32 local's alloca is a 32-bit float; a Float local's is
+                    // f64. Coerce the register to the slot width (identity for
+                    // every non-float and width-matched store).
+                    const slot_ty = self.types.llvmType(self.function_decl.local_types[v.local]);
+                    _ = api.LLVMBuildStore(b, value_repr.coerceFloatWidth(self, self.registers[v.src], slot_ty), self.locals[v.local]);
                     drop.onStoreLocal(self, v.local, v.src, v.borrow);
                 }
             },
@@ -352,6 +366,16 @@ pub const FunctionCodegen = struct {
             },
             .print => |v| try print.lowerPrint(self, self.register_types[v.src], self.registers[v.src]),
             .call => |v| try calls.lowerCall(self, v),
+            .task_spawn => |v| try tasks.lowerTaskSpawn(self, v),
+            .task_spawn_ready => |v| try tasks.lowerTaskSpawnReady(self, v),
+            .task_await => |v| try tasks.lowerTaskAwait(self, v),
+            .task_cancel => |v| tasks.lowerTaskCancel(self, v),
+            .task_detach => |v| tasks.lowerTaskDetach(self, v),
+            .task_yield => tasks.lowerTaskYield(self),
+            .frame_get => |v| tasks.lowerFrameGet(self, v),
+            .frame_set => |v| tasks.lowerFrameSet(self, v),
+            .task_is_complete => |v| tasks.lowerTaskIsComplete(self, v),
+            .task_sleep => |v| tasks.lowerTaskSleep(self, v),
             // Return-value ownership promotions live in backend_capi_returns.zig
             // (the call-result invariants: struct/array/enum/string/closure
             // results are always caller-owned fresh values).
@@ -361,7 +385,7 @@ pub const FunctionCodegen = struct {
                 const size = api.LLVMSizeOf(struct_ty);
                 var args = [_]llvm.c.LLVMValueRef{
                     api.LLVMConstInt(self.types.i64, ir.nativeStateTypeId(v.type_name), 0),
-                    size,
+                    self.types.sizeArg(b, size),
                 };
                 const ptr = api.LLVMBuildCall2(b, self.runtime_decls.struct_alloc.ty, self.runtime_decls.struct_alloc.fn_value, &args, args.len, "struct.alloc");
                 _ = api.LLVMBuildStore(b, api.LLVMConstNull(struct_ty), ptr);
@@ -452,9 +476,17 @@ pub const FunctionCodegen = struct {
                 self.registers[v.dst] = switch (v.representation) {
                     // callable_value: the i64 is just the function id (high bit clear).
                     .callable_value => api.LLVMConstInt(self.types.i64, v.function_id, 0),
-                    // native_callback: a raw function pointer.
+                    // native_callback: a raw function pointer handed to C. On
+                    // wasm32 the Kira function's i64 register ABI disagrees with
+                    // the C `call_indirect` signature (pointer/i32 params), so
+                    // hand out a C-ABI adapter thunk instead of the raw callee.
                     .native_callback => blk: {
                         const fn_value = self.functions.get(v.function_id) orelse return error.MissingFunctionDeclaration;
+                        if (wasm_native_cb.needed(self.types)) {
+                            const fn_decl = functionById(self.request.program.programPtr().*, v.function_id) orelse return error.MissingFunctionDeclaration;
+                            const adapter = try wasm_native_cb.buildAdapter(self.allocator, api, self.module_ref, self.types, fn_decl, fn_value);
+                            break :blk api.LLVMBuildPtrToInt(b, adapter, self.types.i64, "fnptr.wcb");
+                        }
                         break :blk api.LLVMBuildPtrToInt(b, fn_value, self.types.i64, "fnptr");
                     },
                 };

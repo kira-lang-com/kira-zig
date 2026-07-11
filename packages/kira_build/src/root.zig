@@ -67,7 +67,11 @@ test {
     _ = @import("ffi_autobind_sdk.zig");
     _ = @import("ffi_autobind_tests.zig");
     _ = @import("ffi_support.zig");
+    _ = @import("native_artifact_build.zig");
+    _ = @import("native_build_paths.zig");
     _ = @import("native_lib_resolver.zig");
     _ = @import("pipeline_tests.zig");
     _ = @import("wasm_emscripten_tests.zig");
+    _ = @import("wasm_emscripten_width_tests.zig");
+    _ = @import("wasm_emscripten_closure_width_tests.zig");
 }

@@ -22,3 +22,15 @@ pub const isTaggedNativeClosurePointer = @import("callable.zig").isTaggedNativeC
 pub const setExecutionTraceEnabled = @import("trace.zig").setEnabled;
 pub const executionTraceEnabled = @import("trace.zig").isEnabled;
 pub const emitExecutionTrace = @import("trace.zig").emit;
+
+// Async task ABI + cooperative executor (shared by VM and LLVM/native backends).
+pub const Task = @import("task.zig").Task;
+pub const TaskState = @import("task.zig").TaskState;
+pub const Poll = @import("task.zig").Poll;
+pub const PollFn = @import("task.zig").PollFn;
+pub const Executor = @import("executor.zig").Executor;
+
+test {
+    _ = @import("task.zig");
+    _ = @import("executor.zig");
+}

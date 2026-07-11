@@ -367,6 +367,22 @@ pub const BuildSystem = struct {
         }
 
         const verified_program = compiled.verified_program.?;
+
+        // Resolve manifest-declared assets for packaging. Accepted and validated
+        // on every target; only the wasm link consumes them (host/native builds
+        // read the same paths from disk at runtime). A missing declared asset
+        // fails the build with a clear diagnostic instead of silently shipping
+        // an incomplete package.
+        const asset_resolution = ffi_support.prepareProjectAssets(self.allocator, request.source_path) catch ffi_support.AssetResolution{ .mounts = &.{} };
+        if (asset_resolution.missing) |missing_entry| {
+            return .{
+                .source = compiled.source,
+                .diagnostics = try pipeline.missingAssetDiagnostics(self.allocator, missing_entry),
+                .failure_kind = .build,
+                .failure_stage = .backend_prepare,
+            };
+        }
+
         const object_path = try defaultObjectPath(self.allocator, request.output_path);
         const emit_start = nowTimestamp();
         const backend_result = llvm_backend.compile(self.allocator, .{
@@ -379,6 +395,7 @@ pub const BuildSystem = struct {
             },
             .target_selector = request.target.selector,
             .resolved_native_libraries = compiled.native_libraries,
+            .assets = asset_resolution.mounts,
         }) catch |err| {
             const backend_diagnostics = try pipeline.backendDiagnostics(self.allocator, compiled.source.path, err);
             return .{

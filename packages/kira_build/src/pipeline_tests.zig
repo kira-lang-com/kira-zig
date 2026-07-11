@@ -251,12 +251,16 @@ test "ksl builtin resolves shaders from package root while main lives in app dir
         \\    var fragmentHlsl: String = ""
         \\    var vertexGlsl: String = ""
         \\    var fragmentGlsl: String = ""
+        \\    var vertexWgsl: String = ""
+        \\    var fragmentWgsl: String = ""
+        \\    var uniformReflection: String = ""
         \\}
         \\
         \\@Main
         \\function main() {
         \\    let shader = ksl!("Shaders/Tri.ksl")
         \\    let ignored = shader.shaderName.count
+        \\    let ignoredWgsl = shader.vertexWgsl.count + shader.fragmentWgsl.count
         \\    return;
         \\}
         ,

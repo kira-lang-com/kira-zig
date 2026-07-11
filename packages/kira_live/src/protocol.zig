@@ -53,7 +53,8 @@ pub fn readFrame(allocator: std.mem.Allocator, reader: anytype) !Frame {
     // Validate the kind before consuming the payload: a desynced or truncated stream (e.g.
     // a runner that crashed mid-frame) yields a garbage kind, and `@enumFromInt` on an
     // out-of-range value is `unreachable` (a panic). Surface it as a recoverable error so
-    // callers like `waitForReloadMarkers` can fail the reload cleanly instead of aborting.
+    // callers like `attemptHotReload`/`waitForHealthMarkers` can fail the reload cleanly
+    // instead of aborting.
     const kind = liveMessageKindFromInt(raw_kind) orelse return error.InvalidFrameKind;
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
@@ -151,4 +152,22 @@ test "readFrame rejects an out-of-range kind instead of panicking" {
     std.mem.writeInt(u32, bytes[4..8], 9999, .little); // invalid kind
     var reader = std.Io.Reader.fixed(bytes[0..8]);
     try std.testing.expectError(error.InvalidFrameKind, readFrame(arena.allocator(), &reader));
+}
+
+test "hot reload outcome frames round-trip" {
+    // The hot-patch flow's runner->supervisor rejection frames: a native-code
+    // change requests a relaunch; an incompatible edit reports why.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buffer: std.Io.Writer.Allocating = .init(arena.allocator());
+    defer buffer.deinit();
+    try writeFrame(&buffer.writer, .restart_required, "native library changed");
+    try writeFrame(&buffer.writer, .reload_failed, "struct layout changed: AppState");
+    var reader = std.Io.Reader.fixed(buffer.written());
+    const restart = try readFrame(arena.allocator(), &reader);
+    try std.testing.expectEqual(LiveMessageKind.restart_required, restart.kind);
+    try std.testing.expectEqualStrings("native library changed", restart.payload);
+    const failed = try readFrame(arena.allocator(), &reader);
+    try std.testing.expectEqual(LiveMessageKind.reload_failed, failed.kind);
+    try std.testing.expectEqualStrings("struct layout changed: AppState", failed.payload);
 }

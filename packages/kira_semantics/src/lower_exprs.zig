@@ -14,6 +14,7 @@ const attempts = @import("lower_stmts_attempt.zig");
 const scope_flow = @import("lower_exprs_scope_flow.zig");
 const types = @import("lower_exprs_types.zig");
 const enum_variants = @import("lower_exprs_enum_variants.zig");
+const async_spine = @import("lower_exprs_async.zig");
 
 pub const lowerStructLiteralExpr = calls.lowerStructLiteralExpr;
 pub const lowerTypeConstruction = calls.lowerTypeConstruction;
@@ -170,12 +171,19 @@ pub fn lowerStatement(
                 else => false,
             } else false;
             const local_ownership: model.OwnershipMode = if (is_reborrow) .borrow_mut else .owned;
+            // A binding initialized from `Task { ... }` is a task handle: only
+            // `.await` / `.requestCancel()` / `.detach()` may read it (KSEM158).
+            const is_task_handle = if (node.value) |init_expr|
+                init_expr.* == .call and async_spine.isTaskSpawn(init_expr.call)
+            else
+                false;
             try scope.put(ctx.allocator, node.name, .{
                 .id = local_id,
                 .ty = declaration.ty,
                 .storage = @enumFromInt(@intFromEnum(node.storage)),
                 .ownership = local_ownership,
                 .initialized = declaration.initialized,
+                .is_task_handle = is_task_handle,
                 .decl_span = node.span,
             });
             try locals.append(.{
@@ -567,6 +575,17 @@ pub fn lowerExpr(
                     try emitUseAfterMove(ctx, name, node.span, binding.move_span);
                     return error.DiagnosticsEmitted;
                 }
+                if (binding.is_task_handle and !ctx.allow_task_handle_read) {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM158",
+                        .title = "task handle can only be awaited, cancelled, or detached",
+                        .message = "A `Task { ... }` handle is opaque: join it with `.await`, cancel it with `.requestCancel()`, or release it with `.detach()`. It cannot be used as a plain value.",
+                        .labels = &.{diagnostics.primaryLabel(node.span, "task handle used as a plain value")},
+                        .help = "Write `handle.await` to get the task's result.",
+                    });
+                    return error.DiagnosticsEmitted;
+                }
                 lowered.* = .{ .local = .{
                     .local_id = binding.id,
                     .name = try ctx.allocator.dupe(u8, name),
@@ -611,6 +630,11 @@ pub fn lowerExpr(
             }
         },
         .member => |node| {
+            if (std.mem.eql(u8, node.member, "await")) {
+                // `handle.await` joins a deferred task: the first drive runs the
+                // spawned call and yields its result (lower_exprs_async.zig).
+                return async_spine.lowerTaskAwait(ctx, lowered, node, imports, scope, function_headers);
+            }
             if (try lowerParentQualifiedFieldExpr(ctx, node, imports, scope, function_headers)) |field_expr| {
                 lowered.* = field_expr;
                 return lowered;

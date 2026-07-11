@@ -3,6 +3,8 @@ const hybrid = @import("kira_hybrid_definition");
 const hybrid_runtime = @import("kira_hybrid_runtime");
 const model = @import("model.zig");
 const protocol = @import("protocol.zig");
+const reload_listener = @import("reload_listener.zig");
+pub const RunnerClient = @import("runner_client.zig").RunnerClient;
 
 const RequestQuitFn = *const fn () callconv(.c) void;
 
@@ -39,9 +41,9 @@ fn runLiveFromManifest(
     const local_cache_root = try resolveLocalCacheRoot(allocator, manifest_dir, runner_manifest.local_cache_path);
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, local_cache_root);
 
-    var client = try RunnerClient.connect(allocator, runner_manifest.server_host, runner_manifest.server_port);
+    const client = try RunnerClient.connect(allocator, runner_manifest.server_host, runner_manifest.server_port);
     defer client.close();
-    active_client = &client;
+    active_client = client;
     defer active_client = null;
     first_frame_sent = false;
 
@@ -50,18 +52,27 @@ fn runLiveFromManifest(
     try client.sendText(.log_line, try std.fmt.allocPrint(allocator, "live.runner.pid={d}", .{processId()}));
     try client.sendText(.log_line, "live.client.connected");
 
-    // One bundle set, one run, then exit. Hot reload is supervisor-driven process relaunch:
-    // sokol's macOS/iOS backends never return from the app run loop (`[NSApp run]`;
-    // `sapp_request_quit` terminates the process), so an in-process restart loop here can
-    // never execute a second iteration — the supervisor instead kills this process and
-    // spawns a fresh runner with the rebuilt bundles.
-    switch (try receiveBundleSet(allocator, &client, local_cache_root, runner_manifest.main_bundle_id)) {
+    // One bundle set, then one run. While the app runs, the background reload
+    // listener is the sole socket reader: a VM-only rebuild is hot-swapped in
+    // place (same process, same window — see reload_listener.zig), and only a
+    // native-code change falls back to the supervisor's process relaunch
+    // (sokol's macOS/iOS backends never return from the app run loop, so the
+    // dylo-reload path cannot restart in-process).
+    switch (try receiveBundleSet(allocator, client, local_cache_root, runner_manifest.main_bundle_id)) {
         .bundle_ready => {},
         .shutdown => return,
     }
     const bundle_root = try std.fs.path.join(allocator, &.{ local_cache_root, "bundles", try std.fmt.allocPrint(allocator, "{s}.klbundle", .{runner_manifest.main_bundle_id}) });
-    try runBundle(allocator, &client, bundle_root, runner_manifest.target_path);
+    try runBundle(allocator, client, bundle_root, runner_manifest.target_path, .{
+        .local_cache_root = local_cache_root,
+        .main_bundle_id = runner_manifest.main_bundle_id,
+    });
 }
+
+const LiveReloadConfig = struct {
+    local_cache_root: []const u8,
+    main_bundle_id: []const u8,
+};
 
 fn runStandaloneFromManifest(
     allocator: std.mem.Allocator,
@@ -184,6 +195,7 @@ fn runBundle(
     client: *RunnerClient,
     bundle_root: []const u8,
     target_root: []const u8,
+    reload_config: LiveReloadConfig,
 ) !void {
     first_frame_sent = false;
     const bundle_manifest_path = try std.fs.path.join(allocator, &.{ bundle_root, "KiraBundle.toml" });
@@ -210,6 +222,24 @@ fn runBundle(
     try runtime.bridge.installFirstFrameHook(kiraLiveFirstFrameHook);
     try runtime.bridge.installLogHook(kiraLiveLogHook);
     startNativeQuitTimer(&runtime) catch {};
+
+    // Hot reload: markers for swap events, then the background listener that
+    // owns all socket reads for the rest of the session. KIRA_LIVE_NO_HOTPATCH
+    // is the dev kill-switch back to relaunch-only reloads.
+    if (std.c.getenv("KIRA_LIVE_NO_HOTPATCH") == null) {
+        runtime.reload.notify_context = @ptrCast(client);
+        runtime.reload.notify = kiraLiveReloadNotify;
+        const listener = try allocator.create(reload_listener.Listener);
+        listener.* = .{
+            .client = client,
+            .runtime = &runtime,
+            .local_cache_root = reload_config.local_cache_root,
+            .main_bundle_id = reload_config.main_bundle_id,
+            .bundle_root = bundle_root,
+        };
+        try listener.spawn();
+    }
+
     try client.sendText(.log_line, "live.bundle.linked");
     try client.sendText(.log_line, "live.entrypoint.started");
     var target_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, target_root, .{});
@@ -279,14 +309,32 @@ fn receiveBundleSet(
     }
 }
 
-fn storeBundlePayload(bundle_dir: []const u8, payload: protocol.ReplaceBundlePayload) !void {
-    for (payload.files) |file| {
-        const path = try std.fs.path.join(std.heap.page_allocator, &.{ bundle_dir, file.relative_path });
-        defer std.heap.page_allocator.free(path);
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, std.fs.path.dirname(path) orelse ".");
-        const out = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
-        defer out.close(std.Options.debug_io);
-        try out.writeStreamingAll(std.Options.debug_io, file.bytes);
+const storeBundlePayload = reload_listener.storeBundlePayload;
+
+/// Hot-swap event markers (runs on the sokol main thread at the callback
+/// boundary that applied — or rejected — the swap). `rejected` additionally
+/// sends a `reload_failed` frame so the supervisor falls back to a relaunch.
+fn kiraLiveReloadNotify(context: ?*anyopaque, event: hybrid_runtime.hot_swap.ReloadEvent, detail: []const u8) void {
+    const client: *RunnerClient = @ptrCast(@alignCast(context orelse return));
+    var buffer: [320]u8 = undefined;
+    switch (event) {
+        .applied => {
+            const text = std.fmt.bufPrint(&buffer, "live.reload.applied {s}", .{detail}) catch "live.reload.applied";
+            client.sendText(.log_line, text) catch {};
+        },
+        .completed => {
+            const text = std.fmt.bufPrint(&buffer, "live.reload.completed mode=hotpatch {s}", .{detail}) catch "live.reload.completed mode=hotpatch";
+            client.sendText(.log_line, text) catch {};
+        },
+        .rejected => {
+            client.sendText(.reload_failed, detail) catch {};
+            const text = std.fmt.bufPrint(&buffer, "live.reload.rejected reason={s}", .{detail}) catch "live.reload.rejected";
+            client.sendText(.log_line, text) catch {};
+        },
+        .deferred => {
+            const text = std.fmt.bufPrint(&buffer, "live.reload.deferred reason={s}", .{detail}) catch "live.reload.deferred";
+            client.sendText(.log_line, text) catch {};
+        },
     }
 }
 
@@ -353,52 +401,6 @@ fn standaloneWriteLine(text: []const u8) void {
     writer.interface.writeAll(text) catch return;
     writer.interface.writeByte('\n') catch return;
 }
-
-const RunnerClient = struct {
-    allocator: std.mem.Allocator,
-    io_impl: std.Io.Threaded,
-    stream: std.Io.net.Stream,
-    reader: std.Io.net.Stream.Reader,
-    writer: std.Io.net.Stream.Writer,
-    reader_buffer: [4096]u8,
-    writer_buffer: [4096]u8,
-
-    fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16) !RunnerClient {
-        var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
-        const io = io_impl.io();
-        const address = try std.Io.net.IpAddress.parse(host, port);
-        const stream = try std.Io.net.IpAddress.connect(&address, io, .{
-            .mode = .stream,
-            .protocol = .tcp,
-        });
-        var client = RunnerClient{
-            .allocator = allocator,
-            .io_impl = io_impl,
-            .stream = stream,
-            .reader = undefined,
-            .writer = undefined,
-            .reader_buffer = undefined,
-            .writer_buffer = undefined,
-        };
-        client.reader = std.Io.net.Stream.Reader.init(client.stream, client.io_impl.io(), &client.reader_buffer);
-        client.writer = std.Io.net.Stream.Writer.init(client.stream, client.io_impl.io(), &client.writer_buffer);
-        return client;
-    }
-
-    fn close(self: *RunnerClient) void {
-        self.stream.close(self.io_impl.io());
-        self.io_impl.deinit();
-    }
-
-    fn sendText(self: *RunnerClient, kind: protocol.LiveMessageKind, text: []const u8) !void {
-        try protocol.writeFrame(&self.writer.interface, kind, text);
-        try self.writer.interface.flush();
-    }
-
-    fn readFrame(self: *RunnerClient, allocator: std.mem.Allocator) !protocol.Frame {
-        return protocol.readFrame(allocator, &self.reader.interface);
-    }
-};
 
 test "live runner cache paths can target app-container writable roots" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

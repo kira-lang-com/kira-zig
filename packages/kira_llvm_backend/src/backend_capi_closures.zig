@@ -18,7 +18,7 @@ pub fn lowerConstClosure(fc: *FunctionCodegen, v: ir.ConstClosure) !void {
     const captures_arr_ty = api.LLVMArrayType2(fc.types.bridge_ty, n);
     const captures_size = api.LLVMSizeOf(captures_arr_ty);
     const total = api.LLVMBuildAdd(b, api.LLVMConstInt(fc.types.i64, 16, 0), captures_size, "closure.size");
-    var margs = [_]llvm.c.LLVMValueRef{total};
+    var margs = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, total)};
     const ptr = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &margs, margs.len, "closure.alloc");
     var id_idx = [_]llvm.c.LLVMValueRef{api.LLVMConstInt(fc.types.i64, 0, 0)};
     const id_slot = api.LLVMBuildInBoundsGEP2(b, fc.types.i64, ptr, &id_idx, id_idx.len, "closure.id.slot");

@@ -23,6 +23,8 @@ import Foundation
 function main() {
     print("kik-harness-begin")
     print(scalarsSection())
+    print(aliasesSection())
+    print(asyncSpineSection())
     print(collectionsSection())
     print(structsSection())
     print(enumsSection())

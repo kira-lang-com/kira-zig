@@ -27,3 +27,6 @@ static_lib = "../generated/native/x86_64-linux-gnu/libkira_argument_parser.a"
 
 [target.x86_64-windows-msvc]
 static_lib = "../generated/native/x86_64-windows-msvc/kira_argument_parser.lib"
+
+[target.wasm32-emscripten-unknown]
+static_lib = "../generated/native/wasm32-emscripten/libkira_argument_parser.a"

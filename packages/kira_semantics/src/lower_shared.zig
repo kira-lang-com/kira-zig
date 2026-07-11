@@ -35,6 +35,7 @@ pub const Context = struct {
     annotation_headers: ?*const std.StringHashMapUnmanaged(AnnotationHeader) = null,
     construct_headers: ?*const std.StringHashMapUnmanaged(ConstructHeader) = null,
     type_headers: ?*const std.StringHashMapUnmanaged(TypeHeader) = null,
+    type_alias_headers: ?*std.StringHashMapUnmanaged(TypeAliasHeader) = null,
     function_headers: ?*const std.StringHashMapUnmanaged(FunctionHeader) = null,
     enum_headers: ?*const std.StringHashMapUnmanaged(model.EnumDecl) = null,
     // Maps a concrete construct-backed declaration's type name to the construct families it
@@ -58,6 +59,12 @@ pub const Context = struct {
     /// ordinary runtime functions through LibFFI, so the KSEM093 "@Native"
     /// requirement is lifted. Set per-target by the build pipeline.
     allow_runtime_direct_ffi: bool = false,
+    /// Set transiently while lowering the receiver of `handle.await`,
+    /// `handle.requestCancel()`, or `handle.detach()`. Task-handle bindings
+    /// (`is_task_handle`) may only be read through those operations; any other
+    /// read is rejected (KSEM158) so no code can depend on the handle's
+    /// transparent runtime representation.
+    allow_task_handle_read: bool = false,
     /// Lazily built index of extern function headers keyed by function id, so the
     /// direct-FFI boundary check resolves a callee's extern header in O(1) instead
     /// of scanning every function header per call expression (which made that check
@@ -195,6 +202,24 @@ pub const TypeHeader = struct {
     span: source_pkg.Span,
 };
 
+pub const TypeAliasHeader = struct {
+    target: TypeAliasTarget,
+    resolved: ?model.ResolvedType = null,
+    state: TypeAliasResolverState = .unresolved,
+    span: source_pkg.Span,
+};
+
+pub const TypeAliasTarget = union(enum) {
+    syntax: syntax.ast.TypeExpr,
+    imported: model.ResolvedType,
+};
+
+pub const TypeAliasResolverState = enum {
+    unresolved,
+    resolving,
+    resolved,
+};
+
 pub const AnnotationPlacement = enum {
     function_decl,
     class_decl,
@@ -300,6 +325,7 @@ pub fn typeFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror!mod
         },
         .named => |name| blk: {
             const leaf = name.segments[name.segments.len - 1].text;
+            if (try resolveTypeAlias(ctx, leaf)) |alias_type| break :blk alias_type;
             if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
             if (std.mem.eql(u8, leaf, "Float")) break :blk .{ .kind = .float };
             if (std.mem.eql(u8, leaf, "Bool")) break :blk .{ .kind = .boolean };
@@ -360,7 +386,11 @@ pub fn typeTextFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror
         // `construct_any` today, and this text feeds resolved type NAMES used for coercion/dispatch
         // matching. The surface keyword is surfaced only in display paths (ast_dump, diagnostics).
         .any => |info| std.fmt.allocPrint(ctx.allocator, "any {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-        .named => |name| ctx.allocator.dupe(u8, name.segments[name.segments.len - 1].text),
+        .named => |name| blk: {
+            const leaf = name.segments[name.segments.len - 1].text;
+            if (try resolveTypeAlias(ctx, leaf)) |alias_type| break :blk typeTextFromResolved(ctx.allocator, alias_type);
+            break :blk ctx.allocator.dupe(u8, leaf);
+        },
         .generic => |info| genericTypeTextFromSyntax(ctx, info),
     };
 }
@@ -552,12 +582,49 @@ fn validateAnyConstructTarget(ctx: *Context, target: syntax.ast.TypeExpr, span: 
 }
 
 fn isResolvedNonConstructSymbol(ctx: *const Context, name: []const u8) bool {
+    if (ctx.type_alias_headers) |headers| if (headers.contains(name)) return true;
     if (ctx.type_headers) |headers| if (headers.contains(name)) return true;
+    if (ctx.imported_globals.findAlias(name) != null) return true;
     if (ctx.imported_globals.findType(name) != null) return true;
     if (ctx.function_headers) |headers| if (headers.contains(name)) return true;
     if (ctx.imported_globals.findFunction(name) != null) return true;
     if (ctx.annotation_headers) |headers| if (headers.contains(name)) return true;
     return false;
+}
+
+fn resolveTypeAlias(ctx: *const Context, name: []const u8) !?model.ResolvedType {
+    const alias_headers = ctx.type_alias_headers orelse {
+        if (ctx.imported_globals.findAlias(name)) |alias_decl| return alias_decl.target;
+        return null;
+    };
+    const header = alias_headers.getPtr(name) orelse {
+        if (ctx.imported_globals.findAlias(name)) |alias_decl| return alias_decl.target;
+        return null;
+    };
+    switch (header.state) {
+        .resolved => return header.resolved,
+        .resolving => {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM157",
+                .title = "cyclic type alias",
+                .message = try std.fmt.allocPrint(ctx.allocator, "The type alias '{s}' resolves back to itself through another alias.", .{name}),
+                .labels = &.{diagnostics.primaryLabel(header.span, "cyclic alias defined here")},
+                .help = "Break the alias cycle so every `type Name = Target` chain reaches a concrete target type.",
+            });
+            return error.DiagnosticsEmitted;
+        },
+        .unresolved => {},
+    }
+
+    header.state = .resolving;
+    const resolved = switch (header.target) {
+        .syntax => |target| try typeFromSyntax(ctx, target),
+        .imported => |target| target,
+    };
+    header.resolved = resolved;
+    header.state = .resolved;
+    return resolved;
 }
 
 fn isBuiltinTypeName(name: []const u8) bool {

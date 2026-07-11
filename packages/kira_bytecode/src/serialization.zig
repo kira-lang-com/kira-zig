@@ -20,8 +20,28 @@ const MethodMember = bytecode.MethodMember;
 const Function = bytecode.Function;
 const OwnershipMode = bytecode.OwnershipMode;
 
+// Field-level codec primitives (Core Law #5 split).
+const primitives = @import("serialization_primitives.zig");
+const writeString = primitives.writeString;
+const writeOwnershipModes = primitives.writeOwnershipModes;
+const readOwnershipModes = primitives.readOwnershipModes;
+const readOwnershipMode = primitives.readOwnershipMode;
+const defaultOwnershipModes = primitives.defaultOwnershipModes;
+const readString = primitives.readString;
+const readStringList = primitives.readStringList;
+const writeCall = primitives.writeCall;
+const writeIndirectCall = primitives.writeIndirectCall;
+const writeCallPayload = primitives.writeCallPayload;
+const writeTypeRef = primitives.writeTypeRef;
+const readTypeRef = primitives.readTypeRef;
+const readRuntimeCall = primitives.readRuntimeCall;
+const readNativeCall = primitives.readNativeCall;
+const readIndirectCall = primitives.readIndirectCall;
+const readVirtualCall = primitives.readVirtualCall;
+const readCallParts = primitives.readCallParts;
+
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBCB");
+    try writer.writeAll("KBCC");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -336,6 +356,43 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writeOwnershipModes(writer, value.param_ownership);
                 },
                 .ret => |value| try writer.writeInt(i32, if (value.src) |src| @as(i32, @intCast(src)) else -1, .little),
+                .task_spawn => |value| {
+                    try writeCall(writer, value.callee, value.args, value.dst);
+                    try writeTypeRef(writer, value.result_ty);
+                    try writer.writeByte(if (value.native) 1 else 0);
+                    try writer.writeByte(if (value.suspendable) 1 else 0);
+                    try writer.writeInt(u32, value.frame_slots, .little);
+                },
+                .task_spawn_ready => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.value, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .task_await => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.task, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .task_cancel => |value| try writer.writeInt(u32, value.task, .little),
+                .task_detach => |value| try writer.writeInt(u32, value.task, .little),
+                .task_yield => {},
+                .frame_get => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.frame, .little);
+                    try writer.writeInt(u32, value.slot, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .frame_set => |value| {
+                    try writer.writeInt(u32, value.frame, .little);
+                    try writer.writeInt(u32, value.slot, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writeTypeRef(writer, value.ty);
+                },
+                .task_is_complete => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.task, .little);
+                },
+                .task_sleep => |value| try writer.writeInt(u32, value.milliseconds, .little),
                 // VM-internal fused instructions only exist inside the VM's
                 // private decoded code copies (vm_prepare.zig); a module that
                 // contains one is malformed and must not be serialized. Every
@@ -349,7 +406,6 @@ pub fn serialize(writer: anytype, module: Module) !void {
         }
     }
 }
-
 pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     var reader_state = std.Io.Reader.fixed(bytes);
     const reader = &reader_state;
@@ -376,10 +432,14 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // bits bitcast: floatToBits / bitsToFloat). Older containers omit it and
     // default to a value-preserving numeric convert.
     const is_kbcb = std.mem.eql(u8, &magic, "KBCB");
-    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca or is_kbcb;
-    const has_load_indirect_moved = is_kbca or is_kbcb;
-    const has_convert_reinterpret = is_kbcb;
-    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca or is_kbcb;
+    // KBCC is KBCB plus the appended async task opcodes (task_spawn,
+    // task_spawn_ready, task_await, task_cancel, task_detach); container layout
+    // and every feature flag are otherwise identical to KBCB.
+    const is_kbcc = std.mem.eql(u8, &magic, "KBCC");
+    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc;
+    const has_load_indirect_moved = is_kbca or is_kbcb or is_kbcc;
+    const has_convert_reinterpret = is_kbcb or is_kbcc;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -780,6 +840,52 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                         break :blk if (raw >= 0) @as(?u32, @intCast(raw)) else null;
                     },
                 } }),
+                .task_spawn => {
+                    const call = try readCallParts(allocator, reader);
+                    const result_ty = try readTypeRef(allocator, reader);
+                    const native = (try reader.takeByte()) != 0;
+                    const suspendable = (try reader.takeByte()) != 0;
+                    const frame_slots = try reader.takeInt(u32, .little);
+                    try instructions.append(.{ .task_spawn = .{
+                        .dst = call.dst orelse return error.InvalidBytecode,
+                        .callee = call.function_id,
+                        .args = call.args,
+                        .result_ty = result_ty,
+                        .native = native,
+                        .suspendable = suspendable,
+                        .frame_slots = frame_slots,
+                    } });
+                },
+                .task_spawn_ready => try instructions.append(.{ .task_spawn_ready = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .value = try reader.takeInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .task_await => try instructions.append(.{ .task_await = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .task = try reader.takeInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .task_cancel => try instructions.append(.{ .task_cancel = .{ .task = try reader.takeInt(u32, .little) } }),
+                .task_detach => try instructions.append(.{ .task_detach = .{ .task = try reader.takeInt(u32, .little) } }),
+                .task_yield => try instructions.append(.{ .task_yield = .{} }),
+                .frame_get => try instructions.append(.{ .frame_get = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .frame = try reader.takeInt(u32, .little),
+                    .slot = try reader.takeInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .frame_set => try instructions.append(.{ .frame_set = .{
+                    .frame = try reader.takeInt(u32, .little),
+                    .slot = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                    .ty = try readTypeRef(allocator, reader),
+                } }),
+                .task_is_complete => try instructions.append(.{ .task_is_complete = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .task = try reader.takeInt(u32, .little),
+                } }),
+                .task_sleep => try instructions.append(.{ .task_sleep = .{ .milliseconds = try reader.takeInt(u32, .little) } }),
                 // VM-internal fused instructions are never serialized; a file
                 // claiming to contain one is corrupt. Every real opcode is
                 // decoded explicitly above, so the only tags reaching here are
@@ -814,157 +920,5 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         .enums = try enums.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
-    };
-}
-
-fn writeString(writer: anytype, value: []const u8) !void {
-    try writer.writeInt(u32, @as(u32, @intCast(value.len)), .little);
-    try writer.writeAll(value);
-}
-
-fn writeOwnershipModes(writer: anytype, values: []const OwnershipMode) !void {
-    try writer.writeInt(u32, @as(u32, @intCast(values.len)), .little);
-    for (values) |value| try writer.writeByte(@intFromEnum(value));
-}
-
-fn readOwnershipModes(allocator: std.mem.Allocator, reader: anytype) ![]const OwnershipMode {
-    const count = try reader.takeInt(u32, .little);
-    const values = try allocator.alloc(OwnershipMode, count);
-    for (0..count) |index| values[index] = try readOwnershipMode(reader);
-    return values;
-}
-
-fn readOwnershipMode(reader: anytype) !OwnershipMode {
-    return switch (try reader.takeByte()) {
-        @intFromEnum(OwnershipMode.owned) => .owned,
-        @intFromEnum(OwnershipMode.borrow_read) => .borrow_read,
-        @intFromEnum(OwnershipMode.borrow_mut) => .borrow_mut,
-        @intFromEnum(OwnershipMode.move) => .move,
-        @intFromEnum(OwnershipMode.copy) => .copy,
-        else => error.InvalidBytecode,
-    };
-}
-
-fn defaultOwnershipModes(allocator: std.mem.Allocator, count: u32, mode: OwnershipMode) ![]const OwnershipMode {
-    const values = try allocator.alloc(OwnershipMode, count);
-    for (values) |*value| value.* = mode;
-    return values;
-}
-
-fn readString(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
-    const length = try reader.takeInt(u32, .little);
-    const buffer = try allocator.alloc(u8, length);
-    _ = try reader.readSliceAll(buffer);
-    return buffer;
-}
-
-fn readStringList(allocator: std.mem.Allocator, reader: anytype) ![]const []const u8 {
-    const count = try reader.takeInt(u32, .little);
-    const values = try allocator.alloc([]const u8, count);
-    for (0..count) |index| values[index] = try readString(allocator, reader);
-    return values;
-}
-
-fn writeCall(writer: anytype, function_id: u32, args: []const u32, dst: ?u32) !void {
-    try writer.writeInt(u32, function_id, .little);
-    try writeCallPayload(writer, args, dst);
-}
-
-fn writeIndirectCall(writer: anytype, callee: u32, args: []const u32, dst: ?u32) !void {
-    try writer.writeInt(u32, callee, .little);
-    try writeCallPayload(writer, args, dst);
-}
-
-fn writeCallPayload(writer: anytype, args: []const u32, dst: ?u32) !void {
-    try writer.writeInt(u32, @as(u32, @intCast(args.len)), .little);
-    for (args) |arg| try writer.writeInt(u32, arg, .little);
-    try writer.writeInt(i32, if (dst) |value| @as(i32, @intCast(value)) else -1, .little);
-}
-
-fn writeTypeRef(writer: anytype, value: instruction.TypeRef) !void {
-    try writer.writeByte(@intFromEnum(value.kind));
-    try writer.writeByte(if (value.name != null) 1 else 0);
-    if (value.name) |name| try writeString(writer, name);
-    try writer.writeByte(if (value.construct_constraint != null) 1 else 0);
-    if (value.construct_constraint) |constraint| try writeString(writer, constraint.construct_name);
-}
-
-fn readTypeRef(allocator: std.mem.Allocator, reader: anytype) !instruction.TypeRef {
-    const kind: instruction.TypeRef.Kind = @enumFromInt(try reader.takeByte());
-    const has_name = (try reader.takeByte()) != 0;
-    const name = if (has_name) try readString(allocator, reader) else null;
-    const has_constraint = (try reader.takeByte()) != 0;
-    return .{
-        .kind = kind,
-        .name = name,
-        .construct_constraint = if (has_constraint) .{ .construct_name = try readString(allocator, reader) } else null,
-    };
-}
-
-fn readRuntimeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_runtime") {
-    const call = try readCallParts(allocator, reader);
-    return .{ .function_id = call.function_id, .args = call.args, .dst = call.dst };
-}
-
-fn readNativeCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_native") {
-    const call = try readCallParts(allocator, reader);
-    return .{
-        .function_id = call.function_id,
-        .args = call.args,
-        .dst = call.dst,
-        .return_ty = try readTypeRef(allocator, reader),
-    };
-}
-
-fn readIndirectCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_value") {
-    const call = try readIndirectCallParts(allocator, reader);
-    return .{ .callee = call.callee, .args = call.args, .dst = call.dst };
-}
-
-fn readVirtualCall(allocator: std.mem.Allocator, reader: anytype) !@FieldType(instruction.Instruction, "call_virtual") {
-    const receiver = try reader.takeInt(u32, .little);
-    const static_type_name = try readString(allocator, reader);
-    const method_name = try readString(allocator, reader);
-    const payload = try readCallPayload(allocator, reader);
-    return .{
-        .receiver = receiver,
-        .static_type_name = static_type_name,
-        .method_name = method_name,
-        .args = payload.args,
-        .return_ty = try readTypeRef(allocator, reader),
-        .dst = payload.dst,
-    };
-}
-
-fn readCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { function_id: u32, args: []const u32, dst: ?u32 } {
-    const function_id = try reader.takeInt(u32, .little);
-    const payload = try readCallPayload(allocator, reader);
-    return .{
-        .function_id = function_id,
-        .args = payload.args,
-        .dst = payload.dst,
-    };
-}
-
-fn readIndirectCallParts(allocator: std.mem.Allocator, reader: anytype) !struct { callee: u32, args: []const u32, dst: ?u32 } {
-    const callee = try reader.takeInt(u32, .little);
-    const payload = try readCallPayload(allocator, reader);
-    return .{
-        .callee = callee,
-        .args = payload.args,
-        .dst = payload.dst,
-    };
-}
-
-fn readCallPayload(allocator: std.mem.Allocator, reader: anytype) !struct { args: []const u32, dst: ?u32 } {
-    const arg_count = try reader.takeInt(u32, .little);
-    const args = try allocator.alloc(u32, arg_count);
-    for (0..arg_count) |index| {
-        args[index] = try reader.takeInt(u32, .little);
-    }
-    const raw_dst = try reader.takeInt(i32, .little);
-    return .{
-        .args = args,
-        .dst = if (raw_dst >= 0) @as(?u32, @intCast(raw_dst)) else null,
     };
 }

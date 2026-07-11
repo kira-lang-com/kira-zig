@@ -9,6 +9,7 @@ const ir = @import("kira_ir");
 const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
+const bridge_string = @import("backend_capi_bridge_string.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 const allocPrintZ = utils.allocPrintZ;
@@ -23,6 +24,46 @@ pub fn zeroValue(fc: *FunctionCodegen, value_type: ir.ValueType) llvm.c.LLVMValu
     };
 }
 
+// Kira Float is f64 everywhere in the VM, but a named F32 value is a 32-bit
+// LLVM float in native registers, locals, fields, and function signatures.
+// Wherever an f32-typed value meets an f64 context (or vice versa) the width
+// must be converted explicitly — LLVM verifies operand types, so an implicit
+// mix (`fcmp float, double`, `ret float` from a double function) is an invalid
+// module, the sokolDpiScale editor/host build failure. Identity when the value
+// already has the wanted width or is not a float at all, so this is safe to
+// call unconditionally at boundaries.
+pub fn coerceFloatWidth(fc: *FunctionCodegen, value: llvm.c.LLVMValueRef, want: llvm.c.LLVMTypeRef) llvm.c.LLVMValueRef {
+    return coerceFloatWidthRaw(fc.api, fc.builder, fc.types, value, want);
+}
+
+// As coerceFloatWidth, for lowering contexts without a FunctionCodegen (the
+// shared bridge pack/unpack helpers in backend_capi_dispatch.zig).
+pub fn coerceFloatWidthRaw(
+    api: *const llvm.Api,
+    b: llvm.c.LLVMBuilderRef,
+    types: capi.Types,
+    value: llvm.c.LLVMValueRef,
+    want: llvm.c.LLVMTypeRef,
+) llvm.c.LLVMValueRef {
+    const have = api.LLVMTypeOf(value);
+    if (have == want) return value;
+    if (have == types.float_ty and want == types.double_ty) {
+        return api.LLVMBuildFPExt(b, value, want, "f32.widen");
+    }
+    if (have == types.double_ty and want == types.float_ty) {
+        return api.LLVMBuildFPTrunc(b, value, want, "f64.narrow");
+    }
+    return value;
+}
+
+// Float ARITHMETIC and COMPARISON always run at f64, matching the VM (which
+// stores and computes every float as f64) — an f32-width operand is widened
+// before the operation. Narrowing back to F32 happens only at explicit storage
+// boundaries (locals, fields, returns, call arguments) via coerceFloatWidth.
+pub fn floatOperand(fc: *FunctionCodegen, value: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+    return coerceFloatWidth(fc, value, fc.types.double_ty);
+}
+
 // String concatenation: malloc(len_l + len_r), memcpy both halves, and package
 // the buffer as a {ptr, len} string value. Matches the VM's `+` on strings.
 // The buffer is a fresh owned heap allocation tracked by the dst register's
@@ -35,13 +76,13 @@ pub fn lowerStringConcat(fc: *FunctionCodegen, lhs: llvm.c.LLVMValueRef, rhs: ll
     const rhs_ptr = api.LLVMBuildExtractValue(b, rhs, 0, "scat.rp");
     const rhs_len = api.LLVMBuildExtractValue(b, rhs, 1, "scat.rl");
     const total = api.LLVMBuildAdd(b, lhs_len, rhs_len, "scat.total");
-    var malloc_args = [_]llvm.c.LLVMValueRef{total};
+    var malloc_args = [_]llvm.c.LLVMValueRef{fc.types.sizeArg(b, total)};
     const buf = api.LLVMBuildCall2(b, fc.runtime_decls.malloc.ty, fc.runtime_decls.malloc.fn_value, &malloc_args, malloc_args.len, "scat.buf");
-    var copy_l = [_]llvm.c.LLVMValueRef{ buf, lhs_ptr, lhs_len };
+    var copy_l = [_]llvm.c.LLVMValueRef{ buf, lhs_ptr, fc.types.sizeArg(b, lhs_len) };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &copy_l, copy_l.len, "scat.cpyl");
     var tail_index = [_]llvm.c.LLVMValueRef{lhs_len};
     const tail = api.LLVMBuildInBoundsGEP2(b, fc.types.i8, buf, &tail_index, tail_index.len, "scat.tail");
-    var copy_r = [_]llvm.c.LLVMValueRef{ tail, rhs_ptr, rhs_len };
+    var copy_r = [_]llvm.c.LLVMValueRef{ tail, rhs_ptr, fc.types.sizeArg(b, rhs_len) };
     _ = api.LLVMBuildCall2(b, fc.runtime_decls.memcpy.ty, fc.runtime_decls.memcpy.fn_value, &copy_r, copy_r.len, "scat.cpyr");
     var out = api.LLVMGetUndef(fc.types.string_ty);
     out = api.LLVMBuildInsertValue(b, out, buf, 0, "scat.sp");
@@ -94,7 +135,7 @@ pub fn lowerCompare(fc: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
         const len_eq = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, len_a, len_b, "streq.leneq");
         const a_shorter = api.LLVMBuildICmp(b, llvm.c.LLVMIntULT, len_a, len_b, "streq.ashorter");
         const min_len = api.LLVMBuildSelect(b, a_shorter, len_a, len_b, "streq.min");
-        var args = [_]llvm.c.LLVMValueRef{ ptr_a, ptr_b, min_len };
+        var args = [_]llvm.c.LLVMValueRef{ ptr_a, ptr_b, fc.types.sizeArg(b, min_len) };
         const cmp = api.LLVMBuildCall2(b, fc.runtime_decls.memcmp.ty, fc.runtime_decls.memcmp.fn_value, &args, args.len, "streq.memcmp");
         const zero = api.LLVMConstInt(fc.types.i32, 0, 0);
         const bytes_eq = api.LLVMBuildICmp(b, llvm.c.LLVMIntEQ, cmp, zero, "streq.byteseq");
@@ -107,6 +148,8 @@ pub fn lowerCompare(fc: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
         };
     }
     if (operand_kind == .float) {
+        // Compare at f64: an F32-width operand is widened first (VM parity —
+        // the VM compares every float as f64; mixed widths are invalid IR).
         return api.LLVMBuildFCmp(
             fc.builder,
             switch (v.op) {
@@ -117,8 +160,8 @@ pub fn lowerCompare(fc: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
                 .greater => llvm.c.LLVMRealOGT,
                 .greater_equal => llvm.c.LLVMRealOGE,
             },
-            fc.registers[v.lhs],
-            fc.registers[v.rhs],
+            floatOperand(fc, fc.registers[v.lhs]),
+            floatOperand(fc, fc.registers[v.rhs]),
             "fcmp",
         );
     }
@@ -156,6 +199,12 @@ pub fn loadConverted(fc: *FunctionCodegen, ptr: llvm.c.LLVMValueRef, value_type:
     // load), so do not load the whole aggregate (ptrtoint of an aggregate is invalid).
     switch (value_type.kind) {
         .array, .construct_any, .raw_ptr, .enum_instance => {
+            // A closure-typed field is stored at full i64 width (fieldStorageType):
+            // the value is a tagged closure i64 whose bit 63 a ptr-width load would
+            // drop on wasm32 (see utils.isClosureValueType). Load the whole word.
+            if (utils.isClosureValueType(value_type)) {
+                return api.LLVMBuildLoad2(b, fc.types.i64, ptr, "load.clos");
+            }
             const raw = api.LLVMBuildLoad2(b, fc.types.ptr_ty, ptr, "load");
             return api.LLVMBuildPtrToInt(b, raw, fc.types.i64, "load.ptrint");
         },
@@ -194,7 +243,7 @@ pub fn packBridgeBoxed(fc: *FunctionCodegen, value_type: ir.ValueType, value: ll
                 const type_name = value_type.name orelse return error.UnsupportedExecutableFeature;
                 var margs = [_]llvm.c.LLVMValueRef{
                     api.LLVMConstInt(fc.types.i64, ir.nativeStateTypeId(type_name), 0),
-                    api.LLVMSizeOf(struct_ty),
+                    fc.types.sizeArg(b, api.LLVMSizeOf(struct_ty)),
                 };
                 const copy = api.LLVMBuildCall2(b, fc.runtime_decls.struct_alloc.ty, fc.runtime_decls.struct_alloc.fn_value, &margs, margs.len, "bv.struct.copy");
                 _ = api.LLVMBuildStore(b, loaded, copy);
@@ -202,10 +251,9 @@ pub fn packBridgeBoxed(fc: *FunctionCodegen, value_type: ir.ValueType, value: ll
             }
         },
         .float => {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value, fc.types.double_ty, "bv.fpext")
-            else
-                value;
+            // Bridge payloads are f64 bit patterns; coerce by the value's ACTUAL
+            // width (an F32-typed register may already hold f64 after arithmetic).
+            const as_double = coerceFloatWidth(fc, value, fc.types.double_ty);
             const bits = api.LLVMBuildBitCast(b, as_double, fc.types.i64, "bv.fbits");
             bv = api.LLVMBuildInsertValue(b, bv, bits, 2, "bv.payload");
         },
@@ -213,13 +261,7 @@ pub fn packBridgeBoxed(fc: *FunctionCodegen, value_type: ir.ValueType, value: ll
             const word = api.LLVMBuildZExt(b, value, fc.types.i64, "bv.bool");
             bv = api.LLVMBuildInsertValue(b, bv, word, 2, "bv.payload");
         },
-        .string => {
-            const sp = api.LLVMBuildExtractValue(b, value, 0, "bv.str.ptr");
-            const spi = api.LLVMBuildPtrToInt(b, sp, fc.types.i64, "bv.str.ptrint");
-            const sl = api.LLVMBuildExtractValue(b, value, 1, "bv.str.len");
-            bv = api.LLVMBuildInsertValue(b, bv, spi, 2, "bv.payload");
-            bv = api.LLVMBuildInsertValue(b, bv, sl, 3, "bv.extra");
-        },
+        .string => bv = bridge_string.packInto(api, b, fc.types, bv, value),
         .void => return error.UnsupportedExecutableFeature,
     }
     return bv;

@@ -193,6 +193,17 @@ fn findDirectFfiUseInExpr(
             if (findDirectFfiUseInExpr(node.object.*, lookup)) |use| return use;
             if (findDirectFfiUseInExpr(node.index.*, lookup)) |use| return use;
         },
+        .task_spawn => |node| {
+            for (node.args) |arg| {
+                if (findDirectFfiUseInExpr(arg.*, lookup)) |use| return use;
+            }
+        },
+        .task_spawn_ready => |node| return findDirectFfiUseInExpr(node.value.*, lookup),
+        .task_await => |node| return findDirectFfiUseInExpr(node.task.*, lookup),
+        .task_cancel => |node| return findDirectFfiUseInExpr(node.task.*, lookup),
+        .task_detach => |node| return findDirectFfiUseInExpr(node.task.*, lookup),
+        .task_sleep => |node| return findDirectFfiUseInExpr(node.milliseconds.*, lookup),
+        .task_yield,
         .integer,
         .float,
         .string,

@@ -89,7 +89,7 @@ fn moveStructToHeap(fc: *FunctionCodegen, src_val: llvm.c.LLVMValueRef, name: ?[
     const struct_ty = if (name) |n| fc.struct_types.get(n) orelse return src_val else return src_val;
     var margs = [_]llvm.c.LLVMValueRef{
         api.LLVMConstInt(fc.types.i64, ir.nativeStateTypeId(name.?), 0),
-        api.LLVMSizeOf(struct_ty),
+        fc.types.sizeArg(b, api.LLVMSizeOf(struct_ty)),
     };
     const heap = api.LLVMBuildCall2(b, fc.runtime_decls.struct_alloc.ty, fc.runtime_decls.struct_alloc.fn_value, &margs, margs.len, "ret.heap");
     const src_ptr = api.LLVMBuildIntToPtr(b, src_val, fc.types.ptr_ty, "ret.src");

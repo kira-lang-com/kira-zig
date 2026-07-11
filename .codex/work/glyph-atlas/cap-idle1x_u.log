@@ -1,0 +1,265 @@
+[83180:9315872:0711/034349.763555:WARNING:content/browser/child_process_task_port_provider_mac.cc:53] AppleMobileFileIntegrity is disabled. The browser will not collect child process task ports.
+[83180:9315872:0711/034349.910209:INFO:components/enterprise/browser/controller/chrome_browser_cloud_management_controller.cc:239] No machine level policy manager exists.
+[83180:9315924:0711/034350.128991:WARNING:chrome/browser/extensions/external_pref_loader.cc:294] You are using an old-style extension deployment method (external_extensions.json), which will soon be deprecated. (see http://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)
+[83180:9315872:0711/034351.233964:ERROR:content/browser/gpu/gpu_process_host.cc:1089] GPU process exited unexpectedly: exit_code=11
+[83180:9315872:0711/034351.234342:WARNING:content/browser/gpu/gpu_process_host.cc:1531] The GPU process has crashed 1 time(s)
+[83180:9315872:0711/034351.380353:WARNING:content/browser/gpu/gpu_process_host.cc:1111] Reinitialized the GPU process after a crash. The reported initialization time was 77 ms
+[83199:9316105:0711/034351.389548:ERROR:gpu/ipc/client/command_buffer_proxy_impl.cc:285] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.
+[83180:9315872:0711/034353.111750:INFO:CONSOLE:13] "kira.wasm.runtime_initialized", source: http://127.0.0.1:8161/bench.html?mode=idle (13)
+[83180:9315872:0711/034353.114225:INFO:CONSOLE:12] "kira: live.ui_foundation.app.started", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034353.148002:INFO:CONSOLE:12] "kira: live.kira_graphics.backend.initialized", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+Trying to load the allocator multiple times. This is *not* supported.
+[83180:9315930:0711/034354.347397:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[83180:9315930:0711/034354.378940:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret
+[83180:9315930:0711/034354.379000:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.
+[83180:9315872:0711/034354.467753:INFO:CONSOLE:12] "kira: live.kira_graphics.frame.submitted", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.504992:INFO:CONSOLE:12] "kira: live.ui_foundation.tree.built", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.505062:INFO:CONSOLE:12] "kira: live.ui_foundation.retained_tree.ready", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.634567:INFO:CONSOLE:12] "kira: live.ui_foundation.layout.non_empty", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.638248:INFO:CONSOLE:12] "kira: KiraGraphics: SQUIRCLE SURFACE CALLED w=17.000000 h=17.000000 radius=999.000000", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.640335:INFO:CONSOLE:12] "kira: live.ui_foundation.render_commands.generated", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.640359:INFO:CONSOLE:12] "kira: live.kira_graphics.visible_content.submitted", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.640373:INFO:CONSOLE:12] "kira: KIRA_UI_DRAW_COMMANDS_SUBMITTED", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034354.640385:INFO:CONSOLE:12] "kira: KIRA_APP_RENDERED_VISIBLE_CONTENT", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[83180:9315872:0711/034358.470448:INFO:CONSOLE:26] "kira.bench.mode: idle", source: http://127.0.0.1:8161/bench.html?mode=idle (26)
+[83180:9315872:0711/034358.470883:INFO:CONSOLE:20] "JSFPS 0.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034403.755307:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034403.762412:INFO:CONSOLE:20] "JSFPS 26.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034403.762721:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034403.764514:INFO:CONSOLE:20] "JSFPS 25.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034403.765228:INFO:CONSOLE:20] "JSFPS 27.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034404.785350:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034405.890069:INFO:CONSOLE:20] "JSFPS 26.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.514354:INFO:CONSOLE:20] "JSFPS 28.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.525840:INFO:CONSOLE:20] "JSFPS 28.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.662228:INFO:CONSOLE:20] "JSFPS 25.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.716668:INFO:CONSOLE:20] "JSFPS 27.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.716821:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.716917:INFO:CONSOLE:20] "JSFPS 29.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.717079:INFO:CONSOLE:20] "JSFPS 28.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.717601:INFO:CONSOLE:20] "JSFPS 31.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.718121:INFO:CONSOLE:20] "JSFPS 29.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.718261:INFO:CONSOLE:20] "JSFPS 26.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.718385:INFO:CONSOLE:20] "JSFPS 24.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.718493:INFO:CONSOLE:20] "JSFPS 21.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034419.718579:INFO:CONSOLE:20] "JSFPS 23.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034424.178500:INFO:CONSOLE:20] "JSFPS 24.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034424.957432:INFO:CONSOLE:20] "JSFPS 27.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034424.957546:INFO:CONSOLE:20] "JSFPS 28.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034424.959260:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034424.962109:INFO:CONSOLE:20] "JSFPS 27.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034425.016507:INFO:CONSOLE:20] "JSFPS 26.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315930:0711/034425.030703:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[83180:9315872:0711/034426.010620:INFO:CONSOLE:20] "JSFPS 26.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034427.001122:INFO:CONSOLE:20] "JSFPS 25.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034428.215209:INFO:CONSOLE:20] "JSFPS 24.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034428.818928:INFO:CONSOLE:20] "JSFPS 24.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034429.955757:INFO:CONSOLE:20] "JSFPS 23.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034430.950172:INFO:CONSOLE:20] "JSFPS 21.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034431.904040:INFO:CONSOLE:20] "JSFPS 25.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034432.909150:INFO:CONSOLE:20] "JSFPS 26.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034433.931098:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034434.955718:INFO:CONSOLE:20] "JSFPS 26.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034435.975807:INFO:CONSOLE:20] "JSFPS 26.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034437.000557:INFO:CONSOLE:20] "JSFPS 27.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83499:9317801:0711/034437.662518:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake-all --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[83499:9317801:0711/034437.668446:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 250072, parent pid: 83180
+[83499:9317801:0711/034437.690567:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 5733662720B (5.340GiB) / 245075738624B (228.245GiB)
+[83499:9317801:0711/034437.693166:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 5733662720B (5.340GiB) / 245075738624B (228.245GiB)
+[83499:9317801:0711/034437.697350:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[83506:9317821:0711/034437.779607:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[83506:9317821:0711/034437.780382:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 250072, parent pid: 1
+[83506:9317821:0711/034437.792773:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 5732659200B (5.339GiB) / 245075738624B (228.245GiB)
+[83506:9317821:0711/034437.792862:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 5732659200B (5.339GiB) / 245075738624B (228.245GiB)
+[83506:9317821:0711/034437.793036:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[83499:9317801:0711/034437.797255:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[83499:9317801:0711/034437.807209:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[83499:9317801:0711/034437.807550:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[83499:9317801:0711/034437.811545:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[83499:9317801:0711/034437.811591:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[83499:9317801:0711/034437.813244:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[83499:9317801:0711/034437.813281:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[83499:9317839:0711/034437.824089:VERBOSE1:chrome/updater/app/app_wakeall.cc:58] Launching `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake`
+[83509:9317843:0711/034437.862612:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[83509:9317843:0711/034437.865456:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 250072, parent pid: 83499
+[83509:9317843:0711/034437.903845:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 5730164736B (5.337GiB) / 245075738624B (228.245GiB)
+[83509:9317843:0711/034437.903878:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 5730164736B (5.337GiB) / 245075738624B (228.245GiB)
+[83509:9317843:0711/034437.904058:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[83511:9317850:0711/034437.950095:VERBOSE1:chrome/updater/updater.cc:374] Version: 151.0.7910.0, opt, ARM_64, command line: /Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=151.0.7910.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[83511:9317850:0711/034437.950987:VERBOSE1:chrome/updater/updater.cc:377] OS version: 27.0.0, arch: arm64, System uptime (seconds): 250072, parent pid: 1
+[83511:9317850:0711/034437.960364:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/priamc/Library/Application Support/Google/GoogleUpdater): 5729280000B (5.336GiB) / 245075738624B (228.245GiB)
+[83511:9317850:0711/034437.960496:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/v6/6q3jy9nd3pscgwcf3d5ygdxc0000gn/T/): 5729280000B (5.336GiB) / 245075738624B (228.245GiB)
+[83511:9317850:0711/034437.960744:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[83509:9317843:0711/034437.962538:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[83509:9317843:0711/034437.965855:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[83509:9317843:0711/034437.966230:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[83509:9317843:0711/034437.966437:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[83509:9317843:0711/034437.966458:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/Chrome for Testing/Crashpad/settings.dat: No such file or directory (2)
+[83509:9317843:0711/034437.966571:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/priamc/Library/Application Support/Google/ChromeForTesting/Crashpad/settings.dat: No such file or directory (2)
+[83509:9317843:0711/034437.966653:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[83509:9317843:0711/034437.967803:VERBOSE1:chrome/updater/ipc/update_service_internal_proxy_mojo.cc:61] Run
+[83180:9315872:0711/034438.011366:INFO:CONSOLE:20] "JSFPS 25.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[83180:9315872:0711/034439.026568:INFO:CONSOLE:20] "JSFPS 28.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034440.045410:INFO:CONSOLE:20] "JSFPS 29.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034441.078083:INFO:CONSOLE:20] "JSFPS 26.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034442.091661:INFO:CONSOLE:20] "JSFPS 23.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034443.111472:INFO:CONSOLE:20] "JSFPS 24.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034444.112467:INFO:CONSOLE:20] "JSFPS 25.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034445.126623:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034446.138612:INFO:CONSOLE:20] "JSFPS 26.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034447.170707:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83509:9317843:0711/034447.259163:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[83509:9317843:0711/034447.261341:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[83509:9317843:0711/034447.261371:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake) returned 0.
+[83499:9317839:0711/034447.365695:VERBOSE1:chrome/updater/app/app_wakeall.cc:68] `/Users/priamc/Library/Application Support/Google/GoogleUpdater/151.0.7910.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake` exited 0
+[83499:9317801:0711/034447.365989:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[83499:9317801:0711/034447.366654:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[83499:9317801:0711/034447.366676:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake-all) returned 0.
+[83180:9315872:0711/034448.182928:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034449.183826:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034450.215739:INFO:CONSOLE:20] "JSFPS 28.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034451.237455:INFO:CONSOLE:20] "JSFPS 24.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034452.245784:INFO:CONSOLE:20] "JSFPS 24.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034453.250030:INFO:CONSOLE:20] "JSFPS 24.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034454.256507:INFO:CONSOLE:20] "JSFPS 23.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315924:0711/034454.995404:INFO:chrome/browser/extensions/extension_garbage_collector.cc:188] Garbage collection for extensions on file thread is complete.
+[83180:9315872:0711/034455.283026:INFO:CONSOLE:20] "JSFPS 22.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034456.302738:INFO:CONSOLE:20] "JSFPS 16.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83511:9317850:0711/034457.305760:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[83511:9317850:0711/034457.305950:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[83506:9317821:0711/034457.309233:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[83506:9317821:0711/034457.309299:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[83180:9315872:0711/034457.324230:INFO:CONSOLE:20] "JSFPS 18.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034458.364271:INFO:CONSOLE:20] "JSFPS 18.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034459.377397:INFO:CONSOLE:20] "JSFPS 20.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034500.435431:INFO:CONSOLE:20] "JSFPS 21.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034501.452190:INFO:CONSOLE:20] "JSFPS 21.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034502.467127:INFO:CONSOLE:20] "JSFPS 23.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034503.504810:INFO:CONSOLE:20] "JSFPS 24.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034504.517029:INFO:CONSOLE:20] "JSFPS 25.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034505.516810:INFO:CONSOLE:20] "JSFPS 25.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034506.538548:INFO:CONSOLE:20] "JSFPS 26.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034507.551744:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034508.553797:INFO:CONSOLE:20] "JSFPS 26.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034509.574737:INFO:CONSOLE:20] "JSFPS 30.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034510.602644:INFO:CONSOLE:20] "JSFPS 30.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034511.625262:INFO:CONSOLE:20] "JSFPS 29.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034512.644240:INFO:CONSOLE:20] "JSFPS 28.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315930:0711/034513.203102:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[83180:9315872:0711/034513.672368:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034514.698304:INFO:CONSOLE:20] "JSFPS 28.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034515.699319:INFO:CONSOLE:20] "JSFPS 28.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034516.716864:INFO:CONSOLE:20] "JSFPS 24.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034517.741482:INFO:CONSOLE:20] "JSFPS 30.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034518.771167:INFO:CONSOLE:20] "JSFPS 31.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034519.782781:INFO:CONSOLE:20] "JSFPS 30.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034520.790547:INFO:CONSOLE:20] "JSFPS 29.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034521.824448:INFO:CONSOLE:20] "JSFPS 30.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034522.830584:INFO:CONSOLE:20] "JSFPS 28.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034523.864584:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034524.886016:INFO:CONSOLE:20] "JSFPS 26.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034525.902728:INFO:CONSOLE:20] "JSFPS 26.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034526.927805:INFO:CONSOLE:20] "JSFPS 29.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034527.928658:INFO:CONSOLE:20] "JSFPS 30.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034528.938786:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034529.958369:INFO:CONSOLE:20] "JSFPS 29.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034530.977554:INFO:CONSOLE:20] "JSFPS 29.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034531.979331:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034532.991313:INFO:CONSOLE:20] "JSFPS 26.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034534.000035:INFO:CONSOLE:20] "JSFPS 26.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034535.003667:INFO:CONSOLE:20] "JSFPS 26.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034536.029920:INFO:CONSOLE:20] "JSFPS 27.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034537.059163:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034538.092028:INFO:CONSOLE:20] "JSFPS 28.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034539.118846:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034540.141886:INFO:CONSOLE:20] "JSFPS 30.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034541.144705:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034542.172197:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034543.181246:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034544.194559:INFO:CONSOLE:20] "JSFPS 29.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034545.224854:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034546.227396:INFO:CONSOLE:20] "JSFPS 26.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034547.254891:INFO:CONSOLE:20] "JSFPS 26.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034548.288582:INFO:CONSOLE:20] "JSFPS 27.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034549.299840:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034550.309950:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034551.325050:INFO:CONSOLE:20] "JSFPS 29.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034552.334185:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034553.336384:INFO:CONSOLE:20] "JSFPS 28.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034554.363432:INFO:CONSOLE:20] "JSFPS 29.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034555.395389:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034556.411617:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034557.417191:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034558.443226:INFO:CONSOLE:20] "JSFPS 28.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034559.448256:INFO:CONSOLE:20] "JSFPS 26.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034600.474115:INFO:CONSOLE:20] "JSFPS 24.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034601.502150:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034602.503492:INFO:CONSOLE:20] "JSFPS 30.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034603.515925:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034604.536064:INFO:CONSOLE:20] "JSFPS 29.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034605.543637:INFO:CONSOLE:20] "JSFPS 29.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034606.572394:INFO:CONSOLE:20] "JSFPS 28.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034607.587908:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034608.593739:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034609.604536:INFO:CONSOLE:20] "JSFPS 28.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034610.634004:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034611.638781:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034612.640101:INFO:CONSOLE:20] "JSFPS 30.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034613.640844:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034614.664584:INFO:CONSOLE:20] "JSFPS 29.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034615.678518:INFO:CONSOLE:20] "JSFPS 29.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034616.702082:INFO:CONSOLE:20] "JSFPS 26.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034617.704360:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034618.724032:INFO:CONSOLE:20] "JSFPS 27.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034619.757315:INFO:CONSOLE:20] "JSFPS 28.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034620.788062:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034621.799054:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034622.802293:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034623.827135:INFO:CONSOLE:20] "JSFPS 29.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034624.859317:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034625.869716:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034626.870536:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034627.889864:INFO:CONSOLE:20] "JSFPS 26.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034628.890843:INFO:CONSOLE:20] "JSFPS 26.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034629.907015:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034630.925434:INFO:CONSOLE:20] "JSFPS 26.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034631.928704:INFO:CONSOLE:20] "JSFPS 26.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034632.952585:INFO:CONSOLE:20] "JSFPS 29.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034633.957284:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034634.982770:INFO:CONSOLE:20] "JSFPS 28.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034636.005304:INFO:CONSOLE:20] "JSFPS 28.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034637.026136:INFO:CONSOLE:20] "JSFPS 29.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034638.028041:INFO:CONSOLE:20] "JSFPS 28.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034639.030965:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034640.033331:INFO:CONSOLE:20] "JSFPS 26.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034641.062547:INFO:CONSOLE:20] "JSFPS 27.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034642.078209:INFO:CONSOLE:20] "JSFPS 27.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034643.091535:INFO:CONSOLE:20] "JSFPS 28.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034644.122643:INFO:CONSOLE:20] "JSFPS 29.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034645.141399:INFO:CONSOLE:20] "JSFPS 28.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034646.143085:INFO:CONSOLE:20] "JSFPS 29.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034647.158624:INFO:CONSOLE:20] "JSFPS 29.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034648.160334:INFO:CONSOLE:20] "JSFPS 29.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034649.164811:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034650.193569:INFO:CONSOLE:20] "JSFPS 27.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315930:0711/034650.838095:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+Trying to load the allocator multiple times. This is *not* supported.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1783734411.221252 9322021 environment.cc:558] Selected adapter: Apple M1, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU
+[83180:9315872:0711/034651.223221:INFO:CONSOLE:20] "JSFPS 24.3", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+I0000 00:00:1783734411.246096 9322061 environment.cc:558] Selected adapter: Apple M1, arch=metal-3, vendor=apple, backend=Metal, adapterType=Integrated GPU
+[83180:9315872:0711/034652.243139:INFO:CONSOLE:20] "JSFPS 25.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034653.247043:INFO:CONSOLE:20] "JSFPS 27.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034654.276886:INFO:CONSOLE:20] "JSFPS 27.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034655.284763:INFO:CONSOLE:20] "JSFPS 27.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034656.293004:INFO:CONSOLE:20] "JSFPS 29.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034657.303877:INFO:CONSOLE:20] "JSFPS 29.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315872:0711/034658.309612:INFO:CONSOLE:20] "JSFPS 28.8", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[83180:9315930:0711/034658.951839:ERROR:google_apis/gcm/engine/connection_factory_impl.cc:484] ConnectionHandler failed with net error: -2
+[83180:9315872:0711/034658.988380:ERROR:content/browser/gpu/gpu_process_host.cc:1089] GPU process exited unexpectedly: exit_code=15
+[83180:9315872:0711/034658.988431:WARNING:content/browser/gpu/gpu_process_host.cc:1531] The GPU process has crashed 2 time(s)
+[83180:9315872:0711/034659.048558:WARNING:chrome/browser/ui/sad_tab.cc:258] Tab Killed: http://127.0.0.1:8161/
+[83180:9315872:0711/034659.117479:ERROR:content/browser/network_service_instance_impl.cc:721] Network service crashed or was terminated, restarting service.
+[84607:9322301:0711/034659.496422:ERROR:base/memory/shared_memory_switch.cc:268] Mach rendezvous failed, terminating process (parent died?)
+[84608:9322305:0711/034659.496449:ERROR:base/memory/shared_memory_switch.cc:268] Mach rendezvous failed, terminating process (parent died?)

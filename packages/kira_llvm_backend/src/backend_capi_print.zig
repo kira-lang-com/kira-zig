@@ -8,6 +8,7 @@ const ir = @import("kira_ir");
 const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 const findEnumDecl = utils.findEnumDecl;
 
@@ -48,10 +49,10 @@ pub fn writeValue(fc: *FunctionCodegen, value_type: ir.ValueType, value_ref: llv
             writeCall(fc, fc.runtime_decls.write_i64, &args);
         },
         .float => {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value_ref, fc.types.double_ty, "fpext")
-            else
-                value_ref;
+            // Coerce by the value's ACTUAL width (not the declared name): an
+            // F32-typed value may already sit in an f64 register after float
+            // arithmetic, and FPExt on an f64 is invalid IR.
+            const as_double = value_repr.coerceFloatWidth(fc, value_ref, fc.types.double_ty);
             var args = [_]llvm.c.LLVMValueRef{as_double};
             writeCall(fc, fc.runtime_decls.write_f64, &args);
         },

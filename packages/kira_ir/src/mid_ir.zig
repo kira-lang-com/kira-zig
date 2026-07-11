@@ -181,6 +181,32 @@ pub const Value = union(enum) {
     string_len: UnaryWrapperValue,
     opaque_member: OpaqueMemberValue,
     opaque_index: OpaqueIndexValue,
+    // Async task spine (deferred execution): spawn captures a direct call's
+    // callee + args without calling; await joins; cancel/detach are the
+    // cooperative handle operations. `ty` on spawn nodes is the task's result
+    // type (the handle stays checker-transparent).
+    task_spawn: TaskSpawnValue,
+    task_spawn_ready: UnaryWrapperValue,
+    task_await: UnaryWrapperValue,
+    task_cancel: UnaryWrapperValue,
+    task_detach: UnaryWrapperValue,
+    task_yield: TaskYieldValue,
+    task_sleep: UnaryWrapperValue,
+};
+
+pub const TaskYieldValue = struct {
+    ty: model.ResolvedType,
+    temp_id: u32,
+    span: source_pkg.Span,
+};
+
+pub const TaskSpawnValue = struct {
+    callee_name: []const u8,
+    function_id: u32,
+    args: []Value,
+    ty: model.ResolvedType,
+    temp_id: u32,
+    span: source_pkg.Span,
 };
 
 pub const IntegerValue = struct {

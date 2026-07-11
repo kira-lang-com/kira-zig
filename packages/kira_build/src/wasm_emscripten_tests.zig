@@ -1,8 +1,18 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const build_def = @import("kira_build_definition");
-const llvm_backend = @import("kira_llvm_backend");
 const BuildSystem = @import("build_system.zig").BuildSystem;
+const support = @import("wasm_emscripten_test_support.zig");
+
+// General wasm32-emscripten build/run pipeline tests. The C-ABI width regression
+// family (size_t/pointer/callback/clone-contents width bugs) lives in
+// wasm_emscripten_width_tests.zig (Core Law #5 split); shared test infrastructure
+// lives in wasm_emscripten_test_support.zig. Alias the helpers so the test bodies
+// below read unchanged.
+const firstArtifactWithExtension = support.firstArtifactWithExtension;
+const hasArtifact = support.hasArtifact;
+const replaceExtension = support.replaceExtension;
+const ensureRuntimeToolingAvailable = support.ensureRuntimeToolingAvailable;
+const inheritedProcessEnviron = support.inheritedProcessEnviron;
 
 test "wasm32 emscripten build runs real Kira entrypoint through node" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -60,15 +70,104 @@ test "wasm32 emscripten build runs real Kira entrypoint through node" {
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "wasm-entrypoint-ok") != null);
 }
 
-fn ensureRuntimeToolingAvailable(allocator: std.mem.Allocator) !void {
-    llvm_backend.emscripten.validateAvailable(allocator) catch |err| switch (err) {
-        error.EmscriptenUnavailable => return error.SkipZigTest,
-        else => return err,
-    };
-    validateNodeAvailable(allocator) catch |err| switch (err) {
-        error.NodeUnavailable => return error.SkipZigTest,
-        else => return err,
-    };
+test "wasm32 emscripten compiles and links a declared native library through emcc" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const process_allocator = std.heap.smp_allocator;
+    try ensureRuntimeToolingAvailable(process_allocator);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.createDirPath(std.testing.io, "App/NativeLibs");
+    try tmp.dir.createDirPath(std.testing.io, "out");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "App/kira.toml",
+        .data =
+        \\[package]
+        \\name = "App"
+        \\version = "0.1.0"
+        \\kind = "app"
+        \\kira = "0.1.0"
+        \\native_libraries = ["NativeLibs/kira_add.toml"]
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "App/NativeLibs/kira_add.toml",
+        .data =
+        \\[library]
+        \\name = "kira_add"
+        \\link_mode = "static"
+        \\abi = "c"
+        \\
+        \\[build]
+        \\sources = ["kira_add.c"]
+        \\
+        \\[target.wasm32-emscripten-unknown]
+        \\static_lib = "libkira_add.a"
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "App/NativeLibs/kira_add.c",
+        .data = "int kira_test_add(int a, int b) { return a + b; }\n",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "App/app/kira_add.kira",
+        .data =
+        \\@FFI.Extern { library: kira_add; symbol: kira_test_add; abi: c; }
+        \\function kira_test_add(a: I32, b: I32): I32;
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "App/app/main.kira",
+        .data =
+        \\@Main
+        \\@Native
+        \\function main() {
+        \\    let sum: I32 = kira_test_add(40, 2)
+        \\    print(sum)
+        \\    return
+        \\}
+        ,
+    });
+
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", allocator);
+    const output_root = try tmp.dir.realPathFileAlloc(std.testing.io, "out", allocator);
+    const output_path = try std.fs.path.join(allocator, &.{ output_root, "main.js" });
+
+    var system = BuildSystem.init(allocator);
+    system.use_cache = false;
+    const outcome = try system.build(.{
+        .source_path = source_path,
+        .output_path = output_path,
+        .target = build_def.BuildTarget{ .execution = .wasm32_emscripten },
+    });
+
+    try std.testing.expect(!outcome.failed());
+    // A packaged app names its artifacts after the package, so locate the
+    // emitted JS/wasm loader by extension rather than assuming `main.js`.
+    const js_path = firstArtifactWithExtension(outcome.artifacts, ".js") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(firstArtifactWithExtension(outcome.artifacts, ".wasm") != null);
+
+    const process_environ = inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(process_allocator, io_impl.io(), .{
+        .argv = &.{ "node", js_path },
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer process_allocator.free(result.stdout);
+    defer process_allocator.free(result.stderr);
+
+    try std.testing.expectEqual(@as(std.process.Child.Term, .{ .exited = 0 }), result.term);
+    // The native `kira_test_add(40, 2)` was compiled by emcc, archived by emar,
+    // linked into the wasm module, and invoked through the real Kira @Native FFI path.
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "42") != null);
 }
 
 test "wasm32 emscripten reports host native library target exclusion" {
@@ -124,54 +223,4 @@ test "wasm32 emscripten reports host native library target exclusion" {
     try std.testing.expectEqualStrings("KTC003", result.diagnostics[0].code.?);
     try std.testing.expectEqualStrings("unsupported native library target", result.diagnostics[0].title);
     try std.testing.expect(std.mem.indexOf(u8, result.diagnostics[0].message, "wasm32-emscripten-unknown") != null);
-}
-
-fn validateNodeAvailable(allocator: std.mem.Allocator) !void {
-    const process_environ = inheritedProcessEnviron();
-    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
-    defer io_impl.deinit();
-    const result = std.process.run(allocator, io_impl.io(), .{
-        .argv = &.{ "node", "--version" },
-        .expand_arg0 = .expand,
-        .stdout_limit = .limited(1024),
-        .stderr_limit = .limited(1024),
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.NodeUnavailable,
-        else => return err,
-    };
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term == .exited and result.term.exited == 0) return;
-    return error.NodeUnavailable;
-}
-
-fn hasArtifact(artifacts: []const build_def.Artifact, path: []const u8) bool {
-    for (artifacts) |artifact| {
-        if (std.mem.eql(u8, artifact.path, path)) return true;
-    }
-    return false;
-}
-
-fn replaceExtension(allocator: std.mem.Allocator, path: []const u8, extension: []const u8) ![]const u8 {
-    const ext = std.fs.path.extension(path);
-    if (ext.len == 0) return std.fmt.allocPrint(allocator, "{s}{s}", .{ path, extension });
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ path[0 .. path.len - ext.len], extension });
-}
-
-fn inheritedProcessEnviron() std.process.Environ {
-    return switch (builtin.os.tag) {
-        .windows => .{ .block = .global },
-        .wasi, .emscripten, .freestanding, .other => .empty,
-        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
-    };
-}
-
-fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
-    if (!builtin.link_libc) return &.{};
-
-    const environ = std.c.environ;
-    var len: usize = 0;
-    while (environ[len] != null) : (len += 1) {}
-    return environ[0..len :null];
 }

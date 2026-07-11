@@ -1,4 +1,5 @@
 backends = ["hybrid", "llvm"]
+check_leaks = true
 
 [phases.check]
 result = "pass"
@@ -8,4 +9,4 @@ result = "pass"
 
 [phases.run]
 result = "pass"
-stdout = ""
+stdout = "7\n0\n7\n"

@@ -13,6 +13,7 @@ const hlsl_backend = @import("kira_hlsl_backend");
 const msl_backend = @import("kira_msl_backend");
 const spirv_backend = @import("kira_spirv_backend");
 const json = @import("json.zig");
+const uniform_reflection = @import("uniform_reflection.zig");
 
 pub const ShaderTarget = shader_model.BackendTarget;
 
@@ -62,6 +63,10 @@ pub const LoweredShaderArtifact = struct {
     vertex_spirv: ?[]const u8 = null,
     fragment_spirv: ?[]const u8 = null,
     reflection_json: []const u8,
+    // Compact, backend-independent uniform-block descriptor string (see
+    // uniform_reflection.zig). Drives the Sokol backend's per-shader uniform
+    // configuration; empty when the shader declares no uniform blocks.
+    uniform_reflection: []const u8 = "",
 };
 
 pub const ShaderBuildResult = struct {
@@ -208,6 +213,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .fragment_glsl = lowered.fragment_source,
                     .compute_glsl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
+                    .uniform_reflection = try uniform_reflection.render(allocator, reflection),
                 });
             },
             .wgsl => {
@@ -228,6 +234,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .vertex_wgsl = lowered.vertex_source,
                     .fragment_wgsl = lowered.fragment_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
+                    .uniform_reflection = try uniform_reflection.render(allocator, reflection),
                 });
             },
             .hlsl => {
@@ -241,8 +248,8 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                         };
                     },
                     // The HLSL backend rejects intrinsics it cannot lower to valid
-                    // source (atomicAdd -> statement-form InterlockedAdd) rather than
-                    // emitting an undefined helper that fake-passes (Core Law #2).
+                    // source (such as a nested statement-form atomic expression)
+                    // rather than emitting an undefined helper that fake-passes.
                     error.UnsupportedShaderIntrinsic => {
                         try diagnostics.appendOwned(allocator, &diags, .{
                             .severity = .@"error",
@@ -267,6 +274,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .fragment_hlsl = lowered.fragment_source,
                     .compute_hlsl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
+                    .uniform_reflection = try uniform_reflection.render(allocator, reflection),
                 });
             },
             .msl => {
@@ -288,6 +296,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .fragment_msl = lowered.fragment_source,
                     .compute_msl = lowered.compute_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
+                    .uniform_reflection = try uniform_reflection.render(allocator, reflection),
                 });
             },
             .spirv => {
@@ -308,6 +317,7 @@ pub fn buildFileForTarget(allocator: std.mem.Allocator, path: []const u8, target
                     .vertex_spirv = lowered.vertex_source,
                     .fragment_spirv = lowered.fragment_source,
                     .reflection_json = try json.renderReflectionJson(allocator, reflection),
+                    .uniform_reflection = try uniform_reflection.render(allocator, reflection),
                 });
             },
         }
@@ -661,7 +671,7 @@ test "shader lowering emits a compute kernel across backends" {
     try std.testing.expect(hlsl.artifacts[0].compute_hlsl != null);
 }
 
-test "HLSL rejects the atomicAdd intrinsic instead of emitting an undefined helper" {
+test "HLSL lowers atomicAdd through InterlockedAdd's original-value output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -697,12 +707,13 @@ test "HLSL rejects the atomicAdd intrinsic instead of emitting an undefined help
     const glsl = try buildFileForTarget(allocator, source_path, .glsl_330);
     try std.testing.expect(std.mem.indexOf(u8, glsl.artifacts[0].compute_glsl.?, "atomicAdd(") != null);
 
-    // HLSL rejects it: a KSL072 diagnostic and a lowering-stage failure, never an
-    // undefined kira_atomic_add helper in emitted source (Core Law #2).
+    // HLSL uses the statement-form intrinsic and routes its original value directly
+    // into the assignment target; no undefined expression helper is emitted.
     const hlsl = try buildFileForTarget(allocator, source_path, .hlsl);
-    try std.testing.expect(hlsl.artifacts.len == 0);
-    try std.testing.expect(hlsl.failure_stage == .lowering);
-    try expectDiagnosticCode(hlsl.diagnostics, "KSL072");
+    try std.testing.expect(hlsl.artifacts.len == 1);
+    const hlsl_src = hlsl.artifacts[0].compute_hlsl.?;
+    try std.testing.expect(std.mem.indexOf(u8, hlsl_src, "InterlockedAdd(counters[input.thread_id.x], input.thread_id.y, output[input.thread_id.x]);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hlsl_src, "kira_atomic_add") == null);
 }
 
 test "atomicAdd rejects mixed atomic/plain buffer use and non-writable targets" {
@@ -783,5 +794,6 @@ fn expectFileText(allocator: std.mem.Allocator, path: []const u8, actual: []cons
     try std.testing.expectEqualStrings(expected, actual);
 }
 
-
-
+test {
+    _ = @import("uniform_reflection.zig");
+}
