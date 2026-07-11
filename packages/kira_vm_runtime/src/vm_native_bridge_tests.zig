@@ -10,7 +10,66 @@ const Vm = vm_mod.Vm;
 const NativeStateBox = vm_mod.NativeStateBox;
 const native_layout = @import("native_layout.zig");
 const ArrayObject = @import("ownership.zig").ArrayObject;
+const ClosureObject = @import("ownership.zig").ClosureObject;
 const construct_any_test = @import("vm_construct_any_test_helpers.zig");
+
+test "exports runtime closure whose native body is stripped using external capture metadata" {
+    // Simulates the hybrid path where a native-executed closure body is stripped
+    // from the VM bytecode module (compiler.zig drops
+    // `resolved_execution == .native and mode == .hybrid_runtime`). The module
+    // lookup misses, so the manifest-backed caller supplies the capture types via
+    // `external_capture_types`, and the export must still succeed.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var vm = Vm.init(arena.allocator());
+    const pair_fields = [_]bytecode.Field{
+        .{ .name = "value", .ty = .{ .kind = .integer, .name = "I64" } },
+    };
+    const types = [_]bytecode.TypeDecl{
+        .{ .name = "Pair", .fields = @constCast(&pair_fields) },
+    };
+    // The function list deliberately OMITS id 4846: the native body was stripped.
+    const module = bytecode.Module{
+        .types = @constCast(&types),
+        .functions = &.{},
+        .entry_function_id = null,
+    };
+
+    const pair_ptr = try vm.allocateStruct(&module, "Pair");
+    const pair_values: [*]runtime_abi.Value = @ptrFromInt(pair_ptr);
+    pair_values[0] = .{ .integer = 7 };
+
+    const captures = try arena.allocator().alloc(runtime_abi.Value, 1);
+    captures[0] = .{ .raw_ptr = pair_ptr };
+    const closure = try arena.allocator().create(ClosureObject);
+    closure.* = .{ .function_id = 4846, .is_native = true, .captures = captures };
+    const closure_ptr = try vm.heap.registerClosure(closure);
+
+    const capture_types = [_]bytecode.TypeRef{
+        .{ .kind = .ffi_struct, .name = "Pair" },
+    };
+
+    // (a) With external metadata the export succeeds: the native block's header
+    //     carries the native function id (so native dispatches kira_native_fn_4846)
+    //     and the struct capture is lowered into native layout.
+    const native_tagged = try vm.exportRuntimeClosureToNative(&module, closure_ptr, &capture_types);
+    const raw = runtime_abi.untagNativeClosurePointer(native_tagged);
+    const header: [*]const u64 = @ptrFromInt(raw);
+    try std.testing.expectEqual(@as(u64, 4846), header[0]);
+    try std.testing.expectEqual(@as(u64, 1), header[1]);
+    const slots: [*]const runtime_abi.BridgeValue = @ptrFromInt(raw + 16);
+    const lowered = runtime_abi.bridgeValueToValue(slots[0]);
+    try std.testing.expect(lowered == .raw_ptr);
+    try std.testing.expect(lowered.raw_ptr != 0);
+    const native_pair: *const i64 = @ptrFromInt(lowered.raw_ptr);
+    try std.testing.expectEqual(@as(i64, 7), native_pair.*);
+
+    // (b) Without external metadata the module miss is fatal — locking the crash
+    //     (null findFunctionById -> RuntimeFailure) out as a regression.
+    try std.testing.expectError(error.RuntimeFailure, vm.exportRuntimeClosureToNative(&module, closure_ptr, null));
+    try std.testing.expect(std.mem.indexOf(u8, vm.lastError().?, "could not be resolved") != null);
+}
 
 test "materializes native closure struct captures using external metadata" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

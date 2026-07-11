@@ -475,8 +475,8 @@ pub const Vm = struct {
         return native_bridge.materializeCallbackValueFromNative(self, module, ty, value);
     }
 
-    pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize) !usize {
-        return native_bridge.exportRuntimeClosureToNative(self, module, closure_ptr);
+    pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize, external_capture_types: ?[]const bytecode.TypeRef) !usize {
+        return native_bridge.exportRuntimeClosureToNative(self, module, closure_ptr, external_capture_types);
     }
 
     pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {
