@@ -247,15 +247,18 @@ pub const FunctionCodegen = struct {
                     // previous iteration's buffer in loops).
                     drop.trackStringRegister(self, v.dst);
                 } else if (self.isFloat(v.lhs)) {
-                    self.registers[v.dst] = api.LLVMBuildFAdd(b, self.registers[v.lhs], self.registers[v.rhs], "fadd");
+                    // Float arithmetic runs at f64 (VM parity): widen any F32-width
+                    // operand — mixed f32/f64 operands are invalid IR (see
+                    // value_repr.floatOperand).
+                    self.registers[v.dst] = api.LLVMBuildFAdd(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fadd");
                 } else {
                     self.registers[v.dst] = api.LLVMBuildAdd(b, self.registers[v.lhs], self.registers[v.rhs], "add");
                 }
             },
-            .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, self.registers[v.lhs], self.registers[v.rhs], "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
-            .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, self.registers[v.lhs], self.registers[v.rhs], "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
-            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, self.registers[v.lhs], self.registers[v.rhs], "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
-            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, self.registers[v.lhs], self.registers[v.rhs], "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
+            .subtract => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFSub(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fsub") else api.LLVMBuildSub(b, self.registers[v.lhs], self.registers[v.rhs], "sub"),
+            .multiply => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFMul(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fmul") else api.LLVMBuildMul(b, self.registers[v.lhs], self.registers[v.rhs], "mul"),
+            .divide => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFDiv(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "fdiv") else if (v.unsigned) api.LLVMBuildUDiv(b, self.registers[v.lhs], self.registers[v.rhs], "udiv") else api.LLVMBuildSDiv(b, self.registers[v.lhs], self.registers[v.rhs], "sdiv"),
+            .modulo => |v| self.registers[v.dst] = if (self.isFloat(v.lhs)) api.LLVMBuildFRem(b, value_repr.floatOperand(self, self.registers[v.lhs]), value_repr.floatOperand(self, self.registers[v.rhs]), "frem") else if (v.unsigned) api.LLVMBuildURem(b, self.registers[v.lhs], self.registers[v.rhs], "urem") else api.LLVMBuildSRem(b, self.registers[v.lhs], self.registers[v.rhs], "srem"),
             .convert => |v| {
                 const src_is_float = self.isFloat(v.src);
                 if (v.reinterpret) {
@@ -275,8 +278,13 @@ pub const FunctionCodegen = struct {
                         self.registers[v.dst] = api.LLVMBuildBitCast(b, src, self.types.i64, "floatToBits");
                     }
                 } else if (v.target == .float) {
-                    // Int -> Float is sitofp; Float -> Float is identity.
-                    self.registers[v.dst] = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
+                    // Int -> Float is sitofp; Float -> Float converts width when the
+                    // destination is a named F32 (or the source is one) — plain
+                    // identity would leave an f32/f64 register mismatching its
+                    // declared type (invalid IR at the next typed use).
+                    const want = if (v.dst < self.register_types.len) self.types.llvmType(self.register_types[v.dst]) else self.types.double_ty;
+                    const as_float = if (src_is_float) self.registers[v.src] else api.LLVMBuildSIToFP(b, self.registers[v.src], self.types.double_ty, "sitofp");
+                    self.registers[v.dst] = value_repr.coerceFloatWidth(self, as_float, want);
                 } else {
                     // Float -> Int truncates toward zero; Int -> Int is identity.
                     self.registers[v.dst] = if (src_is_float) value_repr.lowerFloatToIntSaturating(self, self.registers[v.src]) else self.registers[v.src];
@@ -314,7 +322,11 @@ pub const FunctionCodegen = struct {
                     _ = api.LLVMBuildStore(b, cloned, self.locals[v.local]);
                     drop.onStoreLocalString(self, v.local, cloned);
                 } else {
-                    _ = api.LLVMBuildStore(b, self.registers[v.src], self.locals[v.local]);
+                    // An F32 local's alloca is a 32-bit float; a Float local's is
+                    // f64. Coerce the register to the slot width (identity for
+                    // every non-float and width-matched store).
+                    const slot_ty = self.types.llvmType(self.function_decl.local_types[v.local]);
+                    _ = api.LLVMBuildStore(b, value_repr.coerceFloatWidth(self, self.registers[v.src], slot_ty), self.locals[v.local]);
                     drop.onStoreLocal(self, v.local, v.src, v.borrow);
                 }
             },

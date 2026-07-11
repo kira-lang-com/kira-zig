@@ -182,6 +182,22 @@ fn appendEmscriptenExecutableFlags(argv: *std.array_list.Managed([]const u8), se
     if (!emscripten.isSelector(selector)) return;
     try argv.append("-sALLOW_MEMORY_GROWTH=1");
     try argv.append("-sGROWABLE_ARRAYBUFFERS=0");
+    // Kira objects are already optimized (KIRA_NATIVE_OPT, default -O2), but the
+    // emcc LINK stage defaults to -O0: no binaryen wasm-opt and an unoptimized JS
+    // loader, which costs real frame time in browsers. Mirror the object-level
+    // level here so a `-O0` build stays debuggable end to end.
+    try argv.append(emccLinkOptFlag());
+}
+
+fn emccLinkOptFlag() []const u8 {
+    const raw = std.c.getenv("KIRA_NATIVE_OPT") orelse return "-O2";
+    const level = std.mem.span(raw);
+    if (std.mem.eql(u8, level, "0")) return "-O0";
+    if (std.mem.eql(u8, level, "1")) return "-O1";
+    if (std.mem.eql(u8, level, "3")) return "-O3";
+    if (std.mem.eql(u8, level, "s")) return "-Os";
+    if (std.mem.eql(u8, level, "z")) return "-Oz";
+    return "-O2";
 }
 
 fn appendDefaultSystemLibraries(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {

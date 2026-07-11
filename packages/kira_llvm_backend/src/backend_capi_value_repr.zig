@@ -24,6 +24,46 @@ pub fn zeroValue(fc: *FunctionCodegen, value_type: ir.ValueType) llvm.c.LLVMValu
     };
 }
 
+// Kira Float is f64 everywhere in the VM, but a named F32 value is a 32-bit
+// LLVM float in native registers, locals, fields, and function signatures.
+// Wherever an f32-typed value meets an f64 context (or vice versa) the width
+// must be converted explicitly — LLVM verifies operand types, so an implicit
+// mix (`fcmp float, double`, `ret float` from a double function) is an invalid
+// module, the sokolDpiScale editor/host build failure. Identity when the value
+// already has the wanted width or is not a float at all, so this is safe to
+// call unconditionally at boundaries.
+pub fn coerceFloatWidth(fc: *FunctionCodegen, value: llvm.c.LLVMValueRef, want: llvm.c.LLVMTypeRef) llvm.c.LLVMValueRef {
+    return coerceFloatWidthRaw(fc.api, fc.builder, fc.types, value, want);
+}
+
+// As coerceFloatWidth, for lowering contexts without a FunctionCodegen (the
+// shared bridge pack/unpack helpers in backend_capi_dispatch.zig).
+pub fn coerceFloatWidthRaw(
+    api: *const llvm.Api,
+    b: llvm.c.LLVMBuilderRef,
+    types: capi.Types,
+    value: llvm.c.LLVMValueRef,
+    want: llvm.c.LLVMTypeRef,
+) llvm.c.LLVMValueRef {
+    const have = api.LLVMTypeOf(value);
+    if (have == want) return value;
+    if (have == types.float_ty and want == types.double_ty) {
+        return api.LLVMBuildFPExt(b, value, want, "f32.widen");
+    }
+    if (have == types.double_ty and want == types.float_ty) {
+        return api.LLVMBuildFPTrunc(b, value, want, "f64.narrow");
+    }
+    return value;
+}
+
+// Float ARITHMETIC and COMPARISON always run at f64, matching the VM (which
+// stores and computes every float as f64) — an f32-width operand is widened
+// before the operation. Narrowing back to F32 happens only at explicit storage
+// boundaries (locals, fields, returns, call arguments) via coerceFloatWidth.
+pub fn floatOperand(fc: *FunctionCodegen, value: llvm.c.LLVMValueRef) llvm.c.LLVMValueRef {
+    return coerceFloatWidth(fc, value, fc.types.double_ty);
+}
+
 // String concatenation: malloc(len_l + len_r), memcpy both halves, and package
 // the buffer as a {ptr, len} string value. Matches the VM's `+` on strings.
 // The buffer is a fresh owned heap allocation tracked by the dst register's
@@ -108,6 +148,8 @@ pub fn lowerCompare(fc: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
         };
     }
     if (operand_kind == .float) {
+        // Compare at f64: an F32-width operand is widened first (VM parity —
+        // the VM compares every float as f64; mixed widths are invalid IR).
         return api.LLVMBuildFCmp(
             fc.builder,
             switch (v.op) {
@@ -118,8 +160,8 @@ pub fn lowerCompare(fc: *FunctionCodegen, v: ir.Compare) !llvm.c.LLVMValueRef {
                 .greater => llvm.c.LLVMRealOGT,
                 .greater_equal => llvm.c.LLVMRealOGE,
             },
-            fc.registers[v.lhs],
-            fc.registers[v.rhs],
+            floatOperand(fc, fc.registers[v.lhs]),
+            floatOperand(fc, fc.registers[v.rhs]),
             "fcmp",
         );
     }
@@ -209,10 +251,9 @@ pub fn packBridgeBoxed(fc: *FunctionCodegen, value_type: ir.ValueType, value: ll
             }
         },
         .float => {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value, fc.types.double_ty, "bv.fpext")
-            else
-                value;
+            // Bridge payloads are f64 bit patterns; coerce by the value's ACTUAL
+            // width (an F32-typed register may already hold f64 after arithmetic).
+            const as_double = coerceFloatWidth(fc, value, fc.types.double_ty);
             const bits = api.LLVMBuildBitCast(b, as_double, fc.types.i64, "bv.fbits");
             bv = api.LLVMBuildInsertValue(b, bv, bits, 2, "bv.payload");
         },

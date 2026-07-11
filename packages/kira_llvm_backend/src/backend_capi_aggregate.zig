@@ -7,6 +7,7 @@ const ir = @import("kira_ir");
 const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const drop = @import("backend_capi_drop.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
@@ -20,7 +21,12 @@ pub fn lowerStoreIndirect(fc: *FunctionCodegen, v: ir.StoreIndirect) !void {
             const value = if (storage == fc.types.i64) src else api.LLVMBuildTrunc(b, src, storage, "store.trunc");
             _ = api.LLVMBuildStore(b, value, ptr);
         },
-        .float => _ = api.LLVMBuildStore(b, src, ptr),
+        .float => {
+            // An F32 field stores 32 bits while the register may carry f64 (and
+            // vice versa); match the declared storage width. Identity when equal.
+            const storage = try fc.storageType(v.ty);
+            _ = api.LLVMBuildStore(b, value_repr.coerceFloatWidth(fc, src, storage), ptr);
+        },
         .string => {
             if (!fc.drop_enabled) {
                 _ = api.LLVMBuildStore(b, src, ptr);
@@ -543,10 +549,10 @@ pub fn enumPayloadAsI64(fc: *FunctionCodegen, value_type: ir.ValueType, value: l
         .integer, .construct_any, .array, .raw_ptr, .ffi_struct, .enum_instance => value,
         .boolean => api.LLVMBuildZExt(b, value, fc.types.i64, "enum.bool"),
         .float => blk: {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value, fc.types.double_ty, "enum.fpext")
-            else
-                value;
+            // Payload words are f64 bit patterns; the register may carry either
+            // float width regardless of the payload's declared name, so coerce
+            // by the VALUE's actual type (identity when already f64).
+            const as_double = value_repr.coerceFloatWidth(fc, value, fc.types.double_ty);
             break :blk api.LLVMBuildBitCast(b, as_double, fc.types.i64, "enum.fbits");
         },
         .string => blk: {

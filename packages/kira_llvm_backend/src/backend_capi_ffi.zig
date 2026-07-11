@@ -11,6 +11,7 @@ const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
 const drop = @import("backend_capi_drop.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 const typeRefName = utils.typeRefName;
@@ -167,9 +168,11 @@ fn marshalArg(fc: *FunctionCodegen, param_type: ir.ValueType, arg_reg: u32, cstr
             return api.LLVMBuildTrunc(b, arg, abi, "carg.itrunc");
         },
         .float => {
+            // Match the C ABI width from the value's ACTUAL width: the register
+            // may carry f32 (a loaded F32 value) or f64 regardless of the
+            // parameter's declared name. Identity when already matching.
             const abi = floatAbiType(fc.types, param_type.name);
-            if (abi == fc.types.double_ty) return arg;
-            return api.LLVMBuildFPTrunc(b, arg, abi, "carg.ftrunc");
+            return value_repr.coerceFloatWidth(fc, arg, abi);
         },
         .ffi_struct => {
             const struct_ty = fc.struct_types.get(param_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
@@ -223,8 +226,8 @@ fn storeResult(fc: *FunctionCodegen, dst: u32, ret_type: ir.ValueType, result: l
             }
         },
         .float => {
-            const abi = floatAbiType(fc.types, ret_type.name);
-            fc.registers[dst] = if (abi == fc.types.double_ty) result else api.LLVMBuildFPExt(b, result, fc.types.double_ty, "cret.fpext");
+            // Registers compute at f64 (VM parity); widen an f32 C return.
+            fc.registers[dst] = value_repr.coerceFloatWidth(fc, result, fc.types.double_ty);
         },
         else => fc.registers[dst] = result,
     }

@@ -11,6 +11,7 @@ const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
 const bridge_string = @import("backend_capi_bridge_string.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 
 const resolveExecution = utils.resolveExecution;
 const allocPrintZ = utils.allocPrintZ;
@@ -328,10 +329,9 @@ pub fn packBridgeValue(
             }
         },
         .float => {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value, types.double_ty, "bv.fpext")
-            else
-                value;
+            // Bridge payloads are f64 bit patterns; coerce by the value's ACTUAL
+            // width (an F32-typed register may already hold f64 after arithmetic).
+            const as_double = value_repr.coerceFloatWidthRaw(api, b, types, value, types.double_ty);
             bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildBitCast(b, as_double, types.i64, "bv.fbits"), 2, "bv.payload");
         },
         .boolean => bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildZExt(b, value, types.i64, "bv.bool"), 2, "bv.payload"),

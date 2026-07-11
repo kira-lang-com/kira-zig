@@ -15,6 +15,7 @@
 //             the emitExitCleanup slot-skip.
 const llvm = @import("llvm_c.zig");
 const drop = @import("backend_capi_drop.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 pub fn lowerReturn(self: *FunctionCodegen, src_opt: ?u32) void {
@@ -81,7 +82,12 @@ pub fn lowerReturn(self: *FunctionCodegen, src_opt: ?u32) void {
             _ = api.LLVMBuildRet(b, ret_val);
         } else {
             drop.emitExitCleanup(self, src);
-            _ = api.LLVMBuildRet(b, self.registers[src]);
+            // The operand must match the function's declared LLVM return width:
+            // an F32 function returns a 32-bit float while its operand may be an
+            // f64 register, and a Float function may be handed an f32-width
+            // register (the sokolDpiScale shape). Identity for non-floats.
+            const ret_ty = self.types.llvmType(self.function_decl.return_type);
+            _ = api.LLVMBuildRet(b, value_repr.coerceFloatWidth(self, self.registers[src], ret_ty));
         }
     } else {
         drop.emitExitCleanup(self, null);

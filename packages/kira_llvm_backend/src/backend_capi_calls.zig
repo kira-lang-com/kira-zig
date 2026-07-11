@@ -8,6 +8,7 @@ const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const drop = @import("backend_capi_drop.zig");
 const ffi = @import("backend_capi_ffi.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 const FunctionCodegen = @import("backend_capi_codegen.zig").FunctionCodegen;
 
 const functionById = utils.functionById;
@@ -269,7 +270,18 @@ pub fn lowerCall(fc: *FunctionCodegen, call: ir.Call) !void {
             }
             const args = try fc.allocator.alloc(llvm.c.LLVMValueRef, call.args.len);
             defer fc.allocator.free(args);
-            for (call.args, 0..) |arg, index| args[index] = fc.registers[arg];
+            for (call.args, 0..) |arg, index| {
+                // A float argument must match the callee's declared parameter
+                // width: F32 params take a 32-bit float, Float params take f64,
+                // while the caller's register may carry either width. Identity
+                // for non-floats and width-matched arguments.
+                if (index < callee_decl.param_types.len) {
+                    const want = fc.types.llvmType(callee_decl.param_types[index]);
+                    args[index] = value_repr.coerceFloatWidth(fc, fc.registers[arg], want);
+                } else {
+                    args[index] = fc.registers[arg];
+                }
+            }
             const result = api.LLVMBuildCall2(fc.builder, fn_ty, callee_fn, args.ptr, @intCast(args.len), "");
             // Ownership across the call boundary follows the callee's parameter modes: an
             // argument passed to an owned/move parameter is consumed by the callee, so the

@@ -1,0 +1,11 @@
+[91514:9355611:0711/035919.942580:WARNING:content/browser/child_process_task_port_provider_mac.cc:53] AppleMobileFileIntegrity is disabled. The browser will not collect child process task ports.
+[91514:9355611:0711/035920.186826:INFO:components/enterprise/browser/controller/chrome_browser_cloud_management_controller.cc:239] No machine level policy manager exists.
+[91514:9355721:0711/035920.547430:WARNING:chrome/browser/extensions/external_pref_loader.cc:294] You are using an old-style extension deployment method (external_extensions.json), which will soon be deprecated. (see http://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)
+[91514:9355611:0711/035921.698543:INFO:CONSOLE:11] "kira.wasm.runtime_initialized", source: http://127.0.0.1:8163/run.html (11)
+[91514:9355611:0711/035921.752421:INFO:CONSOLE:11] "stderr: live.kira_graphics.backend.initialized", source: http://127.0.0.1:8163/run.html (11)
+[91514:9355611:0711/035921.764328:INFO:CONSOLE:11] "stderr: live.kira_graphics.frame.submitted", source: http://127.0.0.1:8163/run.html (11)
+6688 bytes written to file /Users/priamc/Code/kira-projects/kira-zig/.codex/work/glyph-atlas/tri.png
+[91540:9355750:0711/035922.222273:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:370] SharedImageManager::ProduceOverlay: Trying to Produce a Overlay representation from a non-existent mailbox.
+[91540:9355750:0711/035922.222751:ERROR:components/viz/service/display_embedder/skia_output_device_buffer_queue.cc:258] Invalid mailbox.
+[91544:9355777:0711/035922.270257:WARNING:net/extras/sqlite/sqlite_persistent_store_backend_base.cc:179] Failed to post task from FlushAndNotifyInBackground@net/extras/sqlite/sqlite_persistent_store_backend_base.cc:229 to client_task_runner_.
+[91544:9355777:0711/035922.270495:WARNING:net/extras/sqlite/sqlite_persistent_store_backend_base.cc:179] Failed to post task from FlushAndNotifyInBackground@net/extras/sqlite/sqlite_persistent_store_backend_base.cc:229 to client_task_runner_.

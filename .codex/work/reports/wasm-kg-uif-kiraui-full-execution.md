@@ -135,6 +135,71 @@ Corpus:
   free); Any-field closure truncation flagged
   (`.codex/work/wasm32-closure-field-tag-fix.md`).
 
+## Third wave (2026-07-11): project-matter editor — full win
+
+The editor renders completely in headless Chrome on wasm: full chrome (menu
+bar with the Hosami project, hierarchy, import/components/properties panels,
+content browser) plus the viewport drawing the lambert-lit dragon mesh (18MB
+kmesh streamed from MEMFS) over the perspective grid. Full marker chain incl.
+`KIRA_APP_RENDERED_VISIBLE_CONTENT`, zero Dawn errors. Host Metal render
+verified identical before/after.
+
+Editor needed (beyond prior machinery): 3 shader conversions to
+createShaderFromKslArtifact; backend-agnostic `Graphics.contextWidth/Height`
+(was Metal-only → 0 on sokol → 0x0 image abort); auto-managed offscreen
+depth-stencil in kg_begin_render_pass (Metal supplies implicitly, sokol
+didn't); `-1` texture-format sentinel now resolves to swapchain format in
+kg_create_texture_id; REAL textured UI compositing `kg_ui_draw_texture`
+(MSL/WGSL/GLSL) replacing ui-foundation's flat-fill TextureView placeholder
+(fake-success surface removed); storage-buffer/compute (matter rain)
+Metal-gated cleanly pending sokol-WGPU storage support; `assets = ["Assets",
+"hosami"]` + hosami symlink (MEMFS clamps `..` to root, so the editor's
+`../hosami` probe resolves to the mounted copy).
+
+## Fourth wave (2026-07-11): quality + performance
+
+- Interactive editor proven: entity selection, File menu (Save World/Save
+  As/Reload Project), RMB camera look (after platform-gating the Apple-only
+  NSCursor call in graphicsShowMouse — was aborting wasm), all via injected
+  DOM input in headless Chrome.
+- emcc link stage was -O0; now follows KIRA_NATIVE_OPT (default -O2 —
+  binaryen wasm-opt + minified loader). link.zig emccLinkOptFlag.
+- Measured wasm CPU overhead: ≈1.6× native (same Kira bench, LLVM -O2 both).
+- High-DPI done right (kira-graphics + ui-foundation): layout in points,
+  native-pixel framebuffer, glyphs rasterized at size×dpi_scale, pointer
+  coords normalized; hit-testing verified; Metal host untouched;
+  GraphicsApplication.highDpi (default true) is the escape hatch.
+- Icons: root cause = drawIconFields had NO non-Metal branch (silent drop).
+  Real fallback (kira_icon_draw.c cached rasterize + tinted coverage blit).
+- Glyph atlas on the sokol path (sokol_impl.c +830 lines): 2048² R8 skyline
+  atlas, path+glyph+px keys, batched single draw, once-per-commit upload,
+  deferred reset on full. Editor FPS at 2× retina: idle 19→60, orbit 29→30
+  (orbit is 3D-scene fill-bound — scene-pass depth-attachment /
+  dynamic-resolution is the remaining lever, documented not implemented).
+- Two more genuine kira-zig codegen fixes with corpus tests: closure
+  struct-fields ptr-width tag truncation (silent default-handler fold /
+  unreachable trap; now i64 slots) and F32-in-f64-context invalid IR
+  (float32_width_parity). Suites 161/0; corpus 527/0 host + 527/0 wasm.
+
+## Fifth wave (2026-07-11): pixel-perfect layout
+
+- Cursor-steal + right-click interception fixed: canvas owns contextmenu
+  (sokol_impl.c kg_js_own_right_click, emscripten-gated), JS cursor watchdog
+  (restore on all-buttons-up / blur / hidden), editor stale-drag guard.
+  Adversarially verified (stolen mouseup scenario).
+- Retina icon misalignment: icons rasterized at point size while the atlas
+  blit divides by dpi — now rasterize at size×dpi like text (kira_icon_draw.c).
+- Pixel snapping unified (sokol_impl.c): one rule at the point→pixel seam —
+  each rect edge independently round(v*scale); solid quads, texture quads,
+  and scissors now agree with the glyph path. Validated at 1×, 1.5×
+  (fractional acid test, zero edge drift), 2×, with A/B pixel-diff proof.
+- Equal-inset law (user's standing rule: h and v padding MUST be equal):
+  11 offenders equalized across the editor chrome (tool button, grips, plus
+  button, row eyes, magnifiers, dropdown icons, tab markers, transport pill,
+  status icon); law codified in modules/editor Theme.kira; deliberate
+  exceptions documented (title-bar runs, alignment columns, centered
+  cross-axis). Rule also saved to agent memory (kira-ui-padding-rule).
+
 ## Environment notes
 
 - emcc 6.0.2 (brew), node v24, Chrome 150 (brew cask) installed this session.
