@@ -1,0 +1,34 @@
+[88086:9339816:0711/035334.934354:WARNING:content/browser/child_process_task_port_provider_mac.cc:53] AppleMobileFileIntegrity is disabled. The browser will not collect child process task ports.
+[88086:9339816:0711/035335.150283:INFO:components/enterprise/browser/controller/chrome_browser_cloud_management_controller.cc:239] No machine level policy manager exists.
+[88086:9339906:0711/035335.426090:WARNING:chrome/browser/extensions/external_pref_loader.cc:294] You are using an old-style extension deployment method (external_extensions.json), which will soon be deprecated. (see http://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)
+[88086:9339816:0711/035336.586302:INFO:CONSOLE:13] "kira.wasm.runtime_initialized", source: http://127.0.0.1:8161/bench.html?mode=idle (13)
+[88086:9339816:0711/035336.588355:INFO:CONSOLE:12] "kira: live.ui_foundation.app.started", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035336.631299:INFO:CONSOLE:12] "kira: live.kira_graphics.backend.initialized", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.631292:INFO:CONSOLE:12] "kira: live.kira_graphics.frame.submitted", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.656760:INFO:CONSOLE:12] "kira: live.ui_foundation.tree.built", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.656824:INFO:CONSOLE:12] "kira: live.ui_foundation.retained_tree.ready", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.691474:INFO:CONSOLE:12] "kira: live.ui_foundation.layout.non_empty", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.691664:INFO:CONSOLE:12] "kira: KiraGraphics: SQUIRCLE SURFACE CALLED w=17.000000 h=17.000000 radius=999.000000", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.713561:INFO:CONSOLE:12] "kira: live.ui_foundation.render_commands.generated", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.713690:INFO:CONSOLE:12] "kira: live.kira_graphics.visible_content.submitted", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.713806:INFO:CONSOLE:12] "kira: KIRA_UI_DRAW_COMMANDS_SUBMITTED", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+[88086:9339816:0711/035337.713850:INFO:CONSOLE:12] "kira: KIRA_APP_RENDERED_VISIBLE_CONTENT", source: http://127.0.0.1:8161/bench.html?mode=idle (12)
+Trying to load the allocator multiple times. This is *not* supported.
+[88086:9339913:0711/035338.526116:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[88086:9339913:0711/035338.526492:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[88086:9339913:0711/035338.531795:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR
+[88086:9339816:0711/035341.884885:INFO:CONSOLE:26] "kira.bench.mode: idle", source: http://127.0.0.1:8161/bench.html?mode=idle (26)
+[88086:9339816:0711/035341.907945:INFO:CONSOLE:20] "JSFPS 0.2", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035342.933079:INFO:CONSOLE:20] "JSFPS 42.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035343.957276:INFO:CONSOLE:20] "JSFPS 39.1", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035344.967596:INFO:CONSOLE:20] "JSFPS 38.6", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035345.970352:INFO:CONSOLE:20] "JSFPS 37.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035346.983589:INFO:CONSOLE:20] "JSFPS 36.5", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035347.983956:INFO:CONSOLE:20] "JSFPS 33.0", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[88086:9339816:0711/035348.987653:INFO:CONSOLE:20] "JSFPS 33.9", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035350.001460:INFO:CONSOLE:20] "JSFPS 41.4", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+[88086:9339816:0711/035351.009405:INFO:CONSOLE:20] "JSFPS 39.7", source: http://127.0.0.1:8161/bench.html?mode=idle (20)
+1012640 bytes written to file /Users/priamc/Code/kira-projects/kira-zig/.codex/work/glyph-atlas/cap-c2.png
+[88106:9339957:0711/035351.966009:WARNING:net/extras/sqlite/sqlite_persistent_store_backend_base.cc:179] Failed to post task from FlushAndNotifyInBackground@net/extras/sqlite/sqlite_persistent_store_backend_base.cc:229 to client_task_runner_.
+[88106:9339957:0711/035351.970804:WARNING:net/extras/sqlite/sqlite_persistent_store_backend_base.cc:179] Failed to post task from FlushAndNotifyInBackground@net/extras/sqlite/sqlite_persistent_store_backend_base.cc:229 to client_task_runner_.

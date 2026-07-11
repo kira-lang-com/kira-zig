@@ -217,3 +217,56 @@ test "round-trips construct metadata and constrained types" {
     try std.testing.expectEqual(instruction.TypeRef.Kind.construct_any, round_tripped.functions[0].return_type.kind);
     try std.testing.expectEqualStrings("Widget", round_tripped.functions[0].return_type.construct_constraint.?.construct_name);
 }
+
+test "round-trips async task instructions (KBCC)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 8,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_int = .{ .dst = 0, .value = 21 } },
+                    .{ .task_spawn = .{ .dst = 1, .callee = 7, .args = &.{0}, .result_ty = .{ .kind = .integer, .name = "I64" }, .native = true } },
+                    .{ .task_spawn_ready = .{ .dst = 2, .value = 0, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .task_await = .{ .dst = 3, .task = 1, .ty = .{ .kind = .integer, .name = "I64" } } },
+                    .{ .task_cancel = .{ .task = 2 } },
+                    .{ .task_detach = .{ .task = 2 } },
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+    };
+
+    var buffer: [2048]u8 = undefined;
+    var stream = std.Io.Writer.fixed(&buffer);
+    try serialize(&stream, module);
+
+    const round_tripped = try deserialize(allocator, stream.buffered());
+    const insts = round_tripped.functions[0].instructions;
+    try std.testing.expect(insts[1] == .task_spawn);
+    try std.testing.expectEqual(@as(u32, 1), insts[1].task_spawn.dst);
+    try std.testing.expectEqual(@as(u32, 7), insts[1].task_spawn.callee);
+    try std.testing.expectEqual(@as(usize, 1), insts[1].task_spawn.args.len);
+    try std.testing.expectEqual(@as(u32, 0), insts[1].task_spawn.args[0]);
+    try std.testing.expect(insts[1].task_spawn.native);
+    try std.testing.expectEqual(instruction.TypeRef.Kind.integer, insts[1].task_spawn.result_ty.kind);
+    try std.testing.expect(insts[2] == .task_spawn_ready);
+    try std.testing.expectEqual(@as(u32, 2), insts[2].task_spawn_ready.dst);
+    try std.testing.expectEqual(@as(u32, 0), insts[2].task_spawn_ready.value);
+    try std.testing.expect(insts[3] == .task_await);
+    try std.testing.expectEqual(@as(u32, 3), insts[3].task_await.dst);
+    try std.testing.expectEqual(@as(u32, 1), insts[3].task_await.task);
+    try std.testing.expect(insts[4] == .task_cancel);
+    try std.testing.expectEqual(@as(u32, 2), insts[4].task_cancel.task);
+    try std.testing.expect(insts[5] == .task_detach);
+    try std.testing.expectEqual(@as(u32, 2), insts[5].task_detach.task);
+}

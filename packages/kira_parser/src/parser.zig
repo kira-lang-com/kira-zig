@@ -40,6 +40,7 @@ pub const Parser = struct {
     pub const parseCapabilityDecl = decl_impl.parseCapabilityDecl;
     pub const parseEnumDecl = decl_impl.parseEnumDecl;
     pub const parseEnumDeclWithAnnotations = decl_impl.parseEnumDeclWithAnnotations;
+    pub const parseTypeAliasDecl = decl_impl.parseTypeAliasDecl;
     pub const parseAnnotationTarget = decl_impl.parseAnnotationTarget;
     pub const parseGeneratedBlock = decl_impl.parseGeneratedBlock;
     pub const parseGeneratedMember = decl_impl.parseGeneratedMember;
@@ -47,6 +48,7 @@ pub const Parser = struct {
     pub const parseAnnotations = decl_impl.parseAnnotations;
     pub const parseAnnotationBlock = decl_impl.parseAnnotationBlock;
     pub const parseFunctionDeclWithAnnotations = decl_impl.parseFunctionDeclWithAnnotations;
+    pub const parseFunctionDeclWithAnnotationsAsync = decl_impl.parseFunctionDeclWithAnnotationsAsync;
     pub const parseFunctionSignature = decl_impl.parseFunctionSignature;
     pub const parseOptionalReturnType = decl_impl.parseOptionalReturnType;
     pub const parseParamList = param_impl.parseParamList;
@@ -264,7 +266,7 @@ pub const Parser = struct {
     }
 
     pub fn isStatementBoundary(self: *Parser) bool {
-        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_while) or self.at(.kw_match) or self.at(.kw_switch) or
+        return self.at(.r_brace) or self.at(.eof) or self.at(.at_sign) or self.at(.kw_annotation) or self.at(.kw_capability) or self.at(.kw_enum) or self.at(.kw_type) or self.at(.kw_class) or self.at(.kw_struct) or self.at(.kw_construct) or self.at(.kw_async) or self.at(.kw_function) or self.at(.kw_let) or self.at(.kw_var) or self.at(.kw_return) or self.at(.kw_if) or self.at(.kw_for) or self.at(.kw_while) or self.at(.kw_match) or self.at(.kw_switch) or
             self.at(.identifier) or self.at(.integer) or self.at(.float) or self.at(.string) or self.at(.kw_true) or self.at(.kw_false) or self.at(.l_paren) or self.at(.l_bracket) or self.at(.bang) or self.at(.minus);
     }
 
@@ -338,7 +340,7 @@ pub const Parser = struct {
 
     pub fn recoverToTopLevel(self: *Parser) void {
         if (!self.at(.eof)) _ = self.advance();
-        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_comptime) and !self.at(.kw_enum) and !self.at(.kw_struct) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
+        while (!self.at(.eof) and !self.at(.kw_import) and !self.at(.doc_comment) and !self.at(.kw_annotation) and !self.at(.kw_capability) and !self.at(.kw_class) and !self.at(.kw_comptime) and !self.at(.kw_enum) and !self.at(.kw_struct) and !self.at(.kw_async) and !self.at(.kw_function) and !self.at(.kw_type) and !self.at(.kw_construct) and !self.at(.at_sign) and !self.looksLikeConstructFormDecl()) {
             _ = self.advance();
         }
     }
@@ -461,6 +463,7 @@ pub fn tokenDescription(kind: syntax.TokenKind) []const u8 {
         .kw_attempt => "'attempt'",
         .kw_try => "'try'",
         .kw_self_type => "'Self'",
+        .kw_async => "'async'",
         .kw_function => "'function'",
         .kw_generated => "'generated'",
         .kw_override => "'override'",
@@ -581,92 +584,16 @@ pub fn findRepoRootForTest(allocator: std.mem.Allocator) !?[]u8 {
         allocator.free(current);
         current = copy;
     }
-
     allocator.free(current);
     return null;
 }
-
 pub fn fileExistsForTest(path: []const u8) bool {
     var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
     file.close(std.Options.debug_io);
     return true;
 }
-
-test "parses imports functions and construct declarations" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const program = try parseSource(
-        allocator,
-        "import UI as Kit\n" ++
-            "/// demo\n" ++
-            "construct Widget { annotations { @State; } requires { function render() } lifecycle { onAppear() {} } }\n" ++
-            "Widget Button(title: String) { @State let count: Int = 0; content { Text(title) } }\n" ++
-            "@Main function entry(): Int { let x: Float = 12; print(x); return 0; }",
-        &diags,
-    );
-
-    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(@as(usize, 1), program.imports.len);
-    try std.testing.expectEqual(@as(usize, 3), program.decls.len);
-    try std.testing.expectEqual(@as(usize, 1), program.functions.len);
-}
-
-test "reports removed declaration syntax diagnostics" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-
-    {
-        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        const result = parseSource(allocator, "type OldShape { let value: Int = 0 }", &diags);
-        try std.testing.expectError(error.DiagnosticsEmitted, result);
-        try std.testing.expectEqualStrings("removed type declaration syntax", diags.items[0].title);
-    }
-    {
-        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        const result = parseSource(allocator, "@Doc(\"old\")\nstruct Shape { let value: Int = 0 }", &diags);
-        try std.testing.expectError(error.DiagnosticsEmitted, result);
-        try std.testing.expectEqualStrings("removed @Doc annotation", diags.items[0].title);
-    }
-    {
-        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        const result = parseSource(allocator, "struct Shape { static let zero: Int = 0 }", &diags);
-        try std.testing.expectError(error.DiagnosticsEmitted, result);
-        try std.testing.expectEqualStrings("removed static keyword", diags.items[0].title);
-    }
-}
-
-test "parses annotation declarations" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    const program = try parseSource(
-        allocator,
-        "annotation State { }\n" ++
-            "annotation Attribute { parameters { index: Int } }\n" ++
-            "annotation InputMapping { parameters { priority: Int = 0 blocksLowerPriorityMappings: Bool = false } }\n",
-        &diags,
-    );
-
-    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
-    try std.testing.expectEqual(@as(usize, 3), program.decls.len);
-    try std.testing.expectEqualStrings("State", program.decls[0].annotation_decl.name);
-    try std.testing.expectEqual(@as(usize, 0), program.decls[0].annotation_decl.parameters.len);
-    try std.testing.expectEqualStrings("Attribute", program.decls[1].annotation_decl.name);
-    try std.testing.expectEqual(@as(usize, 1), program.decls[1].annotation_decl.parameters.len);
-    try std.testing.expectEqualStrings("index", program.decls[1].annotation_decl.parameters[0].name);
-    try std.testing.expectEqual(@as(usize, 2), program.decls[2].annotation_decl.parameters.len);
-    try std.testing.expect(program.decls[2].annotation_decl.parameters[0].default_value != null);
-    try std.testing.expect(program.decls[2].annotation_decl.parameters[1].default_value != null);
-}
-
 test {
+    _ = @import("parser_root_tests.zig");
     _ = @import("parser_tests.zig");
     _ = @import("parser_app_surface_tests.zig");
 }

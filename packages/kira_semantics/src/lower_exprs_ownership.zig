@@ -173,7 +173,29 @@ fn lowerMoveExpr(
         return lowered;
     }
 
-    return lowerExpr(ctx, node.operand, imports, scope, function_headers);
+    // `move obj.field` (the operand is a field access, not a bare local): an
+    // explicit partial move. Lower the read, then — for an ARRAY field rooted in
+    // an owned local — tag the read `.moved` so codegen nulls the field slot
+    // (LLVM `load.move.field`). Without this the field keeps aliasing the array
+    // the destination now owns, and the owner's teardown double-frees it (the
+    // `matrix.append(move packet.payload)` nested-array crash; the alias also
+    // leaked before inner arrays were reclaimed). Arrays always transfer by
+    // pointer, so this is unconditional for them. Only the slot-null flag is set,
+    // NOT the KSEM partial-move record: the mid-IR KIR002 gate is the authority
+    // on reuse (so whole-struct-reuse-after-field-move stays a KIR002
+    // diagnostic), and a copyable-payload enum field must remain a reusable COPY,
+    // so enums are deliberately excluded. Type-erased (Any) field moves keep
+    // their existing markAnyFieldMovedIntoOwned handling on the implicit-owned
+    // and construct-literal paths.
+    const lowered = try lowerExpr(ctx, node.operand, imports, scope, function_headers);
+    if (lowered.* == .field and lowered.field.ty.kind == .array and lowered.field.object.* == .local) {
+        if (scope.entries.getPtr(lowered.field.object.local.name)) |binding| {
+            if (binding.ownership != .borrow_read and binding.ownership != .borrow_mut and !binding.moved) {
+                lowered.field.moved = true;
+            }
+        }
+    }
+    return lowered;
 }
 
 const LocalBindingRef = struct {

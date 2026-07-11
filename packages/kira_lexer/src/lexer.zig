@@ -310,6 +310,7 @@ fn keywordKind(lexeme: []const u8) syntax.TokenKind {
     if (std.mem.eql(u8, lexeme, "attempt")) return .kw_attempt;
     if (std.mem.eql(u8, lexeme, "try")) return .kw_try;
     if (std.mem.eql(u8, lexeme, "Self")) return .kw_self_type;
+    if (std.mem.eql(u8, lexeme, "async")) return .kw_async;
     if (std.mem.eql(u8, lexeme, "function")) return .kw_function;
     if (std.mem.eql(u8, lexeme, "generated")) return .kw_generated;
     if (std.mem.eql(u8, lexeme, "override")) return .kw_override;

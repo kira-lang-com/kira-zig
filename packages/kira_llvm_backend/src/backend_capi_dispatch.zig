@@ -10,6 +10,8 @@ const backend_api = @import("kira_backend_api");
 const llvm = @import("llvm_c.zig");
 const utils = @import("backend_utils.zig");
 const capi = @import("backend_capi.zig");
+const bridge_string = @import("backend_capi_bridge_string.zig");
+const value_repr = @import("backend_capi_value_repr.zig");
 
 const resolveExecution = utils.resolveExecution;
 const allocPrintZ = utils.allocPrintZ;
@@ -120,14 +122,7 @@ pub fn unpackBridgeValue(api: *const llvm.Api, b: llvm.c.LLVMBuilderRef, types: 
                 d;
         },
         .boolean => api.LLVMBuildTrunc(b, payload, types.bool_ty, "bv.get.bool"),
-        .string => blk: {
-            const extra = api.LLVMBuildExtractValue(b, bv, 3, "bv.get.extra");
-            const sp = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "bv.get.strptr");
-            var s = api.LLVMConstNull(types.string_ty);
-            s = api.LLVMBuildInsertValue(b, s, sp, 0, "bv.get.str0");
-            s = api.LLVMBuildInsertValue(b, s, extra, 1, "bv.get.str1");
-            break :blk s;
-        },
+        .string => bridge_string.unpack(api, b, types, bv),
         .void => error.UnsupportedExecutableFeature,
     };
 }
@@ -327,25 +322,20 @@ pub fn packBridgeValue(
                 const struct_ty = struct_types.get(value_type.name orelse return error.UnsupportedExecutableFeature) orelse return error.UnsupportedExecutableFeature;
                 const src = api.LLVMBuildIntToPtr(b, value, types.ptr_ty, "bv.struct.src");
                 const loaded = api.LLVMBuildLoad2(b, struct_ty, src, "bv.struct.val");
-                var margs = [_]llvm.c.LLVMValueRef{api.LLVMSizeOf(struct_ty)};
+                var margs = [_]llvm.c.LLVMValueRef{types.sizeArg(b, api.LLVMSizeOf(struct_ty))};
                 const copy = api.LLVMBuildCall2(b, malloc_decl.ty, malloc_decl.fn_value, &margs, margs.len, "bv.struct.copy");
                 _ = api.LLVMBuildStore(b, loaded, copy);
                 bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildPtrToInt(b, copy, types.i64, "bv.struct.int"), 2, "bv.payload");
             }
         },
         .float => {
-            const as_double = if (value_type.name != null and std.mem.eql(u8, value_type.name.?, "F32"))
-                api.LLVMBuildFPExt(b, value, types.double_ty, "bv.fpext")
-            else
-                value;
+            // Bridge payloads are f64 bit patterns; coerce by the value's ACTUAL
+            // width (an F32-typed register may already hold f64 after arithmetic).
+            const as_double = value_repr.coerceFloatWidthRaw(api, b, types, value, types.double_ty);
             bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildBitCast(b, as_double, types.i64, "bv.fbits"), 2, "bv.payload");
         },
         .boolean => bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildZExt(b, value, types.i64, "bv.bool"), 2, "bv.payload"),
-        .string => {
-            const sp = api.LLVMBuildExtractValue(b, value, 0, "bv.str.ptr");
-            bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildPtrToInt(b, sp, types.i64, "bv.str.ptrint"), 2, "bv.payload");
-            bv = api.LLVMBuildInsertValue(b, bv, api.LLVMBuildExtractValue(b, value, 1, "bv.str.len"), 3, "bv.extra");
-        },
+        .string => bv = bridge_string.packInto(api, b, types, bv, value),
         .void => {},
     }
     return bv;

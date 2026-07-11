@@ -331,6 +331,14 @@ fn prepareFunction(
                     value.function_id = prepared.indexOfId(value.function_id) orelse no_function_index;
                 }
             },
+            .task_spawn => |*value| {
+                // A runtime callee's deferred call dispatches by prepared-function
+                // index (like call_runtime); a native callee keeps its global id
+                // for the native-call hook (like call_native).
+                if (!value.native) {
+                    value.callee = prepared.indexOfId(value.callee) orelse no_function_index;
+                }
+            },
             .alloc_struct => |value| {
                 alloc_type_index[pc] = type_index_by_name.get(value.type_name) orelse no_type_index;
             },
@@ -1005,6 +1013,19 @@ fn instructionReadsRegister(inst: bytecode.Instruction, register: u32) bool {
             return false;
         },
         .ret => |value| return value.src == register,
+        .task_spawn => |value| {
+            for (value.args) |arg| if (arg == register) return true;
+            return false;
+        },
+        .task_spawn_ready => |value| return value.value == register,
+        .task_await => |value| return value.task == register,
+        .task_cancel => |value| return value.task == register,
+        .task_detach => |value| return value.task == register,
+        .task_yield => return false,
+        .frame_get => |value| return value.frame == register,
+        .frame_set => |value| return value.frame == register or value.src == register,
+        .task_is_complete => |value| return value.task == register,
+        .task_sleep => |value| return value.milliseconds == register,
         .fused_compare_branch => |value| return value.lhs == register or value.rhs == register,
         .fused_compare_const_branch => |value| return value.lhs == register,
         .fused_array_bind_local => |value| return value.array == register or value.index == register,
@@ -1052,6 +1073,11 @@ fn registerWriteOf(inst: bytecode.Instruction) ?u32 {
         .call_native => |value| value.dst,
         .call_virtual => |value| value.dst,
         .call_value => |value| value.dst,
+        .task_spawn => |value| value.dst,
+        .task_spawn_ready => |value| value.dst,
+        .task_await => |value| value.dst,
+        .frame_get => |value| value.dst,
+        .task_is_complete => |value| value.dst,
         else => null,
     };
 }
@@ -1153,6 +1179,19 @@ fn countRegisterReads(allocator: std.mem.Allocator, instructions: []const byteco
                 for (value.args) |register| bumpRead(reads, register);
             },
             .ret => |value| if (value.src) |register| bumpRead(reads, register),
+            .task_spawn => |value| for (value.args) |register| bumpRead(reads, register),
+            .task_spawn_ready => |value| bumpRead(reads, value.value),
+            .task_await => |value| bumpRead(reads, value.task),
+            .task_cancel => |value| bumpRead(reads, value.task),
+            .task_detach => |value| bumpRead(reads, value.task),
+            .task_yield => {},
+            .frame_get => |value| bumpRead(reads, value.frame),
+            .frame_set => |value| {
+                bumpRead(reads, value.frame);
+                bumpRead(reads, value.src);
+            },
+            .task_is_complete => |value| bumpRead(reads, value.task),
+            .task_sleep => |value| bumpRead(reads, value.milliseconds),
             // Fused instructions never appear in compiler/serializer output,
             // which is the only input this pass sees. Every real opcode counts
             // its reads explicitly above, so the only tags reaching here are the

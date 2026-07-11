@@ -195,6 +195,49 @@ pub fn lowerValue(ctx: *Context, expr: *model.Expr) anyerror!mid.Value {
             .temp_id = nextTempId(ctx),
             .span = node.span,
         } },
+        .task_spawn => |node| .{ .task_spawn = .{
+            .callee_name = node.callee_name,
+            .function_id = node.function_id,
+            .args = try lowerValueSlice(ctx, node.args),
+            .ty = node.ty,
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_spawn_ready => |node| .{ .task_spawn_ready = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.value)),
+            .ty = node.ty,
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_await => |node| .{ .task_await = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.task)),
+            .ty = node.ty,
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_cancel => |node| .{ .task_cancel = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.task)),
+            .ty = .{ .kind = .void },
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_detach => |node| .{ .task_detach = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.task)),
+            .ty = .{ .kind = .void },
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_yield => |node| .{ .task_yield = .{
+            .ty = .{ .kind = .void },
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
+        .task_sleep => |node| .{ .task_sleep = .{
+            .inner = try allocValue(ctx, try lowerValue(ctx, node.milliseconds)),
+            .ty = .{ .kind = .void },
+            .temp_id = nextTempId(ctx),
+            .span = node.span,
+        } },
     };
 }
 

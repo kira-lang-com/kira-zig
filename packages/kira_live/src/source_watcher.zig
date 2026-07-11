@@ -6,9 +6,15 @@ pub const FileState = struct {
     size: u64,
 };
 
+/// Polling watcher over every file-system input of a live bundle build:
+/// Kira sources, shader sources, package manifests, assets under `app/`, and
+/// native-library sources. Any change triggers a rebuild; the reload tier is
+/// decided downstream (VM-only edit → in-place hot patch, native change →
+/// process relaunch via the runner's dylib byte compare).
 pub const SourceWatcher = struct {
     allocator: std.mem.Allocator,
     watched_dirs: std.array_list.Managed([]const u8),
+    watched_files: std.array_list.Managed([]const u8),
     files: std.array_list.Managed(FileState),
 
     const Self = @This();
@@ -17,6 +23,7 @@ pub const SourceWatcher = struct {
         return .{
             .allocator = allocator,
             .watched_dirs = std.array_list.Managed([]const u8).init(allocator),
+            .watched_files = std.array_list.Managed([]const u8).init(allocator),
             .files = std.array_list.Managed(FileState).init(allocator),
         };
     }
@@ -26,6 +33,10 @@ pub const SourceWatcher = struct {
             self.allocator.free(dir);
         }
         self.watched_dirs.deinit();
+        for (self.watched_files.items) |path| {
+            self.allocator.free(path);
+        }
+        self.watched_files.deinit();
         for (self.files.items) |file| {
             self.allocator.free(file.path);
         }
@@ -44,6 +55,49 @@ pub const SourceWatcher = struct {
         self.collectFiles(path) catch {};
     }
 
+    /// Watch a single file (e.g. a package's `kira.toml`) without recursing
+    /// into its directory — watching a package ROOT recursively would pick up
+    /// `.kira-build/` outputs and re-trigger forever.
+    pub fn addFile(self: *Self, path: []const u8) !void {
+        for (self.watched_files.items) |existing| {
+            if (std.mem.eql(u8, existing, path)) return;
+        }
+        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{}) catch return;
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+        try self.watched_files.append(path_copy);
+        const tracked_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(tracked_copy);
+        try self.files.append(.{
+            .path = tracked_copy,
+            .mtime_ns = stat.mtime.nanoseconds,
+            .size = stat.size,
+        });
+    }
+
+    /// True for a file that is a real build input. Everything a bundle build
+    /// consumes counts — sources, shaders, manifests, assets — EXCEPT editor
+    /// and OS noise, which would otherwise fire spurious reloads on every
+    /// save-in-progress or Finder visit.
+    fn isWatchableFile(name: []const u8) bool {
+        if (name.len == 0 or name[0] == '.') return false; // .DS_Store, .main.kira.swp, ...
+        if (name[name.len - 1] == '~') return false; // editor backup
+        if (std.mem.endsWith(u8, name, ".swp") or std.mem.endsWith(u8, name, ".swx")) return false;
+        if (std.mem.endsWith(u8, name, ".tmp")) return false;
+        return true;
+    }
+
+    /// Directories that are build OUTPUTS or caches; recursing into them
+    /// would make every rebuild look like a source change (infinite reload).
+    fn isIgnoredDir(name: []const u8) bool {
+        if (name.len == 0 or name[0] == '.') return true; // .kira-build, .git, .zig-cache
+        const ignored = [_][]const u8{ "generated", "exports", "zig-out" };
+        for (ignored) |candidate| {
+            if (std.mem.eql(u8, name, candidate)) return true;
+        }
+        return false;
+    }
+
     fn collectFiles(self: *Self, root: []const u8) !void {
         var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, root, .{ .iterate = true }) catch return;
         defer dir.close(std.Options.debug_io);
@@ -53,9 +107,11 @@ pub const SourceWatcher = struct {
             defer self.allocator.free(path);
 
             switch (entry.kind) {
-                .directory => try self.collectFiles(path),
+                .directory => {
+                    if (!isIgnoredDir(entry.name)) try self.collectFiles(path);
+                },
                 .file => {
-                    if (std.mem.endsWith(u8, entry.name, ".kira")) {
+                    if (isWatchableFile(entry.name)) {
                         const stat = try std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{});
                         const path_copy = try self.allocator.dupe(u8, path);
                         errdefer self.allocator.free(path_copy);
@@ -85,13 +141,14 @@ pub const SourceWatcher = struct {
     }
 
     fn hasNewOrDeletedFiles(self: *Self, root: []const u8) !bool {
-        // Count every `.kira` file under `root` *recursively*, then compare against the
-        // recursive count of tracked files under `root`. The two counts must be gathered
-        // the same way: an earlier version counted only direct children here but compared
-        // against the recursive tracked set, so any watched directory containing a
-        // subdirectory with `.kira` files reported a spurious change on the very first
-        // poll — triggering an unwanted hot reload (and the crashes that cascade from it).
-        const found = try self.countKiraFiles(root);
+        // Count every watchable file under `root` *recursively*, then compare
+        // against the recursive count of tracked files under `root`. The two
+        // counts must be gathered the same way: an earlier version counted only
+        // direct children here but compared against the recursive tracked set,
+        // so any watched directory containing a subdirectory with sources
+        // reported a spurious change on the very first poll — triggering an
+        // unwanted hot reload (and the crashes that cascade from it).
+        const found = try self.countWatchableFiles(root);
 
         var tracked_in_dir: usize = 0;
         for (self.files.items) |file| {
@@ -101,7 +158,7 @@ pub const SourceWatcher = struct {
         return found != tracked_in_dir;
     }
 
-    fn countKiraFiles(self: *Self, root: []const u8) !usize {
+    fn countWatchableFiles(self: *Self, root: []const u8) !usize {
         var count: usize = 0;
         var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, root, .{ .iterate = true }) catch return 0;
         defer dir.close(std.Options.debug_io);
@@ -110,9 +167,11 @@ pub const SourceWatcher = struct {
             const path = try std.fs.path.join(self.allocator, &.{ root, entry.name });
             defer self.allocator.free(path);
             switch (entry.kind) {
-                .directory => count += try self.countKiraFiles(path),
+                .directory => {
+                    if (!isIgnoredDir(entry.name)) count += try self.countWatchableFiles(path);
+                },
                 .file => {
-                    if (std.mem.endsWith(u8, entry.name, ".kira")) count += 1;
+                    if (isWatchableFile(entry.name)) count += 1;
                 },
                 else => {},
             }
@@ -136,6 +195,16 @@ pub const SourceWatcher = struct {
 
         for (self.watched_dirs.items) |dir| {
             try self.collectFiles(dir);
+        }
+        for (self.watched_files.items) |path| {
+            const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{}) catch continue;
+            const path_copy = try self.allocator.dupe(u8, path);
+            errdefer self.allocator.free(path_copy);
+            try self.files.append(.{
+                .path = path_copy,
+                .mtime_ns = stat.mtime.nanoseconds,
+                .size = stat.size,
+            });
         }
     }
 };
@@ -212,4 +281,98 @@ test "SourceWatcher does not report a spurious change for nested .kira files" {
         file.close(std.Options.debug_io);
     }
     try std.testing.expect(try watcher.changed());
+}
+
+test "SourceWatcher watches shader, native, and manifest inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const tmp_path = "/tmp/kira_live_inputs_test_app";
+    const shader_file = "/tmp/kira_live_inputs_test_app/Shader/effect.ksl";
+    const native_file = "/tmp/kira_live_inputs_test_app/impl.c";
+    const manifest_file = "/tmp/kira_live_inputs_test_manifest/kira.toml";
+
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, "/tmp/kira_live_inputs_test_app/Shader");
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, "/tmp/kira_live_inputs_test_manifest");
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, "/tmp/kira_live_inputs_test_manifest") catch {};
+
+    for ([_][]const u8{ shader_file, native_file, manifest_file }) |path| {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "// v1");
+        file.close(std.Options.debug_io);
+    }
+
+    var watcher = SourceWatcher.init(allocator);
+    defer watcher.deinit();
+    try watcher.addDirectory(tmp_path);
+    try watcher.addFile(manifest_file);
+    try std.testing.expect(!try watcher.changed());
+
+    // Shader edit is a change.
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, shader_file, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "// v2 shader");
+        file.close(std.Options.debug_io);
+    }
+    try std.testing.expect(try watcher.changed());
+    try watcher.refresh();
+    try std.testing.expect(!try watcher.changed());
+
+    // Native source edit is a change.
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, native_file, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "// v2 native");
+        file.close(std.Options.debug_io);
+    }
+    try std.testing.expect(try watcher.changed());
+    try watcher.refresh();
+    try std.testing.expect(!try watcher.changed());
+
+    // Watched single file (kira.toml) edit is a change.
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_file, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "# v2 manifest");
+        file.close(std.Options.debug_io);
+    }
+    try std.testing.expect(try watcher.changed());
+}
+
+test "SourceWatcher ignores editor and OS noise" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const tmp_path = "/tmp/kira_live_noise_test_app";
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, tmp_path);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, tmp_path) catch {};
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, "/tmp/kira_live_noise_test_app/main.kira", .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "// v1");
+        file.close(std.Options.debug_io);
+    }
+
+    var watcher = SourceWatcher.init(allocator);
+    defer watcher.deinit();
+    try watcher.addDirectory(tmp_path);
+    try std.testing.expect(!try watcher.changed());
+
+    // Dotfiles, editor backups/swaps, and build-output dirs must not trigger.
+    for ([_][]const u8{
+        "/tmp/kira_live_noise_test_app/.DS_Store",
+        "/tmp/kira_live_noise_test_app/main.kira~",
+        "/tmp/kira_live_noise_test_app/.main.kira.swp",
+    }) |path| {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "noise");
+        file.close(std.Options.debug_io);
+    }
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, "/tmp/kira_live_noise_test_app/generated");
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, "/tmp/kira_live_noise_test_app/generated/out.kira", .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "// generated output");
+        file.close(std.Options.debug_io);
+    }
+    try std.testing.expect(!try watcher.changed());
 }

@@ -497,6 +497,22 @@ pub fn typeRefName(name: []const u8) []const u8 {
     };
 }
 
+// A Kira function-typed value (`handler: (borrow Evt) -> Void`) lowers to IR as
+// kind .raw_ptr whose name is the SIGNATURE TEXT — always starting with '(' (see
+// kira_semantics function_types.signatureText). No FFI pointer/callback/alias type
+// can carry such a name (they are identifiers), so this cleanly identifies
+// closure-typed struct fields. Their runtime value is a Kira closure i64 whose
+// bit 63 tags a heap closure block, so the value MUST be stored at full i64
+// width: a pointer-width slot (4 bytes on wasm32) silently destroys the tag,
+// after which the call_value dispatcher misreads the block address as a direct
+// function id — an `unreachable` trap at runtime, or (worse) LLVM exploiting the
+// dispatcher's unreachable default to fold the call to an arbitrary known callee.
+pub fn isClosureValueType(value_type: ir.ValueType) bool {
+    if (value_type.kind != .raw_ptr) return false;
+    const name = value_type.name orelse return false;
+    return name.len > 0 and name[0] == '(';
+}
+
 pub fn findTypeDecl(program: *const ir.Program, name: []const u8) ?ir.TypeDecl {
     for (program.types) |type_decl| {
         if (std.mem.eql(u8, type_decl.name, name)) return type_decl;

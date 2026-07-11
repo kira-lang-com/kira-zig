@@ -21,6 +21,27 @@ Internal memory for corpus and verification workflow.
 - If behavior is backend-specific, keep that explicit in `expect.toml` rather than relying on implicit defaults.
 - If LLVM or hybrid behavior changes, ensure the case still exercises those paths.
 
+## Opt-in wasm backend
+
+- `backends` accepts a fourth value, `"wasm"`, alongside `"vm"`, `"llvm"`, and
+  `"hybrid"`. It is opt-in per case (e.g. `backends = ["hybrid", "vm", "llvm", "wasm"]`)
+  and must accompany `hybrid` — it never stands alone.
+- A `wasm` entry builds the case through the real `wasm32-emscripten` pipeline
+  (the same `BuildSystem` the CLI uses), executes the emitted `.js` loader under
+  `node`, and compares stdout/exit exactly like the other backends.
+- When `emcc` or `node` is missing, the runner SKIPs the wasm entry for that case
+  (it never fails and never silently pretends it ran): the summary prints a
+  `<n> skipped` count plus a per-case note (`SKIP wasm: emcc ... unavailable`, or
+  the equivalent for node). Set `EMSDK`/`EMCC` or install emscripten + Node.js to
+  run wasm locally.
+- `"wasm"` is part of the `all` backend selection, so `zig build test-backends`
+  and `zig build test-full` exercise opted-in wasm cases automatically (skipping
+  cleanly when the toolchain is absent). `zig build test` stays VM-only.
+- Only add `"wasm"` to a case after confirming it passes on wasm
+  (`KIRA_CORPUS_FILTER=<case> zig build test-backends`, with emcc + node present).
+  A case that diverges on wasm is a real backend gap — leave it off the wasm
+  matrix rather than papering over the mismatch.
+
 ## Example cases to inspect
 
 - `tests/pass/run/basic`
@@ -49,7 +70,7 @@ Internal memory for corpus and verification workflow.
 - Runs with five or fewer failures print every failure with its full trace.
 - Runs with more than five failures group failures by stable diagnostic/runtime signatures, show occurrence counts and representative cases, and print one full trace per group.
 - The corpus runner writes `.kira/test-report.json` on every run so agents can inspect totals, grouped failures, representative cases, diagnostic metadata, and full group traces without re-running tests just to recover output.
-- `zig build test` runs the VM run corpus. `zig build test-backends` runs the run corpus across VM, LLVM, and hybrid. `zig build test-full` runs check, build, and run corpus coverage across all backends.
+- `zig build test` runs the VM run corpus. `zig build test-backends` runs the run corpus across VM, LLVM, hybrid, and (for opted-in cases) wasm. `zig build test-full` runs check, build, and run corpus coverage across all backends. Missing emcc/node makes wasm entries skip (with a per-case note) rather than fail.
 
 ## Verification commands
 

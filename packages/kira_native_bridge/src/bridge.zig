@@ -36,6 +36,33 @@ pub const NativeBridge = struct {
         active_array_allocator = null;
     }
 
+    /// Rebuild the function-id -> trampoline table against the ALREADY-LOADED
+    /// native library (or the current process for self-bound bridges). Used by
+    /// live hot reload: a recompiled bytecode module may assign new function
+    /// ids to the same native symbols, so the mapping is rebuilt from the new
+    /// manifest's descriptors without reopening the dylib — sokol and the
+    /// graphics host keep their state and the installed invoker hooks stay
+    /// valid because the code they point into never moved.
+    pub fn rebind(self: *NativeBridge, descriptors: []const hybrid.BridgeDescriptor) !void {
+        if (self.library == null and !self.self_bound) return error.MissingNativeLibrary;
+        var replacement: std.AutoHashMapUnmanaged(u32, trampoline.Trampoline) = .{};
+        errdefer replacement.deinit(self.allocator);
+        for (descriptors) |descriptor| {
+            const symbol_name_z = try self.allocator.dupeZ(u8, descriptor.symbol_name);
+            const invoke = if (self.library) |*library|
+                try symbol_resolver.resolveSymbol(library, symbol_name_z)
+            else
+                try resolveSelfTrampoline(symbol_name_z);
+            try replacement.put(self.allocator, descriptor.function_id.value, .{
+                .function_id = descriptor.function_id.value,
+                .symbol_name = descriptor.symbol_name,
+                .invoke = invoke,
+            });
+        }
+        self.trampolines.deinit(self.allocator);
+        self.trampolines = replacement;
+    }
+
     pub fn bind(self: *NativeBridge, library_path: []const u8, descriptors: []const hybrid.BridgeDescriptor) !void {
         var library = try openNativeLibrary(self.allocator, library_path);
         errdefer library.close();

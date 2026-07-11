@@ -39,6 +39,16 @@ pub const Unavailable = struct {
     pub const Reason = enum { missing_environment_variable };
 };
 
+/// A build-time asset directory (or file) to bundle into a self-contained
+/// `wasm32-emscripten` package. `host_path` is the absolute on-disk source and
+/// `mount_path` is the MEMFS location the running app reads it from — the
+/// project-relative path with a leading `/`, so a runtime-relative `fopen`
+/// (resolved against the MEMFS working directory `/`) still finds it.
+pub const AssetMount = struct {
+    host_path: []const u8,
+    mount_path: []const u8,
+};
+
 pub const ResolvedNativeLibrary = struct {
     manifest_path: ?[]const u8 = null,
     name: []const u8,
@@ -49,6 +59,9 @@ pub const ResolvedNativeLibrary = struct {
     headers: native.HeaderSpec,
     autobinding: ?native.AutobindingSpec = null,
     build: native.BuildRecipe = .{},
+    /// Extra flags for compiling this library's own sources on the resolved
+    /// target (carried from the matching `TargetSpec.compiler_flags`).
+    compiler_flags: []const []const u8 = &.{},
     link: LinkExtras,
     /// When non-null the library cannot be prepared on this machine/target and
     /// every preparation step (artifact build, autobinding, freshness checks)
@@ -88,6 +101,7 @@ pub fn resolveLibrary(allocator: std.mem.Allocator, spec: native.NativeLibrarySp
                 .headers = try cloneHeaders(allocator, spec.headers),
                 .autobinding = if (spec.autobinding) |autobinding| try cloneAutobinding(allocator, autobinding) else null,
                 .build = try cloneBuildRecipe(allocator, spec.build),
+                .compiler_flags = try cloneStrings(allocator, target_spec.compiler_flags),
                 .link = try LinkExtras.clone(allocator, target_spec.link),
             };
         }

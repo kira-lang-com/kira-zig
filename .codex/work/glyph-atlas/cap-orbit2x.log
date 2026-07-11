@@ -1,0 +1,33 @@
+[82304:9310803:0711/034204.419801:WARNING:content/browser/child_process_task_port_provider_mac.cc:53] AppleMobileFileIntegrity is disabled. The browser will not collect child process task ports.
+[82304:9310803:0711/034204.750627:INFO:components/enterprise/browser/controller/chrome_browser_cloud_management_controller.cc:239] No machine level policy manager exists.
+[82304:9310926:0711/034205.060316:WARNING:chrome/browser/extensions/external_pref_loader.cc:294] You are using an old-style extension deployment method (external_extensions.json), which will soon be deprecated. (see http://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)
+[82304:9310803:0711/034206.309043:INFO:CONSOLE:13] "kira.wasm.runtime_initialized", source: http://127.0.0.1:8161/bench.html?mode=orbit (13)
+[82304:9310803:0711/034206.310662:INFO:CONSOLE:12] "kira: live.ui_foundation.app.started", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034206.353735:INFO:CONSOLE:12] "kira: live.kira_graphics.backend.initialized", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.316424:INFO:CONSOLE:12] "kira: live.kira_graphics.frame.submitted", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.342075:INFO:CONSOLE:12] "kira: live.ui_foundation.tree.built", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.342159:INFO:CONSOLE:12] "kira: live.ui_foundation.retained_tree.ready", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.365175:INFO:CONSOLE:12] "kira: live.ui_foundation.layout.non_empty", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.365370:INFO:CONSOLE:12] "kira: KiraGraphics: SQUIRCLE SURFACE CALLED w=17.000000 h=17.000000 radius=999.000000", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.388849:INFO:CONSOLE:12] "kira: live.ui_foundation.render_commands.generated", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.388910:INFO:CONSOLE:12] "kira: live.kira_graphics.visible_content.submitted", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.388929:INFO:CONSOLE:12] "kira: KIRA_UI_DRAW_COMMANDS_SUBMITTED", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+[82304:9310803:0711/034207.388943:INFO:CONSOLE:12] "kira: KIRA_APP_RENDERED_VISIBLE_CONTENT", source: http://127.0.0.1:8161/bench.html?mode=orbit (12)
+Trying to load the allocator multiple times. This is *not* supported.
+[82304:9310931:0711/034208.149399:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[82304:9310931:0711/034208.210010:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret
+[82304:9310931:0711/034208.210033:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.
+[82304:9310803:0711/034211.616783:INFO:CONSOLE:26] "kira.bench.mode: orbit", source: http://127.0.0.1:8161/bench.html?mode=orbit (26)
+[82304:9310803:0711/034211.644231:INFO:CONSOLE:20] "JSFPS 0.2", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034212.663261:INFO:CONSOLE:20] "JSFPS 39.3", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034213.662856:INFO:CONSOLE:20] "JSFPS 40.0", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034214.677228:INFO:CONSOLE:20] "JSFPS 38.5", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034215.698957:INFO:CONSOLE:20] "JSFPS 38.2", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034216.717849:INFO:CONSOLE:20] "JSFPS 33.4", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034217.746861:INFO:CONSOLE:20] "JSFPS 34.0", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[82304:9310803:0711/034218.758042:INFO:CONSOLE:20] "JSFPS 35.6", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034219.781292:INFO:CONSOLE:20] "JSFPS 37.1", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034220.806345:INFO:CONSOLE:20] "JSFPS 34.4", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+[82304:9310803:0711/034221.813104:INFO:CONSOLE:20] "JSFPS 26.7", source: http://127.0.0.1:8161/bench.html?mode=orbit (20)
+832221 bytes written to file /Users/priamc/Code/kira-projects/kira-zig/.codex/work/glyph-atlas/cap-orbit2x.png
