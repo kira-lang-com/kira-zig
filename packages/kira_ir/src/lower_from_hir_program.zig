@@ -458,6 +458,16 @@ const Reach = struct {
                 try self.markExpr(node.object);
                 try self.markExpr(node.index);
             },
+            // A deferred spawn's callee runs at first drive — it is reachable
+            // even though no direct `.call` node names it.
+            .task_spawn => |node| {
+                try self.markFunction(node.function_id);
+                for (node.args) |arg| try self.markExpr(arg);
+            },
+            .task_spawn_ready => |node| try self.markExpr(node.value),
+            .task_await => |node| try self.markExpr(node.task),
+            .task_cancel => |node| try self.markExpr(node.task),
+            .task_detach => |node| try self.markExpr(node.task),
             else => {},
         }
     }

@@ -1,4 +1,5 @@
 pub const test_roots = [_][]const u8{
+    "kira_runtime_abi",
     "kira_toolchain",
     "kira_lexer",
     "kira_diagnostics",

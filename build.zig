@@ -63,7 +63,7 @@ const packages = [_]Package{
     .{ .name = "kira_doc", .path = "packages/kira_doc/src/root.zig", .imports = &.{ "kira_core", "kira_parser", "kira_semantics" } },
     .{ .name = "kira_app_generation", .path = "packages/kira_app_generation/src/root.zig", .imports = &.{"kira_core"} },
     .{ .name = "kira_main", .path = "packages/kira_main/src/root.zig", .imports = &.{ "kira_core", "kira_source", "kira_runtime_abi", "kira_hybrid_definition", "kira_bytecode", "kira_vm_runtime", "kira_native_bridge", "kira_hybrid_runtime", "kira_build", "kira_build_definition", "kira_diagnostics", "kira_project" } },
-    .{ .name = "kira_live", .path = "packages/kira_live/src/root.zig", .imports = &.{ "kira_build", "kira_build_definition", "kira_diagnostics", "kira_diagnostic_messages", "kira_hybrid_definition", "kira_hybrid_runtime", "kira_ir", "kira_llvm_backend", "kira_manifest", "kira_native_lib_definition", "kira_package_manager", "kira_project", "kira_wasm_runtime" } },
+    .{ .name = "kira_live", .path = "packages/kira_live/src/root.zig", .imports = &.{ "kira_build", "kira_build_definition", "kira_bytecode", "kira_diagnostics", "kira_diagnostic_messages", "kira_hybrid_definition", "kira_hybrid_runtime", "kira_ir", "kira_llvm_backend", "kira_manifest", "kira_native_lib_definition", "kira_package_manager", "kira_project", "kira_wasm_runtime" } },
     .{ .name = "kira_cli", .path = "packages/kira_cli/src/main.zig", .imports = &.{ "cli", "kira_core", "kira_source", "kira_diagnostics", "kira_diagnostic_messages", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_semantics", "kira_ir", "kira_bytecode", "kira_vm_runtime", "kira_build", "kira_build_definition", "kira_hybrid_runtime", "kira_runtime_abi", "kira_app_generation", "kira_live", "kira_log", "kira_toolchain", "kira_project", "kira_package_manager", "kira_manifest", "kira_ksl_syntax_model", "kira_shader_model", "kira_instruments", "kira_wasm_runtime", "kira_main" } },
 };
 
@@ -130,6 +130,13 @@ pub fn build(b: *std.Build) void {
     modules.get("kira_llvm_backend").?.addOptions("kira_llvm_build_options", llvm_options);
     modules.get("kira_llvm_backend").?.link_libc = true;
 
+    // kira_dynamic_ffi resolves process symbols via dlfcn/dlsym (@cImport of
+    // <dlfcn.h>) and drives libffi, so it needs libc headers + linkage. The
+    // main `kira` snapshot links libc transitively through other modules, but
+    // the isolated unit-test compiles for this package and kira_native_bridge
+    // do not, which fails on hosts without an implicitly-linked libc (Linux).
+    modules.get("kira_dynamic_ffi").?.link_libc = true;
+
     const cli_options = b.addOptions();
     cli_options.addOption([]const u8, "binary_name", kira_bootstrapper_name);
     cli_options.addOption([]const u8, "version", kirac_version);
@@ -171,6 +178,15 @@ pub fn build(b: *std.Build) void {
         .name = kira_primary_executable,
         .root_module = modules.get("kira_cli").?,
     });
+    // Export the executable's dynamic symbol table. `kira test` resolves the
+    // in-process developer/native API (e.g. `kira_developer_*`, statically
+    // linked from kira_main) through `dlsym(RTLD_DEFAULT, ...)`. On ELF hosts
+    // those symbols are invisible to `dlsym` unless the main executable is
+    // linked with `-rdynamic`/`-Wl,-export-dynamic`, so without this the
+    // in-process FFI path fails with `MissingNativeSymbol` on Linux (macOS
+    // resolves process-image symbols regardless). Additive only: it exports
+    // more symbols, never removes any.
+    cli.rdynamic = true;
 
     const bootstrapper_options = b.addOptions();
     bootstrapper_options.addOption([]const u8, "version", kirac_version);
@@ -235,6 +251,7 @@ pub fn build(b: *std.Build) void {
     });
     live_support_module.addImport("kira_hybrid_definition", modules.get("kira_hybrid_definition").?);
     live_support_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
+    live_support_module.addImport("kira_bytecode", modules.get("kira_bytecode").?);
     live_support_module.link_libc = true;
     const live_support_c_flags: []const []const u8 = if (apple_sdk.len > 0) &.{ "-isysroot", apple_sdk } else &.{};
     if (apple_sdk.len > 0) live_support_module.addSystemIncludePath(.{ .cwd_relative = std.fs.path.join(b.allocator, &.{ apple_sdk, "usr", "include" }) catch @panic("failed to build Apple SDK include path") });
@@ -415,6 +432,10 @@ pub fn build(b: *std.Build) void {
     run_corpus_module.addImport("kira_build_definition", modules.get("kira_build_definition").?);
     run_corpus_module.addImport("kira_diagnostics", modules.get("kira_diagnostics").?);
     run_corpus_module.addImport("kira_hybrid_runtime", modules.get("kira_hybrid_runtime").?);
+    // Corpus wasm matrix (tests/wasm_support.zig) reuses the emscripten
+    // availability check from the LLVM backend to SKIP wasm jobs cleanly when the
+    // emcc toolchain is absent.
+    run_corpus_module.addImport("kira_llvm_backend", modules.get("kira_llvm_backend").?);
     run_corpus_module.addImport("kira_source", modules.get("kira_source").?);
     run_corpus_module.addImport("kira_vm_runtime", modules.get("kira_vm_runtime").?);
     run_corpus_module.link_libc = true;

@@ -27,7 +27,16 @@ pub const PhaseProfile = struct {
 pub const JobReport = struct {
     passed: usize,
     failed: usize,
+    skipped: usize = 0,
     failures: []const FailureRecord = &.{},
+    skips: []const SkipRecord = &.{},
+};
+
+// A wasm-matrix entry that could not run because the emcc/node toolchain was
+// absent. Recorded (not failed) so the suite prints an honest skip summary.
+pub const SkipRecord = struct {
+    label: []const u8,
+    note: []const u8,
 };
 
 pub const FailureDetail = struct {
@@ -58,7 +67,9 @@ pub const SuiteReport = struct {
     total: usize,
     passed: usize,
     failed: usize,
+    skipped: usize = 0,
     failures: []const FailureRecord,
+    skips: []const SkipRecord = &.{},
 };
 
 pub const PhaseFailureActual = struct {
@@ -74,17 +85,25 @@ pub const BufferedReporter = struct {
     allocator: std.mem.Allocator,
     passed: usize = 0,
     failed: usize = 0,
+    skipped: usize = 0,
     failures: std.array_list.Managed(FailureRecord),
+    skips: std.array_list.Managed(SkipRecord),
 
     pub fn init(allocator: std.mem.Allocator) BufferedReporter {
         return .{
             .allocator = allocator,
             .failures = std.array_list.Managed(FailureRecord).init(allocator),
+            .skips = std.array_list.Managed(SkipRecord).init(allocator),
         };
     }
 
     pub fn pass(self: *BufferedReporter, _: []const u8) void {
         self.passed += 1;
+    }
+
+    pub fn skip(self: *BufferedReporter, label: []const u8, note: []const u8) !void {
+        self.skipped += 1;
+        try self.skips.append(.{ .label = label, .note = note });
     }
 
     pub fn fail(self: *BufferedReporter, label: []const u8, err: anyerror) void {
@@ -139,7 +158,9 @@ pub const BufferedReporter = struct {
         return .{
             .passed = self.passed,
             .failed = self.failed,
+            .skipped = self.skipped,
             .failures = try kept_failures.toOwnedSlice(),
+            .skips = try self.skips.toOwnedSlice(),
         };
     }
 };
@@ -147,6 +168,10 @@ pub const BufferedReporter = struct {
 pub fn writeHumanReport(allocator: std.mem.Allocator, writer: anytype, report: SuiteReport) !void {
     try writer.print("{d} passed\n", .{report.passed});
     try writer.print("{d} failed\n", .{report.failed});
+    if (report.skipped != 0) {
+        try writer.print("{d} skipped\n", .{report.skipped});
+        try writeSkipSummary(writer, report.skips);
+    }
     if (report.failed == 0) return;
 
     if (report.failed <= max_ungrouped_failures) {
@@ -185,55 +210,6 @@ pub fn writeHumanReport(allocator: std.mem.Allocator, writer: anytype, report: S
         try writer.writeAll(representative.trace);
         if (representative.trace.len == 0 or representative.trace[representative.trace.len - 1] != '\n') try writer.writeByte('\n');
     }
-}
-
-pub fn writeJsonReportFile(allocator: std.mem.Allocator, report: SuiteReport) !void {
-    if (std.fs.path.dirname(default_report_path)) |dir| {
-        if (dir.len > 0) try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir);
-    }
-    var file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, default_report_path, .{ .truncate = true });
-    defer file.close(std.Options.debug_io);
-    var buffer: [4096]u8 = undefined;
-    var writer = file.writer(std.Options.debug_io, &buffer);
-    try writeJsonReport(allocator, &writer.interface, report);
-    try writer.interface.flush();
-}
-
-pub fn writeJsonReport(allocator: std.mem.Allocator, writer: anytype, report: SuiteReport) !void {
-    const groups = try groupFailures(allocator, report.failures);
-    try writer.writeAll("{\n");
-    try writer.print("  \"total_tests\": {d},\n", .{report.total});
-    try writer.print("  \"passed_tests\": {d},\n", .{report.passed});
-    try writer.print("  \"failed_tests\": {d},\n", .{report.failed});
-    try writer.print("  \"failure_group_count\": {d},\n", .{groups.len});
-    try writer.writeAll("  \"failure_groups\": [");
-    for (groups, 0..) |group, group_index| {
-        if (group_index != 0) try writer.writeAll(",");
-        const representative = group.failures[0];
-        try writer.writeAll("\n    {\n");
-        try writer.writeAll("      \"signature\": ");
-        try writeJsonString(writer, group.signature);
-        try writer.print(",\n      \"occurrences\": {d},\n", .{group.failures.len});
-        try writer.writeAll("      \"representative_cases\": [");
-        const representative_count = @min(group.failures.len, 5);
-        for (group.failures[0..representative_count], 0..) |failure, index| {
-            if (index != 0) try writer.writeAll(", ");
-            try writeJsonString(writer, failure.label);
-        }
-        try writer.writeAll("],\n");
-        try writer.writeAll("      \"diagnostic_metadata\": ");
-        try writeDiagnosticMetadata(writer, representative);
-        try writer.writeAll(",\n      \"full_trace\": ");
-        try writeJsonString(writer, representative.trace);
-        try writer.writeAll(",\n      \"occurrence_labels\": [");
-        for (group.failures, 0..) |failure, index| {
-            if (index != 0) try writer.writeAll(", ");
-            try writeJsonString(writer, failure.label);
-        }
-        try writer.writeAll("]\n    }");
-    }
-    if (groups.len != 0) try writer.writeAll("\n  ");
-    try writer.writeAll("]\n}\n");
 }
 
 pub fn renderDiagnosticsTrace(
@@ -354,12 +330,38 @@ pub fn writeProfileTimingSummary(writer: *std.Io.Writer, case_name: []const u8, 
     try writer.writeByte('\n');
 }
 
-const FailureGroup = struct {
+// Print an honest, per-entry account of the wasm-matrix cases that were skipped
+// (grouped by note so a missing-toolchain run reads as one clear reason with the
+// affected cases listed), so a skip is never mistaken for a silent pass.
+fn writeSkipSummary(writer: anytype, skips: []const SkipRecord) !void {
+    if (skips.len == 0) return;
+    try writer.writeAll("\nSkipped (wasm toolchain unavailable):\n");
+    var note_index: usize = 0;
+    while (note_index < skips.len) : (note_index += 1) {
+        // Emit each distinct note once, then list the cases it covers.
+        var already_reported = false;
+        var prior: usize = 0;
+        while (prior < note_index) : (prior += 1) {
+            if (std.mem.eql(u8, skips[prior].note, skips[note_index].note)) {
+                already_reported = true;
+                break;
+            }
+        }
+        if (already_reported) continue;
+        try writer.print("  {s}\n", .{skips[note_index].note});
+        for (skips[note_index..]) |entry| {
+            if (!std.mem.eql(u8, entry.note, skips[note_index].note)) continue;
+            try writer.print("    - {s}\n", .{entry.label});
+        }
+    }
+}
+
+pub const FailureGroup = struct {
     signature: []const u8,
     failures: []const FailureRecord,
 };
 
-fn groupFailures(allocator: std.mem.Allocator, failures: []const FailureRecord) ![]const FailureGroup {
+pub fn groupFailures(allocator: std.mem.Allocator, failures: []const FailureRecord) ![]const FailureGroup {
     var groups = std.array_list.Managed(FailureGroup).init(allocator);
     var grouped = std.array_list.Managed(std.array_list.Managed(FailureRecord)).init(allocator);
     for (failures) |failure| {
@@ -496,58 +498,6 @@ fn renderDiagnosticsFallback(writer: *std.Io.Writer, diagnostics_items: []const 
     }
 }
 
-fn writeDiagnosticMetadata(writer: anytype, failure: FailureRecord) !void {
-    try writer.writeAll("{");
-    try writer.writeAll("\"error\": ");
-    try writeJsonString(writer, failure.error_name);
-    try writer.writeAll(", \"backend\": ");
-    if (failure.backend) |backend| {
-        try writeJsonString(writer, support.backendName(backend));
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeAll(", \"phase\": ");
-    if (failure.phase) |phase| {
-        try writeJsonString(writer, support.phaseName(phase));
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeAll(", \"stage\": ");
-    if (failure.stage) |stage| {
-        try writeJsonString(writer, support.stageName(stage));
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeAll(", \"diagnostic_code\": ");
-    if (failure.diagnostic_code) |code| {
-        try writeJsonString(writer, code);
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeAll(", \"diagnostic_title\": ");
-    if (failure.diagnostic_title) |title| {
-        try writeJsonString(writer, title);
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeAll("}");
-}
-
-fn writeJsonString(writer: anytype, value: []const u8) !void {
-    try writer.writeAll("\"");
-    for (value) |byte| {
-        switch (byte) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => try writer.print("{c}", .{byte}),
-        }
-    }
-    try writer.writeAll("\"");
-}
-
 test "groups failures by stable signature" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -562,33 +512,4 @@ test "groups failures by stable signature" {
     try std.testing.expectEqual(@as(usize, 2), groups[0].failures.len);
     try std.testing.expectEqualStrings("a", groups[0].failures[0].label);
     try std.testing.expectEqualStrings("c", groups[1].failures[0].label);
-}
-
-test "json report includes group trace and representative cases" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const failures = [_]FailureRecord{
-        .{
-            .label = "tests/fail/example [vm check]",
-            .error_name = "ExpectationFailed",
-            .signature = "diagnostic:semantics:KSEM001",
-            .trace = "error[KSEM001]: missing @Main entrypoint\n",
-            .diagnostic_code = "KSEM001",
-            .diagnostic_title = "missing @Main entrypoint",
-            .stage = .semantics,
-        },
-    };
-    var buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&buffer);
-    try writeJsonReport(arena.allocator(), &writer, .{
-        .total = 4,
-        .passed = 3,
-        .failed = 1,
-        .failures = &failures,
-    });
-    const json = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"failure_group_count\": 1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"representative_cases\": [\"tests/fail/example [vm check]\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "missing @Main entrypoint") != null);
 }

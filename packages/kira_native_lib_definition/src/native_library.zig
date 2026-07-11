@@ -55,6 +55,9 @@ pub const TargetSpec = struct {
     selector: TargetSelector,
     static_lib: ?[]const u8 = null,
     dynamic_lib: ?[]const u8 = null,
+    /// Extra flags passed when compiling this library's own sources for this
+    /// target (e.g. `--use-port=emdawnwebgpu`). Generic across every backend.
+    compiler_flags: []const []const u8 = &.{},
     link: LinkExtras = .{},
 };
 

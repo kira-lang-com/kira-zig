@@ -28,6 +28,21 @@ pub fn emccPath(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, emccExecutableName());
 }
 
+/// Locates the `emar` archiver that pairs with the active `emcc`. Prefers an
+/// explicit `EMAR` override, then the archiver sitting next to the resolved
+/// `emcc`, and finally falls back to `emar` on `PATH`.
+pub fn emarPath(allocator: std.mem.Allocator) ![]const u8 {
+    if (try envVarOwned(allocator, "EMAR")) |path| return path;
+    const emcc = try emccPath(allocator);
+    defer allocator.free(emcc);
+    if (std.fs.path.dirname(emcc)) |dir| {
+        const candidate = try std.fs.path.join(allocator, &.{ dir, emarExecutableName() });
+        if (fileExists(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+    return allocator.dupe(u8, emarExecutableName());
+}
+
 pub fn validateAvailable(allocator: std.mem.Allocator) !void {
     const emcc = try emccPath(allocator);
     defer allocator.free(emcc);
@@ -51,6 +66,10 @@ pub fn validateAvailable(allocator: std.mem.Allocator) !void {
 
 fn emccExecutableName() []const u8 {
     return if (builtin.os.tag == .windows) "emcc.bat" else "emcc";
+}
+
+fn emarExecutableName() []const u8 {
+    return if (builtin.os.tag == .windows) "emar.bat" else "emar";
 }
 
 fn envVarOwned(allocator: std.mem.Allocator, name: []const u8) !?[]const u8 {

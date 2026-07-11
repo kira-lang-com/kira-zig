@@ -34,6 +34,8 @@ This file tracks the frontend surface implemented in the compiler today. The lan
 - Type inference plus explicit uninitialized declarations and strict annotated-initializer matching
 - Migration diagnostics for removed legacy declaration and documentation syntax
 - Construct-driven semantic checks for declared annotations, lifecycle hooks, and required `content { ... }`
+- Language-wide type aliases `type Name = Target`, with alias-cycle and duplicate diagnostics; Foundation uses them for `type Byte = U8` / `type ByteBuffer = [Byte]`
+- Async task spine: `async function` declarations, `Task { call(...) }` deferred spawn, `handle.await` join, `handle.requestCancel()` cooperative cancel, `handle.detach()`, the `taskYield()` cooperative suspend point, and `taskSleep(ms)` timed parking
 
 ## Current Executable Lowering Boundary
 
@@ -70,6 +72,8 @@ The frontend and semantic model understand the broader language surface above. T
 - `RawPtr`, `CString`, and callback/pointer typedefs used by the current FFI path
 - boxed callback-state handles for Kira-owned native userdata transport, with typed field-oriented recovery across `llvm` and `hybrid`
 - function types, named function references, inline callback literals, direct trailing callbacks, immutable by-value callback captures, shared mutable `var` callback captures, nested captures, and callable-value invocations through locals and fields across the shared executable backends
+- language-wide `type Name = Target` aliases, canonicalized before lowering so aliased and canonical spellings execute identically across `vm`, `llvm`, and `hybrid`
+- the deferred async task spine across `vm`, `llvm`, and `hybrid`: `async function` bodies execute like synchronous functions when called directly (no reactor-backed suspend points yet; `is_async` is carried through HIR/IR/bytecode for the later executor phases); `Task { call(...) }` spawns a deferred task (arguments evaluate at the spawn site, the call runs at first drive); `handle.await` joins it (running the deferred call and yielding its result); `handle.requestCancel()` before the first drive prevents the call from ever running; `handle.detach()` drives the task and discards the result. Awaiting a cancelled task and joining twice are runtime traps on every backend. The current slice restricts task bodies to a direct call to a named function with scalar (`Int`/`Float`/`Bool`) parameters and a scalar or `Void` result (a `Void` task joins as `Int` 0), or a pure scalar literal (`KSEM159` otherwise); task handles are opaque — any use other than `.await`/`.requestCancel()`/`.detach()` is rejected (`KSEM158`). `taskYield()` is a cooperative suspend point: eligible async task bodies (scalar params/locals, spawned-only) are compiled into saved-frame state machines — a yield suspends the body (its params/locals persist in a heap task frame), the executor round-robins the ready queue, and the body resumes at the yield point on its next drive, identically on `vm`, `llvm`, and `hybrid`; cancellation is observed at suspend points (a cancelled suspended task never resumes and its join traps). Ineligible bodies keep the stack-nested drive at yield points
 
 `kirac check`, `kirac ast`, and `kirac tokens` operate on the broader frontend. `kirac run` and `kirac build` use the shared executable lowering across VM, LLVM/native, and hybrid backends rather than treating LLVM/native as a permanently tiny subset.
 

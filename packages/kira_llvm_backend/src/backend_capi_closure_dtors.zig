@@ -33,6 +33,7 @@ const ir = @import("kira_ir");
 const llvm = @import("llvm_c.zig");
 const capi = @import("backend_capi.zig");
 const utils = @import("backend_utils.zig");
+const bridge_string = @import("backend_capi_bridge_string.zig");
 const destructors = @import("backend_capi_destructors.zig");
 
 const inferRegisterTypes = utils.inferRegisterTypes;
@@ -276,9 +277,9 @@ fn buildClone(
     const bridge_size = api.LLVMSizeOf(types.bridge_ty);
     const captures_size = api.LLVMBuildMul(b, count, bridge_size, "cc.capsize");
     const total = api.LLVMBuildAdd(b, api.LLVMConstInt(types.i64, 16, 0), captures_size, "cc.size");
-    var malloc_args = [_]llvm.c.LLVMValueRef{total};
+    var malloc_args = [_]llvm.c.LLVMValueRef{types.sizeArg(b, total)};
     const dst = api.LLVMBuildCall2(b, runtime.malloc.ty, runtime.malloc.fn_value, &malloc_args, malloc_args.len, "cc.dst");
-    var memcpy_args = [_]llvm.c.LLVMValueRef{ dst, src, total };
+    var memcpy_args = [_]llvm.c.LLVMValueRef{ dst, src, types.sizeArg(b, total) };
     _ = api.LLVMBuildCall2(b, runtime.memcpy.ty, runtime.memcpy.fn_value, &memcpy_args, memcpy_args.len, "");
 
     const ret_block = api.LLVMAppendBasicBlockInContext(types.context, fn_value, "cc.ret");
@@ -299,13 +300,22 @@ fn buildClone(
             const payload = api.LLVMBuildLoad2(b, types.i64, payload_ptr, "cc.payload");
             switch (ty.kind) {
                 .string => {
-                    const extra_ptr = captureField(api, b, types, dst, i, 3);
-                    const len = api.LLVMBuildLoad2(b, types.i64, extra_ptr, "cc.strlen");
+                    // On wasm32 the len rides in the high 32 bits of the payload word
+                    // (packed layout — see backend_capi_bridge_string); on 64-bit it is
+                    // the separate field-3 extra slot. Match the packing so the clone
+                    // copies the right byte count and stores a slot the release path can
+                    // still read (ptr in the low half, len re-folded into the high half).
+                    const extra_load = if (types.usize_ty == types.i64) blk: {
+                        const extra_ptr = captureField(api, b, types, dst, i, 3);
+                        break :blk api.LLVMBuildLoad2(b, types.i64, extra_ptr, "cc.strlen");
+                    } else null;
+                    const len = bridge_string.lenFromLoadedPayload(api, b, types, payload, extra_load);
                     const buf = api.LLVMBuildIntToPtr(b, payload, types.ptr_ty, "cc.strbuf");
                     var args = [_]llvm.c.LLVMValueRef{ buf, len };
                     const cloned = api.LLVMBuildCall2(b, dtors.string_clone.ty, dtors.string_clone.fn_value, &args, args.len, "cc.strclone");
                     const cloned_int = api.LLVMBuildPtrToInt(b, cloned, types.i64, "cc.strclone.int");
-                    _ = api.LLVMBuildStore(b, cloned_int, payload_ptr);
+                    const cloned_word = bridge_string.repackClonedPtr(api, b, types, cloned_int, len);
+                    _ = api.LLVMBuildStore(b, cloned_word, payload_ptr);
                 },
                 .ffi_struct => {
                     const name = ty.name orelse continue;

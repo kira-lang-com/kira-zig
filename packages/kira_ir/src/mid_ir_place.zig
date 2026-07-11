@@ -71,6 +71,13 @@ pub fn valueType(value: mid.Value) model.ResolvedType {
         .string_len => |node| node.ty,
         .opaque_member => |node| node.ty,
         .opaque_index => |node| node.ty,
+        .task_spawn => |node| node.ty,
+        .task_spawn_ready => |node| node.ty,
+        .task_await => |node| node.ty,
+        .task_cancel => |node| node.ty,
+        .task_detach => |node| node.ty,
+        .task_yield => |node| node.ty,
+        .task_sleep => |node| node.ty,
     };
 }
 

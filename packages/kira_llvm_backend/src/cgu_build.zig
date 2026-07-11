@@ -443,7 +443,7 @@ pub fn compileExecutable(
     try objects.append(try allocator.dupe(u8, bridge_object));
     try objects.append(try allocator.dupe(u8, dynamic_ffi_object));
 
-    try linker.linkExecutable(allocator, executable_path, objects.items, request.resolved_native_libraries, request.target_selector);
+    try linker.linkExecutable(allocator, executable_path, objects.items, request.resolved_native_libraries, request.target_selector, request.assets);
     const link_ns = nowNs() - link_start;
 
     // Reclaim objects for functions that were deleted, renamed, or changed.

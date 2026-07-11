@@ -66,6 +66,14 @@ pub fn buildBundles(
 
     for (sync_result.graph.packages) |package| {
         const package_root = std.fs.path.dirname(package.source_root) orelse continue;
+        // The app's own package can appear in its dependency graph. Building it
+        // again as a dependency would OVERWRITE the main bundle's manifest with
+        // a `__kira_live_self__` native path (dependency bundles emit no shared
+        // library), so the runner would self-bind against kirac instead of
+        // loading the app's real dylib and hang in HybridRuntime.init. Skip it:
+        // the main bundle above already built this package with its dylib.
+        const dep_bundle_id = try bundleIdForPackage(allocator, package.name);
+        if (std.mem.eql(u8, dep_bundle_id, app_bundle_id)) continue;
         try bundle_results.append(try buildDependencyBundle(
             allocator,
             package_root,

@@ -282,6 +282,7 @@ pub const Function = struct {
     id: u32,
     name: []const u8,
     is_main: bool,
+    is_async: bool = false,
     execution: runtime_abi.FunctionExecution,
     is_extern: bool = false,
     foreign: ?ffi.ForeignFunction = null,
@@ -504,6 +505,73 @@ pub const Expr = union(enum) {
     array: ArrayExpr,
     builder_array: BuilderArrayExpr,
     index: IndexExpr,
+    // Async task spine (deferred execution): `Task { f(a, b) }` spawns a task
+    // whose call runs at first poll (join/detach), not at spawn; args are
+    // evaluated eagerly at the spawn site. `Task { <pure value> }` spawns an
+    // already-completed task. `ty` on spawn nodes is the task's RESULT type —
+    // the handle stays checker-transparent (misuse is rejected by the KSEM158
+    // task-handle guard, not the type system).
+    task_spawn: TaskSpawnExpr,
+    task_spawn_ready: TaskSpawnReadyExpr,
+    task_await: TaskAwaitExpr,
+    task_cancel: TaskCancelExpr,
+    task_detach: TaskDetachExpr,
+    task_yield: TaskYieldExpr,
+    task_sleep: TaskSleepExpr,
+};
+
+/// `taskYield()`: a cooperative progress point — the executor runs the next
+/// queued task (if any) before this body continues. Void, statement position.
+pub const TaskYieldExpr = struct {
+    span: source_pkg.Span,
+};
+
+/// `taskSleep(ms)`: park the current task for at least `ms` milliseconds — the
+/// executor runs other tasks and wakes this one when its deadline passes.
+/// Outside a suspendable task body it blocks the current thread.
+pub const TaskSleepExpr = struct {
+    milliseconds: *Expr,
+    span: source_pkg.Span,
+};
+
+/// Spawn a deferred call: `callee(args)` runs when the task is first driven
+/// (`.await` joins it, `.detach()` runs and discards). A cancel observed before
+/// the first drive prevents the call from ever running.
+pub const TaskSpawnExpr = struct {
+    callee_name: []const u8,
+    function_id: u32,
+    args: []*Expr,
+    /// The task's result type (== the callee's return type).
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+/// Spawn an already-completed task carrying a pure value (`Task { 41 }`).
+pub const TaskSpawnReadyExpr = struct {
+    value: *Expr,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+/// Join a task: first drive runs the deferred call and yields its result;
+/// joining a cancelled task or joining twice is a runtime trap.
+pub const TaskAwaitExpr = struct {
+    task: *Expr,
+    ty: ResolvedType,
+    span: source_pkg.Span,
+};
+
+/// Cooperative cancel: sets the task's cancel flag. Never force-terminates.
+pub const TaskCancelExpr = struct {
+    task: *Expr,
+    span: source_pkg.Span,
+};
+
+/// Stop waiting: drives the task (the work still runs unless already
+/// cancelled) and discards the result.
+pub const TaskDetachExpr = struct {
+    task: *Expr,
+    span: source_pkg.Span,
 };
 
 pub const IntegerExpr = struct {
@@ -830,5 +898,12 @@ pub fn exprType(expr: Expr) ResolvedType {
         .array => |node| node.ty,
         .builder_array => |node| node.ty,
         .index => |node| node.ty,
+        .task_spawn => |node| node.ty,
+        .task_spawn_ready => |node| node.ty,
+        .task_await => |node| node.ty,
+        .task_cancel => .{ .kind = .void },
+        .task_detach => .{ .kind = .void },
+        .task_yield => .{ .kind = .void },
+        .task_sleep => .{ .kind = .void },
     };
 }

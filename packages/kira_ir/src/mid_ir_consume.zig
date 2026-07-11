@@ -222,6 +222,11 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             try self.consumeValue(state, node.object.*, .read);
             try self.consumeValue(state, node.index.*, .read);
         },
+        // Task args and handles are scalars (KSEM159), so every use is a read;
+        // no ownership transfers through a spawn or handle operation.
+        .task_spawn => |node| for (node.args) |arg| try self.consumeValue(state, arg, .read),
+        .task_spawn_ready, .task_await, .task_cancel, .task_detach, .task_sleep => |node| try self.consumeValue(state, node.inner.*, .read),
+        .task_yield => {},
     }
 }
 
@@ -305,6 +310,13 @@ pub fn consumeCallArgs(self: *Checker, state: *State, args: []const mid.Value, o
                 .null_ptr => |node| node.span,
                 .function_ref => |node| node.span,
                 .namespace_ref => |node| node.span,
+                .task_spawn => |node| node.span,
+                .task_spawn_ready => |node| node.span,
+                .task_await => |node| node.span,
+                .task_cancel => |node| node.span,
+                .task_detach => |node| node.span,
+                .task_yield => |node| node.span,
+                .task_sleep => |node| node.span,
             };
             try self.emitOwnershipDiagnostic(
                 "KIR002",
