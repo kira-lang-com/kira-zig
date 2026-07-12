@@ -1,6 +1,7 @@
 const std = @import("std");
 const diag_messages = @import("kira_diagnostic_messages");
 const cmd_run = @import("commands/run.zig");
+const cmd_debug = @import("commands/debug.zig");
 const cmd_build = @import("commands/build.zig");
 const cmd_check = @import("commands/check.zig");
 const cmd_test = @import("commands/test.zig");
@@ -126,6 +127,7 @@ fn dispatchCommand(
 ) !u8 {
     return switch (kind) {
         .run => executeCommand(allocator, command, args, out, err, cmd_run.execute),
+        .debug => executeCommand(allocator, command, args, out, err, cmd_debug.execute),
         .fetch_llvm => executeCommand(allocator, command, args, out, err, cmd_fetch_llvm.execute),
         .tokens => executeCommand(allocator, command, args, out, err, cmd_tokens.execute),
         .ast => executeCommand(allocator, command, args, out, err, cmd_ast.execute),

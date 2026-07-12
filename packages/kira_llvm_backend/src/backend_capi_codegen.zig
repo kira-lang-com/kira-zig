@@ -30,6 +30,8 @@ const calls = @import("backend_capi_calls.zig");
 const returns = @import("backend_capi_returns.zig");
 const tasks = @import("backend_capi_tasks.zig");
 const wasm_native_cb = @import("backend_capi_wasm_native_cb.zig");
+const debug_dwarf = @import("debug_dwarf.zig");
+const debug_glue = @import("backend_capi_debug.zig");
 
 pub const FunctionCodegen = struct {
     allocator: std.mem.Allocator,
@@ -46,6 +48,16 @@ pub const FunctionCodegen = struct {
     functions: *const std.AutoHashMapUnmanaged(u32, llvm.c.LLVMValueRef),
     function_decl: ir.Function,
     function_value: llvm.c.LLVMValueRef,
+
+    // DWARF context (best-effort; `dwarf` null when disabled/unsupported). The
+    // per-function subprogram scope/file/path plus `di_current_line` (last real
+    // line, carried forward so every instruction gets a valid in-scope `!dbg`)
+    // are managed by backend_capi_debug.zig. See there for the verifier rationale.
+    dwarf: ?*debug_dwarf.DwarfBuilder = null,
+    di_scope: ?llvm.c.LLVMMetadataRef = null,
+    di_file: ?llvm.c.LLVMMetadataRef = null,
+    di_source_path: ?[]const u8 = null,
+    di_current_line: c_uint = 0,
 
     registers: []llvm.c.LLVMValueRef = &.{},
     register_types: []ir.ValueType = &.{},
@@ -126,6 +138,10 @@ pub const FunctionCodegen = struct {
         const entry_block = api.LLVMAppendBasicBlockInContext(self.types.context, self.function_value, "entry");
         api.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
+        // Attach the DWARF subprogram + seed the `!dbg` location before any IR is
+        // built (drop.setup, allocas, param stores) so the builder always has one.
+        debug_glue.attach(self);
+
         // Register types must be inferred BEFORE drop.setup: the pre-scan needs them
         // to recognize string concatenation (`.add` with a string dst) as an owned
         // string-buffer producer.
@@ -173,6 +189,9 @@ pub const FunctionCodegen = struct {
         // Seed owned-aggregate param cleanup slots now that the params are bound.
         drop.seedOwnedParams(self);
 
+        // dbg.declare for each entry-block local alloca (named by frame slot).
+        debug_glue.declareLocals(self, entry_block);
+
         // Pre-create a basic block for every label target.
         for (self.function_decl.instructions) |instruction| {
             if (instruction == .label) {
@@ -182,9 +201,11 @@ pub const FunctionCodegen = struct {
         }
 
         self.terminated = false;
-        for (self.function_decl.instructions) |instruction| {
+        for (self.function_decl.instructions, 0..) |instruction, index| {
             // Skip dead instructions that follow a terminator until the next label.
             if (self.terminated and instruction != .label) continue;
+            // Tag every value this instruction lowers to with its `!dbg` location.
+            debug_glue.applyLocation(self, index);
             try self.lowerInstruction(instruction);
         }
 

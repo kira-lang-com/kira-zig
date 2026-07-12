@@ -8,9 +8,9 @@ description: "LLVM discovery order and toolchain/launcher caution for Kira: wher
 Discovery order: `KIRA_LLVM_HOME` -> Kira-managed installs under
 `~/.kira/toolchains/llvm/...` -> older repo-managed fallback paths.
 
-`zig build` refreshes the developer `kira` snapshot the CLI runs from — be
-careful changing launcher/build/toolchain behavior, it affects every
-subsequent `kira` invocation in the session.
+`zig build` refreshes the `~/.kira/toolchains/dev` snapshot `kira` runs
+from — be careful changing launcher/build/toolchain behavior, it affects
+every subsequent `kira` invocation in the session.
 
 Missing local LLVM is not a reason to skip LLVM validation — run
 `kira fetch-llvm` / `zig build fetch-llvm` or help install it first. Don't

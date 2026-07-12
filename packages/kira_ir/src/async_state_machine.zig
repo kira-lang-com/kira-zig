@@ -28,6 +28,7 @@
 //!     directly, never taken as a value).
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 
 /// Rewrite every eligible yielding async body in `program` and flag its
 /// spawn sites (`suspendable` + `frame_slots`).
@@ -272,7 +273,10 @@ fn transformFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !
     const int_ty: ir.ValueType = .{ .kind = .integer, .name = "I64" };
     const result_ty: ir.ValueType = if (function_decl.return_type.kind == .void) int_ty else function_decl.return_type;
 
-    var out = std.array_list.Managed(ir.Instruction).init(allocator);
+    var out = InstructionBuf.init(allocator, &InstructionBuf.null_span);
+    // Async lowering drops per-instruction spans for now; free the unused
+    // locations buffer (toOwnedInstructions consumes only the instruction list).
+    defer out.deinit();
 
     // Prologue: load the frame pointer (the only real local) and dispatch on
     // the resume state. Entry-block defs dominate every resume label.
@@ -403,7 +407,7 @@ fn transformFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !
     }
 
     var transformed = function_decl;
-    transformed.instructions = try out.toOwnedSlice();
+    transformed.instructions = try out.toOwnedInstructions();
     transformed.register_count = next_register;
     transformed.param_ownership = &.{.owned};
     transformed.param_types = try allocator.dupe(ir.ValueType, &.{.{ .kind = .raw_ptr, .name = "TaskFrame" }});

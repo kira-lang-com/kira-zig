@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const source = @import("kira_source");
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
@@ -248,14 +249,14 @@ pub const Lowerer = struct {
         return local < self.boxed_locals.len and self.boxed_locals[local];
     }
 
-    pub fn lowerStatements(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statements: []const model.Statement) !bool {
+    pub fn lowerStatements(self: *Lowerer, instructions: *InstructionBuf, statements: []const model.Statement) !bool {
         for (statements) |statement| {
             if (try self.lowerStatement(instructions, statement)) return true;
         }
         return false;
     }
 
-    fn lowerStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statement: model.Statement) !bool {
+    fn lowerStatement(self: *Lowerer, instructions: *InstructionBuf, statement: model.Statement) !bool {
         self.current_span = statementSpan(statement);
         self.current_construct = @tagName(statement);
         switch (statement) {
@@ -326,7 +327,7 @@ pub const Lowerer = struct {
         }
     }
 
-    fn lowerReturnExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
+    fn lowerReturnExpr(self: *Lowerer, instructions: *InstructionBuf, expr: *model.Expr) anyerror!u32 {
         if (expr.* == .local and !self.isBoxedLocal(expr.local.local_id)) {
             const dst = self.freshRegister();
             try instructions.append(.{ .load_local = .{
@@ -352,7 +353,7 @@ pub const Lowerer = struct {
         return self.lowerExpr(instructions, expr);
     }
 
-    pub fn lowerExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
+    pub fn lowerExpr(self: *Lowerer, instructions: *InstructionBuf, expr: *model.Expr) anyerror!u32 {
         self.current_span = exprSpan(expr);
         self.current_construct = @tagName(expr.*);
         return switch (expr.*) {
@@ -921,7 +922,7 @@ pub const Lowerer = struct {
 
     pub fn storeValueToLocal(
         self: *Lowerer,
-        instructions: *std.array_list.Managed(ir.Instruction),
+        instructions: *InstructionBuf,
         local: u32,
         ty: ir.ValueType,
         src: u32,
@@ -947,7 +948,7 @@ pub const Lowerer = struct {
 
     pub fn initializeBoxedLocal(
         self: *Lowerer,
-        instructions: *std.array_list.Managed(ir.Instruction),
+        instructions: *InstructionBuf,
         local: u32,
         ty: ir.ValueType,
         initial_value: ?u32,

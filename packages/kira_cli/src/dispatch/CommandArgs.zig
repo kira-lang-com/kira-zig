@@ -18,6 +18,12 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
             try list.append(options.input_path);
         },
         .run => |options| try appendRunOptions(allocator, &list, options),
+        .debug => |options| {
+            if (options.backend) |backend| try list.appendSlice(&.{ "--backend", backendLabel(backend) });
+            if (options.dap) try list.append("--dap");
+            if (options.port) |port| try list.appendSlice(&.{ "--port", try std.fmt.allocPrint(allocator, "{d}", .{port}) });
+            try list.append(options.input_path);
+        },
         .live => |options| try appendLiveOptions(allocator, &list, options),
         .export_cmd => |options| try appendExportOptions(allocator, &list, options),
         .new => |options| {

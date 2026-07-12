@@ -15,6 +15,7 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\  build        Build a project, example, library, or source file.
         \\  ffi          Run explicit FFI maintenance tasks.
         \\  run          Build and execute a runnable target.
+        \\  debug        Debug a runnable target (interactive REPL or DAP server).
         \\  live         Start a live server/client session for an app/example target.
         \\  shader       Check, inspect, or build KSL shaders.
         \\  instruments  Run a target under process instrumentation.
@@ -65,6 +66,12 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
         .run => try writer.writeAll(
             \\usage: kira run [--backend vm|llvm|hybrid] [--offline] [--locked] [--trace-execution] [--timings] [--quit-after <duration>] [<project-dir|manifest|source>]
             \\Run an app, example, or source file. `--quit-after` accepts values like 5s, 5000ms, or 5.
+            \\
+        ),
+        .debug => try writer.writeAll(
+            \\usage: kira debug [--backend vm|llvm|hybrid] [--dap] [--port <tcp-port>] [<project-dir|manifest|source>]
+            \\Build and debug an app, example, or source file. Without `--dap`, starts an interactive source-level REPL.
+            \\With `--dap`, serves the Debug Adapter Protocol over stdio (or TCP with `--port`) for an editor client.
             \\
         ),
         .live => try writer.writeAll(

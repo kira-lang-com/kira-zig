@@ -19,4 +19,5 @@ test {
     // bare `pub const _ = @import(...)` re-exports.
     _ = @import("cgu_hash.zig");
     _ = @import("cgu_cache.zig");
+    _ = @import("debug_dwarf.zig");
 }

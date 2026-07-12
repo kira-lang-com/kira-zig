@@ -1,4 +1,5 @@
 const runtime_abi = @import("kira_runtime_abi");
+const source = @import("kira_source");
 
 pub const ValueType = struct {
     kind: Kind,
@@ -139,7 +140,18 @@ pub const Function = struct {
     register_count: u32,
     local_count: u32,
     local_types: []const ValueType,
+    /// Source-level names per local slot (index = local id), for the debugger's
+    /// variables view. Empty for functions lowered without name info; entries may
+    /// be "" for hidden/synthesized slots. Threaded HIR->IR->bytecode alongside
+    /// `locations`.
+    local_names: []const []const u8 = &.{},
     instructions: []Instruction,
+    /// Source span per instruction, index-aligned with `instructions` when
+    /// populated by the lowerer (see `instruction_buf.zig`). May be empty for
+    /// synthesized functions (async rewrites, generated callbacks); consumers
+    /// must treat `idx >= locations.len` and `{0,0}` spans as "no location".
+    /// This is the debugger's source line-table source of truth in low IR.
+    locations: []const source.Span = &.{},
 };
 
 pub const Instruction = union(enum) {

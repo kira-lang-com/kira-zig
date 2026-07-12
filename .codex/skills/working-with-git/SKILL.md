@@ -6,7 +6,8 @@ description: "Git and PR workflow for this repo: commit/push/PR/review/land/sync
 # Working with git
 
 Never destructive git: no `reset --hard`, `restore`, `checkout -- <file>`,
-`stash drop`. Worktrees carry uncommitted WIP; those discard it irreversibly.
+`stash drop`; worktrees may carry uncommitted WIP that those commands would
+discard irreversibly.
 
 ## Use `devflow`, NEVER raw git/gh
 

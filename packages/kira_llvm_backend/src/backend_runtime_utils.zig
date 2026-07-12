@@ -53,6 +53,15 @@ pub fn nativeOptFlag() [:0]const u8 {
     return "-O2";
 }
 
+// Whether Kira debug info should be emitted; mirrors backend_capi.debugInfoEnabled
+// (ON unless KIRA_DEBUG_INFO=0) so the object-emission `-g` flag tracks whether
+// the module actually carries DWARF metadata.
+pub fn debugInfoRequested() bool {
+    const raw = std.c.getenv("KIRA_DEBUG_INFO") orelse return true;
+    const value = std.mem.span(raw);
+    return value.len != 0 and value[0] != '0';
+}
+
 pub fn emitObjectFileViaClang(
     allocator: std.mem.Allocator,
     api: *const llvm.Api,
@@ -95,6 +104,12 @@ pub fn emitObjectFileViaClang(
     // mem2reg/SROA/inlining/loop opts. This is the dominant native-perf lever and the
     // primary path for iPhone. Overridable via KIRA_NATIVE_OPT for debugging.
     try argv.append(nativeOptFlag());
+    // Emit debug sections. The textual IR already carries the DWARF metadata the
+    // C-API backend built (compile unit, subprograms, line locations); `-g` makes
+    // clang lower it into the object's debug sections instead of dropping it.
+    // Overridable off via KIRA_DEBUG_INFO=0 (which also stops the backend from
+    // emitting the metadata in the first place).
+    if (debugInfoRequested()) try argv.append("-g");
     try argv.appendSlice(&.{ "-c", "-x", "ir", "-o", object_path, ir_path });
     const process_environ = inheritedProcessEnviron();
     var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });

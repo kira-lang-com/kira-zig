@@ -270,3 +270,123 @@ test "round-trips async task instructions (KBCC)" {
     try std.testing.expect(insts[5] == .task_detach);
     try std.testing.expectEqual(@as(u32, 2), insts[5].task_detach.task);
 }
+
+test "round-trips debug section (KBCD source files + locations + local names)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .functions = &.{
+            // Function 0 carries a full debug table.
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 2,
+                .local_count = 2,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_int = .{ .dst = 0, .value = 7 } },
+                    .{ .ret = .{ .src = null } },
+                },
+                .debug_locations = &.{
+                    .{ .file_id = 0, .start = 0, .end = 0 },
+                    .{ .file_id = 1, .start = 12, .end = 34 },
+                },
+                .local_names = &.{ "count", "total" },
+            },
+            // Function 1 has no debug info: it must stay empty across the trip
+            // and must not shift the per-function alignment of function 0.
+            .{
+                .id = 1,
+                .name = "helper",
+                .param_count = 0,
+                .register_count = 1,
+                .local_count = 0,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .ret = .{ .src = null } },
+                },
+            },
+        },
+        .entry_function_id = 0,
+        .source_files = &.{ "main.kira", "helper.kira" },
+    };
+
+    var bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer bytes.deinit();
+    try serialize(&bytes.writer, module);
+
+    const round_tripped = try deserialize(allocator, bytes.written());
+
+    try std.testing.expectEqual(@as(usize, 2), round_tripped.source_files.len);
+    try std.testing.expectEqualStrings("main.kira", round_tripped.source_files[0]);
+    try std.testing.expectEqualStrings("helper.kira", round_tripped.source_files[1]);
+
+    const func0 = round_tripped.functions[0];
+    try std.testing.expectEqual(@as(usize, 2), func0.debug_locations.len);
+    try std.testing.expectEqual(@as(u32, 0), func0.debug_locations[0].file_id);
+    try std.testing.expectEqual(@as(u32, 0), func0.debug_locations[0].start);
+    try std.testing.expectEqual(@as(u32, 0), func0.debug_locations[0].end);
+    try std.testing.expectEqual(@as(u32, 1), func0.debug_locations[1].file_id);
+    try std.testing.expectEqual(@as(u32, 12), func0.debug_locations[1].start);
+    try std.testing.expectEqual(@as(u32, 34), func0.debug_locations[1].end);
+    try std.testing.expectEqual(@as(usize, 2), func0.local_names.len);
+    try std.testing.expectEqualStrings("count", func0.local_names[0]);
+    try std.testing.expectEqualStrings("total", func0.local_names[1]);
+
+    const func1 = round_tripped.functions[1];
+    try std.testing.expectEqual(@as(usize, 0), func1.debug_locations.len);
+    try std.testing.expectEqual(@as(usize, 0), func1.local_names.len);
+}
+
+test "legacy module without debug section loads with empty debug info" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+    const module: Module = .{
+        .functions = &.{
+            .{
+                .id = 0,
+                .name = "main",
+                .param_count = 0,
+                .register_count = 1,
+                .local_count = 1,
+                .local_types = &.{},
+                .instructions = &.{
+                    .{ .const_int = .{ .dst = 0, .value = 3 } },
+                    .{ .ret = .{ .src = null } },
+                },
+                .debug_locations = &.{.{ .file_id = 0, .start = 1, .end = 2 }},
+                .local_names = &.{"x"},
+            },
+        },
+        .entry_function_id = 0,
+        .source_files = &.{"main.kira"},
+    };
+
+    var bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer bytes.deinit();
+    try serialize(&bytes.writer, module);
+
+    // Forge a pre-KBCD container: overwrite the KBCD magic with KBCC. The KBCC
+    // reader stops after the last function and never consumes the trailing
+    // debug bytes, exactly as a genuinely old file (which lacks them) behaves.
+    const legacy = try allocator.dupe(u8, bytes.written());
+    try std.testing.expectEqualStrings("KBCD", legacy[0..4]);
+    @memcpy(legacy[0..4], "KBCC");
+
+    const round_tripped = try deserialize(allocator, legacy);
+
+    // No debug section is read: source files and every per-function debug table
+    // default to empty, preserving backward compatibility with existing .kbc.
+    try std.testing.expectEqual(@as(usize, 0), round_tripped.source_files.len);
+    try std.testing.expectEqual(@as(usize, 1), round_tripped.functions.len);
+    try std.testing.expectEqual(@as(usize, 0), round_tripped.functions[0].debug_locations.len);
+    try std.testing.expectEqual(@as(usize, 0), round_tripped.functions[0].local_names.len);
+    // The pre-debug payload still round-trips intact.
+    try std.testing.expect(round_tripped.functions[0].instructions[0] == .const_int);
+    try std.testing.expectEqual(@as(i64, 3), round_tripped.functions[0].instructions[0].const_int.value);
+}

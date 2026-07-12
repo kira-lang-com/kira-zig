@@ -40,8 +40,16 @@ const readIndirectCall = primitives.readIndirectCall;
 const readVirtualCall = primitives.readVirtualCall;
 const readCallParts = primitives.readCallParts;
 
+// Optional trailing debug section (KBCD+, Core Law #5 split).
+const debug_section = @import("serialization_debug.zig");
+const writeDebugSection = debug_section.writeDebugSection;
+const readDebugSection = debug_section.readDebugSection;
+
 pub fn serialize(writer: anytype, module: Module) !void {
-    try writer.writeAll("KBCC");
+    // KBCD is KBCC plus an appended debug section (source-file table + per-
+    // function PC->source locations and local names). Container layout up to
+    // the last function is byte-identical to KBCC.
+    try writer.writeAll("KBCD");
     try writer.writeInt(u32, @as(u32, @intCast(module.constructs.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.construct_implementations.len)), .little);
     try writer.writeInt(u32, @as(u32, @intCast(module.types.len)), .little);
@@ -405,6 +413,10 @@ pub fn serialize(writer: anytype, module: Module) !void {
             }
         }
     }
+
+    // Trailing debug section (KBCD): defaults to an all-empty section when the
+    // module carries no debug info, so the reader still sees a valid layout.
+    try writeDebugSection(writer, module);
 }
 pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     var reader_state = std.Io.Reader.fixed(bytes);
@@ -436,10 +448,16 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
     // task_spawn_ready, task_await, task_cancel, task_detach); container layout
     // and every feature flag are otherwise identical to KBCB.
     const is_kbcc = std.mem.eql(u8, &magic, "KBCC");
-    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc;
-    const has_load_indirect_moved = is_kbca or is_kbcb or is_kbcc;
-    const has_convert_reinterpret = is_kbcb or is_kbcc;
-    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc;
+    // KBCD is KBCC plus a trailing debug section (source-file table + per-
+    // function PC->source location table and local names). The container up to
+    // the last function is byte-identical to KBCC; older files omit the section
+    // and default all debug info to empty.
+    const is_kbcd = std.mem.eql(u8, &magic, "KBCD");
+    const has_debug_section = is_kbcd;
+    const has_unsigned_arith = is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc or is_kbcd;
+    const has_load_indirect_moved = is_kbca or is_kbcb or is_kbcc or is_kbcd;
+    const has_convert_reinterpret = is_kbcb or is_kbcc or is_kbcd;
+    const is_kbc6_or_later = is_kbc6 or is_kbc7 or is_kbc8 or is_kbc9 or is_kbca or is_kbcb or is_kbcc or is_kbcd;
     const has_function_ownership = std.mem.eql(u8, &magic, "KBC1") or std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_closure_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
     const has_load_ownership = std.mem.eql(u8, &magic, "KBC3") or std.mem.eql(u8, &magic, "KBC4") or is_kbc5 or is_kbc6_or_later;
@@ -913,12 +931,23 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
         });
     }
 
+    // Functions are decoded before the trailing debug section so it can patch
+    // each function's debug_locations/local_names in place. Pre-KBCD containers
+    // have no section: source_files stays empty and every function keeps the
+    // default empty debug tables.
+    const function_slice = try functions.toOwnedSlice();
+    var source_files: []const []const u8 = &.{};
+    if (has_debug_section) {
+        source_files = try readDebugSection(allocator, reader, function_slice);
+    }
+
     return .{
         .constructs = try constructs.toOwnedSlice(),
         .construct_implementations = try construct_implementations.toOwnedSlice(),
         .types = try types.toOwnedSlice(),
         .enums = try enums.toOwnedSlice(),
-        .functions = try functions.toOwnedSlice(),
+        .functions = function_slice,
         .entry_function_id = if (raw_entry >= 0) @as(u32, @intCast(raw_entry)) else null,
+        .source_files = source_files,
     };
 }

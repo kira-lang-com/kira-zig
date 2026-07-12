@@ -1,5 +1,6 @@
 pub const CommandKind = enum {
     run,
+    debug,
     fetch_llvm,
     tokens,
     ast,
@@ -26,6 +27,7 @@ pub const CommandKind = enum {
     pub fn label(self: CommandKind) []const u8 {
         return switch (self) {
             .run => "run",
+            .debug => "debug",
             .fetch_llvm => "fetch-llvm",
             .tokens => "tokens",
             .ast => "ast",

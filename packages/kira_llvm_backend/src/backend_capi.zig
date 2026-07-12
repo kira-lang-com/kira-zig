@@ -30,6 +30,7 @@ const enum_dtors = @import("backend_capi_enum_dtors.zig");
 const array_dtors = @import("backend_capi_array_dtors.zig");
 const dynamic_dtors = @import("backend_capi_dynamic_dtors.zig");
 const ffi = @import("backend_capi_ffi.zig");
+const debug_dwarf = @import("debug_dwarf.zig");
 
 const functionExecutionById = utils.functionExecutionById;
 const functionById = utils.functionById;
@@ -41,6 +42,15 @@ pub const Lowered = struct {
     context: llvm.c.LLVMContextRef,
     module_ref: llvm.c.LLVMModuleRef,
 };
+
+// DWARF debug-info emission is ON by default so `kira build` binaries are
+// debuggable (line tables + locals) out of the box. Set KIRA_DEBUG_INFO=0 to opt
+// out (e.g. smaller artifacts, or to isolate a codegen issue).
+fn debugInfoEnabled() bool {
+    const raw = std.c.getenv("KIRA_DEBUG_INFO") orelse return true;
+    const value = std.mem.span(raw);
+    return value.len != 0 and value[0] != '0';
+}
 
 fn dropEnabled() bool {
     // Owned-value drop elaboration is now ON by default (the C-API backend is the default
@@ -145,6 +155,18 @@ pub fn buildModulePlanned(
 
     const builder = api.LLVMCreateBuilderInContext(context);
     defer api.LLVMDisposeBuilder(builder);
+
+    // Real DWARF: one DIBuilder + compile unit for the whole module. Per-function
+    // subprograms and per-instruction locations are attached during body
+    // lowering (FunctionCodegen), then finalized before the module is emitted.
+    // Best-effort: `tryInit` returns null (feature off, diagnosed) on a toolchain
+    // that can't emit debug info, and the codegen wiring simply skips it.
+    var dwarf_storage: ?debug_dwarf.DwarfBuilder = if (debugInfoEnabled())
+        debug_dwarf.DwarfBuilder.tryInit(allocator, api, module_ref, context, request.program.programPtr())
+    else
+        null;
+    defer if (dwarf_storage) |*dw| dw.deinit();
+    const dwarf: ?*debug_dwarf.DwarfBuilder = if (dwarf_storage) |*dw| dw else null;
 
     const types = Types.init(api, context, triple);
     const runtime_decls = RuntimeDecls.declare(api, module_ref, types, request.mode);
@@ -301,9 +323,16 @@ pub fn buildModulePlanned(
             .functions = &functions,
             .function_decl = function_decl,
             .function_value = function_value,
+            .dwarf = dwarf,
         };
         try fc.lower();
     }
+
+    // Support functions below (dispatchers, hybrid trampolines, host main) have
+    // no DISubprogram. Clear any debug location the last user body left on the
+    // shared builder so their IR is not tagged with another function's scope,
+    // which the verifier rejects as a cross-function !dbg attachment.
+    if (dwarf) |dw| dw.clearLocation(builder);
 
     // Dispatcher bodies, hybrid trampolines, and the host main are shared support
     // definitions: emitted once in the support CGU, declared-only elsewhere.
@@ -333,6 +362,10 @@ pub fn buildModulePlanned(
             try buildHostMain(allocator, api, builder, module_ref, types, entry_decl, entry_value);
         }
     }
+
+    // Resolve all temporary debug metadata before the module is printed,
+    // verified, or emitted. Must happen after every subprogram is created.
+    if (dwarf) |dw| dw.finalize();
 
     if (std.c.getenv("KIRA_CAPI_DUMP") != null) {
         const text = api.LLVMPrintModuleToString(module_ref);

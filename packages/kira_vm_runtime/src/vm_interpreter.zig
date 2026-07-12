@@ -27,6 +27,7 @@ const tasks_impl = @import("vm_interpreter_tasks.zig");
 const taskFromRegister = tasks_impl.taskFromRegister;
 const vm_prepare = @import("vm_prepare.zig");
 const vm_mod = @import("vm.zig");
+const vm_debug = @import("vm_debug.zig");
 
 const Vm = vm_mod.Vm;
 const Hooks = vm_mod.Hooks;
@@ -95,30 +96,52 @@ pub fn runPrepared(
     try prologue.bindArguments(vm, decl, module, hooks, args, locals, local_owned);
 
     var pc: usize = 0;
+    // Debug frame stack: record this call frame so backtraces are walkable, and
+    // gate the (attached-only) single-step hook. `pc` aliases the live cursor.
+    // Every use is behind the `vm.debug` null check, so a non-debugging VM only
+    // pays one not-taken branch here and one per dispatched instruction.
+    const debug_pushed = if (vm.debug != null) blk: {
+        vm.debug_frames.append(vm.allocator, .{
+            .function_id = decl.id,
+            .name = decl.name,
+            .pc = &pc,
+            .locals = locals,
+        }) catch break :blk false;
+        break :blk true;
+    } else false;
+    defer if (debug_pushed) {
+        _ = vm.debug_frames.pop();
+    };
+    if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
     dispatch: switch (code[pc]) {
         .const_int => |value| {
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = value.value });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_float => |value| {
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .float = value.value });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_string => |value| {
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .string = value.value });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_bool => |value| {
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = value.value });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_null_ptr => |value| {
             setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = 0 });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_function => |value| {
@@ -132,6 +155,7 @@ pub fn runPrepared(
             runtime_abi.emitExecutionTrace("CALLABLE", "CONST_FUNCTION", "dst={d} fn={d} raw=0x{x} repr={s}", .{ value.dst, value.function_id, raw_ptr, @tagName(value.representation) });
             setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = raw_ptr });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .const_closure => |value| {
@@ -139,6 +163,7 @@ pub fn runPrepared(
             runtime_abi.emitExecutionTrace("CALLABLE", "CONST_CLOSURE", "dst={d} fn={d} raw=0x{x} captures={d}", .{ value.dst, value.function_id, closure_ptr, value.captures.len });
             setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = closure_ptr });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .alloc_struct => |value| {
@@ -149,6 +174,7 @@ pub fn runPrepared(
                 try vm.allocateStruct(module, value.type_name);
             setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = struct_ptr });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .alloc_enum => |value| {
@@ -172,6 +198,7 @@ pub fn runPrepared(
             }
             setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.allocateEnum(value.enum_type_name, value.discriminant, payload) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .alloc_native_state => |value| {
@@ -182,6 +209,7 @@ pub fn runPrepared(
             }
             setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.allocateNativeState(module, value.type_name, value.type_id, src_value.raw_ptr) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .alloc_array => |value| {
@@ -192,6 +220,7 @@ pub fn runPrepared(
             }
             setSlotManaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = try vm.allocateArray(@intCast(len_value.integer)) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .add => |value| {
@@ -208,6 +237,7 @@ pub fn runPrepared(
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.addValues(vm, lhs, rhs));
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .subtract => |value| {
@@ -219,6 +249,7 @@ pub fn runPrepared(
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.subtractValues(vm, lhs, rhs));
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .multiply => |value| {
@@ -230,6 +261,7 @@ pub fn runPrepared(
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.multiplyValues(vm, lhs, rhs));
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .divide => |value| {
@@ -237,6 +269,7 @@ pub fn runPrepared(
             const rhs = registers[value.rhs];
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.divideValues(vm, lhs, rhs, value.unsigned));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .modulo => |value| {
@@ -244,6 +277,7 @@ pub fn runPrepared(
             const rhs = registers[value.rhs];
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.moduloValues(vm, lhs, rhs, value.unsigned));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .bitwise => |value| {
@@ -251,12 +285,14 @@ pub fn runPrepared(
             const rhs = registers[value.rhs];
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.bitwiseValue(vm, lhs, rhs, value.op, value.unsigned));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .convert => |value| {
             const src = registers[value.src];
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.convertValue(vm, src, value.to_float, value.reinterpret));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .compare => |value| {
@@ -280,11 +316,13 @@ pub fn runPrepared(
                 setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = try value_impl.compareValues(vm, lhs, rhs, value.op) });
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .unary => |value| {
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], try value_impl.unaryValue(vm, registers[value.src], value.op));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .store_local => |value| {
@@ -311,6 +349,7 @@ pub fn runPrepared(
                 setSlotOwned(vm, &locals[value.local], &local_owned[value.local], stored);
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .load_local => |value| {
@@ -342,11 +381,13 @@ pub fn runPrepared(
                 .borrow_read, .borrow_mut, .copy => setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], locals[value.local]),
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .local_ptr => |value| {
             setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(&locals[value.local]) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .subobject_ptr => |value| {
@@ -358,6 +399,7 @@ pub fn runPrepared(
             const base_ptr: [*]align(1) runtime_abi.Value = @ptrFromInt(base.raw_ptr);
             setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(base_ptr + value.offset) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .field_ptr => |value| {
@@ -382,31 +424,37 @@ pub fn runPrepared(
                 setSlotUnmanaged(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(slot_ptr) });
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .recover_native_state => |value| {
             try native_state.recoverNativeState(vm, module, registers, register_owned, value);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .free_native_state => |value| {
             try native_state.freeNativeState(vm, registers, value);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .native_state_field_get => |value| {
             try native_state.nativeStateFieldGet(vm, module, registers, register_owned, value);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .native_state_field_set => |value| {
             try native_state.nativeStateFieldSet(vm, module, registers, register_owned, value);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .c_string_to_string => |value| {
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], try vm.copyCString(registers[value.src]));
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .array_len => |value| {
@@ -418,6 +466,7 @@ pub fn runPrepared(
             const array_ptr: *const ArrayObject = @ptrFromInt(array_value.raw_ptr);
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(array_ptr.len) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .string_len => |value| {
@@ -428,6 +477,7 @@ pub fn runPrepared(
             }
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(string_value.string.len) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .array_get => |value| {
@@ -454,7 +504,8 @@ pub fn runPrepared(
                 mutable_array.items[index] = runtime_abi.bridgeValueFromValue(.void);
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], drained);
                 pc += 1;
-                continue :dispatch code[pc];
+                if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
             }
             const element = try prologue.prepareArrayElement(vm, module, value.ty, runtime_abi.bridgeValueToValue(array_ptr.items[index]), value.borrow);
             if (element.owned) {
@@ -463,6 +514,7 @@ pub fn runPrepared(
                 setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], element.value);
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_array_field_load => |value| {
@@ -492,6 +544,7 @@ pub fn runPrepared(
             setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], field_value);
             if (element.owned) vm.heap.dropValue(element.value);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .array_set => |value| {
@@ -517,6 +570,7 @@ pub fn runPrepared(
                 registers[value.src] = .{ .void = {} };
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .array_append => |value| {
@@ -536,6 +590,7 @@ pub fn runPrepared(
                 registers[value.src] = .{ .void = {} };
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .enum_tag => |value| {
@@ -555,7 +610,8 @@ pub fn runPrepared(
                 }
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(native_words[0]) });
                 pc += 1;
-                continue :dispatch code[pc];
+                if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
             }
             const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
             if (enum_ptr[0] != .integer) {
@@ -564,6 +620,7 @@ pub fn runPrepared(
             }
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], enum_ptr[0]);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .enum_payload => |value| {
@@ -577,11 +634,13 @@ pub fn runPrepared(
                 const payload = try vm.enumPayloadFromNativeWord(module, value.payload_ty, native_words[1]);
                 setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], payload);
                 pc += 1;
-                continue :dispatch code[pc];
+                if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
             }
             const enum_ptr: [*]align(1) const runtime_abi.Value = @ptrFromInt(enum_value.raw_ptr);
             setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], enum_ptr[1]);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .load_indirect => |value| {
@@ -619,6 +678,7 @@ pub fn runPrepared(
                 setSlotBorrowed(vm, &registers[value.dst], &register_owned[value.dst], slot_ptr.*);
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .store_indirect => |value| {
@@ -647,6 +707,7 @@ pub fn runPrepared(
                 }
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .copy_indirect => |value| {
@@ -667,6 +728,7 @@ pub fn runPrepared(
             const src_ptr = try vm.resolveStructValuePointer(value.type_name, src_ptr_value.raw_ptr);
             try vm.copyStructValueInto(module, value.type_name, dst_ptr, .{ .raw_ptr = src_ptr });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .branch => |value| {
@@ -677,19 +739,23 @@ pub fn runPrepared(
             }
             // Targets were resolved to direct pc offsets by the decode pass.
             pc = if (condition.boolean) value.true_label else value.false_label;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .jump => |value| {
             pc = value.label;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .label => {
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .print => |value| {
             try builtins.printValue(writer, module, registers[value.src], value.ty);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .call_runtime => |value| {
@@ -698,6 +764,21 @@ pub fn runPrepared(
             // failure semantics for missing functions and unresolved labels.
             const callee_index = value.function_id;
             if (callee_index >= prepared.functions.len) {
+                // INT3-style software breakpoint: the debugger patched this pc
+                // with a sentinel call_runtime and saved the original. Restore
+                // it, report the stop, then re-dispatch the ORIGINAL instruction.
+                // (Cold path: no real function index can reach the sentinel.)
+                if (callee_index == vm_debug.breakpoint_sentinel) {
+                    if (vm.debug) |dbg| {
+                        dbg.onBreakpointHit(function, pc);
+                    } else {
+                        // No controller to restore it: fail loudly rather than
+                        // spin on the sentinel.
+                        vm.rememberError("vm hit a breakpoint with no debug controller attached");
+                        return error.RuntimeFailure;
+                    }
+                    continue :dispatch code[pc];
+                }
                 if (callee_index == vm_prepare.trap_label_index) {
                     vm.rememberError("vm branch targets an unknown label");
                 } else {
@@ -717,6 +798,7 @@ pub fn runPrepared(
             const result = try runPrepared(vm, prepared, callee, call_args, writer, hooks);
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .call_native => |value| {
@@ -733,6 +815,7 @@ pub fn runPrepared(
             result = try vm.materializeNativeResultFromC(module, value.return_ty, result);
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_spawn => |value| {
@@ -742,6 +825,7 @@ pub fn runPrepared(
             const task = try tasks_impl.spawnTask(vm, value, registers);
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(task) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_spawn_ready => |value| {
@@ -752,6 +836,7 @@ pub fn runPrepared(
             try vm.task_queue.append(vm.allocator, task);
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .raw_ptr = @intFromPtr(task) });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_await => |value| {
@@ -759,6 +844,7 @@ pub fn runPrepared(
             const result = try tasks_impl.awaitTask(vm, prepared, module, task, writer, hooks);
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_cancel => |value| {
@@ -766,6 +852,7 @@ pub fn runPrepared(
             // Cooperative flag; a no-op once the task has run or been joined.
             if (task.state == .pending) task.cancel_requested = true;
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_detach => |value| {
@@ -783,6 +870,7 @@ pub fn runPrepared(
                 .consumed => {},
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_yield => {
@@ -790,6 +878,7 @@ pub fn runPrepared(
             // before this body continues.
             try tasks_impl.yieldOnce(vm, prepared, module, writer, hooks);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .frame_get => |value| {
@@ -801,6 +890,7 @@ pub fn runPrepared(
             const slots: [*]runtime_abi.Value = @ptrFromInt(frame_value.raw_ptr);
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], slots[value.slot]);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .frame_set => |value| {
@@ -812,6 +902,7 @@ pub fn runPrepared(
             const slots: [*]runtime_abi.Value = @ptrFromInt(frame_value.raw_ptr);
             slots[value.slot] = registers[value.src];
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_sleep => |value| {
@@ -826,6 +917,7 @@ pub fn runPrepared(
                 vm_tasks.sleepNs(ms * std.time.ns_per_ms);
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .task_is_complete => |value| {
@@ -835,6 +927,7 @@ pub fn runPrepared(
             const done = task.state != .pending or task.cancel_requested;
             setSlotPrimitive(vm, &registers[value.dst], &register_owned[value.dst], .{ .boolean = done });
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .call_virtual => |value| {
@@ -930,6 +1023,7 @@ pub fn runPrepared(
             };
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .call_value => |value| {
@@ -985,6 +1079,7 @@ pub fn runPrepared(
             };
             if (value.dst) |dst| setSlotOwned(vm, &registers[dst], &register_owned[dst], result) else vm.heap.dropValue(result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .ret => |value| {
@@ -1010,6 +1105,7 @@ pub fn runPrepared(
             else
                 try value_impl.compareValues(vm, lhs, rhs, value.op);
             pc = if (taken) value.true_target else value.false_target;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_compare_const_branch => |value| {
@@ -1019,6 +1115,7 @@ pub fn runPrepared(
             else
                 try value_impl.compareValues(vm, lhs, .{ .integer = value.imm }, value.op);
             pc = if (taken) value.true_target else value.false_target;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_cmp_local_const_branch => |value| {
@@ -1028,6 +1125,7 @@ pub fn runPrepared(
             else
                 try value_impl.compareValues(vm, lhs, .{ .integer = value.imm }, value.op);
             pc = if (taken) value.true_target else value.false_target;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_arith_locals_store => |value| {
@@ -1041,6 +1139,7 @@ pub fn runPrepared(
             // own; numeric results are unmanaged so this degrades to borrowed.
             setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_arith_local_const_store => |value| {
@@ -1051,6 +1150,7 @@ pub fn runPrepared(
                 try fused.arithValues(vm, lhs, .{ .integer = value.imm }, value.kind);
             setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], result);
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_array_bind_local => |value| {
@@ -1085,6 +1185,7 @@ pub fn runPrepared(
                 setSlotOwned(vm, &locals[value.dst_local], &local_owned[value.dst_local], .{ .raw_ptr = copied });
             }
             pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];
         },
         .fused_arith_locals_ret => |value| {

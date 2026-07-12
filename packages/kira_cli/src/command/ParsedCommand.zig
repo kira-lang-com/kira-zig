@@ -43,6 +43,16 @@ pub const RunOptions = struct {
     input_path: []const u8 = ".",
 };
 
+pub const DebugOptions = struct {
+    backend: ?build_def.ExecutionTarget = null,
+    // Run the Debug Adapter Protocol server (editor-facing) instead of the
+    // interactive terminal REPL. `--port` selects a TCP transport; without it,
+    // the DAP server speaks over stdio.
+    dap: bool = false,
+    port: ?u16 = null,
+    input_path: []const u8 = ".",
+};
+
 pub const LiveMode = enum { run, runners_list, runners_build, runners_clean };
 pub const LiveRunnerKind = enum {
     desktop,
@@ -173,6 +183,7 @@ pub const LiveRunnerOptions = struct {
 
 pub const ParsedCommand = union(CommandKind) {
     run: RunOptions,
+    debug: DebugOptions,
     fetch_llvm: FetchLlvmOptions,
     tokens: UpdateOptions,
     ast: UpdateOptions,

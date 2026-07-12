@@ -13,6 +13,7 @@ pub const fetchLibffi = @import("fetch_libffi.zig").run;
 pub const fetchLibffiInstallArchive = @import("fetch_libffi.zig").installArchive;
 pub const fetchLibffiPrintCiMetadataJson = @import("fetch_libffi.zig").printCiMetadataJson;
 pub const sharedLibraryExtension = @import("build_system.zig").sharedLibraryExtension;
+pub const llvmToolDir = @import("llvm_tooldir.zig").llvmToolDir;
 pub const CheckPipelineResult = @import("pipeline.zig").CheckPipelineResult;
 pub const CacheStatus = @import("pipeline.zig").CacheStatus;
 pub const ExecutablePipelineResult = @import("pipeline.zig").ExecutablePipelineResult;

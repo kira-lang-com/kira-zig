@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const parent = @import("lower_from_hir.zig");
@@ -617,7 +618,7 @@ pub fn lowerFfiTypeInfo(allocator: std.mem.Allocator, program: model.Program, ff
 
 pub fn lowerAssignmentStatement(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     program: model.Program,
     node: model.AssignStatement,
 ) !void {

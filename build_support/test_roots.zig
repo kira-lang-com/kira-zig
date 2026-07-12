@@ -29,4 +29,5 @@ pub const test_roots = [_][]const u8{
     "kira_live",
     "kira_llvm_backend",
     "kira_native_bridge",
+    "kira_debug",
 };

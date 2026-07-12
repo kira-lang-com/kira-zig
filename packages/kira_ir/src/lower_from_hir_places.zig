@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const type_impl = @import("lower_from_hir_types.zig");
 
@@ -49,7 +50,7 @@ pub const WritebackList = std.array_list.Managed(Writeback);
 /// it to deeper chains keeps VM/LLVM/hybrid parity.
 pub fn lowerMutableObject(
     lowerer: anytype,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     expr: *model.Expr,
     writebacks: *WritebackList,
 ) anyerror!u32 {
@@ -119,7 +120,7 @@ pub fn lowerMutableObject(
 /// Emit the deferred array-element write-backs (deepest-first) recorded by
 /// `lowerMutableObject`, persisting each mutated element copy back into its array.
 pub fn emitWritebacks(
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     writebacks: *const WritebackList,
 ) !void {
     var i = writebacks.items.len;
@@ -189,7 +190,7 @@ fn indexArgArrayMayBeMutated(
 
 pub fn lowerDirectCallArgs(
     lowerer: anytype,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     args: []const *model.Expr,
     function_id: u32,
     writebacks: *WritebackList,

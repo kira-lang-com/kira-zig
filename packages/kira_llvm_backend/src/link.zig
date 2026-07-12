@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 const backend_utils = @import("backend_utils.zig");
+const runtime_utils = @import("backend_runtime_utils.zig");
 const clang_driver = @import("clang_driver.zig");
 const emscripten = @import("emscripten.zig");
 const toolchain = @import("toolchain.zig");
@@ -109,6 +110,16 @@ pub fn linkExecutable(
     try appendDefaultSystemLibraries(&argv, selector);
 
     try runCommand(allocator, argv.items);
+
+    // On Apple targets DWARF stays in the object files' debug sections; the
+    // debugger reads it from a companion `.dSYM` bundle that `dsymutil` builds
+    // from the linked executable. Best-effort: a missing/failing dsymutil warns
+    // (the executable is still linked) rather than failing the build.
+    if (runtime_utils.debugInfoRequested() and isAppleTarget(selector)) {
+        generateDsym(allocator, executable_path) catch |err| {
+            std.debug.print("kira llvm backend: dsymutil did not run ({s}); executable linked without a .dSYM bundle\n", .{@errorName(err)});
+        };
+    }
 }
 
 pub fn linkSharedLibrary(
@@ -282,6 +293,42 @@ fn isWindowsTarget(selector: ?native.TargetSelector) bool {
 fn isLinuxTarget(selector: ?native.TargetSelector) bool {
     const value = selector orelse return builtin.os.tag == .linux;
     return std.mem.eql(u8, value.operating_system, "linux");
+}
+
+fn isAppleTarget(selector: ?native.TargetSelector) bool {
+    const value = selector orelse return builtin.os.tag == .macos or builtin.os.tag == .ios;
+    const os = value.operating_system;
+    return std.mem.eql(u8, os, "macos") or
+        std.mem.eql(u8, os, "ios") or
+        std.mem.eql(u8, os, "tvos") or
+        std.mem.eql(u8, os, "watchos") or
+        std.mem.eql(u8, os, "xros");
+}
+
+// Run `dsymutil <executable>` to produce the companion `.dSYM` bundle. Tolerant:
+// returns an error (which the caller downgrades to a warning) if dsymutil is
+// missing or exits non-zero, so a toolchain without dsymutil still links.
+fn generateDsym(allocator: std.mem.Allocator, executable_path: []const u8) !void {
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const dsymutil_path = try llvm_toolchain.toolPath(allocator, "dsymutil");
+    defer allocator.free(dsymutil_path);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
+    const process_environ = backend_utils.inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{ dsymutil_path, executable_path },
+        .expand_arg0 = .expand,
+        .environ_map = &environ_map,
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term == .exited and result.term.exited == 0) return;
+    if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+    return error.DsymutilFailed;
 }
 
 test "windows console subsystem only applies to native windows targets" {

@@ -71,6 +71,23 @@ pub const PreparedFunction = struct {
     alloc_type_index: []u32,
     struct_locals: []StructLocal,
     frame_size: usize,
+    /// Optional PC->source location table, index-aligned to `code`. Carried
+    /// forward from `decl.debug_locations` across the fuse/compact rewrite so a
+    /// debugger can map an interpreter pc back to a source span. Empty (`&.{}`)
+    /// for functions built without debug info — the common non-debug path pays
+    /// no allocation. A fused superinstruction takes the location of the FIRST
+    /// original op it covers; the synthesized trailing `ret` takes the previous
+    /// emitted instruction's location; the label trap has none (`{0,0,0}`).
+    prepared_locations: []const bytecode.SourceLoc = &.{},
+
+    /// Source location for interpreter pc `pc`, or null when unknown (no debug
+    /// info, out of range, or the `{0,0}` "no known location" sentinel).
+    pub fn sourceLocAt(self: *const PreparedFunction, pc: usize) ?bytecode.SourceLoc {
+        if (pc >= self.prepared_locations.len) return null;
+        const loc = self.prepared_locations[pc];
+        if (loc.start == 0 and loc.end == 0) return null;
+        return loc;
+    }
 };
 
 pub const PreparedModule = struct {
@@ -80,6 +97,13 @@ pub const PreparedModule = struct {
     /// (the compiler assigns sequential ids); sparse map otherwise.
     index_by_id_dense: []u32,
     index_by_id_sparse: std.AutoHashMapUnmanaged(u32, u32) = .{},
+
+    /// The module's dedup source-file string table (indexed by
+    /// `bytecode.SourceLoc.file_id`), exposed for debuggers resolving a
+    /// `sourceLocAt` result to a file path. Empty for modules without debug info.
+    pub fn sourceFiles(self: *const PreparedModule) []const []const u8 {
+        return self.module.source_files;
+    }
 
     pub fn indexOfId(self: *const PreparedModule, id: u32) ?u32 {
         if (self.index_by_id_dense.len != 0) {
@@ -95,6 +119,7 @@ pub const PreparedModule = struct {
             allocator.free(function.code);
             allocator.free(function.alloc_type_index);
             allocator.free(function.struct_locals);
+            if (function.prepared_locations.len != 0) allocator.free(function.prepared_locations);
         }
         allocator.free(self.functions);
         allocator.free(self.index_by_id_dense);
@@ -128,6 +153,7 @@ pub fn prepare(allocator: std.mem.Allocator, module: *const bytecode.Module) !*P
             allocator.free(function.code);
             allocator.free(function.alloc_type_index);
             allocator.free(function.struct_locals);
+            if (function.prepared_locations.len != 0) allocator.free(function.prepared_locations);
         }
         allocator.free(functions);
     }
@@ -346,13 +372,62 @@ fn prepareFunction(
         }
     }
 
+    const struct_locals = try collectStructLocals(allocator, type_index_by_name, decl);
+    errdefer allocator.free(struct_locals);
+
+    const prepared_locations = try buildPreparedLocations(allocator, decl, instructions, old_to_new, body_len, code.len);
+
     return .{
         .decl = decl,
         .code = code,
         .alloc_type_index = alloc_type_index,
-        .struct_locals = try collectStructLocals(allocator, type_index_by_name, decl),
+        .struct_locals = struct_locals,
         .frame_size = @as(usize, decl.register_count) + @as(usize, decl.local_count),
+        .prepared_locations = prepared_locations,
     };
+}
+
+/// Carry `decl.debug_locations` (index-aligned to the ORIGINAL instructions)
+/// forward onto the emitted `code`, using the `old_to_new` map produced by the
+/// emit pass. Returns `&.{}` (no allocation) when the function carries no debug
+/// info. Each emitted instruction takes the location of the FIRST original op
+/// that maps to it (so a fused superinstruction reports its first covered op),
+/// the synthesized trailing `ret` inherits the previous instruction's location,
+/// and the label trap stays "unknown" (`{0,0,0}`).
+fn buildPreparedLocations(
+    allocator: std.mem.Allocator,
+    decl: *const bytecode.Function,
+    instructions: []const bytecode.Instruction,
+    old_to_new: []const u32,
+    body_len: usize,
+    code_len: usize,
+) ![]const bytecode.SourceLoc {
+    if (decl.debug_locations.len == 0) return &.{};
+    const unknown = bytecode.SourceLoc{ .file_id = 0, .start = 0, .end = 0 };
+    const locs = try allocator.alloc(bytecode.SourceLoc, code_len);
+    errdefer allocator.free(locs);
+    @memset(locs, unknown);
+    const assigned = try allocator.alloc(bool, code_len);
+    defer allocator.free(assigned);
+    @memset(assigned, false);
+
+    // Ascending original pc order: the first op mapping to an emitted index wins,
+    // which is exactly "fused instruction -> first covered op". Labels emit
+    // nothing, so they never claim an emitted slot.
+    for (0..body_len) |i| {
+        if (instructions[i] == .label) continue;
+        const emitted = old_to_new[i];
+        if (emitted >= code_len or assigned[emitted]) continue;
+        assigned[emitted] = true;
+        locs[emitted] = if (i < decl.debug_locations.len) decl.debug_locations[i] else unknown;
+    }
+    // Synthesized trailing `ret` sits at code_len-2 (label trap at code_len-1);
+    // it inherits the previous emitted instruction's location (code_len-3), when
+    // the function has a body. An empty body leaves it "unknown".
+    if (code_len >= 3 and !assigned[code_len - 2]) {
+        locs[code_len - 2] = locs[code_len - 3];
+    }
+    return locs;
 }
 
 fn mapLabel(label_offsets: []const u32, old_to_new: []const u32, trap_pc: u32, label: u32) u32 {
