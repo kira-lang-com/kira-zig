@@ -99,9 +99,26 @@ fn rebasePaths(allocator: std.mem.Allocator, base: []const u8, values: []const [
 }
 
 fn rebasePath(allocator: std.mem.Allocator, base: []const u8, value: []const u8) ![]const u8 {
-    if (value.len == 0 or std.fs.path.isAbsolute(value) or std.mem.startsWith(u8, value, "${")) return allocator.dupe(u8, value);
-    if (std.mem.eql(u8, base, ".") or base.len == 0) return allocator.dupe(u8, value);
-    return std.fs.path.join(allocator, &.{ base, value });
+    if (value.len == 0 or std.mem.startsWith(u8, value, "${")) return allocator.dupe(u8, value);
+    if (std.fs.path.isAbsolute(value) or std.mem.eql(u8, base, ".") or base.len == 0)
+        return normalizeManifestPath(allocator, value);
+    const joined = try std.fmt.allocPrint(
+        allocator,
+        "{s}/{s}",
+        .{ std.mem.trimEnd(u8, base, "/\\"), std.mem.trimStart(u8, value, "/\\") },
+    );
+    for (joined) |*byte| if (byte.* == '\\') {
+        byte.* = '/';
+    };
+    return joined;
+}
+
+fn normalizeManifestPath(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const normalized = try allocator.dupe(u8, value);
+    for (normalized) |*byte| if (byte.* == '\\') {
+        byte.* = '/';
+    };
+    return normalized;
 }
 
 test "migration rebases native library paths from TOML directory to project root" {
@@ -123,23 +140,23 @@ test "migration rebases native library paths from TOML directory to project root
     };
     const rebased = try rebaseNativeLibrary(allocator, "NativeLibs", library);
     try std.testing.expectEqualStrings(
-        try std.fs.path.join(allocator, &.{ "NativeLibs", "include", "demo.h" }),
+        "NativeLibs/include/demo.h",
         rebased.headers.entrypoint.?,
     );
     try std.testing.expectEqualStrings(
-        try std.fs.path.join(allocator, &.{ "NativeLibs", "include" }),
+        "NativeLibs/include",
         rebased.headers.include_dirs[0],
     );
     try std.testing.expectEqualStrings(
-        try std.fs.path.join(allocator, &.{ "NativeLibs", "src", "demo.c" }),
+        "NativeLibs/src/demo.c",
         rebased.build.sources[0],
     );
     try std.testing.expectEqualStrings(
-        try std.fs.path.join(allocator, &.{ "NativeLibs", "include", "demo.h" }),
+        "NativeLibs/include/demo.h",
         rebased.autobinding.?.headers[0],
     );
     try std.testing.expectEqualStrings(
-        try std.fs.path.join(allocator, &.{ "NativeLibs", "target", "include" }),
+        "NativeLibs/target/include",
         rebased.targets[0].link.include_dirs[0],
     );
     try std.testing.expectEqualStrings("X11", rebased.targets[0].link.system_libs[0]);
