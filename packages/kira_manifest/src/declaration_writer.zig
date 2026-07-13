@@ -15,10 +15,14 @@ const PackageKind = @import("project_manifest.zig").PackageKind;
 /// and bindings always write to `app/bindings/<module>.kira`.
 pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManifest) !void {
     try writer.print("Package {s} {{\n", .{packageName(manifest.name)});
-    try writer.print("    let version = \"{s}\"\n", .{manifest.version});
+    try writer.writeAll("    let version = ");
+    try writeQuotedString(writer, manifest.version);
+    try writer.writeAll("\n");
     try writer.print("    let kind = PackageKind.{s}\n", .{kindVariant(manifest.kind)});
     if (manifest.module_root) |root| {
-        try writer.print("    let moduleRoot = \"{s}\"\n", .{root});
+        try writer.writeAll("    let moduleRoot = ");
+        try writeQuotedString(writer, root);
+        try writer.writeAll("\n");
     }
     try writer.print("    let defaults = Defaults {{ executionMode: Backend.{s}, buildTarget: BuildTarget.{s} }}\n", .{
         backendVariant(manifest.execution_mode),
@@ -34,17 +38,37 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
         try writer.print("], phase: TestPhase.{s} }}\n", .{phaseVariant(tests.phase)});
     }
 
+    if (manifest.assets.len > 0) {
+        try writer.writeAll("    let assets = ");
+        try writeStringArray(writer, manifest.assets);
+        try writer.writeAll("\n");
+    }
+
     if (manifest.dependencies.len > 0) {
         try writer.writeAll("    let dependencies = [\n");
         for (manifest.dependencies, 0..) |dep, index| {
-            try writer.print("        Dependency {{ name: \"{s}\"", .{dep.name});
+            try writer.writeAll("        Dependency { name: ");
+            try writeQuotedString(writer, dep.name);
             switch (dep.source) {
-                .registry => |r| try writer.print(", version: \"{s}\"", .{r.version}),
-                .path => |p| try writer.print(", path: \"{s}\"", .{p.path}),
+                .registry => |r| {
+                    try writer.writeAll(", version: ");
+                    try writeQuotedString(writer, r.version);
+                },
+                .path => |p| {
+                    try writer.writeAll(", path: ");
+                    try writeQuotedString(writer, p.path);
+                },
                 .git => |g| {
-                    try writer.print(", git: \"{s}\"", .{g.url});
-                    if (g.rev) |rev| try writer.print(", rev: \"{s}\"", .{rev});
-                    if (g.tag) |tag| try writer.print(", tag: \"{s}\"", .{tag});
+                    try writer.writeAll(", git: ");
+                    try writeQuotedString(writer, g.url);
+                    if (g.rev) |rev| {
+                        try writer.writeAll(", rev: ");
+                        try writeQuotedString(writer, rev);
+                    }
+                    if (g.tag) |tag| {
+                        try writer.writeAll(", tag: ");
+                        try writeQuotedString(writer, tag);
+                    }
                 },
             }
             try writer.writeAll(if (index + 1 == manifest.dependencies.len) " }\n" else " },\n");
@@ -67,7 +91,9 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
 
 fn writeNativeLibrary(writer: anytype, lib: native.NativeLibrarySpec) !void {
     try writer.writeAll("        NativeLibrary {\n");
-    try writer.print("            name: \"{s}\",\n", .{lib.name});
+    try writer.writeAll("            name: ");
+    try writeQuotedString(writer, lib.name);
+    try writer.writeAll(",\n");
     try writer.print("            linkMode: LinkMode.{s},\n", .{linkModeVariant(lib.link_mode)});
     try writeHeaders(writer, lib.headers);
     if (lib.build.sources.len > 0) {
@@ -87,10 +113,13 @@ fn writeNativeLibrary(writer: anytype, lib: native.NativeLibrarySpec) !void {
 fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
     try writer.writeAll("            targets: [\n");
     for (targets, 0..) |target, index| {
-        try writer.print(
-            "                NativeTarget {{ triple: \"{s}-{s}-{s}\"",
-            .{ target.selector.architecture, target.selector.operating_system, target.selector.abi },
-        );
+        try writer.writeAll("                NativeTarget { triple: \"");
+        try writeEscapedStringContents(writer, target.selector.architecture);
+        try writer.writeAll("-");
+        try writeEscapedStringContents(writer, target.selector.operating_system);
+        try writer.writeAll("-");
+        try writeEscapedStringContents(writer, target.selector.abi);
+        try writer.writeAll("\"");
         if (target.compiler_flags.len > 0) {
             try writer.writeAll(", compilerFlags: ");
             try writeStringArray(writer, target.compiler_flags);
@@ -125,7 +154,8 @@ fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
     try writer.writeAll("            headers: Headers {");
     var first = true;
     if (headers.entrypoint) |entry| {
-        try writer.print(" entrypoint: \"{s}\"", .{entry});
+        try writer.writeAll(" entrypoint: ");
+        try writeQuotedString(writer, entry);
         first = false;
     }
     if (headers.include_dirs.len > 0) {
@@ -143,7 +173,8 @@ fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
 }
 
 fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
-    try writer.print("            autobind: Autobind {{ module: \"{s}\"", .{auto.module_name});
+    try writer.writeAll("            autobind: Autobind { module: ");
+    try writeQuotedString(writer, auto.module_name);
     if (auto.headers.len > 0) {
         try writer.writeAll(", headers: ");
         try writeStringArray(writer, auto.headers);
@@ -170,9 +201,27 @@ fn writeStringArray(writer: anytype, values: []const []const u8) !void {
     try writer.writeAll("[");
     for (values, 0..) |value, index| {
         if (index != 0) try writer.writeAll(", ");
-        try writer.print("\"{s}\"", .{value});
+        try writeQuotedString(writer, value);
     }
     try writer.writeAll("]");
+}
+
+fn writeQuotedString(writer: anytype, value: []const u8) !void {
+    try writer.writeAll("\"");
+    try writeEscapedStringContents(writer, value);
+    try writer.writeAll("\"");
+}
+
+fn writeEscapedStringContents(writer: anytype, value: []const u8) !void {
+    for (value) |byte| switch (byte) {
+        '\\' => try writer.writeAll("\\\\"),
+        '"' => try writer.writeAll("\\\""),
+        '\n' => try writer.writeAll("\\n"),
+        '\r' => try writer.writeAll("\\r"),
+        '\t' => try writer.writeAll("\\t"),
+        0 => try writer.writeAll("\\0"),
+        else => try writer.writeByte(byte),
+    };
 }
 
 fn packageName(name: []const u8) []const u8 {
@@ -235,6 +284,7 @@ test "writes a round-trippable package.kira" {
         .kind = .app,
         .execution_mode = "hybrid",
         .build_target = "host",
+        .assets = &.{ "assets", "assets\\quoted\"name\n" },
         .dependencies = &.{
             .{ .name = "Foundation", .source = .{ .registry = .{ .version = "0.1.0" } } },
             .{ .name = "Remote", .source = .{ .git = .{ .url = "https://example.com/remote.git", .rev = "abc123" } } },
@@ -262,6 +312,7 @@ test "writes a round-trippable package.kira" {
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Foundation\", version: \"0.1.0\" }") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Remote\", git: \"https://example.com/remote.git\", rev: \"abc123\" }") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "NativeTarget { triple: \"x86_64-linux-gnu\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"assets\\\\quoted\\\"name\\n\"") != null);
 
     // Reload it through the declaration loader for a true round trip.
     const loader = @import("declaration_loader.zig");
@@ -269,6 +320,8 @@ test "writes a round-trippable package.kira" {
     try std.testing.expect(result.ok());
     try std.testing.expectEqualStrings("DemoApp", result.manifest.name);
     try std.testing.expectEqualStrings("hybrid", result.manifest.execution_mode);
+    try std.testing.expectEqual(@as(usize, 2), result.manifest.assets.len);
+    try std.testing.expectEqualStrings("assets\\quoted\"name\n", result.manifest.assets[1]);
     try std.testing.expectEqual(@as(usize, 2), result.manifest.dependencies.len);
     const git_dep = result.manifest.dependencies[1].source.git;
     try std.testing.expectEqualStrings("https://example.com/remote.git", git_dep.url);
