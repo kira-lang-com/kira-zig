@@ -39,6 +39,14 @@ pub fn status(ctx: Context) !void {
         try reportPair(ctx, "fork vs upstream", fork_ref, up_ref);
     }
     try reportPair(ctx, "local vs fork", ctx.default_branch, fork_ref);
+
+    const branch = try git.currentBranch(ctx);
+    defer ctx.allocator.free(branch);
+    if (!std.mem.eql(u8, branch, ctx.default_branch) and !std.mem.eql(u8, branch, "HEAD")) {
+        const fork_branch_ref = try std.fmt.allocPrint(ctx.allocator, "origin/{s}", .{branch});
+        defer ctx.allocator.free(fork_branch_ref);
+        try reportPair(ctx, "active branch vs fork", "HEAD", fork_branch_ref);
+    }
 }
 
 /// Single-stage: the PR lives on upstream when there is an upstream remote
@@ -153,9 +161,9 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
         // a rate-limited/incomplete review must not read as "reviewed".
-        const logins = try gh.reviewerLogins(ctx, slug, number);
+        const logins = try gh.headReviewerLogins(ctx, slug, number);
         defer ctx.allocator.free(logins);
-        const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
+        const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null or try gh.codeRabbitCheckResponded(ctx, slug, number);
         const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
         const reviewers_seen = has_rabbit and (!require_codex or has_codex);
 
@@ -183,9 +191,9 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 /// wait-reviews (Codex P2: "Require reviewer completion before merging").
 pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
     const slug = prSlug(ctx);
-    const logins = try gh.reviewerLogins(ctx, slug, number);
+    const logins = try gh.headReviewerLogins(ctx, slug, number);
     defer ctx.allocator.free(logins);
-    const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
+    const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null or try gh.codeRabbitCheckResponded(ctx, slug, number);
     const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
     if (!(has_rabbit and (!require_codex or has_codex))) {
         out.print("devflow: refusing to land #{d}: required review not submitted yet (submitted: {s})\n", .{ number, logins });

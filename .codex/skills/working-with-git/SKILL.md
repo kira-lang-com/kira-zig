@@ -12,7 +12,7 @@ discard irreversibly.
 ## Use `devflow`, NEVER raw git/gh
 
 ```sh
-zig build devflow -- status              # content diff, not ahead/behind counts
+zig build devflow -- status              # default + active-branch content diff
 zig build devflow -- commit [-m "..."]   # stage all + signed commit
 zig build devflow -- push                # push branch to fork over SSH
 zig build devflow -- pr-scope            # inspect complete-branch PR metadata
@@ -37,9 +37,13 @@ Never trust ahead/behind counts (squash/merge rewrite or add SHAs) — `devflow
 status` reports actual content diff instead, trust that. Always resync local
 `main` after any merge, same session (`devflow land`/`sync` does this).
 
-`land` refuses with `ReviewsPending` or `UnresolvedReviews` if CI isn't green
-or a requested review (CodeRabbit always, Codex if pinged) isn't resolved —
-that's the gate working, not a bug; don't bypass it by merging manually.
+`wait-reviews` and `land` only accept submitted reviews attached to the current
+PR head; a stale review from an earlier push never satisfies the gate.
+CodeRabbit's successful head check counts as its response when it explicitly
+skips an oversized PR. `land` refuses with `ReviewsPending` or
+`UnresolvedReviews` if CI isn't green or a requested review (CodeRabbit always,
+Codex if pinged) isn't resolved — that's the gate working, not a bug; don't
+bypass it by merging manually.
 
 ## Guardrails
 

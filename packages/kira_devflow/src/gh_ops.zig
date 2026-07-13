@@ -82,6 +82,32 @@ pub fn reviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     });
 }
 
+/// Comma-joined reviewers whose submitted review is attached to the PR's
+/// current head commit. A review of an older pushed head cannot satisfy the
+/// landing gate after new fixes have been added.
+pub fn headReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",   "pr",                                                                                                        "view", num_str, "-R", slug, "--json", "headRefOid,reviews",
+        "--jq", ".headRefOid as $head | [.reviews[] | select(.commit.oid == $head) | .author.login] | unique | join(\",\")",
+    });
+}
+
+/// CodeRabbit may decline oversized PRs through a successful head check rather
+/// than a submitted review. That is still a completed response (with an honest
+/// skipped reason), so it must not leave `wait-reviews` hanging forever.
+pub fn codeRabbitCheckResponded(ctx: Context, slug: []const u8, number: u32) !bool {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    const response = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",     "pr",         "checks", num_str,                                                                                                  "-R", slug,
+        "--json", "name,state", "--jq",   "[.[] | select((.name | ascii_downcase | contains(\"coderabbit\")) and .state == \"SUCCESS\")] | length",
+    });
+    defer ctx.allocator.free(response);
+    return (std.fmt.parseInt(u32, std.mem.trim(u8, response, " \r\n"), 10) catch 0) > 0;
+}
+
 /// Count of unresolved review threads across ALL pages (0 = all findings
 /// resolved). Pages through `reviewThreads` so a PR with >100 threads cannot
 /// hide unresolved findings on a later page and falsely read as resolved.
