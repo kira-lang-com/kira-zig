@@ -282,7 +282,10 @@ fn runLlvm(
     });
     defer allocator.free(child.stderr);
     if (!exitedZero(child.term)) {
-        try writer.print("FAIL <parity {s}> (native binary exited non-zero)\n", .{label});
+        defer allocator.free(child.stdout);
+        try writer.print("FAIL <parity {s}> (native binary {s})\n", .{ label, termDescription(child.term) });
+        if (child.stdout.len != 0) try writer.print("native stdout:\n{s}\n", .{child.stdout});
+        if (child.stderr.len != 0) try writer.print("native stderr:\n{s}\n", .{child.stderr});
         return .failed;
     }
 
@@ -364,6 +367,20 @@ fn exitedZero(term: std.process.Child.Term) bool {
     };
 }
 
+fn termDescription(term: std.process.Child.Term) []const u8 {
+    return switch (term) {
+        .exited => |code| if (code == 0) "exited successfully" else switch (code) {
+            1 => "exited with code 1",
+            2 => "exited with code 2",
+            3 => "exited with code 3",
+            else => "exited with a non-zero code",
+        },
+        .signal => "terminated by a signal",
+        .stopped => "stopped by a signal",
+        .unknown => "terminated for an unknown reason",
+    };
+}
+
 fn directoryExists(path: []const u8) bool {
     var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
     dir.close(std.Options.debug_io);
@@ -394,4 +411,10 @@ test "firstDifference finds the first divergent byte and length mismatch" {
     try std.testing.expectEqual(@as(?usize, null), firstDifference("abc", "abc"));
     try std.testing.expectEqual(@as(?usize, 1), firstDifference("abc", "aXc"));
     try std.testing.expectEqual(@as(?usize, 3), firstDifference("abc", "abcd"));
+}
+
+test "native parity termination descriptions preserve common exit codes" {
+    try std.testing.expectEqualStrings("exited successfully", termDescription(.{ .exited = 0 }));
+    try std.testing.expectEqualStrings("exited with code 1", termDescription(.{ .exited = 1 }));
+    try std.testing.expectEqualStrings("terminated for an unknown reason", termDescription(.{ .unknown = 9 }));
 }
