@@ -108,6 +108,53 @@ pub fn reviewFindings(ctx: Context, number: u32, include_codex: bool) !void {
     out.print("devflow: exact-head inline findings on #{d}\n{s}\n", .{ number, findings });
 }
 
+/// `ci-failures <pr>`: print failed job logs for workflow runs attached to the
+/// PR's exact current head.
+pub fn ciFailures(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.failedRunIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no failed workflow runs on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        const log = try gh.failedRunLog(ctx, slug, run_id);
+        defer ctx.allocator.free(log);
+        out.print("devflow: failed CI log for #{d} exact head {s}, run {s}\n{s}\n", .{ number, head, run_id, log });
+    }
+}
+
+/// `blacksmith <enable|disable|status>`: manage the repository variable that
+/// selects runner labels across every workflow. Enabling assumes the
+/// Blacksmith GitHub app has already been granted access to this repository.
+pub fn blacksmith(ctx: Context, action: []const u8) !void {
+    const slug = prSlug(ctx);
+    if (std.mem.eql(u8, action, "enable")) {
+        try gh.setRepositoryVariable(ctx, slug, "KIRA_CI_RUNNER", "blacksmith");
+        out.print("devflow: Blacksmith runners enabled on {s}\n", .{slug});
+        return;
+    }
+    if (std.mem.eql(u8, action, "disable")) {
+        try gh.setRepositoryVariable(ctx, slug, "KIRA_CI_RUNNER", "github");
+        out.print("devflow: GitHub-hosted runners enabled on {s}\n", .{slug});
+        return;
+    }
+    if (std.mem.eql(u8, action, "status")) {
+        const value = try gh.repositoryVariable(ctx, slug, "KIRA_CI_RUNNER");
+        defer if (value) |owned| ctx.allocator.free(owned);
+        out.print("devflow: CI runner provider on {s}: {s}\n", .{ slug, value orelse "github (default)" });
+        return;
+    }
+    out.line("devflow: blacksmith requires enable, disable, or status");
+    return error.InvalidBlacksmithAction;
+}
+
 /// Single-stage: the PR lives on upstream when there is an upstream remote
 /// (the owner is a maintainer, so there is one landing — on upstream). Falls
 /// back to the fork only when no upstream remote is configured.

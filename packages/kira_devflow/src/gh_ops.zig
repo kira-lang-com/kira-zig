@@ -179,6 +179,34 @@ pub fn headReviewFindings(ctx: Context, slug: []const u8, number: u32, include_c
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "api", "--paginate", endpoint, "--jq", jq });
 }
 
+pub fn failedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                    slug,   "--commit",                                               head,
+        "--limit", "20",  "--json", "databaseId,conclusion", "--jq", ".[] | select(.conclusion == \"failure\") | .databaseId",
+    });
+}
+
+pub fn failedRunLog(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "run", "view", run_id, "-R", slug, "--log-failed",
+    });
+}
+
+pub fn setRepositoryVariable(ctx: Context, slug: []const u8, name: []const u8, value: []const u8) !void {
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "variable", "set", name, "-R", slug, "--body", value,
+    });
+}
+
+pub fn repositoryVariable(ctx: Context, slug: []const u8, name: []const u8) !?[]u8 {
+    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "variable", "get", name, "-R", slug, "--json", "value", "--jq", ".value",
+    });
+    defer result.deinit(ctx.allocator);
+    if (!result.ok()) return null;
+    return @as(?[]u8, try ctx.allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n")));
+}
+
 /// CodeRabbit may decline oversized PRs through a successful head check rather
 /// than a submitted review. That is still a completed response (with an honest
 /// skipped reason), so it must not leave `wait-reviews` hanging forever.

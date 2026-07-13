@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Test on ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ vars.KIRA_CI_RUNNER == 'blacksmith' && matrix.blacksmith_runner || matrix.github_runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -22,13 +22,16 @@ jobs:
         include:
           - os: linux
             arch: x64
-            runner: ubuntu-24.04
+            github_runner: ubuntu-24.04
+            blacksmith_runner: blacksmith-4vcpu-ubuntu-2404
           - os: macos
             arch: arm64
-            runner: macos-14
+            github_runner: macos-14
+            blacksmith_runner: blacksmith-6vcpu-macos-15
           - os: windows
             arch: x64
-            runner: windows-2022
+            github_runner: windows-2022
+            blacksmith_runner: blacksmith-4vcpu-windows-2025
 
     steps:
       - name: Check out Kira

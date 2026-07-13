@@ -395,7 +395,8 @@ test "resolveInlineLibrary applies matching target compiler and linker options" 
         try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "include" }),
         resolved.link.include_dirs[0],
     );
-    try std.testing.expect(std.mem.indexOf(u8, resolved.artifact_path, ".kira-build/native/x86_64-linux-gnu/") != null);
+    const expected_target_dir = try std.fs.path.join(allocator, &.{ ".kira-build", "native", "x86_64-linux-gnu" });
+    try std.testing.expect(std.mem.indexOf(u8, resolved.artifact_path, expected_target_dir) != null);
 }
 
 test "inline native artifact paths distinguish target ABIs" {
