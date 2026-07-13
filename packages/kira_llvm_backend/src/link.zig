@@ -93,6 +93,7 @@ pub fn linkExecutable(
     if (windowsConsoleSubsystemArg(selector)) |subsystem_arg| {
         try argv.append(subsystem_arg);
     }
+    try appendNativeExecutableFlags(&argv, selector);
     try appendEmscriptenExecutableFlags(&argv, selector);
     try appendPreloadedAssets(allocator, &argv, selector, assets);
     try appendNativeLibraryPaths(allocator, &argv);
@@ -123,6 +124,14 @@ pub fn linkExecutable(
         };
     }
     progress.print("Published executable {s}", .{std.fs.path.basename(executable_path)});
+}
+
+/// Kira's current LLVM object model uses absolute relocations for native global
+/// data. Linux distributions commonly configure clang to link PIE executables
+/// by default, which rejects those objects with R_X86_64_32S relocation errors.
+/// Make the executable policy explicit until object emission itself is PIC.
+fn appendNativeExecutableFlags(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {
+    if (isLinuxTarget(selector) and !emscripten.isSelector(selector)) try argv.append("-no-pie");
 }
 
 pub fn linkSharedLibrary(
@@ -432,4 +441,24 @@ test "windows console subsystem flag matches windows toolchain abi" {
         .operating_system = "windows",
         .abi = "gnu",
     }).?);
+}
+
+test "linux executable links explicitly disable pie" {
+    var linux_args = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer linux_args.deinit();
+    try appendNativeExecutableFlags(&linux_args, .{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    });
+    try std.testing.expectEqualSlices([]const u8, &.{"-no-pie"}, linux_args.items);
+
+    var windows_args = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer windows_args.deinit();
+    try appendNativeExecutableFlags(&windows_args, .{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "msvc",
+    });
+    try std.testing.expectEqual(@as(usize, 0), windows_args.items.len);
 }

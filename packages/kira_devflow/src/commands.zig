@@ -114,20 +114,59 @@ pub fn ciFailures(ctx: Context, number: u32) !void {
     const slug = prSlug(ctx);
     const head = try gh.prHeadOid(ctx, slug, number);
     defer ctx.allocator.free(head);
-    const run_ids = try gh.failedRunIdsForHead(ctx, slug, head);
+    const run_ids = try gh.runIdsForHead(ctx, slug, head);
     defer ctx.allocator.free(run_ids);
     if (run_ids.len == 0) {
-        out.print("devflow: no failed workflow runs on #{d} exact head {s}\n", .{ number, head });
+        out.print("devflow: no workflow runs on #{d} exact head {s}\n", .{ number, head });
         return;
     }
 
+    var found = false;
     var ids = std.mem.splitScalar(u8, run_ids, '\n');
     while (ids.next()) |run_id| {
         if (run_id.len == 0) continue;
-        const log = try gh.failedRunLog(ctx, slug, run_id);
-        defer ctx.allocator.free(log);
-        out.print("devflow: failed CI log for #{d} exact head {s}, run {s}\n{s}\n", .{ number, head, run_id, log });
+        const job_ids = try gh.failedJobIdsForRun(ctx, slug, run_id);
+        defer ctx.allocator.free(job_ids);
+        var jobs = std.mem.splitScalar(u8, job_ids, '\n');
+        while (jobs.next()) |job_id| {
+            if (job_id.len == 0) continue;
+            found = true;
+            const log = try gh.failedJobLog(ctx, slug, run_id, job_id);
+            defer ctx.allocator.free(log);
+            const excerpt = try failureExcerpt(ctx.allocator, log);
+            defer ctx.allocator.free(excerpt);
+            out.print("devflow: failed CI excerpt for #{d} exact head {s}, run {s}, job {s}\n{s}\n", .{ number, head, run_id, job_id, excerpt });
+        }
     }
+    if (!found) out.print("devflow: no failed jobs on #{d} exact head {s}\n", .{ number, head });
+}
+
+fn failureExcerpt(allocator: std.mem.Allocator, log: []const u8) ![]u8 {
+    var result: std.Io.Writer.Allocating = .init(allocator);
+    errdefer result.deinit();
+    var lines = std.mem.splitScalar(u8, log, '\n');
+    var emitted: usize = 0;
+    while (lines.next()) |line| {
+        if (!failureRelevant(line)) continue;
+        try result.writer.print("{s}\n", .{line});
+        emitted += 1;
+        if (emitted == 400) {
+            try result.writer.writeAll("... failure excerpt capped at 400 matching lines ...\n");
+            break;
+        }
+    }
+    if (emitted == 0) try result.writer.writeAll("(job failed without a matching error line; inspect the job URL from ci-runners)\n");
+    return result.toOwnedSlice();
+}
+
+fn failureRelevant(line: []const u8) bool {
+    const needles = [_][]const u8{
+        "##[error]",                        " error:",                     "error[",   "failed", "FAIL ",             "ExternalCommandFailed",
+        "undefined reference",              "linker",                      "clang:",   "lld:",   "kira llvm backend", "/usr/bin/x86_64-linux-gnu-ld:",
+        "Process completed with exit code", "A connection attempt failed", "dial tcp",
+    };
+    for (needles) |needle| if (std.mem.indexOf(u8, line, needle) != null) return true;
+    return false;
 }
 
 /// `ci-runners <pr>`: report the actual runner assigned to every job attached

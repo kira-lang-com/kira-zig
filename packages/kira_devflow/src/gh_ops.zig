@@ -192,6 +192,23 @@ pub fn failedRunLog(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
     });
 }
 
+pub fn failedJobIdsForRun(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/runs/{s}/jobs", .{ slug, run_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api", "--paginate", endpoint, "--jq", ".jobs[] | select(.conclusion == \"failure\") | .id",
+    });
+}
+
+pub fn failedJobLog(ctx: Context, slug: []const u8, run_id: []const u8, job_id: []const u8) ![]u8 {
+    _ = run_id;
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/jobs/{s}/logs", .{ slug, job_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api", endpoint,
+    });
+}
+
 pub fn completedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
         "gh",      "run", "list",   "-R",                          slug,   "--commit",                                                                                  head,
