@@ -118,7 +118,7 @@ pub const WindowsController = struct {
         if (comptime is_target) {
             const th = self.thread orelse return HwError.NotStopped;
             out.setU32(plat.off_flags, plat.ctx_flags);
-            if (win.GetThreadContext(th, &out.bytes) == 0) return HwError.Unsupported;
+            if (!win.GetThreadContext(th, &out.bytes).toBool()) return HwError.Unsupported;
             return;
         }
         return HwError.Unsupported;
@@ -128,7 +128,7 @@ pub const WindowsController = struct {
         if (comptime is_target) {
             const th = self.thread orelse return HwError.NotStopped;
             buf.setU32(plat.off_flags, plat.ctx_flags);
-            if (win.SetThreadContext(th, &buf.bytes) == 0) return HwError.Unsupported;
+            if (!win.SetThreadContext(th, &buf.bytes).toBool()) return HwError.Unsupported;
             return;
         }
         return HwError.Unsupported;
@@ -200,13 +200,13 @@ pub const WindowsController = struct {
         const self = cast(ptr);
         if (comptime is_target) {
             self.pid = @intCast(pid);
-            if (win.DebugActiveProcess(self.pid) == 0) {
+            if (!win.DebugActiveProcess(self.pid).toBool()) {
                 return switch (win.GetLastError()) {
                     win.ERROR_ACCESS_DENIED => HwError.PermissionDenied,
                     else => HwError.Unsupported,
                 };
             }
-            self.proc = win.OpenProcess(win.PROCESS_VM_OPERATION | win.PROCESS_VM_READ | win.PROCESS_VM_WRITE, 0, self.pid);
+            self.proc = win.OpenProcess(win.PROCESS_VM_OPERATION | win.PROCESS_VM_READ | win.PROCESS_VM_WRITE, .FALSE, self.pid);
             self.attached = true;
             // Drain to the first breakpoint the loader raises so a thread is
             // stopped and its context is safe to program.
@@ -295,7 +295,7 @@ pub const WindowsController = struct {
         if (!self.attached) return HwError.NotStopped;
         if (comptime is_target) {
             var read: usize = 0;
-            if (win.ReadProcessMemory(self.proc, @ptrFromInt(@as(usize, @intCast(addr))), buf.ptr, buf.len, &read) == 0 or read != buf.len) {
+            if (!win.ReadProcessMemory(self.proc, @ptrFromInt(@as(usize, @intCast(addr))), buf.ptr, buf.len, &read).toBool() or read != buf.len) {
                 return HwError.Unsupported;
             }
             return;
@@ -308,7 +308,7 @@ pub const WindowsController = struct {
         if (!self.attached) return HwError.NotStopped;
         if (comptime is_target) {
             var wrote: usize = 0;
-            if (win.WriteProcessMemory(self.proc, @ptrFromInt(@as(usize, @intCast(addr))), bytes.ptr, bytes.len, &wrote) == 0 or wrote != bytes.len) {
+            if (!win.WriteProcessMemory(self.proc, @ptrFromInt(@as(usize, @intCast(addr))), bytes.ptr, bytes.len, &wrote).toBool() or wrote != bytes.len) {
                 return HwError.Unsupported;
             }
             return;
@@ -353,7 +353,7 @@ pub const WindowsController = struct {
         if (comptime is_target) {
             if (self.thread) |th| _ = win.CloseHandle(th);
             self.thread = null;
-            if (win.ContinueDebugEvent(self.pid, self.last_tid, win.DBG_CONTINUE) == 0) return HwError.Unsupported;
+            if (!win.ContinueDebugEvent(self.pid, self.last_tid, win.DBG_CONTINUE).toBool()) return HwError.Unsupported;
             return self.waitStop();
         }
         return HwError.Unsupported;
@@ -362,7 +362,7 @@ pub const WindowsController = struct {
     fn waitStop(self: *WindowsController) HwError!HwStop {
         if (comptime is_target) {
             var ev: [plat.dbg.size]u8 align(8) = [_]u8{0} ** plat.dbg.size;
-            if (win.WaitForDebugEventEx(&ev, win.INFINITE) == 0) return HwError.Unsupported;
+            if (!win.WaitForDebugEventEx(&ev, win.INFINITE).toBool()) return HwError.Unsupported;
             const code = std.mem.readInt(u32, ev[plat.dbg.off_code..][0..4], .little);
             const tid = std.mem.readInt(u32, ev[plat.dbg.off_thread..][0..4], .little);
             self.last_tid = tid;
@@ -372,11 +372,11 @@ pub const WindowsController = struct {
                 return HwStop{ .exited = @bitCast(rc) };
             }
             // Refresh the stopped-thread handle so the caller can program it.
-            self.thread = win.OpenThread(win.THREAD_ACCESS, 0, tid);
+            self.thread = win.OpenThread(win.THREAD_ACCESS, .FALSE, tid);
             if (code != plat.EXCEPTION_DEBUG_EVENT) {
                 // Non-exception event (thread/dll create, output-string, etc.):
                 // acknowledge and keep waiting for a real stop.
-                if (win.ContinueDebugEvent(self.pid, tid, win.DBG_CONTINUE) == 0) return HwError.Unsupported;
+                if (!win.ContinueDebugEvent(self.pid, tid, win.DBG_CONTINUE).toBool()) return HwError.Unsupported;
                 return self.waitStop();
             }
             const exc = std.mem.readInt(u32, ev[plat.dbg.off_exc_code..][0..4], .little);

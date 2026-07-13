@@ -38,6 +38,7 @@
 //!     `TargetError.Unsupported` rather than arming at a guessed address.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const di = @import("debug_info.zig");
 const target_mod = @import("target.zig");
 const ctrl = @import("hw/controller.zig");
@@ -240,7 +241,7 @@ pub const NativeTarget = struct {
         // If attach or arming fails (commonly a missing debugger entitlement on
         // macOS -> HardwareUnavailable), the child was spawned *stopped* and would
         // otherwise linger as an orphan — kill it before surfacing the error.
-        errdefer std.posix.kill(launched.pid, std.posix.SIG.KILL) catch {};
+        errdefer if (comptime builtin.os.tag != .windows) std.posix.kill(launched.pid, std.posix.SIG.KILL) catch {};
 
         self.hw().attach(launched.pid) catch |err| return mapHwError(err);
         self.attached = true;
