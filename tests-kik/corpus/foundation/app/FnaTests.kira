@@ -1,0 +1,84 @@
+// FnaTests.kira — migrated corpus case from tests/pass/run/foundation_fs_argparser_leak_regression.
+// PREFIX: fna / Fna (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure/FS API already available.
+
+// ---------------------------------------------------------------------------
+// foundation_fs_argparser_leak_regression
+// ---------------------------------------------------------------------------
+// Leak regressions for the foundation FS and ArgumentParser C helpers:
+// - fs_free_buffer used to skip heap buffers holding "" — every empty-file
+//   read leaked its 1-byte buffer.
+// - File.readAll never freed the fs_read_all_text_from_handle buffer — every
+//   handle read leaked the whole file contents.
+// - argumentOptionName / argumentInlineValue never called kap_free_string —
+//   every parsed option leaked its C-side copy.
+// The loops (100 iterations each, preserved from the original) make surviving
+// allocations obvious under a leak run; the value checks prove the frees did
+// not turn into use-after-free. Fixture files are created under /tmp and
+// removed at the end so the test is deterministic and cwd-independent.
+
+@Native
+function fnaFsArgparserChurn() -> String {
+    let emptyPath = "/tmp/kik_corpus_fna_empty.txt"
+    let samplePath = "/tmp/kik_corpus_fna_sample.txt"
+    if !writeFile(emptyPath, "") {
+        return "setup empty write failed"
+    }
+    if !writeFile(samplePath, "sample body\n") {
+        return "setup sample write failed"
+    }
+
+    var i = 0
+    while i < 100 {
+        let emptyContents = readFile(emptyPath)
+        if emptyContents.ok == false {
+            return "empty read failed"
+        }
+        if emptyContents.text != "" {
+            return "empty read returned data"
+        }
+        i = i + 1
+    }
+
+    var j = 0
+    while j < 100 {
+        let file = openFile(samplePath)
+        let contents = file.readAll()
+        file.close()
+        if contents.ok == false {
+            return "handle read failed"
+        }
+        if contents.text != "sample body\n" {
+            return "handle read returned wrong data"
+        }
+        j = j + 1
+    }
+
+    var k = 0
+    while k < 100 {
+        let name = argumentOptionName("--mode=fast")
+        let value = argumentInlineValue("--mode=fast")
+        if name != "mode" {
+            return "bad option name"
+        }
+        if value != "fast" {
+            return "bad inline value"
+        }
+        k = k + 1
+    }
+
+    let removedEmpty = removePath(emptyPath)
+    let removedSample = removePath(samplePath)
+    if !removedEmpty {
+        return "cleanup empty failed"
+    }
+    if !removedSample {
+        return "cleanup sample failed"
+    }
+    return "fs-argparser-leak-regression-ok"
+}
+
+Test FnaFsArgparserLeakRegression {
+    test { return fnaFsArgparserChurn() }
+    expect { let e: Result<String, TestFailure> = .Ok("fs-argparser-leak-regression-ok"); return e }
+}

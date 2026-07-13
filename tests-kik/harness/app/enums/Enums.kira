@@ -36,12 +36,12 @@ function enNodeValue(n: borrow EnNode) -> Int {
 
 function enSafeDiv(a: Int, b: Int) -> Result<Int, EnMathError> {
     if b == 0 {
-        return Result.Error(EnMathError.DivByZero)
+        return .Error(.DivByZero)
     }
     if a < 0 {
-        return Result.Error(EnMathError.Negative)
+        return .Error(.Negative)
     }
-    return Result.Ok(a / b)
+    return .Ok(a / b)
 }
 
 function enErrCode(e: borrow EnMathError) -> Int {
@@ -98,7 +98,7 @@ function enumsSection() -> Int {
     //    (typed element destroy: enum block + payload box + buffer).
     var k = 0
     while k < 40 {
-        let tags = [EmxTag.Named("a" + "b"), EmxTag.Anon, EmxTag.Named("c" + "d")]
+        let tags: [EmxTag] = [.Named("a" + "b"), .Anon, .Named("c" + "d")]
         let bag = EmxBag { tags: move tags }
         acc = acc + emxCountNamed(bag)
         k = k + 1
@@ -120,7 +120,7 @@ function enumsSection() -> Int {
     //    dispatcher; move-only per KIR002, clone arm traps).
     var q = 0
     while q < 40 {
-        let cells = [EmxCell.Filled(EmxCircle(r: 3)), EmxCell.Empty, EmxCell.Filled(EmxSquare(s: 4))]
+        let cells: [EmxCell] = [.Filled(EmxCircle(r: 3)), .Empty, .Filled(EmxSquare(s: 4))]
         let grid = EmxGrid { cells: move cells }
         acc = acc + grid.cells.count + emxTotalArea(grid)
         q = q + 1
@@ -130,23 +130,23 @@ function enumsSection() -> Int {
 }
 
 // NOTE: these intentionally return the enum directly from each branch. The
-// `var s = EnShade.X; s = EnShade.Y; return s` form (a mutable enum local
+// `var s = .X; s = .Y; return s` form (a mutable enum local
 // reassigned, then returned) miscompiles on the LLVM backend — see
 // FINDINGS.md (#1) and known-bugs/llvm_enum_var_local.
 function enShadeFor(i: Int) -> EnShade {
     switch i % 3 {
-        case 0 { return EnShade.Light }
-        case 1 { return EnShade.Dark }
-        case 2 { return EnShade.Mid }
-        default { return EnShade.Light }
+        case 0 { return .Light }
+        case 1 { return .Dark }
+        case 2 { return .Mid }
+        default { return .Light }
     }
 }
 
 function enNodeFor(j: Int) -> EnNode {
     switch j % 3 {
-        case 0 { return EnNode.Leaf(j) }
-        case 1 { return EnNode.Tagged(j) }
-        case 2 { return EnNode.Empty }
-        default { return EnNode.Empty }
+        case 0 { return .Leaf(j) }
+        case 1 { return .Tagged(j) }
+        case 2 { return .Empty }
+        default { return .Empty }
     }
 }

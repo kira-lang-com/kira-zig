@@ -1,0 +1,210 @@
+// OwcConsumingTests.kira — migrated from the four widget-builder-DSL consuming
+// cases previously documented in SKIPPED.md:
+//   consuming_body_wrapper_parity           -> OwcConsumingBodyWrapperParity        (7)
+//   consuming_children_drain_parity          -> OwcConsumingChildrenDrainParity      (9)
+//   consuming_for_reemit_parity              -> OwcConsumingForReemitParity          (3)
+//   consuming_single_to_array_forward_parity -> OwcConsumingSingleToArrayForward     (5)
+//
+// These were skipped because each builds a host-shaped widget TREE. They are
+// migratable now: `body { ... }` builder blocks are family-generic (Construct
+// 2.0) and the driver compares scalars, so each case's rendered `[String]` is
+// folded to the exact Int checksum the original `@Main` asserted (the original
+// stdout was only the constant "ok" gated on that checksum). Running under the
+// package's vm/llvm/hybrid Tests matrix (and the KIRA_TEST_CHECK_LEAKS VM
+// live-count gate) preserves the consuming-receiver / partial-move drop coverage.
+//
+// PREFIX: Owc (distinct from the OwyTests file's Owy names). The consuming family
+// takes `self` OWNED at every `render()` dispatch (@Consuming), so a wrapper's
+// body block partial-moves its @Content field into a fresh construct.
+
+construct OwcWidget {
+    @Required let body: OwcWidget
+
+    @Consuming
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+OwcWidget OwcLeaf(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+function owcRenderedChildren(widgets: [any OwcWidget]) -> [String] {
+    var out: [String] = []
+    var index = 0
+    while index < widgets.count {
+        let lines = widgets[index].render()
+        var j = 0
+        while j < lines.count {
+            out.append(lines[j])
+            j = j + 1
+        }
+        index = index + 1
+    }
+    return out
+}
+
+// --- consuming_body_wrapper_parity: body wraps @Content into a fresh Frame.
+OwcWidget OwcFrame(pad: Int) {
+    @Content let content: OwcWidget
+
+    function render() -> [String] {
+        var out: [String] = ["frame"]
+        let inner = content.render()
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+OwcWidget OwcWrap() {
+    @Content let content: OwcWidget
+
+    body {
+        OwcFrame(pad: 1) {
+            content
+        }
+    }
+}
+
+Test OwcConsumingBodyWrapperParity {
+    test {
+        let rendered = OwcWrap() {
+            OwcLeaf(text = "hi")
+        }.render()
+        var index = 0
+        var checksum = 0
+        while index < rendered.count {
+            checksum = checksum + rendered[index].count
+            index = index + 1
+        }
+        return checksum
+    }
+    // "frame"=5 + "hi"=2 = 7
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
+}
+
+// --- consuming_children_drain_parity: drain owned-array elements through
+// consuming dispatch.
+OwcWidget OwcRow() {
+    @Content let children: [OwcWidget]
+
+    function render() -> [String] {
+        var out: [String] = ["row"]
+        let inner = owcRenderedChildren(children)
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+Test OwcConsumingChildrenDrainParity {
+    test {
+        let rendered = OwcRow() {
+            OwcLeaf(text = "a")
+            OwcLeaf(text = "bb")
+            OwcLeaf(text = "ccc")
+        }.render()
+        var checksum = 0
+        var index = 0
+        while index < rendered.count {
+            checksum = checksum + rendered[index].count
+            index = index + 1
+        }
+        return checksum
+    }
+    // "row"=3 + a=1 + bb=2 + ccc=3 = 9
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
+}
+
+// --- consuming_for_reemit_parity: forward @Content children via For re-emit.
+OwcWidget OwcHolder() {
+    @Content let children: [OwcWidget]
+
+    function render() -> [String] {
+        return owcRenderedChildren(children)
+    }
+}
+
+OwcWidget OwcForward() {
+    @Content let children: [OwcWidget]
+
+    body {
+        OwcHolder() {
+            For(child in children) {
+                child
+            }
+        }
+    }
+}
+
+Test OwcConsumingForReemitParity {
+    test {
+        let rendered = OwcForward() {
+            OwcLeaf(text = "a")
+            OwcLeaf(text = "bb")
+        }.render()
+        var checksum = 0
+        var index = 0
+        while index < rendered.count {
+            checksum = checksum + rendered[index].count
+            index = index + 1
+        }
+        return checksum
+    }
+    // a=1 + bb=2 = 3
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+// --- consuming_single_to_array_forward_parity: single @Content becomes array
+// element 0 of an array-content widget.
+OwcWidget OwcBox() {
+    @Content let children: [OwcWidget]
+
+    function render() -> [String] {
+        var out: [String] = ["box"]
+        let inner = owcRenderedChildren(children)
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+OwcWidget OwcFill() {
+    @Content let content: OwcWidget
+
+    body {
+        OwcBox() {
+            content
+        }
+    }
+}
+
+Test OwcConsumingSingleToArrayForward {
+    test {
+        let rendered = OwcFill() {
+            OwcLeaf(text = "hi")
+        }.render()
+        var checksum = 0
+        var index = 0
+        while index < rendered.count {
+            checksum = checksum + rendered[index].count
+            index = index + 1
+        }
+        return checksum
+    }
+    // "box"=3 + "hi"=2 = 5
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}

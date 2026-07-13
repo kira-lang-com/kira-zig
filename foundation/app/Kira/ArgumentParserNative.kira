@@ -10,18 +10,18 @@ enum ArgumentTokenKind {
 function classifyArgumentToken(token: borrow String) -> ArgumentTokenKind {
     let kind = kap_classify_token(token)
     if kind == 1 {
-        return ArgumentTokenKind.LongOption
+        return .LongOption
     }
     if kind == 2 {
-        return ArgumentTokenKind.ShortOption
+        return .ShortOption
     }
     if kind == 3 {
-        return ArgumentTokenKind.CommandTerminator
+        return .CommandTerminator
     }
     if kind == 4 {
-        return ArgumentTokenKind.Empty
+        return .Empty
     }
-    return ArgumentTokenKind.Positional
+    return .Positional
 }
 
 @Native

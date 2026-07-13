@@ -38,7 +38,7 @@ reporting a blocker).
 | LLVM / toolchain / launcher | `llvm-toolchain` |
 | unsure which package a change belongs in | `where-to-change` |
 | commit, push, PR, review, land | `working-with-git` |
-| writing/editing a `.kira` source file | `working-with-kira` |
+| Working with `.kira` or always when working on new syntax or refining it | `working-with-kira` |
 | building/running/debugging a Kira binary or `.kira` app | `kira-build` |
 | editing `AGENTS.md`, `CLAUDE.md`, or a skill | `working-with-agents-instructions` |
 

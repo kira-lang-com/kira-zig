@@ -1,0 +1,152 @@
+// Cx2OverrideBlockTests.kira — Construct 2.0 items 1 + 5: call-site override blocks.
+// A construction's trailing `{ ... }` block may carry `let <field> = <expr>` override members
+// that set named fields, alongside bare children that fill the `some X` / `[some X]` slot.
+// Parens arguments and override members coexist. Unknown override field -> KSEM163;
+// overriding a slot field -> KSEM162 (both covered in fail-corpus/construct2).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// PREFIX: cx2Ov / Cx2Ov (all top-level names).
+
+construct Cx2OvWidget {
+    @Required let body: Cx2OvWidget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Cx2OvWidget Cx2OvText(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+function cx2OvFlatten(children: borrow [some Cx2OvWidget]) -> [String] {
+    var labels: [String] = []
+    var i = 0
+    while i < children.count {
+        let rendered = children[i].render()
+        var j = 0
+        while j < rendered.count {
+            labels.append(rendered[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return labels
+}
+
+function cx2OvPipe(labels: borrow [String]) -> String {
+    var out = ""
+    var i = 0
+    while i < labels.count {
+        if i > 0 {
+            out = out + "|"
+        }
+        out = out + labels[i]
+        i = i + 1
+    }
+    return out
+}
+
+// A slot-less widget with two scalar fields; overriding `render` discharges the family's
+// `@Required let body` (terminal-member rule). Scalar fields carry defaults.
+Cx2OvWidget Cx2OvLabel() {
+    let prefix: String = "P"
+    let suffix: String = "S"
+
+    function render() -> [String] {
+        return [prefix, suffix]
+    }
+}
+
+// A widget with a constructor parameter AND a defaulted scalar field.
+Cx2OvWidget Cx2OvBadge(kind: String) {
+    let note: String = "n"
+
+    function render() -> [String] {
+        return [kind, note]
+    }
+}
+
+// A widget mixing a scalar field with a `[some X]` child slot.
+Cx2OvWidget Cx2OvTitledRow() {
+    let title: String = "T"
+    let children: [some Cx2OvWidget]
+
+    function render() -> [String] {
+        var out: [String] = [title]
+        let kids = cx2OvFlatten(children)
+        var i = 0
+        while i < kids.count {
+            out.append(kids[i])
+            i = i + 1
+        }
+        return out
+    }
+}
+
+// A `let field = value` override sets a scalar field; unset fields keep their defaults.
+Test Cx2OvScalarOverride {
+    test {
+        let label = Cx2OvLabel() {
+            let prefix = "X"
+        }
+        return cx2OvPipe(label.render())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("X|S"); return e }
+}
+
+// A parenthesized argument and an override member coexist on one construction.
+Test Cx2OvParensPlusOverride {
+    test {
+        let badge = Cx2OvBadge(kind = "K") {
+            let note = "N"
+        }
+        return cx2OvPipe(badge.render())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("K|N"); return e }
+}
+
+// A widget with a `@Required` scalar field (no default); overriding `render` discharges the
+// family's `@Required let body`. The required scalar must be provided at every construction —
+// as a constructor argument OR an override member (Construct 2.0 item 2).
+Cx2OvWidget Cx2OvRequired() {
+    @Required let label: String
+
+    function render() -> [String] {
+        return [label]
+    }
+}
+
+// A `@Required` field satisfied by a constructor argument.
+Test Cx2OvRequiredViaParens {
+    test {
+        let w = Cx2OvRequired(label = "R")
+        return cx2OvPipe(w.render())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("R"); return e }
+}
+
+// A `@Required` field satisfied by a `let field = value` override block.
+Test Cx2OvRequiredViaBlock {
+    test {
+        let w = Cx2OvRequired() {
+            let label = "B"
+        }
+        return cx2OvPipe(w.render())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("B"); return e }
+}
+
+// Bare children fill the `[some X]` slot while a `let` override sets a scalar field.
+Test Cx2OvMixedChildrenAndOverride {
+    test {
+        let row = Cx2OvTitledRow() {
+            let title = "H"
+            Cx2OvText("a")
+            Cx2OvText("b")
+        }
+        return cx2OvPipe(row.render())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("H|a|b"); return e }
+}

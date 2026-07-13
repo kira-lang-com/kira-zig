@@ -6,6 +6,9 @@ const ResolvedPackageRoot = @import("project.zig").ResolvedPackageRoot;
 const ResolvedTarget = @import("project.zig").ResolvedTarget;
 const TargetKind = @import("project.zig").TargetKind;
 
+/// The declaration manifest. It takes precedence over `kira.toml` when both are
+/// present in a package directory (it is first in `manifest_file_names`).
+pub const declaration_manifest_file_name = "package.kira";
 pub const preferred_manifest_file_name = "kira.toml";
 pub const legacy_manifest_file_name = "project.toml";
 pub const repo_manifest_file_name = "Kira.toml";
@@ -13,13 +16,24 @@ pub const manifest_file_name = preferred_manifest_file_name;
 pub const entrypoint_rel_path = "app/main.kira";
 
 pub const manifest_file_names = [_][]const u8{
+    declaration_manifest_file_name,
     preferred_manifest_file_name,
     legacy_manifest_file_name,
     repo_manifest_file_name,
 };
 
+/// True when the manifest at `path` is a `package.kira` declaration manifest.
+pub fn isDeclarationManifest(path: []const u8) bool {
+    return std.mem.eql(u8, std.fs.path.basename(path), declaration_manifest_file_name);
+}
+
 pub fn loadProjectFromFile(allocator: std.mem.Allocator, path: []const u8) !Project {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
+    if (isDeclarationManifest(path)) {
+        const result = try manifest.loadProjectManifestFromDeclaration(allocator, text, path);
+        if (!result.ok()) return error.InvalidManifest;
+        return .{ .manifest = result.manifest };
+    }
     return .{
         .manifest = try manifest.parseProjectManifest(allocator, text),
     };
@@ -57,7 +71,8 @@ pub fn loadPackageRootFromPath(allocator: std.mem.Allocator, path: []const u8) !
 
 pub fn resolveTargetFromPath(allocator: std.mem.Allocator, path: []const u8) !ResolvedTarget {
     const base = std.fs.path.basename(path);
-    if (std.mem.eql(u8, base, preferred_manifest_file_name) or
+    if (std.mem.eql(u8, base, declaration_manifest_file_name) or
+        std.mem.eql(u8, base, preferred_manifest_file_name) or
         std.mem.eql(u8, base, legacy_manifest_file_name) or
         std.mem.eql(u8, base, repo_manifest_file_name) or
         directoryExists(path))

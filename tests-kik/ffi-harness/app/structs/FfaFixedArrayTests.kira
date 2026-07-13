@@ -45,7 +45,7 @@ function ffaStoreReadback() -> Int {
 
 Test FfaInlineArrayStoreReadback {
     test { return ffaStoreReadback() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(111); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(111); return e }
 }
 
 // Churn the store/read cycle so a per-iteration native leak (the old orphaned
@@ -60,5 +60,5 @@ Test FfaInlineArrayChurn {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(11100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(11100); return e }
 }

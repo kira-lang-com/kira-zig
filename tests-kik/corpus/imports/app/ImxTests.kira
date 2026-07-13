@@ -1,0 +1,162 @@
+// ImxTests.kira — migrated corpus cases from tests/pass/run/{imports,imported_*,inheritance_*}.
+// PREFIXES: imx/Imx (imports), ima/Ima (imported_instance_method_parity),
+// imb/Imb (imported_library_class_metadata_parity), imc/Imc (imported_namespace_parity),
+// imd/Imd (inheritance_imported_parent_parity), ime/Ime (inheritance_multi_parent_parity).
+// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+// The sibling module app/support.kira is imported qualified, exactly like the legacy
+// cases' `import support as Support`.
+
+import support as Support
+
+// ---------------------------------------------------------------------------
+// imports — the import statement resolving (plus local helper arithmetic)
+// ---------------------------------------------------------------------------
+
+function imxHelper() -> Int {
+    let first = 1
+    let second = 2
+    return first + second
+}
+
+Test ImxImportsResolve {
+    test { return imxHelper() }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+// ---------------------------------------------------------------------------
+// imported_instance_method_parity
+// ---------------------------------------------------------------------------
+
+Test ImaInstanceMethod {
+    test {
+        let app: Support.ImaApplication = Support.ImaApplication()
+        return app.run()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(7); return e }
+}
+
+// ---------------------------------------------------------------------------
+// imported_library_class_metadata_parity
+// ---------------------------------------------------------------------------
+
+Test ImbLabelRender {
+    test {
+        let label = Support.ImbLabel()
+        return label.render()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(11); return e }
+}
+
+Test ImbConfigNodeValue {
+    test {
+        let config = Support.imbMakeConfig()
+        return config.node.value
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(11); return e }
+}
+
+// ---------------------------------------------------------------------------
+// imported_namespace_parity
+// ---------------------------------------------------------------------------
+
+Test ImcNamespaceValue {
+    test { return Support.imcValue() }
+    expect { let e: Result<I64, TestFailure> = .Ok(42); return e }
+}
+
+// ---------------------------------------------------------------------------
+// inheritance_imported_parent_parity
+// ---------------------------------------------------------------------------
+
+class ImdChild extends Support.ImdImportedBase {
+    override let base = 33
+
+    function total(): I64 {
+        return ImdImportedBase.baseValue() + ImdImportedBase.base
+    }
+}
+
+Test ImdChildBaseValue {
+    test {
+        let child: ImdChild = ImdChild()
+        return child.baseValue()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(33); return e }
+}
+
+Test ImdChildBaseField {
+    test {
+        let child: ImdChild = ImdChild()
+        return child.base
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(33); return e }
+}
+
+Test ImdChildTotal {
+    test {
+        let child: ImdChild = ImdChild()
+        return child.total()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(66); return e }
+}
+
+// ---------------------------------------------------------------------------
+// inheritance_multi_parent_parity
+// ---------------------------------------------------------------------------
+
+class ImeLeft {
+    let value: I64 = 10
+
+    function doubled(): I64 {
+        return value * 2
+    }
+}
+
+class ImeRight {
+    let bonus: I64 = 5
+
+    function tripled(): I64 {
+        return bonus * 3
+    }
+}
+
+class ImeChild extends ImeLeft, ImeRight {
+    override let value = 11
+    override let bonus = 7
+
+    function total(): I64 {
+        return ImeLeft.doubled() + ImeRight.tripled() + ImeLeft.value + ImeRight.bonus
+    }
+}
+
+Test ImeChildDoubled {
+    test {
+        let child: ImeChild = ImeChild()
+        return child.doubled()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(22); return e }
+}
+
+Test ImeChildTripled {
+    test {
+        let child: ImeChild = ImeChild()
+        return child.tripled()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(21); return e }
+}
+
+Test ImeChildFields {
+    test {
+        let child: ImeChild = ImeChild()
+        return child.value * 100 + child.bonus
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(1107); return e }
+}
+
+Test ImeChildTotal {
+    test {
+        let child: ImeChild = ImeChild()
+        return child.total()
+    }
+    expect { let e: Result<I64, TestFailure> = .Ok(61); return e }
+}

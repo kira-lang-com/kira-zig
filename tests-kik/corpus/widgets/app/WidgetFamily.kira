@@ -1,0 +1,19 @@
+// WidgetFamily.kira — shared `construct Widget` family for the body-block
+// cases (WblTests, WcmTests, WfmTests).
+//
+// UNPREFIXED by convention: this one family is shared across three migrated
+// cases (WblTests, WcmTests, WfmTests) that all declared the identical shape,
+// so a single `construct Widget` declaration preserves each case's semantics.
+// The name is NOT load-bearing: `body { ... }` builder-block declarations are
+// family-generic (Construct 2.0 item 7 — the old literal-`Widget` special case
+// was removed in construct_form_surface.zig). A renamed family with a `body {}`
+// declaration now checks and runs cleanly; see the dedicated regression in
+// tests-kik/corpus/construct2 (`Cx2BodyBlockOnRenamedFamily`, family `Cx2Panel`).
+
+construct Widget {
+    @Required let body: Widget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}

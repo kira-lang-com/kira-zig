@@ -1,0 +1,202 @@
+// DseTests.kira — the pure-Kira test driver compares STRUCT-typed Test results
+// structurally (packages/kira_build/src/synth_test_driver_eq.zig). PREFIX: dse / Dse.
+//
+// Before this, a Test whose `test`/`expect` returned a struct compared with `==`,
+// which is silent-wrong for aggregates (always false). Now the driver synthesizes
+// a recursive `__kira_test_eq_<T>(a: borrow T, b: borrow T) -> Bool` per struct
+// result type and dispatches through it: field-walk with scalar `!=` leaves,
+// nested-struct recursion, and array count+elementwise loops. When the package
+// already provides `eq_<T>` (hand-written or via `@Derive(Equatable)`), that
+// comparator is authoritative and the driver USES IT instead of synthesizing.
+//
+// No `import Foundation` here — Test / Result / TestFailure and the `Equatable`
+// derive macro are package-wide once main.kira imports Foundation. Every case is
+// green by construction: the synthesized comparator runs identically on
+// vm / llvm / hybrid because it is ordinary Kira lowered once by the frontend.
+
+// ---------------------------------------------------------------------------
+// Types under test
+// ---------------------------------------------------------------------------
+
+struct DsePoint {
+    var x: Int
+    var y: Int
+}
+
+struct DseLabeled {
+    var label: String
+    var n: Int
+}
+
+// Nested struct fields: the synthesized comparator recurses into DsePoint.
+struct DseSegment {
+    var from: DsePoint
+    var to: DsePoint
+    var tag: String
+}
+
+// Array fields: a scalar array (count + elementwise `!=`) and a struct array
+// (count + elementwise recursive comparator), plus a String leaf.
+struct DseBag {
+    var xs: [Int]
+    var pts: [DsePoint]
+    var label: String
+}
+
+// ---------------------------------------------------------------------------
+// Flat struct — scalar fields
+// ---------------------------------------------------------------------------
+
+Test DseFlatStructEq {
+    test {
+        return DsePoint { x: 1, y: 2 }
+    }
+    expect { let e: Result<DsePoint, TestFailure> = .Ok(DsePoint { x: 1, y: 2 }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// String-field struct
+// ---------------------------------------------------------------------------
+
+Test DseStringFieldStructEq {
+    test {
+        return DseLabeled { label: "hello", n: 3 }
+    }
+    expect { let e: Result<DseLabeled, TestFailure> = .Ok(DseLabeled { label: "hello", n: 3 }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Nested struct — recursion through DsePoint, plus a String leaf
+// ---------------------------------------------------------------------------
+
+Test DseNestedStructEq {
+    test {
+        return DseSegment { from: DsePoint { x: 1, y: 2 }, to: DsePoint { x: 3, y: 4 }, tag: "s" }
+    }
+    expect { let e: Result<DseSegment, TestFailure> = .Ok(DseSegment { from: DsePoint { x: 1, y: 2 }, to: DsePoint { x: 3, y: 4 }, tag: "s" }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Array-field struct — scalar array + struct array + String
+// ---------------------------------------------------------------------------
+
+Test DseArrayFieldStructEq {
+    test {
+        return DseBag { xs: [1, 2, 3], pts: [DsePoint { x: 1, y: 1 }, DsePoint { x: 2, y: 2 }], label: "b" }
+    }
+    expect { let e: Result<DseBag, TestFailure> = .Ok(DseBag { xs: [1, 2, 3], pts: [DsePoint { x: 1, y: 1 }, DsePoint { x: 2, y: 2 }], label: "b" }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// CONVENTION BRIDGE 1 — hand-written, deliberately quirky `eq_` is authoritative
+//
+// eq_DseAccount compares only `id` and IGNORES `nickname`. The Test returns an
+// account whose nickname differs from the expected one. If the driver used
+// synthesized structural equality it would compare `nickname` and FAIL; because
+// it honors the user's `eq_DseAccount`, the two are "equal" and the test PASSES.
+// A green PASS here is the proof the bridge overrides synthesis.
+// ---------------------------------------------------------------------------
+
+struct DseAccount {
+    var id: Int
+    var nickname: String
+}
+
+function eq_DseAccount(a: borrow DseAccount, b: borrow DseAccount) -> Bool {
+    if a.id != b.id { return false }
+    return true
+}
+
+Test DseUserEqBridgeHonored {
+    test {
+        return DseAccount { id: 42, nickname: "actual-name" }
+    }
+    // Same id, DIFFERENT nickname — equal only under the quirky user eq_.
+    expect { let e: Result<DseAccount, TestFailure> = .Ok(DseAccount { id: 42, nickname: "expected-name" }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// CONVENTION BRIDGE 2 — `@Derive(Equatable)` supplies `eq_<T>`; the driver uses it
+// ---------------------------------------------------------------------------
+
+@Derive(Equatable)
+struct DseDerived {
+    var a: Int
+    var b: Int
+}
+
+Test DseDeriveEquatableBridge {
+    test {
+        return DseDerived { a: 5, b: 6 }
+    }
+    expect { let e: Result<DseDerived, TestFailure> = .Ok(DseDerived { a: 5, b: 6 }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Payload-less enum as a struct field — compared as a `!=` tag leaf
+// ---------------------------------------------------------------------------
+
+enum DseColor { Red Green Blue }
+
+struct DseTaggedColor {
+    var color: DseColor
+    var weight: Int
+}
+
+Test DsePayloadlessEnumFieldEq {
+    test {
+        return DseTaggedColor { color: .Green, weight: 5 }
+    }
+    expect { let e: Result<DseTaggedColor, TestFailure> = .Ok(DseTaggedColor { color: .Green, weight: 5 }); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Payload-carrying enum — compared through its user `eq_` bridge (payload-aware).
+//
+// The synthesized struct comparator has no tag-only shortcut for enums with
+// payloads (that would be silent-wrong); such an enum is honored ONLY through a
+// user `eq_`. eq_DseShape below compares payloads, so equal shapes PASS.
+// ---------------------------------------------------------------------------
+
+enum DseShape {
+    Circle(Int)
+    Empty
+}
+
+function eq_DseShape(a: borrow DseShape, b: borrow DseShape) -> Bool {
+    match a {
+        Circle(pa) -> {
+            match b {
+                Circle(pb) -> { return pa == pb }
+                Empty -> { return false }
+            }
+        }
+        Empty -> {
+            match b {
+                Empty -> { return true }
+                Circle(pb) -> { return false }
+            }
+        }
+    }
+}
+
+Test DsePayloadEnumBridgeEq {
+    test {
+        let shape: DseShape = .Circle(3)
+        return shape
+    }
+    expect { let e: Result<DseShape, TestFailure> = .Ok(.Circle(3)); return e }
+}
+
+// A payload-carrying enum as a struct FIELD, honored through its bridge.
+struct DseShapeHolder {
+    var shape: DseShape
+    var n: Int
+}
+
+Test DsePayloadEnumFieldBridgeEq {
+    test {
+        return DseShapeHolder { shape: .Circle(7), n: 1 }
+    }
+    expect { let e: Result<DseShapeHolder, TestFailure> = .Ok(DseShapeHolder { shape: .Circle(7), n: 1 }); return e }
+}

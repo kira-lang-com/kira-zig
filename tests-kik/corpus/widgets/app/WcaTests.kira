@@ -1,0 +1,29 @@
+// WcaTests.kira — migrated from tests/pass/run/widget_any_coercion.
+// PREFIX: wca / Wca (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_any_coercion
+// ---------------------------------------------------------------------------
+// A concrete construct-backed declaration value coerces to `some Family`, and a
+// heterogeneous array of different declarations of the same family unifies to
+// `[some Family]`. Original printed `items.count` (stdout "3").
+
+construct WcaWidget {
+}
+
+WcaWidget WcaText {
+    let text: String = ""
+}
+
+WcaWidget WcaSpacer {
+}
+
+Test WcaAnyCoercionArrayCount {
+    test {
+        let single: some WcaWidget = WcaText(text: "one")
+        let items: [some WcaWidget] = [WcaText(text: "a"), WcaSpacer(), WcaText(text: "b")]
+        return items.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}

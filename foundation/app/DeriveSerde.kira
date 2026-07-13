@@ -1,0 +1,307 @@
+// DeriveSerde.kira — builtin `@Derive(Serializable)` / `@Derive(Deserializable)` macros, written
+// in pure Kira and shipped in Foundation (sibling to Derive.kira's Equatable / Clone).
+//
+// Because Foundation is merged into every importing package, these `comptime macro` declarations
+// register the two derives for all Kira code, and the top-level `__kira_deser_*` helper functions
+// below are defined ONCE here and are visible package-wide. Nothing in this file introduces a
+// user-facing top-level name other than the macros `Serializable` / `Deserializable`; the shared
+// runtime helpers all carry the reserved `__kira_deser_` prefix so they can never collide with
+// user code, and the generated per-type functions are name-glued to the derived type.
+//
+//   @Derive(Serializable)   generates  function serialize_<Type>(v: borrow <Type>) -> String
+//   @Derive(Deserializable) generates  function deserialize_<Type>(s: borrow String) -> <Type>
+//
+// WIRE FORMAT (v1, compact, deterministic, single line):
+//
+//   TypeName{field1=VALUE;field2=VALUE;...}
+//
+//   * Int / Bool / Float scalar field -> String(value)               (e.g. `n=42`, `flag=true`)
+//   * String field                    -> the text wrapped in `"`     (e.g. `label="hi"`), NO
+//                                        escaping in v1: a String containing `"`, `;` or `}` is
+//                                        OUT OF CONTRACT (no error is raised; keep it simple).
+//   * nested @Derive struct field     -> serialize_<FieldType>(value) recursed inline
+//                                        (e.g. `from=DrvPoint{x=1;y=2}`)
+//
+// Deserialization is the exact inverse and traps deterministically on malformed input (bad type
+// name, missing `=`/`;`/`}`, truncated text, non-digit in an Int) by driving an out-of-range
+// `charAt` / inverted `substring`, both of which the runtime turns into a hard trap on every
+// backend. The round-trip law holds for every supported value: deserialize_T(serialize_T(v)) == v
+// field-wise (proven with eq_T from @Derive(Equatable) in tests-kik/corpus/derive-serde).
+//
+// LIMITATIONS (v1):
+//   * Supported field types: Int, Bool, String, nested @Derive struct, and (Serializable only)
+//     Float. Float is REJECTED by Deserializable — there is no lossless Float parser primitive, so
+//     rather than ship a lossy parser the macro raises a Diagnostics.error naming the field.
+//   * Array / generic / optional fields (non-bare type text such as `[Int]`, `Map<K,V>`) are
+//     rejected by both macros with a Diagnostics.error, exactly as Equatable / Clone do.
+//   * `appliesTo { struct }` only; enums are a follow-up.
+
+// ---------------------------------------------------------------------------
+// Shared runtime helpers (defined once; package-wide via Foundation).
+// ---------------------------------------------------------------------------
+
+// Deterministic hard trap in Int context: index one past the last byte is always out of range.
+function __kira_deser_trap(s: borrow String) -> Int {
+    return s.charAt(s.count)
+}
+
+// Deterministic hard trap in String context: an inverted (start > end) substring always traps.
+function __kira_deser_trap_str(s: borrow String) -> String {
+    return s.substring(s.count + 1, s.count)
+}
+
+// Scan forward from `start` over a field VALUE and return the exclusive end index — the position of
+// the top-level `;` (field separator) or `}` (struct close) that terminates it. Brace-aware: a
+// nested struct value carries its own balanced `{...}` (with internal `;`), so only a `;`/`}` seen
+// at brace-depth 0 terminates. Scalars and quoted strings have no braces, so the same scan stops at
+// their first `;`/`}` — one scanner serves every field type.
+function __kira_deser_scan(s: borrow String, start: Int) -> Int {
+    var pos: Int = start
+    var depth: Int = 0
+    let n: Int = s.count
+    while pos < n {
+        let c: Int = s.charAt(pos)
+        if c == 123 {
+            depth = depth + 1
+        } else {
+            if c == 125 {
+                if depth == 0 {
+                    return pos
+                }
+                depth = depth - 1
+            } else {
+                if c == 59 {
+                    if depth == 0 {
+                        return pos
+                    }
+                }
+            }
+        }
+        pos = pos + 1
+    }
+    return pos
+}
+
+// Parse a signed decimal integer, trapping on empty text, a lone `-`, or any non-digit byte.
+function __kira_deser_int(s: borrow String) -> Int {
+    let n: Int = s.count
+    if n == 0 {
+        return __kira_deser_trap(s)
+    }
+    var i: Int = 0
+    var neg: Bool = false
+    let first: Int = s.charAt(0)
+    if first == 45 {
+        neg = true
+        i = 1
+    }
+    if i >= n {
+        return __kira_deser_trap(s)
+    }
+    var acc: Int = 0
+    while i < n {
+        let d: Int = s.charAt(i)
+        var digit: Int = 0
+        if d < 48 {
+            digit = __kira_deser_trap(s)
+        } else {
+            if d > 57 {
+                digit = __kira_deser_trap(s)
+            } else {
+                digit = d - 48
+            }
+        }
+        acc = acc * 10 + digit
+        i = i + 1
+    }
+    if neg {
+        acc = 0 - acc
+    }
+    return acc
+}
+
+// Parse a Bool from exactly "true" / "false"; trap on anything else.
+function __kira_deser_bool(s: borrow String) -> Bool {
+    if s == "true" {
+        return true
+    }
+    if s == "false" {
+        return false
+    }
+    return __kira_deser_trap(s) == 0
+}
+
+// Strip the surrounding `"` from a serialized String value; trap if the quotes are absent.
+function __kira_deser_unquote(s: borrow String) -> String {
+    let n: Int = s.count
+    if n < 2 {
+        return __kira_deser_trap_str(s)
+    }
+    if s.charAt(0) != 34 {
+        return __kira_deser_trap_str(s)
+    }
+    if s.charAt(n - 1) != 34 {
+        return __kira_deser_trap_str(s)
+    }
+    return s.substring(1, n - 1)
+}
+
+// ---------------------------------------------------------------------------
+// @Derive(Serializable)
+// ---------------------------------------------------------------------------
+
+comptime macro Serializable {
+    kind { derive }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var stmts: [Syntax] = []
+        stmts.append(quote { var out: String = #{target.name.asString()} })
+        stmts.append(quote { out = out + "{" })
+        var idx: Int = 0
+        for field in target.fields {
+            // Reject array / generic / optional field types (non-bare type text).
+            var joined: String = ""
+            for id in field.type.asSyntax().identifiers() {
+                joined = joined + id.asString()
+            }
+            if joined != field.type.asSyntax() {
+                Diagnostics.error("Derive(Serializable): field has an unsupported array/generic type; only Int/Float/Bool/String or a nested @Derive(Serializable) struct field are supported in v1", at: target.syntax)
+            }
+            // Leading separator on every field after the first.
+            var sep: String = ""
+            if idx != 0 {
+                sep = ";"
+            }
+            // Classify: Int/Float/Bool -> String(x); String -> quoted; other bare type -> recurse.
+            var isNumScalar: Bool = false
+            if field.type == "Int" {
+                isNumScalar = true
+            }
+            if field.type == "Float" {
+                isNumScalar = true
+            }
+            if field.type == "Bool" {
+                isNumScalar = true
+            }
+            if isNumScalar {
+                stmts.append(quote { out = out + #{sep} + #{field.name.asString()} + "=" + String(v.#{field.name}) })
+            } else {
+                if field.type == "String" {
+                    stmts.append(quote { out = out + #{sep} + #{field.name.asString()} + "=" + "\"" + v.#{field.name} + "\"" })
+                } else {
+                    stmts.append(quote { out = out + #{sep} + #{field.name.asString()} + "=" + serialize_#{field.type.asSyntax()}(v.#{field.name}) })
+                }
+            }
+            idx = idx + 1
+        }
+        stmts.append(quote { out = out + "}" })
+        stmts.append(quote { return out })
+        return quote {
+            function serialize_#{target.name}(v: borrow #{target.name}) -> String {
+                #{Syntax.join(stmts, "\n")}
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// @Derive(Deserializable)
+// ---------------------------------------------------------------------------
+
+comptime macro Deserializable {
+    kind { derive }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var total: Int = 0
+        for field in target.fields {
+            total = total + 1
+        }
+
+        var stmts: [Syntax] = []
+        // Prefix: the leading `TypeName` up to the first `{`. A missing `{` yields indexOf == -1,
+        // so substring(0, -1) traps in the condition; a present-but-wrong name traps in the branch.
+        stmts.append(quote { let __brace: Int = s.indexOf("{") })
+        stmts.append(quote { var pos: Int = __brace + 1 })
+        stmts.append(quote {
+            if s.substring(0, __brace) != #{target.name.asString()} {
+                pos = __kira_deser_trap(s)
+            }
+        })
+
+        var inits: [Syntax] = []
+        var idx: Int = 0
+        for field in target.fields {
+            // Reject array / generic / optional field types (non-bare type text).
+            var joined: String = ""
+            for id in field.type.asSyntax().identifiers() {
+                joined = joined + id.asString()
+            }
+            if joined != field.type.asSyntax() {
+                Diagnostics.error("Derive(Deserializable): field has an unsupported array/generic type; only Int/Bool/String or a nested @Derive(Deserializable) struct field are supported in v1", at: target.syntax)
+            }
+
+            // Build the per-field value-conversion expression by field type.
+            var conv: Syntax = quote { __kira_deser_int(__val#{idx}) }
+            if field.type == "Int" {
+                conv = quote { __kira_deser_int(__val#{idx}) }
+            } else {
+                if field.type == "Bool" {
+                    conv = quote { __kira_deser_bool(__val#{idx}) }
+                } else {
+                    if field.type == "String" {
+                        conv = quote { __kira_deser_unquote(__val#{idx}) }
+                    } else {
+                        if field.type == "Float" {
+                            Diagnostics.error("Derive(Deserializable): Float field is not supported in v1 (no lossless Float parser); use Serializable-only or store the value as a String/Int", at: target.syntax)
+                        } else {
+                            conv = quote { deserialize_#{field.type.asSyntax()}(__val#{idx}) }
+                        }
+                    }
+                }
+            }
+
+            // Locate `label=`, carve the value, convert, advance the cursor.
+            stmts.append(quote {
+                let __rest#{idx}: String = s.substring(pos, s.count)
+                let __eq#{idx}: Int = __rest#{idx}.indexOf("=")
+                let __eqAt#{idx}: Int = pos + __eq#{idx}
+                if s.substring(pos, __eqAt#{idx}) != #{field.name.asString()} {
+                    pos = __kira_deser_trap(s)
+                }
+                pos = __eqAt#{idx} + 1
+                let __end#{idx}: Int = __kira_deser_scan(s, pos)
+                let __val#{idx}: String = s.substring(pos, __end#{idx})
+                let #{field.name}: #{field.type.asSyntax()} = #{conv}
+                pos = __end#{idx}
+            })
+
+            // Between fields consume the `;` separator; the trailing `}` is checked after the loop.
+            if idx < total - 1 {
+                stmts.append(quote {
+                    if s.charAt(pos) != 59 {
+                        pos = __kira_deser_trap(s)
+                    }
+                    pos = pos + 1
+                })
+            }
+
+            inits.append(quote { #{field.name}: #{field.name} })
+            idx = idx + 1
+        }
+
+        stmts.append(quote {
+            if s.charAt(pos) != 125 {
+                pos = __kira_deser_trap(s)
+            }
+        })
+
+        return quote {
+            function deserialize_#{target.name}(s: borrow String) -> #{target.name} {
+                #{Syntax.join(stmts, "\n")}
+                return #{target.name} {
+                    #{Syntax.join(inits, "\n")}
+                }
+            }
+        }
+    }
+}

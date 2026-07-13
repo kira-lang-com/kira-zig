@@ -10,10 +10,30 @@ const runtime_abi = @import("kira_runtime_abi");
 const vm_runtime = @import("kira_vm_runtime");
 const hybrid_runtime = @import("kira_hybrid_runtime");
 const wrappers = @import("runtime_wrappers.zig");
+const failtest = @import("developer_failtest.zig");
+const tests_config = @import("developer_tests_config.zig");
+const manifest_pkg = @import("kira_manifest");
+const decode = @import("developer_test_decode.zig");
+const leak = @import("developer_leak.zig");
+const parity = @import("developer_parity.zig");
+const ProgressReport = @import("developer_progress_report.zig").ProgressReport;
+
+const TestExpectation = decode.TestExpectation;
+const ExpectedKiraError = decode.ExpectedKiraError;
+
+/// Empty NUL-terminated C string returned when no report has been produced yet.
+const empty_report: [:0]const u8 = "";
 
 pub const DeveloperFacade = struct {
     arena: std.heap.ArenaAllocator,
-    report_buffer: [65537]u8 = [_]u8{0} ** 65537,
+    /// The report is an owned, heap-grown, NUL-terminated string rather than a
+    /// fixed array: a manifest-driven backend matrix (e.g. tests-kik/harness on
+    /// [vm, llvm, hybrid]) emits well over 64 KiB of PASS/CHECK lines. A fixed
+    /// buffer silently truncated the tail — dropping the last backend leg's
+    /// `test result [..]` line and the combined tally — which read as the run
+    /// dying mid-output while exiting 0 (fake success). An owned buffer that
+    /// grows to the exact output size can never truncate.
+    report_owned: ?[:0]u8 = null,
     error_buffer: [1025]u8 = [_]u8{0} ** 1025,
 
     pub fn create() !*DeveloperFacade {
@@ -26,6 +46,7 @@ pub const DeveloperFacade = struct {
 
     pub fn destroy(self: *DeveloperFacade) void {
         self.arena.deinit();
+        if (self.report_owned) |owned| std.heap.c_allocator.free(owned);
         std.heap.c_allocator.destroy(self);
     }
 
@@ -96,10 +117,7 @@ pub const DeveloperFacade = struct {
             try self.setDiagnosticsReport(if (result.source) |*compiled_source| compiled_source else null, result.diagnostics);
             return false;
         }
-        var output: std.Io.Writer.Allocating = .init(allocator);
-        defer output.deinit();
-        for (result.artifacts) |artifact| try output.writer.print("wrote {s}\n", .{artifact.path});
-        try self.setReport(output.written());
+        try self.setReport("Successfully built\n");
         return true;
     }
 
@@ -120,14 +138,70 @@ pub const DeveloperFacade = struct {
 
         const allocator = self.arena.allocator();
         const leaves = try discoverTestLeaves(allocator, path);
-        var full: std.Io.Writer.Allocating = .init(allocator);
+
+        // Read the manifest `Tests { backends, phase }` config (best-effort). A
+        // package without it keeps the historical single-backend behavior.
+        const project_manifest: ?manifest_pkg.ProjectManifest = blk: {
+            const input = resolveInput(allocator, path) catch break :blk null;
+            break :blk if (input.target.project) |project| project.manifest else null;
+        };
+        const plan = try tests_config.resolvePlan(allocator, project_manifest, backend);
+
+        var full = ProgressReport.init(allocator);
         defer full.deinit();
         var aggregate = TestReport{};
-        for (leaves) |leaf| {
-            if (leaves.len > 1) try full.writer.print("suite {s}\n", .{leaf});
-            const leaf_report = try self.executeLeaf(leaf, backend, &full.writer);
-            aggregate.add(leaf_report);
+
+        // Test declarations run once per planned backend (each must end 0-failed);
+        // a manifest-driven matrix prints a per-backend tally.
+        for (plan.backends) |entry| {
+            var backend_report = TestReport{};
+            for (leaves) |leaf| {
+                if (leaves.len > 1) try full.writer.print("suite {s}\n", .{leaf});
+                if (tests_config.runsCheck(plan.phase)) {
+                    backend_report.add(try self.checkLeaf(leaf, entry.backend, &full.writer));
+                }
+                if (tests_config.runsExecute(plan.phase)) {
+                    backend_report.add(try self.executeLeaf(leaf, entry.backend, &full.writer));
+                }
+            }
+            if (plan.from_manifest) {
+                try full.writer.print("test result [{s}]: {d} passed; {d} failed; {d} total\n", .{
+                    entry.label, backend_report.passed, backend_report.failed, backend_report.total,
+                });
+            }
+            aggregate.add(backend_report);
         }
+
+        // FailTests are compiled once per their own declared backends, entirely
+        // runner-side, and tallied into the same PASS/FAIL stream. They are
+        // compile-time (so they still evaluate under the Check phase) and
+        // backend-independent, so they run once rather than per planned backend.
+        for (leaves) |leaf| {
+            const ft = try failtest.runForLeaf(allocator, leaf, &full.writer);
+            aggregate.add(.{ .passed = ft.passed, .failed = ft.failed, .total = ft.total });
+        }
+
+        // Cross-backend `@Main` stdout parity (KIRA_TEST_PARITY=1) and native
+        // `@Main` leak check (KIRA_TEST_CHECK_LEAKS=1): only when the package
+        // declares a `Tests { backends }` matrix AND carries an `@Main`. Replaces
+        // the legacy corpus's exact-stdout-across-backends and native leaks
+        // guarantees for the packages (harness, hybrid-bridge, string-primitives)
+        // whose READMEs document the parity/leak run.
+        if ((parity.enabled() or leak.enabled()) and plan.from_manifest) {
+            const targets = try parityTargets(allocator, plan.backends);
+            for (leaves) |leaf| {
+                const input = resolveInput(allocator, leaf) catch continue;
+                const source_path = input.target.source_path orelse continue;
+                const root = input.target.root_path orelse ".";
+                if (!parity.hasMain(allocator, root, source_path)) continue;
+                const output_root = try outputRoot(allocator, input.target.root_path);
+                try ensurePath(output_root);
+                const skip_diff = parity.mainIsNative(allocator, root, source_path);
+                const pr = try parity.run(allocator, source_path, input.target.root_path, output_root, targets, leak.enabled(), skip_diff, &full.writer);
+                aggregate.add(.{ .passed = pr.passed, .failed = pr.failed, .total = pr.total });
+            }
+        }
+
         try full.writer.print("test result: {d} passed; {d} failed; {d} total\n", .{
             aggregate.passed,
             aggregate.failed,
@@ -137,8 +211,32 @@ pub const DeveloperFacade = struct {
         return aggregate.failed == 0;
     }
 
+    /// Check phase: compile/analyze a leaf's `Test` declarations for `backend`
+    /// without executing their bodies. A clean compile counts as one pass; a
+    /// compile failure counts as one fail and its diagnostics are written.
+    fn checkLeaf(self: *DeveloperFacade, input_path: []const u8, backend: api.KiraDeveloperBackend, writer: anytype) !TestReport {
+        const allocator = self.arena.allocator();
+        const input = try resolveInput(allocator, input_path);
+        const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
+        const target = tests_config.checkTarget(backend);
+        const result = try build.compileFileForBackendWithOptions(allocator, source_path, target, null, &.{}, .{
+            .allow_runtime_direct_ffi = true,
+            .require_main = false,
+            .test_mode = true,
+            .synthesize_test_driver = false,
+        });
+        if (result.failed()) {
+            try writeDiagnostics(writer, &result.source, result.diagnostics);
+            try writer.print("FAIL {s} (check)\n", .{input.target.displayPath()});
+            return .{ .failed = 1, .total = 1 };
+        }
+        try writer.print("CHECK {s}\n", .{input.target.displayPath()});
+        return .{ .passed = 1, .total = 1 };
+    }
+
     pub fn report(self: *DeveloperFacade) [*:0]const u8 {
-        return @ptrCast(&self.report_buffer);
+        if (self.report_owned) |owned| return owned.ptr;
+        return empty_report.ptr;
     }
 
     pub fn lastError(self: *DeveloperFacade) [*:0]const u8 {
@@ -237,10 +335,13 @@ pub const DeveloperFacade = struct {
     }
 
     fn setReport(self: *DeveloperFacade, message: []const u8) !void {
-        const length = @min(message.len, self.report_buffer.len - 1);
-        @memcpy(self.report_buffer[0..length], message[0..length]);
-        self.report_buffer[length] = 0;
-        if (length + 1 < self.report_buffer.len) @memset(self.report_buffer[length + 1 ..], 0);
+        // Grow to the exact message size — never truncate. A truncated report
+        // that drops a backend leg's result line is indistinguishable from a
+        // crash and must never be presented as success.
+        const owned = try std.heap.c_allocator.allocSentinel(u8, message.len, 0);
+        @memcpy(owned[0..message.len], message);
+        if (self.report_owned) |old| std.heap.c_allocator.free(old);
+        self.report_owned = owned;
     }
 
     fn setError(self: *DeveloperFacade, message: []const u8) void {
@@ -253,7 +354,10 @@ pub const DeveloperFacade = struct {
     fn reset(self: *DeveloperFacade) void {
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-        @memset(&self.report_buffer, 0);
+        if (self.report_owned) |owned| {
+            std.heap.c_allocator.free(owned);
+            self.report_owned = null;
+        }
         @memset(&self.error_buffer, 0);
     }
 };
@@ -273,16 +377,6 @@ const TestReport = struct {
         self.failed += other.failed;
         self.total += other.total;
     }
-};
-
-const TestExpectation = union(enum) {
-    ok: runtime_abi.Value,
-    expected_error: ExpectedKiraError,
-};
-
-const ExpectedKiraError = struct {
-    kind: []const u8,
-    message: []const u8,
 };
 
 pub export fn kira_developer_create() callconv(.c) ?*DeveloperFacade {
@@ -347,6 +441,23 @@ fn selectedBackend(input: ResolvedInput, backend: api.KiraDeveloperBackend) ?bui
     };
 }
 
+/// Map the resolved `kira test` backend matrix to execution targets for the
+/// cross-backend `@Main` parity/leak run. `.default` resolves to vm; wasm is
+/// dropped (its parity is the corpus wasm matrix's concern).
+fn parityTargets(allocator: std.mem.Allocator, entries: []const tests_config.BackendEntry) ![]build_def.ExecutionTarget {
+    var list = std.array_list.Managed(build_def.ExecutionTarget).init(allocator);
+    for (entries) |entry| {
+        const target: build_def.ExecutionTarget = switch (entry.backend) {
+            .default, .vm => .vm,
+            .llvm => .llvm_native,
+            .hybrid => .hybrid,
+            .wasm32_emscripten => continue,
+        };
+        try list.append(target);
+    }
+    return list.toOwnedSlice();
+}
+
 fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
     if (std.mem.eql(u8, text, "vm")) return .vm;
     if (std.mem.eql(u8, text, "llvm") or std.mem.eql(u8, text, "llvm_native")) return .llvm_native;
@@ -356,8 +467,8 @@ fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
 }
 
 fn outputRoot(allocator: std.mem.Allocator, project_root: ?[]const u8) ![]u8 {
-    if (project_root) |root| return std.fs.path.join(allocator, &.{ root, "generated" });
-    return allocator.dupe(u8, "generated");
+    if (project_root) |root| return std.fs.path.join(allocator, &.{ root, ".kira-build" });
+    return allocator.dupe(u8, ".kira-build");
 }
 
 fn ensurePath(path: []const u8) !void {
@@ -387,12 +498,12 @@ fn executeCompiledTests(allocator: std.mem.Allocator, result: build.ExecutablePi
         report.total += 1;
         const test_name = try std.fmt.allocPrint(allocator, "{s}__test", .{implementation.type_name});
         const expect_name = try std.fmt.allocPrint(allocator, "{s}__expect", .{implementation.type_name});
-        const test_function = findFunctionByName(module, test_name) orelse {
+        const test_function = decode.findFunctionByName(module, test_name) orelse {
             report.failed += 1;
             try writer.print("FAIL {s} (missing test artifact)\n", .{implementation.type_name});
             continue;
         };
-        const expect_function = findFunctionByName(module, expect_name) orelse {
+        const expect_function = decode.findFunctionByName(module, expect_name) orelse {
             report.failed += 1;
             try writer.print("FAIL {s} (missing expect artifact)\n", .{implementation.type_name});
             continue;
@@ -405,7 +516,7 @@ fn executeCompiledTests(allocator: std.mem.Allocator, result: build.ExecutablePi
             try writer.print("FAIL {s} ({s})\n", .{ implementation.type_name, @errorName(err) });
             continue;
         };
-        const expectation = decodeTestExpectation(&vm, &module, expect_function.return_type, expected) catch |err| {
+        const expectation = decode.decodeTestExpectation(&vm, &module, expect_function.return_type, expected) catch |err| {
             report.failed += 1;
             try writer.print("FAIL {s} (invalid expected Result: {s})\n", .{ implementation.type_name, @errorName(err) });
             continue;
@@ -420,7 +531,7 @@ fn executeCompiledTests(allocator: std.mem.Allocator, result: build.ExecutablePi
 /// output. No Zig comparison override — the suite ran as ordinary Kira.
 fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipelineResult, writer: anytype) !TestReport {
     const module = result.bytecode_module orelse return error.MissingBytecodeArtifact;
-    const driver = findFunctionByName(module, "__kira_test_main") orelse return .{};
+    const driver = decode.findFunctionByName(module, "__kira_test_main") orelse return .{};
 
     var vm = vm_runtime.Vm.init(std.heap.smp_allocator);
     defer vm.deinit();
@@ -438,11 +549,28 @@ fn executeViaDriver(allocator: std.mem.Allocator, result: build.ExecutablePipeli
         return .{ .failed = 1, .total = 1 };
     };
 
-    return tallyDriverOutput(allocator, captured.written(), writer, VmTrapChecker{
+    var report = try tallyDriverOutput(allocator, captured.written(), writer, VmTrapChecker{
         .vm = &vm,
         .module = &module,
         .ffi_dispatcher = &ffi_dispatcher,
     });
+    // Leak gate (KIRA_TEST_CHECK_LEAKS=1): after every Test in the suite has run
+    // and dropped its locals, the VM heap and native-layout tallies must be back
+    // to zero. A non-zero live count is a leak — fail the suite with a clear line.
+    try gateVmLeaks(allocator, &vm, &report, writer);
+    return report;
+}
+
+/// Append a leak failure to `report` when leak gating is on and `vm` still holds
+/// live managed/native objects after a suite run. Preserves the legacy VM memory
+/// report guarantee (`heap.count() == 0`).
+fn gateVmLeaks(allocator: std.mem.Allocator, vm: *const vm_runtime.Vm, report: *TestReport, writer: anytype) !void {
+    if (!leak.enabled()) return;
+    const live = leak.vmLiveCount(vm);
+    if (live == 0) return;
+    report.failed += 1;
+    report.total += 1;
+    try writer.print("FAIL <leak-gate> ({d} live VM objects after tests: {s})\n", .{ live, leak.vmLeakSummary(allocator, vm) });
 }
 
 /// Parse the synthesized driver's PASS/FAIL/KTRAP lines into a TestReport.
@@ -505,11 +633,11 @@ fn expectedTrapMessage(
     run_options: vm_runtime.Hooks,
 ) []const u8 {
     const expect_name = std.fmt.allocPrint(allocator, "{s}__expect", .{name}) catch return "";
-    const expect_fn = findFunctionByName(module.*, expect_name) orelse return "";
+    const expect_fn = decode.findFunctionByName(module.*, expect_name) orelse return "";
     var discard: std.Io.Writer.Allocating = .init(allocator);
     defer discard.deinit();
     const value = vm.runFunctionById(module, expect_fn.id, &.{}, &discard.writer, run_options) catch return "";
-    const expectation = decodeTestExpectation(vm, module, expect_fn.return_type, value) catch return "";
+    const expectation = decode.decodeTestExpectation(vm, module, expect_fn.return_type, value) catch return "";
     return switch (expectation) {
         .expected_error => |expected_error| allocator.dupe(u8, expected_error.message) catch "",
         .ok => "",
@@ -527,11 +655,11 @@ fn expectedTrapMessageHybrid(
     name: []const u8,
 ) []const u8 {
     const expect_name = std.fmt.allocPrint(allocator, "{s}__expect", .{name}) catch return "";
-    const expect_fn = findFunctionByName(runtime.module, expect_name) orelse return "";
+    const expect_fn = decode.findFunctionByName(runtime.module, expect_name) orelse return "";
     var discard: std.Io.Writer.Allocating = .init(allocator);
     defer discard.deinit();
     const value = runtime.runFunctionForValue(expect_fn.id, &discard.writer) catch return "";
-    const expectation = decodeTestExpectation(&runtime.vm, &runtime.module, expect_fn.return_type, value) catch return "";
+    const expectation = decode.decodeTestExpectation(&runtime.vm, &runtime.module, expect_fn.return_type, value) catch return "";
     return switch (expectation) {
         .expected_error => |expected_error| allocator.dupe(u8, expected_error.message) catch "",
         .ok => "",
@@ -565,7 +693,7 @@ const VmTrapChecker = struct {
         };
         const expected = expectedTrapMessage(allocator, self.vm, self.module, name, run_options);
         const fn_name = try std.fmt.allocPrint(allocator, "{s}__test", .{name});
-        const func = findFunctionByName(self.module.*, fn_name) orelse return .{ .trapped = false, .message_matched = false };
+        const func = decode.findFunctionByName(self.module.*, fn_name) orelse return .{ .trapped = false, .message_matched = false };
         var discard: std.Io.Writer.Allocating = .init(allocator);
         defer discard.deinit();
         _ = self.vm.runFunctionById(self.module, func.id, &.{}, &discard.writer, run_options) catch {
@@ -658,7 +786,11 @@ fn executeViaHybridDriver(self: *DeveloperFacade, source_path: []const u8, outpu
         try writer.print("FAIL <test-driver> ({s})\n", .{@errorName(err)});
         return .{ .failed = 1, .total = 1 };
     };
-    return tallyDriverOutput(allocator, captured.written(), writer, HybridTrapChecker{ .runtime = &runtime });
+    var report = try tallyDriverOutput(allocator, captured.written(), writer, HybridTrapChecker{ .runtime = &runtime });
+    // Leak gate (KIRA_TEST_CHECK_LEAKS=1): the hybrid runtime's VM must be
+    // heap/native-clean once every bridged Test has run and dropped.
+    try gateVmLeaks(allocator, &runtime.vm, &report, writer);
+    return report;
 }
 
 fn executeOneTest(
@@ -681,7 +813,7 @@ fn executeOneTest(
                 try writer.print("FAIL {s} ({s})\n", .{ type_name, @errorName(err) });
                 return;
             };
-            if (valuesEqual(module, expected_value, actual, test_function.return_type)) {
+            if (decode.valuesEqual(module, expected_value, actual, test_function.return_type)) {
                 report.passed += 1;
                 try writer.print("PASS {s}\n", .{type_name});
             } else {
@@ -715,80 +847,6 @@ fn executeOneTest(
     }
 }
 
-fn decodeTestExpectation(vm: *vm_runtime.Vm, module: *const bytecode.Module, result_ty: bytecode.TypeRef, value: runtime_abi.Value) !TestExpectation {
-    const result_name = result_ty.name orelse return error.ExpectedResultTypeMissing;
-    const slots = enumSlots(value) orelse return error.ExpectedResultValueMissing;
-    const tag = enumTag(slots) orelse return error.ExpectedResultTagMissing;
-    const variant = enumVariantName(module, result_name, tag) orelse return error.ExpectedResultVariantMissing;
-    if (std.mem.eql(u8, variant, "Ok")) return .{ .ok = slots[1] };
-    if (std.mem.eql(u8, variant, "Error")) return .{ .expected_error = try decodeExpectedKiraError(vm, module, slots[1]) };
-    return error.ExpectedResultVariantMissing;
-}
-
-fn decodeExpectedKiraError(vm: *vm_runtime.Vm, module: *const bytecode.Module, value: runtime_abi.Value) !ExpectedKiraError {
-    const failure_name = if (value == .raw_ptr and value.raw_ptr != 0) vm.managedStructTypeName(value.raw_ptr) orelse "TestFailure" else "TestFailure";
-    const slots = enumSlots(value) orelse return error.ExpectedFailureValueMissing;
-    const tag = enumTag(slots) orelse return error.ExpectedFailureTagMissing;
-    return .{
-        .kind = enumVariantName(module, failure_name, tag) orelse return error.ExpectedFailureVariantMissing,
-        .message = if (slots[1] == .string) slots[1].string else "",
-    };
-}
-
-fn enumSlots(value: runtime_abi.Value) ?[*]align(1) const runtime_abi.Value {
-    if (value != .raw_ptr or value.raw_ptr == 0) return null;
-    return @ptrFromInt(value.raw_ptr);
-}
-
-fn enumTag(slots: [*]align(1) const runtime_abi.Value) ?u32 {
-    if (slots[0] != .integer or slots[0].integer < 0) return null;
-    return @intCast(slots[0].integer);
-}
-
-fn enumVariantName(module: *const bytecode.Module, enum_name: []const u8, discriminant: u32) ?[]const u8 {
-    for (module.enums) |enum_decl| {
-        if (!std.mem.eql(u8, enum_decl.name, enum_name)) continue;
-        for (enum_decl.variants) |variant| if (variant.discriminant == discriminant) return variant.name;
-    }
-    return null;
-}
-
-fn valuesEqual(module: *const bytecode.Module, expected: runtime_abi.Value, actual: runtime_abi.Value, ty: bytecode.TypeRef) bool {
-    if (ty.kind == .enum_instance) return enumValuesEqual(module, expected, actual, ty.name orelse return false);
-    if (std.meta.activeTag(expected) != std.meta.activeTag(actual)) return false;
-    return switch (expected) {
-        .void => true,
-        .integer => |value| value == actual.integer,
-        .float => |value| value == actual.float,
-        .string => |value| std.mem.eql(u8, value, actual.string),
-        .boolean => |value| value == actual.boolean,
-        .raw_ptr => |value| value == actual.raw_ptr,
-    };
-}
-
-fn enumValuesEqual(module: *const bytecode.Module, expected: runtime_abi.Value, actual: runtime_abi.Value, enum_name: []const u8) bool {
-    const expected_slots = enumSlots(expected) orelse return false;
-    const actual_slots = enumSlots(actual) orelse return false;
-    const expected_tag = enumTag(expected_slots) orelse return false;
-    const actual_tag = enumTag(actual_slots) orelse return false;
-    if (expected_tag != actual_tag) return false;
-    const payload_ty = enumVariantPayloadType(module, enum_name, expected_tag) orelse return true;
-    return valuesEqual(module, expected_slots[1], actual_slots[1], payload_ty);
-}
-
-fn enumVariantPayloadType(module: *const bytecode.Module, enum_name: []const u8, discriminant: u32) ?bytecode.TypeRef {
-    for (module.enums) |enum_decl| {
-        if (!std.mem.eql(u8, enum_decl.name, enum_name)) continue;
-        for (enum_decl.variants) |variant| if (variant.discriminant == discriminant) return variant.payload_ty;
-    }
-    return null;
-}
-
-fn findFunctionByName(module: bytecode.Module, name: []const u8) ?bytecode.Function {
-    for (module.functions) |function| if (std.mem.eql(u8, function.name, name)) return function;
-    return null;
-}
-
 fn discoverTestLeaves(allocator: std.mem.Allocator, input_path: []const u8) ![]const []const u8 {
     if (!directoryExists(input_path) or isKiraAppPackage(input_path)) return allocator.dupe([]const u8, &.{input_path});
     var leaves = std.array_list.Managed([]const u8).init(allocator);
@@ -819,7 +877,7 @@ fn isKiraAppPackage(path: []const u8) bool {
 }
 
 fn hasManifest(path: []const u8) bool {
-    for ([_][]const u8{ "kira.toml", "project.toml", "Kira.toml" }) |name| {
+    for ([_][]const u8{ "package.kira", "kira.toml", "project.toml", "Kira.toml" }) |name| {
         const manifest_path = std.fs.path.join(std.heap.page_allocator, &.{ path, name }) catch return false;
         defer std.heap.page_allocator.free(manifest_path);
         if (fileExists(manifest_path)) return true;

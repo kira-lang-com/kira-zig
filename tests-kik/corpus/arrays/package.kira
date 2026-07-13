@@ -1,0 +1,6 @@
+Package KikCorpusArrays {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+    let tests = Tests { backends: [.Vm, .Llvm, .Hybrid], phase: .Both }
+}

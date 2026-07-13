@@ -1,6 +1,7 @@
 // Corpus migration: closures. Source cases under tests/pass/run/{callback_*,
 // trailing_callback_*, closure_export_distinct_dispatch}. No `import Foundation`
-// (main.kira covers the package). Prefix: ckx / Ckx.
+// (main.kira covers the package). Prefix: ckx / Ckx
+// (trailing_callback_native_syntax uses tnx / Tnx).
 
 // ── callback_builder_style_parity ─────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ Test CkxCallbackBuilderStyleParity {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 // ── callback_mutable_value_capture ────────────────────────────────────────────
@@ -34,7 +35,7 @@ Test CkxCallbackMutableValueCapture {
         printer(1)
         return offset
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ── callback_return_value_parity ──────────────────────────────────────────────
@@ -52,7 +53,7 @@ Test CkxCallbackReturnValueParity {
         let printer = ckxMakePrinter()
         return printer(5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 // ── callback_value_capture ────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ Test CkxCallbackValueCapture {
         }
         return printer(1)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ── callback_value_parity ─────────────────────────────────────────────────────
@@ -104,7 +105,7 @@ Test CkxCallbackValueParity {
         ckxTrigger(box)
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(52); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(52); return e }
 }
 
 // ── trailing_callback_captures ────────────────────────────────────────────────
@@ -181,7 +182,7 @@ Test CkxTrailingCallbackCaptures {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(122); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(122); return e }
 }
 
 // ── trailing_callback_mutable_capture ─────────────────────────────────────────
@@ -199,7 +200,7 @@ Test CkxTrailingCallbackMutableCapture {
         }
         return offset
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ── closure_export_distinct_dispatch ──────────────────────────────────────────
@@ -230,7 +231,7 @@ Test CkxClosureExportDistinctDispatchSequential {
         // FF1 bug would give 11 + 11 = 22 (stale-pointer reuse); correct is 112.
         return r1 + r2
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(112); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(112); return e }
 }
 
 Test CkxClosureExportDistinctDispatchTwo {
@@ -242,5 +243,64 @@ Test CkxClosureExportDistinctDispatchTwo {
         // FF1 bug would give (1+10) + (2+10) = 23; correct is 113.
         return ckxInvokeTwo(move cbA, move cbB, 1, 2)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(113); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(113); return e }
+}
+
+// ── trailing_callback_native_syntax ───────────────────────────────────────────
+// Trailing-closure syntax on native-shaped method calls: bare call with only a
+// trailing closure, a call with leading args plus trailing closure, and a
+// zero-parameter `{ in ... }` trailing closure.
+
+class TnxFrame {
+    let value: Int
+
+    function draw() -> Int {
+        return self.value
+    }
+}
+
+class TnxGraphics {
+    function run(handler: (TnxFrame) -> Void) {
+        handler(TnxFrame(1))
+        return
+    }
+
+    function runWithConfig(config: Int, handler: (TnxFrame) -> Void) {
+        handler(TnxFrame(config))
+        return
+    }
+}
+
+class TnxApp {
+    function tick(handler: () -> Void) {
+        handler()
+        return
+    }
+}
+
+function tnxUpdate() -> Int {
+    return 3
+}
+
+Test TnxTrailingCallbackNativeSyntax {
+    test {
+        // The original prints 1, 2, 3 in sequence; fold the sequence into a
+        // single ordered digit accumulator.
+        var out = 0
+        let graphics = TnxGraphics()
+        graphics.run { frame in
+            out = out * 10 + frame.draw()
+        }
+
+        graphics.runWithConfig(2) { frame in
+            out = out * 10 + frame.draw()
+        }
+
+        let app = TnxApp()
+        app.tick { in
+            out = out * 10 + tnxUpdate()
+        }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(123); return e }
 }

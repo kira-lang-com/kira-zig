@@ -1059,6 +1059,10 @@ fn instructionReadsRegister(inst: bytecode.Instruction, register: u32) bool {
         .c_string_to_string => |value| return value.src == register,
         .array_len => |value| return value.array == register,
         .string_len => |value| return value.string == register,
+        .string_from_scalar => |value| return value.src == register,
+        .string_char_at => |value| return value.string == register or value.index == register,
+        .string_substring => |value| return value.string == register or value.start == register or value.end == register,
+        .string_index_of => |value| return value.string == register or value.needle == register,
         .array_get => |value| return value.array == register or value.index == register,
         .array_set => |value| return value.array == register or value.index == register or value.src == register,
         .array_append => |value| return value.array == register or value.src == register,
@@ -1140,6 +1144,10 @@ fn registerWriteOf(inst: bytecode.Instruction) ?u32 {
         .c_string_to_string => |value| value.dst,
         .array_len => |value| value.dst,
         .string_len => |value| value.dst,
+        .string_from_scalar => |value| value.dst,
+        .string_char_at => |value| value.dst,
+        .string_substring => |value| value.dst,
+        .string_index_of => |value| value.dst,
         .array_get => |value| value.dst,
         .enum_tag => |value| value.dst,
         .enum_payload => |value| value.dst,
@@ -1216,6 +1224,20 @@ fn countRegisterReads(allocator: std.mem.Allocator, instructions: []const byteco
             .c_string_to_string => |value| bumpRead(reads, value.src),
             .array_len => |value| bumpRead(reads, value.array),
             .string_len => |value| bumpRead(reads, value.string),
+            .string_from_scalar => |value| bumpRead(reads, value.src),
+            .string_char_at => |value| {
+                bumpRead(reads, value.string);
+                bumpRead(reads, value.index);
+            },
+            .string_substring => |value| {
+                bumpRead(reads, value.string);
+                bumpRead(reads, value.start);
+                bumpRead(reads, value.end);
+            },
+            .string_index_of => |value| {
+                bumpRead(reads, value.string);
+                bumpRead(reads, value.needle);
+            },
             .array_get => |value| {
                 bumpRead(reads, value.array);
                 bumpRead(reads, value.index);

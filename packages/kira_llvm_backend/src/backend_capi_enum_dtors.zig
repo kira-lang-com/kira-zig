@@ -178,7 +178,7 @@ fn buildClone(
         api.LLVMAddCase(switch_inst, api.LLVMConstInt(types.i64, variant.discriminant, 0), case_block);
         api.LLVMPositionBuilderAtEnd(b, case_block);
         // A construct_any payload cannot be deep-cloned (no kira_capi_dynamic_clone
-        // call sites — see KIRA_MEMORY_MODEL.md §3), and it never needs to be: a
+        // call sites — see .codex/KIRA_MEMORY_MODEL.md §3), and it never needs to be: a
         // contains-any enum is move-only (checker KIR002 rejects every duplicating
         // ownership edge), so this clone helper is unreachable for it at runtime.
         // Trap to make that guarantee loud rather than silently share the shell into

@@ -1,0 +1,11 @@
+Package KikCorpusNativeMain {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+    // vm is deliberately ABSENT from the matrix: an @Native @Main (and @Native
+    // code generally) cannot execute on the pure VM. That exclusion IS the
+    // pass-differential the legacy tests/fail/backend/vm_native_main case
+    // expressed by listing only ["hybrid", "llvm"]. Under KIRA_TEST_PARITY=1 the
+    // @Native @Main's "native main\n" is proven byte-identical across hybrid+llvm.
+    let tests = Tests { backends: [.Hybrid, .Llvm], phase: .Both }
+}

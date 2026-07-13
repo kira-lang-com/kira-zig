@@ -24,7 +24,7 @@ Good split examples:
 
 ## Generated-artifact hygiene
 
-- Never edit `generated/`, `.zig-cache/`, `zig-out/`, or `.kira/` by hand.
+- Never edit `.kira-build/`, `.zig-cache/`, `zig-out/`, or `.kira/` by hand.
 - Regenerate bindings/assets through the real commands instead.
 
 ## Docs/examples sync

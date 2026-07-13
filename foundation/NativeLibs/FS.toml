@@ -20,13 +20,13 @@ sources = ["FS/fs.c"]
 include_dirs = ["FS"]
 
 [target.aarch64-macos-none]
-static_lib = "../generated/native/aarch64-macos/libfs.a"
+static_lib = "../.kira-build/native/aarch64-macos/libfs.a"
 
 [target.x86_64-linux-gnu]
-static_lib = "../generated/native/x86_64-linux-gnu/libfs.a"
+static_lib = "../.kira-build/native/x86_64-linux-gnu/libfs.a"
 
 [target.x86_64-windows-msvc]
-static_lib = "../generated/native/x86_64-windows-msvc/fs.lib"
+static_lib = "../.kira-build/native/x86_64-windows-msvc/fs.lib"
 
 [target.wasm32-emscripten-unknown]
-static_lib = "../generated/native/wasm32-emscripten/libfs.a"
+static_lib = "../.kira-build/native/wasm32-emscripten/libfs.a"

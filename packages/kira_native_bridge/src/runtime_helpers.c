@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -289,6 +290,123 @@ KIRA_BRIDGE_EXPORT void kira_native_print_f64(double value) {
 KIRA_BRIDGE_EXPORT void kira_native_print_string(const unsigned char *ptr, uint64_t len) {
     kira_native_write_string(ptr, len);
     kira_native_write_newline();
+}
+
+/*
+ * String primitives (`String(x)` conversions and `s.charAt/substring/indexOf`).
+ * Semantics mirror the VM interpreter arms in vm_interpreter.zig exactly —
+ * parity is the contract:
+ *   - String(Int)  → base-10, matches Zig `{d}` (plain %lld).
+ *   - String(Bool) → "true"/"false".
+ *   - String(Float)→ shortest decimal that round-trips through strtod, expanded
+ *     to plain (non-scientific) notation — byte-identical to Zig's `{d}` float
+ *     rendering the VM uses. NaN/inf render "nan"/"inf"/"-inf".
+ *   - charAt OOB and substring invalid-range ABORT (the VM traps; the pure-Kira
+ *     test driver's KTRAP re-run depends on the abort, so no soft sentinel).
+ *   - indexOf: empty needle → 0, absent → -1.
+ * Out-params write a {ptr,len} KiraBridgeString slot; buffers are plain malloc,
+ * matching the string-buffer ownership model used by the array element clone
+ * path above (libc-owned on the native path even in hybrid builds).
+ */
+static void kira_string_out(KiraBridgeString *out, const char *bytes, size_t len) {
+    unsigned char *buf = (unsigned char *)malloc(len == 0 ? 1 : len);
+    if (buf == NULL) {
+        fprintf(stderr, "kira string allocation failed\n");
+        abort();
+    }
+    memcpy(buf, bytes, len);
+    out->ptr = buf;
+    out->len = len;
+}
+
+KIRA_BRIDGE_EXPORT void kira_string_from_i64(int64_t value, KiraBridgeString *out) {
+    char tmp[32];
+    int n = snprintf(tmp, sizeof tmp, "%lld", (long long)value);
+    kira_string_out(out, tmp, (size_t)n);
+}
+
+KIRA_BRIDGE_EXPORT void kira_string_from_bool(int64_t value, KiraBridgeString *out) {
+    if (value != 0) kira_string_out(out, "true", 4);
+    else kira_string_out(out, "false", 5);
+}
+
+KIRA_BRIDGE_EXPORT void kira_string_from_f64(double value, KiraBridgeString *out) {
+    if (isnan(value)) { kira_string_out(out, "nan", 3); return; }
+    if (isinf(value)) {
+        if (value < 0) kira_string_out(out, "-inf", 4);
+        else kira_string_out(out, "inf", 3);
+        return;
+    }
+    /* Shortest %.*g that round-trips (Zig {d} equivalence), then expand any
+     * scientific form to plain decimal so 1e20 renders as the full digit run
+     * and 1.5e-7 as 0.00000015 — the notation Zig's {d} always uses. */
+    char g[64];
+    int prec;
+    for (prec = 1; prec <= 17; prec++) {
+        snprintf(g, sizeof g, "%.*g", prec, value);
+        if (strtod(g, NULL) == value) break;
+    }
+    const char *e = strpbrk(g, "eE");
+    if (e == NULL) {
+        kira_string_out(out, g, strlen(g));
+        return;
+    }
+    /* Split mantissa/exponent: [-]D[.DDD] e [+-]XX */
+    char plain[1100]; /* |exp| <= 308 for doubles; buffer is comfortably larger */
+    size_t pn = 0;
+    int exp10 = (int)strtol(e + 1, NULL, 10);
+    int neg = g[0] == '-';
+    const char *m = g + (neg ? 1 : 0);
+    char digits[32];
+    size_t nd = 0;
+    int point = -1; /* digit count before the '.' in the mantissa */
+    for (const char *p = m; p < e; p++) {
+        if (*p == '.') { point = (int)nd; continue; }
+        digits[nd] = *p;
+        nd = nd + 1;
+    }
+    if (point < 0) point = (int)nd;
+    int dp = point + exp10; /* decimal point position within `digits` */
+    if (neg) plain[pn++] = '-';
+    if (dp <= 0) {
+        plain[pn++] = '0';
+        plain[pn++] = '.';
+        for (int i = 0; i < -dp; i++) plain[pn++] = '0';
+        for (size_t i = 0; i < nd; i++) plain[pn++] = digits[i];
+    } else if ((size_t)dp >= nd) {
+        for (size_t i = 0; i < nd; i++) plain[pn++] = digits[i];
+        for (int i = 0; i < dp - (int)nd; i++) plain[pn++] = '0';
+    } else {
+        for (int i = 0; i < dp; i++) plain[pn++] = digits[i];
+        plain[pn++] = '.';
+        for (size_t i = (size_t)dp; i < nd; i++) plain[pn++] = digits[i];
+    }
+    kira_string_out(out, plain, pn);
+}
+
+KIRA_BRIDGE_EXPORT int64_t kira_string_char_at(const unsigned char *ptr, int64_t len, int64_t index) {
+    if (ptr == NULL || index < 0 || index >= len) {
+        fprintf(stderr, "kira runtime trap: string index is out of bounds\n");
+        abort();
+    }
+    return (int64_t)ptr[index];
+}
+
+KIRA_BRIDGE_EXPORT void kira_string_substring(const unsigned char *ptr, int64_t len, int64_t start, int64_t end, KiraBridgeString *out) {
+    if (start < 0 || end > len || start > end) {
+        fprintf(stderr, "kira runtime trap: string substring range is out of bounds\n");
+        abort();
+    }
+    kira_string_out(out, (const char *)(ptr + start), (size_t)(end - start));
+}
+
+KIRA_BRIDGE_EXPORT int64_t kira_string_index_of(const unsigned char *hptr, int64_t hlen, const unsigned char *nptr, int64_t nlen) {
+    if (nlen == 0) return 0;
+    if (hlen < nlen) return -1;
+    for (int64_t i = 0; i + nlen <= hlen; i++) {
+        if (memcmp(hptr + i, nptr, (size_t)nlen) == 0) return i;
+    }
+    return -1;
 }
 
 KIRA_BRIDGE_EXPORT KiraArray *kira_array_alloc(int64_t len) {

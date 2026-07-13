@@ -17,13 +17,13 @@ fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         if (dep_spec.source == .path) return error.InvalidArguments;
     }
 
-    const generated_root = try std.fs.path.join(allocator, &.{ location.root_path, "generated" });
-    defer allocator.free(generated_root);
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, generated_root);
+    const build_root = try std.fs.path.join(allocator, &.{ location.root_path, ".kira-build", "package" });
+    defer allocator.free(build_root);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, build_root);
 
     const archive_name = try std.fmt.allocPrint(allocator, "{s}-{s}.tar", .{ location.manifest.name, location.manifest.version });
     defer allocator.free(archive_name);
-    const archive_path = try std.fs.path.join(allocator, &.{ generated_root, archive_name });
+    const archive_path = try std.fs.path.join(allocator, &.{ build_root, archive_name });
     defer allocator.free(archive_path);
 
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, archive_path, .{ .truncate = true });
@@ -162,6 +162,7 @@ fn shouldSkip(name: []const u8) bool {
         std.mem.eql(u8, name, ".zig-cache") or
         std.mem.eql(u8, name, "zig-out") or
         std.mem.eql(u8, name, ".kira") or
+        std.mem.eql(u8, name, ".kira-build") or
         std.mem.eql(u8, name, "generated");
 }
 

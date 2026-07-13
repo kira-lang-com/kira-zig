@@ -1,0 +1,249 @@
+// DrvTests.kira — coverage for Foundation's builtin `@Derive(Equatable)` and `@Derive(Clone)`
+// macros (see foundation/app/Derive.kira). PREFIX: drv / Drv.
+// No `import Foundation` here — Test / Result / TestFailure and the `Equatable` / `Clone` derive
+// macros are all package-wide once main.kira imports Foundation.
+//
+// Generated function contracts (fixed):
+//   @Derive(Equatable) on struct T  ->  function eq_T(a: borrow T, b: borrow T) -> Bool
+//   @Derive(Clone)     on struct T  ->  function clone_T(v: borrow T) -> T
+// Both expand at the frontend, so vm / llvm / hybrid behave identically by construction.
+
+// ---------------------------------------------------------------------------
+// Types under test
+// ---------------------------------------------------------------------------
+
+@Derive(Equatable, Clone)
+struct DrvPoint {
+    var x: Int
+    var y: Int
+}
+
+@Derive(Equatable, Clone)
+struct DrvLabeled {
+    var label: String
+    var n: Int
+}
+
+// Nested struct fields: Equatable/Clone recurse through DrvPoint's own eq_/clone_.
+@Derive(Equatable, Clone)
+struct DrvSegment {
+    var from: DrvPoint
+    var to: DrvPoint
+    var tag: String
+}
+
+// A user-defined derive macro must keep working next to the builtins (extensibility).
+comptime macro DrvArity {
+    kind { derive }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var count: Int = 0
+        for field in target.fields {
+            count = count + 1
+        }
+        return quote {
+            function drvArity_#{target.name}() -> Int {
+                return #{count}
+            }
+        }
+    }
+}
+
+@Derive(Equatable, Clone, DrvArity)
+struct DrvMixed {
+    var name: String
+    var score: Int
+    var flag: Bool
+}
+
+// ---------------------------------------------------------------------------
+// Equatable — scalar fields
+// ---------------------------------------------------------------------------
+
+Test DrvScalarEqTrue {
+    test {
+        let a = DrvPoint { x: 1, y: 2 }
+        let b = DrvPoint { x: 1, y: 2 }
+        return eq_DrvPoint(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvScalarEqFalseFirst {
+    test {
+        let a = DrvPoint { x: 1, y: 2 }
+        let b = DrvPoint { x: 9, y: 2 }
+        return eq_DrvPoint(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+Test DrvScalarEqFalseSecond {
+    test {
+        let a = DrvPoint { x: 1, y: 2 }
+        let b = DrvPoint { x: 1, y: 9 }
+        return eq_DrvPoint(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Equatable — String fields
+// ---------------------------------------------------------------------------
+
+Test DrvStringEqTrue {
+    test {
+        let a = DrvLabeled { label: "hello", n: 3 }
+        let b = DrvLabeled { label: "hello", n: 3 }
+        return eq_DrvLabeled(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvStringEqFalseLabel {
+    test {
+        let a = DrvLabeled { label: "hello", n: 3 }
+        let b = DrvLabeled { label: "world", n: 3 }
+        return eq_DrvLabeled(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Equatable — nested struct recursion
+// ---------------------------------------------------------------------------
+
+Test DrvNestedEqTrue {
+    test {
+        let a = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        let b = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        return eq_DrvSegment(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvNestedEqFalseDeep {
+    test {
+        // Differs only in a nested Point's y — proves the recursion actually inspects nested fields.
+        let a = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        let b = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 9 }, tag: "s" }
+        return eq_DrvSegment(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+Test DrvNestedEqFalseTag {
+    test {
+        let a = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        let b = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "t" }
+        return eq_DrvSegment(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Clone — scalar fields + independence
+// ---------------------------------------------------------------------------
+
+Test DrvCloneScalarEq {
+    test {
+        let orig = DrvPoint { x: 7, y: 8 }
+        let copy = clone_DrvPoint(orig)
+        return eq_DrvPoint(orig, copy)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvCloneIndependence {
+    test {
+        // Mutating the clone must leave the original untouched (value independence).
+        let orig = DrvPoint { x: 7, y: 8 }
+        var copy = clone_DrvPoint(orig)
+        copy.x = 100
+        copy.y = 200
+        return orig.x == 7 && orig.y == 8
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Clone — String fields + independence (deep-value copy)
+// ---------------------------------------------------------------------------
+
+Test DrvCloneStringEq {
+    test {
+        let orig = DrvLabeled { label: "keep", n: 11 }
+        let copy = clone_DrvLabeled(orig)
+        return eq_DrvLabeled(orig, copy)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvCloneStringIndependence {
+    test {
+        let orig = DrvLabeled { label: "keep", n: 11 }
+        var copy = clone_DrvLabeled(orig)
+        copy.label = "mutated"
+        copy.n = 99
+        // The original's String buffer must not have been aliased by the clone.
+        return orig.label == "keep" && orig.n == 11
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Clone — nested struct recursion, independence at depth
+// ---------------------------------------------------------------------------
+
+Test DrvCloneNestedEq {
+    test {
+        let orig = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        let copy = clone_DrvSegment(orig)
+        return eq_DrvSegment(orig, copy)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvCloneNestedIndependence {
+    test {
+        let orig = DrvSegment { from: DrvPoint { x: 1, y: 2 }, to: DrvPoint { x: 3, y: 4 }, tag: "s" }
+        var copy = clone_DrvSegment(orig)
+        copy.from = DrvPoint { x: 50, y: 60 }
+        return orig.from.x == 1 && orig.from.y == 2
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// @Derive(Equatable, Clone) combined on one type, round-trip
+// ---------------------------------------------------------------------------
+
+Test DrvCombinedCloneThenEq {
+    test {
+        let orig = DrvMixed { name: "kira", score: 42, flag: true }
+        let copy = clone_DrvMixed(orig)
+        return eq_DrvMixed(orig, copy)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DrvCombinedFlagSensitivity {
+    test {
+        let a = DrvMixed { name: "kira", score: 42, flag: true }
+        let b = DrvMixed { name: "kira", score: 42, flag: false }
+        return eq_DrvMixed(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Extensibility: a user-defined derive macro runs alongside the builtins on the same type.
+// ---------------------------------------------------------------------------
+
+Test DrvUserMacroAlongsideBuiltins {
+    test {
+        // DrvMixed carries @Derive(Equatable, Clone, DrvArity); the user macro's output must exist.
+        return drvArity_DrvMixed()
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}

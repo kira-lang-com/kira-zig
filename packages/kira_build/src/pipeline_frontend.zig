@@ -16,6 +16,7 @@ const macro_expand = @import("macro_expand.zig");
 const nowNs = timing.nowNs;
 const elapsedNs = timing.elapsedNs;
 const timingPrint = timing.timingPrint;
+const progressPrint = timing.progressPrint;
 
 fn countSourceBytes(allocator: std.mem.Allocator, files: [][]u8) !usize {
     var total: usize = 0;
@@ -132,10 +133,12 @@ pub fn displayTargetSelector(allocator: std.mem.Allocator, selector: ?native.Tar
 }
 
 pub fn lexFile(allocator: std.mem.Allocator, path: []const u8) !LexPipelineResult {
+    progressPrint("Reading source {s}", .{std.fs.path.basename(path)});
     const source_start = nowNs();
     const source = try source_pkg.SourceFile.fromPath(allocator, path);
     timingPrint("[kira:timing] SourceFile.fromPath path={s} bytes={d} ns={d}\n", .{ path, source.text.len, elapsedNs(source_start) });
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    progressPrint("Lexing {s}", .{std.fs.path.basename(path)});
     const lex_start = nowNs();
     const tokens = lexer.tokenize(allocator, &source, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -193,6 +196,7 @@ fn parseFileWithNativePreparation(
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     for (lexed.diagnostics) |diag| try diags.append(diag);
 
+    progressPrint("Parsing {s}", .{std.fs.path.basename(path)});
     const parse_start = nowNs();
     const program = parser.parse(allocator, lexed.tokens.?, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -209,6 +213,7 @@ fn parseFileWithNativePreparation(
     timingPrint("[kira:timing] parse path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ path, program.imports.len, program.decls.len, program.functions.len, elapsedNs(parse_start) });
 
     const native_libraries = if (prepare_native) blk: {
+        progressPrint("Resolving native libraries for {s}", .{std.fs.path.basename(path)});
         const native_start = nowNs();
         const libraries = ffi_support.prepareNativeLibrariesForTarget(allocator, path, program.imports, target_selector) catch |err| switch (err) {
             error.UnsupportedTarget => {
@@ -243,6 +248,7 @@ fn parseFileWithNativePreparation(
 pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !CheckPipelineResult {
     const total_start = nowNs();
 
+    progressPrint("Resolving native libraries for package {s}", .{std.fs.path.basename(source_root)});
     const native_prepare_start = nowNs();
     const own_libraries = ffi_support.prepareNativeLibrariesForTarget(allocator, source_root, &.{}, null) catch |err| switch (err) {
         error.UnsupportedTarget => &.{},
@@ -250,6 +256,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
     };
     timingPrint("[kira:timing] prepareNativeLibraries source_root={s} native_libraries={d} ns={d}\n", .{ source_root, own_libraries.len, elapsedNs(native_prepare_start) });
 
+    progressPrint("Discovering sources in package {s}", .{std.fs.path.basename(source_root)});
     const collect_start = nowNs();
     const module_files = try program_graph.collectPackageModuleFiles(allocator, source_root);
     const collect_ns = elapsedNs(collect_start);
@@ -267,15 +274,18 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
         };
     }
 
+    progressPrint("Reading primary package source {s}", .{std.fs.path.basename(module_files[0])});
     const source_start = nowNs();
     const source = try source_pkg.SourceFile.fromPath(allocator, module_files[0]);
     timingPrint("[kira:timing] SourceFile.fromPath package_root_primary={s} bytes={d} ns={d}\n", .{ module_files[0], source.text.len, elapsedNs(source_start) });
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    progressPrint("Loading dependency module map", .{});
     const module_map_start = nowNs();
     const module_map = try package_manager.loadModuleMapForSource(allocator, module_files[0]);
     const imported_package_files = try countImportedPackageFiles(allocator, module_map);
     timingPrint("[kira:timing] loadModuleMapForSource package_root={s} owners={d} imported_package_files={d} ns={d}\n", .{ module_files[0], module_map.owners.len, imported_package_files, elapsedNs(module_map_start) });
 
+    progressPrint("Preparing dependency native libraries", .{});
     const declared_prepare_start = nowNs();
     const declared_libraries = ffi_support.prepareDeclaredNativeLibrariesForTarget(allocator, own_libraries, module_map, null) catch |err| switch (err) {
         error.UnsupportedTarget => own_libraries,
@@ -283,6 +293,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
     };
     timingPrint("[kira:timing] prepareDeclaredNativeLibraries package_root={s} native_libraries={d} ns={d}\n", .{ module_files[0], declared_libraries.len, elapsedNs(declared_prepare_start) });
 
+    progressPrint("Building package program graph", .{});
     const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraphFromFiles(allocator, module_files, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -299,6 +310,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
     };
     timingPrint("[kira:timing] buildProgramGraphFromFiles source_root={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ source_root, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
 
+    progressPrint("Expanding macros", .{});
     const expanded_program = macro_expand.expandAndCheck(allocator, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => return .{
             .source = source,
@@ -308,6 +320,7 @@ pub fn checkPackageRoot(allocator: std.mem.Allocator, source_root: []const u8) !
         else => return err,
     };
 
+    progressPrint("Checking package semantics", .{});
     const semantics_start = nowNs();
     _ = semantics.analyzeLibrary(allocator, expanded_program, .{}, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {

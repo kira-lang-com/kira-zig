@@ -29,8 +29,10 @@ utils) stay below command/host packages. Follow `docs/package_graph.md` and
 - Graphics backend: Kira Graphics package/backend layer, not host
   placeholder code
 
-Top-level dirs: `packages/` (all of the above), `tests/` (corpus + helpers),
-`examples/` (runnable samples), `docs/`, `templates/` (used by `kira new`).
+Top-level dirs: `packages/` (all of the above), `tests-kik/` (Kira-native test
+suites: corpus, fail-corpus, harness, ffi-harness, shaders — the legacy `tests/`
+tree is deleted), `examples/` (runnable samples), `docs/`, `templates/` (used by
+`kira new`).
 `generated/`, `.zig-cache/`, `zig-out/` are build outputs — don't hand-edit.
 
 Backend/platform selection: explicit repo-native enums/structured target

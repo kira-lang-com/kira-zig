@@ -90,6 +90,21 @@ pub fn parseCallbackBlock(self: *Parser) anyerror!syntax.ast.CallbackBlock {
 }
 
 pub fn parseBuilderItem(self: *Parser) anyerror!syntax.ast.BuilderItem {
+    // Construct 2.0 override member: `let <field> = <expr>` inside a construction's trailing
+    // block sets a named field, alongside bare children that fill the `some X` slot. An optional
+    // `: Type` annotation is accepted and ignored (the field's declared type governs).
+    if (self.at(.kw_let)) {
+        const start = self.advance().span.start;
+        const name_token = try self.expect(.identifier, "expected field name after 'let'", "name the field this override sets");
+        if (self.match(.colon)) _ = try self.parseTypeExpr();
+        _ = try self.expect(.equal, "expected '=' in field override", "assign the override value with '='");
+        const value = try self.parseExpression();
+        return .{ .field_override = .{
+            .name = name_token.lexeme,
+            .value = value,
+            .span = source_pkg.Span.init(start, exprSpan(value.*).end),
+        } };
+    }
     if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "For") and self.peekNext().kind == .l_paren) {
         const start = self.advance().span.start;
         _ = try self.expect(.l_paren, "expected '(' after For", "open the app-surface For clause here");

@@ -28,7 +28,7 @@ pub const FfiOptions = struct {
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
-    input_path: []const u8 = ".",
+    quiet: bool = false,
 };
 
 pub const RunOptions = struct {
@@ -140,6 +140,10 @@ pub const UpdateOptions = struct {
     input_path: ?[]const u8 = null,
 };
 
+pub const MigrateManifestOptions = struct {
+    input_path: []const u8,
+};
+
 pub const PackageMode = enum { pack, inspect };
 pub const PackageOptions = struct {
     mode: PackageMode,
@@ -202,6 +206,7 @@ pub const ParsedCommand = union(CommandKind) {
     remove: SinglePackageOptions,
     update: UpdateOptions,
     package: PackageOptions,
+    migrate_manifest: MigrateManifestOptions,
     live: LiveOptions,
     export_cmd: ExportOptions,
     help: HelpOptions,

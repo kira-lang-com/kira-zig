@@ -216,7 +216,20 @@ pub fn consumeValue(self: *Checker, state: *State, value: mid.Value, mode: PathU
             try self.consumeValue(&else_state, node.else_value.*, mode);
             try self.joinState(state, &then_state, &else_state);
         },
-        .native_state, .native_user_data, .native_recover, .native_state_free, .c_string_to_string, .array_len, .string_len => |node| try self.consumeValue(state, node.inner.*, .read),
+        .native_state, .native_user_data, .native_recover, .native_state_free, .c_string_to_string, .array_len, .string_len, .string_from_scalar => |node| try self.consumeValue(state, node.inner.*, .read),
+        .string_char_at => |node| {
+            try self.consumeValue(state, node.string.*, .read);
+            try self.consumeValue(state, node.index.*, .read);
+        },
+        .string_substring => |node| {
+            try self.consumeValue(state, node.string.*, .read);
+            try self.consumeValue(state, node.start.*, .read);
+            try self.consumeValue(state, node.end.*, .read);
+        },
+        .string_index_of => |node| {
+            try self.consumeValue(state, node.string.*, .read);
+            try self.consumeValue(state, node.needle.*, .read);
+        },
         .opaque_member => |node| try self.consumeValue(state, node.object.*, .read),
         .opaque_index => |node| {
             try self.consumeValue(state, node.object.*, .read);
@@ -301,6 +314,10 @@ pub fn consumeCallArgs(self: *Checker, state: *State, args: []const mid.Value, o
                 .c_string_to_string => |node| node.span,
                 .array_len => |node| node.span,
                 .string_len => |node| node.span,
+                .string_from_scalar => |node| node.span,
+                .string_char_at => |node| node.span,
+                .string_substring => |node| node.span,
+                .string_index_of => |node| node.span,
                 .opaque_member => |node| node.span,
                 .opaque_index => |node| node.span,
                 .integer => |node| node.span,

@@ -3,6 +3,85 @@ const builtin = @import("builtin");
 const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 
+/// Resolve a native library declared inline in a `package.kira` manifest (a
+/// `NativeLibrary { ... }` entry) into a `ResolvedNativeLibrary`, using the
+/// project root as the base for every relative path.
+///
+/// Inline libraries carry no per-target `static_lib` paths and no `output`: the
+/// artifact is compiled from `sources` into a project-local, target-scoped path,
+/// and — the autobind law — bindings always write to
+/// `<project_root>/app/bindings/<module>.kira`. `pseudo_manifest_path` is a
+/// synthetic path (the project's `package.kira`) used only for diagnostics and
+/// identity.
+pub fn resolveInlineLibrary(
+    allocator: std.mem.Allocator,
+    spec: native.NativeLibrarySpec,
+    target: native.TargetSelector,
+    project_root: []const u8,
+    pseudo_manifest_path: []const u8,
+) !native.ResolvedNativeLibrary {
+    const artifact_path = try inlineArtifactPath(allocator, project_root, spec.name, spec.link_mode, target);
+
+    var resolved = native.ResolvedNativeLibrary{
+        .manifest_path = try allocator.dupe(u8, pseudo_manifest_path),
+        .name = try allocator.dupe(u8, spec.name),
+        .link_mode = spec.link_mode,
+        .abi = spec.abi,
+        .artifact_path = artifact_path,
+        .target = target,
+        .headers = spec.headers,
+        .autobinding = spec.autobinding,
+        .build = spec.build,
+        .compiler_flags = &.{},
+        .link = .{},
+    };
+
+    if (try firstUnresolvedEnvVar(allocator, resolved)) |missing| {
+        resolved.unavailable = .{ .reason = .missing_environment_variable, .detail = missing };
+        return resolved;
+    }
+
+    // Every relative path is resolved against the project root (there is no
+    // sibling `.toml` file for an inline library).
+    const base = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    resolved.headers = try resolveHeaders(allocator, base, spec.headers);
+    resolved.build = try resolveBuildRecipe(allocator, base, spec.build);
+    resolved.autobinding = if (spec.autobinding) |autobinding| blk: {
+        // Autobind law: bindings always land at app/bindings/<module>.kira.
+        const output_path = try std.fs.path.join(allocator, &.{ project_root, "app", "bindings", try std.fmt.allocPrint(allocator, "{s}.kira", .{autobinding.module_name}) });
+        break :blk native.AutobindingSpec{
+            .module_name = try allocator.dupe(u8, autobinding.module_name),
+            .output_path = output_path,
+            .headers = try absolutizePaths(allocator, base, autobinding.headers),
+            .bindings = .{
+                .mode = autobinding.bindings.mode,
+                .profile = autobinding.bindings.profile,
+                .functions = try cloneStrings(allocator, autobinding.bindings.functions),
+                .structs = try cloneStrings(allocator, autobinding.bindings.structs),
+                .callbacks = try cloneStrings(allocator, autobinding.bindings.callbacks),
+            },
+        };
+    } else null;
+    return resolved;
+}
+
+fn inlineArtifactPath(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    name: []const u8,
+    link_mode: native.LinkMode,
+    target: native.TargetSelector,
+) ![]const u8 {
+    const triple_dir = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ target.architecture, target.operating_system });
+    const is_windows = std.mem.eql(u8, target.operating_system, "windows");
+    const file_name = if (link_mode == .dynamic)
+        try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ if (is_windows) "" else "lib", name, if (is_windows) ".dll" else ".dylib" })
+    else
+        try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ if (is_windows) "" else "lib", name, if (is_windows) ".lib" else ".a" });
+    const rel = try std.fs.path.join(allocator, &.{ ".kira-build", "native", triple_dir, file_name });
+    return absolutizePath(allocator, try std.fs.path.join(allocator, &.{ project_root, "package.kira" }), rel);
+}
+
 pub fn resolveNativeManifestFile(allocator: std.mem.Allocator, path: []const u8, target: native.TargetSelector) !native.ResolvedNativeLibrary {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
     const parsed = try manifest.parseNativeLibManifest(allocator, text);

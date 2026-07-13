@@ -7,6 +7,7 @@ const runtime_utils = @import("backend_runtime_utils.zig");
 const clang_driver = @import("clang_driver.zig");
 const emscripten = @import("emscripten.zig");
 const toolchain = @import("toolchain.zig");
+const progress = @import("progress.zig");
 
 pub fn buildRuntimeHelpersObject(
     allocator: std.mem.Allocator,
@@ -116,10 +117,12 @@ pub fn linkExecutable(
     // from the linked executable. Best-effort: a missing/failing dsymutil warns
     // (the executable is still linked) rather than failing the build.
     if (runtime_utils.debugInfoRequested() and isAppleTarget(selector)) {
+        progress.print("Generating debug symbols for {s}", .{std.fs.path.basename(executable_path)});
         generateDsym(allocator, executable_path) catch |err| {
             std.debug.print("kira llvm backend: dsymutil did not run ({s}); executable linked without a .dSYM bundle\n", .{@errorName(err)});
         };
     }
+    progress.print("Published executable {s}", .{std.fs.path.basename(executable_path)});
 }
 
 pub fn linkSharedLibrary(
@@ -355,7 +358,7 @@ test "preload-file args are emitted only for the emscripten target" {
     const allocator = arena.allocator();
 
     const assets = [_]native.AssetMount{
-        .{ .host_path = "/proj/generated/Shaders", .mount_path = "/generated/Shaders" },
+        .{ .host_path = "/proj/.kira-build/shaders", .mount_path = "/.kira-build/shaders" },
         .{ .host_path = "/proj/fonts", .mount_path = "/fonts" },
     };
 
@@ -368,7 +371,7 @@ test "preload-file args are emitted only for the emscripten target" {
     }, &assets);
     try std.testing.expectEqual(@as(usize, 4), wasm_argv.items.len);
     try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[0]);
-    try std.testing.expectEqualStrings("/proj/generated/Shaders@/generated/Shaders", wasm_argv.items[1]);
+    try std.testing.expectEqualStrings("/proj/.kira-build/shaders@/.kira-build/shaders", wasm_argv.items[1]);
     try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[2]);
     try std.testing.expectEqualStrings("/proj/fonts@/fonts", wasm_argv.items[3]);
 

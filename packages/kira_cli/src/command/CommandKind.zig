@@ -19,6 +19,7 @@ pub const CommandKind = enum {
     remove,
     update,
     package,
+    migrate_manifest,
     live,
     export_cmd,
     help,
@@ -46,6 +47,7 @@ pub const CommandKind = enum {
             .remove => "remove",
             .update => "update",
             .package => "package",
+            .migrate_manifest => "migrate-manifest",
             .live => "live",
             .export_cmd => "export",
             .help => "help",
@@ -69,6 +71,8 @@ pub fn parse(command: []const u8) ?CommandKind {
             if (std.mem.eql(u8, command, "test")) return kind;
         } else if (kind == .export_cmd) {
             if (std.mem.eql(u8, command, "export")) return kind;
+        } else if (kind == .migrate_manifest) {
+            if (std.mem.eql(u8, command, "migrate-manifest")) return kind;
         } else if (std.mem.eql(u8, command, field.name)) {
             return kind;
         }

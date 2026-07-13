@@ -1,7 +1,0 @@
-struct Base {}
-class Child extends Base, Base {}
-
-@Main
-function entry() {
-    return
-}

@@ -14,6 +14,7 @@ const cmd_add = @import("commands/add.zig");
 const cmd_remove = @import("commands/remove.zig");
 const cmd_update = @import("commands/update.zig");
 const cmd_package = @import("commands/package.zig");
+const cmd_migrate_manifest = @import("commands/migrate_manifest.zig");
 const cmd_fetch_llvm = @import("commands/fetch_llvm.zig");
 const cmd_shader = @import("commands/shader.zig");
 const cmd_instruments = @import("commands/instruments.zig");
@@ -25,6 +26,7 @@ const help_text = @import("command/HelpText.zig");
 const CommandKind = @import("command/CommandKind.zig").CommandKind;
 const ParsedCommand = @import("command/ParsedCommand.zig").ParsedCommand;
 const command_args = @import("dispatch/CommandArgs.zig");
+const progress_surface = @import("progress_surface.zig");
 
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     var stdout_buffer: [4096]u8 = undefined;
@@ -34,10 +36,14 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
-    return runWithWriters(allocator, args, &stdout.interface, &stderr.interface);
+    return runImpl(allocator, args, &stdout.interface, &stderr.interface, true);
 }
 
 pub fn runWithWriters(allocator: std.mem.Allocator, args: []const []const u8, out: anytype, err: anytype) !u8 {
+    return runImpl(allocator, args, out, err, false);
+}
+
+fn runImpl(allocator: std.mem.Allocator, args: []const []const u8, out: anytype, err: anytype, interactive_progress: bool) !u8 {
     const parsed = try cli_parser.parse(allocator, args);
     switch (parsed) {
         .failure => |failure| {
@@ -48,12 +54,18 @@ pub fn runWithWriters(allocator: std.mem.Allocator, args: []const []const u8, ou
             }
             return 1;
         },
-        .command => |command| return dispatchParsedCommand(allocator, command, out, err),
+        .command => |command| return dispatchParsedCommand(allocator, command, out, err, interactive_progress),
     }
 }
 
-fn executeCommand(allocator: std.mem.Allocator, command: []const u8, args: []const []const u8, out: anytype, err: anytype, comptime execute: anytype) !u8 {
+fn executeCommand(allocator: std.mem.Allocator, command: []const u8, args: []const []const u8, out: anytype, err: anytype, interactive_progress: bool, comptime execute: anytype) !u8 {
+    var progress: ?progress_surface.Surface = if (interactive_progress and hasProgressSurface(command, args)) progress_surface.Surface.init(command) else null;
+    if (progress) |*surface| surface.activate();
+    var succeeded = false;
+    defer if (progress) |*surface| surface.finish(succeeded);
     execute(allocator, args, out, err) catch |run_err| {
+        if (progress) |*surface| surface.finish(false);
+        progress = null;
         if (run_err == error.CommandFailed or run_err == error.InvalidArguments) {
             if (run_err == error.InvalidArguments) try help_text.print(err, null);
             return 1;
@@ -92,7 +104,16 @@ fn executeCommand(allocator: std.mem.Allocator, command: []const u8, args: []con
         try support.renderInternalCompilerError(err, @errorName(run_err));
         return 1;
     };
+    succeeded = true;
     return 0;
+}
+
+fn hasProgressSurface(command: []const u8, args: []const []const u8) bool {
+    for (args) |arg| if (std.mem.eql(u8, arg, "--timings")) return false;
+    return std.mem.eql(u8, command, "build") or
+        std.mem.eql(u8, command, "check") or
+        std.mem.eql(u8, command, "test") or
+        std.mem.eql(u8, command, "run");
 }
 
 fn dispatchParsedCommand(
@@ -100,6 +121,7 @@ fn dispatchParsedCommand(
     command: ParsedCommand,
     out: anytype,
     err: anytype,
+    interactive_progress: bool,
 ) !u8 {
     switch (command) {
         .help => |options| {
@@ -114,7 +136,7 @@ fn dispatchParsedCommand(
     }
     const kind = command.kind();
     const args = try command_args.toArgs(allocator, command);
-    return dispatchCommand(allocator, kind, kind.label(), args, out, err);
+    return dispatchCommand(allocator, kind, kind.label(), args, out, err, interactive_progress);
 }
 
 fn dispatchCommand(
@@ -124,30 +146,32 @@ fn dispatchCommand(
     args: []const []const u8,
     out: anytype,
     err: anytype,
+    interactive_progress: bool,
 ) !u8 {
     return switch (kind) {
-        .run => executeCommand(allocator, command, args, out, err, cmd_run.execute),
-        .debug => executeCommand(allocator, command, args, out, err, cmd_debug.execute),
-        .fetch_llvm => executeCommand(allocator, command, args, out, err, cmd_fetch_llvm.execute),
-        .tokens => executeCommand(allocator, command, args, out, err, cmd_tokens.execute),
-        .ast => executeCommand(allocator, command, args, out, err, cmd_ast.execute),
-        .check => executeCommand(allocator, command, args, out, err, cmd_check.execute),
-        .test_cmd => executeCommand(allocator, command, args, out, err, cmd_test.execute),
-        .build => executeCommand(allocator, command, args, out, err, cmd_build.execute),
-        .ffi => executeCommand(allocator, command, args, out, err, cmd_ffi.execute),
-        .instruments => executeCommand(allocator, command, args, out, err, cmd_instruments.execute),
-        .instrument_artifact => executeCommand(allocator, command, args, out, err, cmd_instruments.executeArtifact),
-        .run_hybrid_artifact => executeCommand(allocator, command, args, out, err, cmd_run.executeHybridArtifact),
-        .live_runner => executeCommand(allocator, command, args, out, err, cmd_live.executeRunner),
-        .shader => executeCommand(allocator, command, args, out, err, cmd_shader.execute),
-        .new => executeCommand(allocator, command, args, out, err, cmd_new.execute),
-        .sync => executeCommand(allocator, command, args, out, err, cmd_sync.execute),
-        .add => executeCommand(allocator, command, args, out, err, cmd_add.execute),
-        .remove => executeCommand(allocator, command, args, out, err, cmd_remove.execute),
-        .update => executeCommand(allocator, command, args, out, err, cmd_update.execute),
-        .package => executeCommand(allocator, command, args, out, err, cmd_package.execute),
-        .live => executeCommand(allocator, command, args, out, err, cmd_live.execute),
-        .export_cmd => executeCommand(allocator, command, args, out, err, cmd_export.execute),
+        .run => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_run.execute),
+        .debug => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_debug.execute),
+        .fetch_llvm => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_fetch_llvm.execute),
+        .tokens => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_tokens.execute),
+        .ast => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_ast.execute),
+        .check => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_check.execute),
+        .test_cmd => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_test.execute),
+        .build => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_build.execute),
+        .ffi => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_ffi.execute),
+        .instruments => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_instruments.execute),
+        .instrument_artifact => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_instruments.executeArtifact),
+        .run_hybrid_artifact => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_run.executeHybridArtifact),
+        .live_runner => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_live.executeRunner),
+        .shader => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_shader.execute),
+        .new => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_new.execute),
+        .sync => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_sync.execute),
+        .add => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_add.execute),
+        .remove => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_remove.execute),
+        .update => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_update.execute),
+        .package => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_package.execute),
+        .migrate_manifest => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_migrate_manifest.execute),
+        .live => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_live.execute),
+        .export_cmd => executeCommand(allocator, command, args, out, err, interactive_progress, cmd_export.execute),
         .help, .version => unreachable,
     };
 }

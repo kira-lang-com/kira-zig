@@ -24,6 +24,7 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\  remove       Remove a package dependency.
         \\  update       Update registry package dependencies.
         \\  package      Pack or inspect Kira package archives.
+        \\  migrate-manifest  Convert a legacy kira.toml to package.kira.
         \\  export       Generate platform project/export scaffolds.
         \\  new          Scaffold an app or library package.
         \\  fetch-llvm   Install or describe the managed LLVM toolchain.
@@ -59,8 +60,8 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
             \\
         ),
         .ffi => try writer.writeAll(
-            \\usage: kira ffi autobind [--backend vm|llvm|hybrid|wasm32-emscripten] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
-            \\Regenerate native FFI bindings explicitly instead of doing heavy autobinding during normal check/build/run flows.
+            \\usage: kira ffi autobind [--backend vm|llvm|hybrid|wasm32-emscripten] [--offline] [--locked] [--timings] [--quiet]
+            \\Regenerate native FFI bindings for the current project.
             \\
         ),
         .run => try writer.writeAll(
@@ -106,6 +107,11 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
         .remove => try writer.writeAll("usage: kira remove <Package>\n"),
         .update => try writer.writeAll("usage: kira update [<project-dir|manifest>]\n"),
         .package => try writer.writeAll("usage: kira package pack [<project-dir|manifest>]\n       kira package inspect <archive-path|project-dir>\n"),
+        .migrate_manifest => try writer.writeAll(
+            \\usage: kira migrate-manifest <project-dir|kira.toml>
+            \\Write an equivalent package.kira beside a legacy kira.toml (which is left in place; package.kira takes precedence).
+            \\
+        ),
         .export_cmd => try writer.writeAll(
             \\usage: kira export apple|macos|ios|tvos|visionos|windows|android|web|linux [<project-dir|manifest>] [--profile debug|profiler|release] [--surface dom|webgpu|hybrid]
             \\Generate platform exports. Target defaults to the current project.

@@ -15,13 +15,14 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     build.setNativePreparationMode(.full);
     defer build.setNativePreparationMode(.full);
 
-    const input = support.resolveCliInput(allocator, parsed.input_path) catch |err| switch (err) {
+    const input_path = support.defaultCommandInputPath();
+    const input = support.resolveCliInput(allocator, input_path) catch |err| switch (err) {
         error.InvalidProjectPath => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, parsed.input_path));
+            try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, input_path));
             return error.CommandFailed;
         },
         error.ProjectManifestNotFound => {
-            try support.renderStandaloneDiagnostic(stderr, try diag_messages.PackageMessages.missingProjectManifest(allocator, parsed.input_path));
+            try support.renderStandaloneDiagnostic(stderr, try diag_messages.PackageMessages.missingProjectManifest(allocator, input_path));
             return error.CommandFailed;
         },
         else => return err,
@@ -53,6 +54,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         },
     };
 
+    if (parsed.quiet) return;
+
     var generated: usize = 0;
     var skipped: usize = 0;
     for (libraries) |library| {
@@ -64,9 +67,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
             );
             continue;
         }
-        if (library.autobinding) |autobinding| {
+        if (library.autobinding != null) {
             generated += 1;
-            try stdout.print("autobind wrote {s}\n", .{autobinding.output_path});
         }
     }
     if (skipped == 0) {
@@ -85,8 +87,7 @@ const ParsedArgs = struct {
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
-    input_path: []const u8,
-
+    quiet: bool = false,
     const Mode = enum { autobind };
 };
 
@@ -96,8 +97,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
     var offline = false;
     var locked = false;
     var timings = false;
-    var input_path: ?[]const u8 = null;
-
+    var quiet = false;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -119,8 +119,11 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
             timings = true;
             continue;
         }
-        if (input_path != null) return error.InvalidArguments;
-        input_path = arg;
+        if (std.mem.eql(u8, arg, "--quiet")) {
+            quiet = true;
+            continue;
+        }
+        return error.InvalidArguments;
     }
 
     return .{
@@ -128,7 +131,7 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
         .offline = offline,
         .locked = locked,
         .timings = timings,
-        .input_path = input_path orelse support.defaultCommandInputPath(),
+        .quiet = quiet,
     };
 }
 
@@ -171,7 +174,7 @@ fn backendTargetSelector(allocator: std.mem.Allocator, backend: ?build_def.Execu
 }
 
 test "parseArgs recognizes backend override for autobind" {
-    const parsed = try parseArgs(&.{ "autobind", "--backend", "hybrid", "examples/hello" });
+    const parsed = try parseArgs(&.{ "autobind", "--backend", "hybrid", "--quiet" });
     try std.testing.expectEqual(build_def.ExecutionTarget.hybrid, parsed.backend.?);
-    try std.testing.expectEqualStrings("examples/hello", parsed.input_path);
+    try std.testing.expect(parsed.quiet);
 }

@@ -1,0 +1,262 @@
+// DsxTests.kira — coverage for Foundation's builtin `@Derive(Serializable)` and
+// `@Derive(Deserializable)` macros (see foundation/app/DeriveSerde.kira). PREFIX: dsx / Dsx.
+// No `import Foundation` here — Test / Result / TestFailure, the derive macros, and the shared
+// `__kira_deser_*` helpers are all package-wide once main.kira imports Foundation.
+//
+// Generated function contracts (fixed):
+//   @Derive(Serializable)   on struct T  ->  function serialize_T(v: borrow T) -> String
+//   @Derive(Deserializable) on struct T  ->  function deserialize_T(s: borrow String) -> T
+// Both expand at the frontend, so vm / llvm / hybrid behave identically by construction.
+//
+// Wire format (v1): TypeName{field1=VALUE;field2=VALUE}
+//   Int/Bool -> String(x); String -> "text" (unescaped, v1); nested @Derive -> recursed inline.
+//
+// Equatable is derived alongside so round-trip tests can assert field-wise value equality with the
+// fixed `eq_T` contract.
+
+// ---------------------------------------------------------------------------
+// Types under test
+// ---------------------------------------------------------------------------
+
+@Derive(Equatable, Serializable, Deserializable)
+struct DsxPoint {
+    var x: Int
+    var y: Int
+}
+
+@Derive(Equatable, Serializable, Deserializable)
+struct DsxLabeled {
+    var label: String
+    var n: Int
+}
+
+@Derive(Equatable, Serializable, Deserializable)
+struct DsxFlags {
+    var name: String
+    var score: Int
+    var flag: Bool
+}
+
+// Nested struct fields: serialize/deserialize recurse through DsxPoint's own serialize_/deserialize_.
+@Derive(Equatable, Serializable, Deserializable)
+struct DsxSeg {
+    var from: DsxPoint
+    var to: DsxPoint
+    var tag: String
+}
+
+// ---------------------------------------------------------------------------
+// Serialize — exact wire strings
+// ---------------------------------------------------------------------------
+
+Test DsxSerializeScalar {
+    test {
+        let p = DsxPoint { x: 3, y: 5 }
+        return serialize_DsxPoint(p)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxPoint{x=3;y=5}"); return e }
+}
+
+Test DsxSerializeNegative {
+    test {
+        let p = DsxPoint { x: -7, y: -100 }
+        return serialize_DsxPoint(p)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxPoint{x=-7;y=-100}"); return e }
+}
+
+Test DsxSerializeString {
+    test {
+        let l = DsxLabeled { label: "hi", n: 42 }
+        return serialize_DsxLabeled(l)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxLabeled{label=\"hi\";n=42}"); return e }
+}
+
+Test DsxSerializeBool {
+    test {
+        let f = DsxFlags { name: "kira", score: 9, flag: true }
+        return serialize_DsxFlags(f)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxFlags{name=\"kira\";score=9;flag=true}"); return e }
+}
+
+Test DsxSerializeEmptyString {
+    test {
+        let l = DsxLabeled { label: "", n: 0 }
+        return serialize_DsxLabeled(l)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxLabeled{label=\"\";n=0}"); return e }
+}
+
+Test DsxSerializeNested {
+    test {
+        let s = DsxSeg { from: DsxPoint { x: 1, y: 2 }, to: DsxPoint { x: 3, y: 4 }, tag: "s" }
+        return serialize_DsxSeg(s)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("DsxSeg{from=DsxPoint{x=1;y=2};to=DsxPoint{x=3;y=4};tag=\"s\"}"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Deserialize — from literal wire strings, asserted field-wise via eq_T
+// ---------------------------------------------------------------------------
+
+Test DsxDeserializeScalar {
+    test {
+        let p = deserialize_DsxPoint("DsxPoint{x=3;y=5}")
+        let want = DsxPoint { x: 3, y: 5 }
+        return eq_DsxPoint(p, want)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxDeserializeNegative {
+    test {
+        let p = deserialize_DsxPoint("DsxPoint{x=-7;y=-100}")
+        let want = DsxPoint { x: -7, y: -100 }
+        return eq_DsxPoint(p, want)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxDeserializeString {
+    test {
+        let l = deserialize_DsxLabeled("DsxLabeled{label=\"hi\";n=42}")
+        let want = DsxLabeled { label: "hi", n: 42 }
+        return eq_DsxLabeled(l, want)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxDeserializeBool {
+    test {
+        let f = deserialize_DsxFlags("DsxFlags{name=\"kira\";score=9;flag=false}")
+        let want = DsxFlags { name: "kira", score: 9, flag: false }
+        return eq_DsxFlags(f, want)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxDeserializeNested {
+    test {
+        let s = deserialize_DsxSeg("DsxSeg{from=DsxPoint{x=1;y=2};to=DsxPoint{x=3;y=4};tag=\"s\"}")
+        let want = DsxSeg { from: DsxPoint { x: 1, y: 2 }, to: DsxPoint { x: 3, y: 4 }, tag: "s" }
+        return eq_DsxSeg(s, want)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// A deserialize whose field differs must NOT compare equal (proves parse actually reads the value).
+Test DsxDeserializeMismatch {
+    test {
+        let p = deserialize_DsxPoint("DsxPoint{x=3;y=5}")
+        let other = DsxPoint { x: 3, y: 9 }
+        return eq_DsxPoint(p, other)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip law: deserialize_T(serialize_T(v)) == v (field-wise via eq_T)
+// ---------------------------------------------------------------------------
+
+Test DsxRoundTripFlat {
+    test {
+        let v = DsxPoint { x: 12, y: 34 }
+        let back = deserialize_DsxPoint(serialize_DsxPoint(v))
+        return eq_DsxPoint(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxRoundTripNegative {
+    test {
+        let v = DsxPoint { x: -1, y: -999 }
+        let back = deserialize_DsxPoint(serialize_DsxPoint(v))
+        return eq_DsxPoint(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxRoundTripString {
+    test {
+        let v = DsxLabeled { label: "hello", n: 7 }
+        let back = deserialize_DsxLabeled(serialize_DsxLabeled(v))
+        return eq_DsxLabeled(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxRoundTripEmptyString {
+    test {
+        let v = DsxLabeled { label: "", n: 5 }
+        let back = deserialize_DsxLabeled(serialize_DsxLabeled(v))
+        return eq_DsxLabeled(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxRoundTripBool {
+    test {
+        let v = DsxFlags { name: "z", score: -3, flag: true }
+        let back = deserialize_DsxFlags(serialize_DsxFlags(v))
+        return eq_DsxFlags(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DsxRoundTripNested {
+    test {
+        let v = DsxSeg { from: DsxPoint { x: -5, y: 6 }, to: DsxPoint { x: 7, y: -8 }, tag: "edge" }
+        let back = deserialize_DsxSeg(serialize_DsxSeg(v))
+        return eq_DsxSeg(v, back)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Malformed input traps (kept last; the driver re-runs each in isolation). Each passes iff the
+// body traps — the declared Ok value is never produced.
+// ---------------------------------------------------------------------------
+
+Test DsxTrapGarbagePrefix {
+    test {
+        let p = deserialize_DsxPoint("garbage")
+        return p.x
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test DsxTrapTruncated {
+    test {
+        // Missing the `;y=..}` tail: the separator/close checks index past the end and trap.
+        let p = deserialize_DsxPoint("DsxPoint{x=1")
+        return p.x
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test DsxTrapWrongTypeName {
+    test {
+        let p = deserialize_DsxPoint("Wrong{x=1;y=2}")
+        return p.x
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test DsxTrapNonDigitInt {
+    test {
+        let p = deserialize_DsxPoint("DsxPoint{x=a;y=2}")
+        return p.x
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test DsxTrapUnquotedString {
+    test {
+        // `label` value is not wrapped in quotes -> unquote traps.
+        let l = deserialize_DsxLabeled("DsxLabeled{label=hi;n=42}")
+        return l.n
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}

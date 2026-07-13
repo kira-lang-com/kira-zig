@@ -31,6 +31,7 @@ const array_dtors = @import("backend_capi_array_dtors.zig");
 const dynamic_dtors = @import("backend_capi_dynamic_dtors.zig");
 const ffi = @import("backend_capi_ffi.zig");
 const debug_dwarf = @import("debug_dwarf.zig");
+const progress = @import("progress.zig");
 
 const functionExecutionById = utils.functionExecutionById;
 const functionById = utils.functionById;
@@ -307,6 +308,7 @@ pub fn buildModulePlanned(
         // Per-function CGUs emit only their own body; every other function stays a
         // declaration here and is resolved from its own object at link time.
         if (!plan.emitsBody(function_decl.id)) continue;
+        progress.print("Lowering native function {s}", .{function_decl.name});
         const function_value = functions.get(function_decl.id) orelse return error.MissingFunctionDeclaration;
         var fc = codegen.FunctionCodegen{
             .allocator = allocator,

@@ -1,0 +1,6 @@
+Package hello {
+    let version = "0.1.0"
+    let kind = .App
+    let moduleRoot = "main"
+    let defaults = Defaults { executionMode: .Vm, buildTarget: .Host }
+}

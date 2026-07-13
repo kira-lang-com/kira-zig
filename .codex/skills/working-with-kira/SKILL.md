@@ -2,7 +2,7 @@
 name: working-with-kira
 description: >
   Write Kira and prove it. One source, many backends (vm / llvm-native / hybrid /
-  wasm); parity is sacred. Syntax, structs/enums/classes, closures, ownership
+  wasm); parity is sacred. Syntax, expected-type `.member`, structs/enums/classes, closures, ownership
   (Rust affine), FFI + native-state, attempt/handle, the Foundation `Test`
   construct, the `kira` CLI. Read BEFORE writing/editing a `.kira` file, adding a
   backend/runtime feature, or claiming a change works.
@@ -11,9 +11,9 @@ description: >
 ---
 
 ## Parity = the law
-Same source, all backends agree: `vm`, `llvm` (native), `hybrid`, `wasm32-emscripten`. `--backend vm|llvm|hybrid` works on `run`/`build`/`check`; default from `kira.toml` `[defaults] execution_mode`. **VM has no FFI** → libs using Kira Graphics / UI Foundation need `hybrid`/`llvm`. DONE = works (or rejected with a diagnostic) on every targeted backend, not one.
+Same source, all backends agree: `vm`, `llvm` (native), `hybrid`, `wasm32-emscripten`. `--backend vm|llvm|hybrid` works on `run`/`build`/`check`; the default comes from `package.kira`'s `Defaults.executionMode`. **VM has no FFI** → libs using Kira Graphics / UI Foundation need `hybrid`/`llvm`. DONE = works (or rejected with a diagnostic) on every targeted backend, not one.
 
-Project: `kira.toml` (`[package] name/version/kind/module_root`, `[defaults] execution_mode`) + `app/main.kira` holding `@Main`.
+Project: `package.kira` (`Package Name { let version = "..."; let kind = .App; let defaults = Defaults { executionMode = .Hybrid } }`) + `app/main.kira` holding `@Main`.
 
 ## Core syntax
 - `let` immutable, `var` mutable; type optional (`let n: I64 = 3`). `@Main function main() { ...; return }`, `function f(a: Int) -> Int {}`.
@@ -28,10 +28,26 @@ Project: `kira.toml` (`[package] name/version/kind/module_root`, `[defaults] exe
 ```kira
 enum E { InvalidFormat: String = "def"   // single payload + default
          UnexpectedEnd }                  // payload-less
-let e = E.InvalidFormat                   // qualified outside match
+let e: E = .InvalidFormat                 // expected type supplies E
 match e { InvalidFormat(t) -> ...; UnexpectedEnd -> ... }  // unqualified inside, payload bound
 ```
-`match` exhaustive (missing/dup-arm diagnostics). `Result<Value,Failure>` = canonical 2-variant (`Result.Ok(v)`/`Result.Error(f)`). Fieldless enums are Copy.
+`match` exhaustive (missing/dup-arm diagnostics). `Result<Value,Failure>` = canonical 2-variant (`.Ok(v)`/`.Error(f)` in an expected `Result` context). Fieldless enums are Copy.
+
+## Expected-type `.member`
+Kai uses a leading-dot expression when the surrounding position supplies its expected type. Anchors include typed locals/fields/defaults, function arguments and returns, typed array elements, the other side of a comparison, and an outer enum payload.
+```kira
+let tone: Tone = .Red
+let tones: [Tone] = [.Red, .Label("hi")]
+score(.Green)
+function defaultTone() -> Tone { return .Red }
+if backend == .Vm { print("vm") }
+
+let animal: Animal = .Dog()             // concrete subclass expected as Animal
+let child: some Widget = .Text()        // declaration satisfying Widget
+let tone2: Tone = .makeTone()           // compatible named function result
+apply(6, .twice)                         // compatible named callback
+```
+This is expected-type name resolution, not static members. `let x = .Red` has no anchor and fails with `KSEM166`; Kai adds a type (`let x: Tone = .Red`) or keeps `Tone.Red`. An anchored but missing/incompatible member fails with `KSEM167`. The qualified spelling remains valid.
 
 ## Classes / inheritance
 `class` adds inheritance over `struct`. `class Child extends Left, Right { override let value = 11; function t() -> I64 { return Left.doubled() + Right.value } }` — multi-parent, `override` field default, parent-qualified field/method access, exact-signature overrides; parity across backends.
@@ -68,10 +84,10 @@ Native state: `nativeState(S{...})` → `nativeUserData(s)` → later `nativeRec
 ```kira
 Test SumsRange {
     test { var s = 0; for i in 0..5 { s = s + i }; return s }   // must end with trailing return <scalar>
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 ```
-`import Foundation` once; `kira test` must end "0 failed". Reduce each test to a SCALAR (Int/Bool/String) — runner compares scalars only. `return` solely inside a match/if arm infers Void → KSEM031 (use a `var out` accumulator). Trap test: `expect { ... Result.Error(TestFailure.Runtime("")) }` passes iff body traps.
+`import Foundation` once; `kira test` must end "0 failed". Reduce each test to a SCALAR (Int/Bool/String) — runner compares scalars only. `return` solely inside a match/if arm infers Void → KSEM031 (use a `var out` accumulator). Trap test: `expect { ... .Error(.Runtime("")) }` passes iff body traps.
 
 ## Catches (don't guess from Rust/Swift/TS)
 - Keyword is `function`, never `fn`/`func`/`def`. No `pub`/`void`/`mut` keyword (use `var`). Return type accepts both `-> Int` and `): Int` (colon common); omit for Void.

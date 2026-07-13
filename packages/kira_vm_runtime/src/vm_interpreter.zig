@@ -22,6 +22,7 @@ const value_impl = @import("vm_values.zig");
 const prologue = @import("vm_interpreter_prologue.zig");
 const fused = @import("vm_interpreter_fused.zig");
 const native_state = @import("vm_interpreter_native_state.zig");
+const strings_impl = @import("vm_interpreter_strings.zig");
 const vm_tasks = @import("vm_tasks.zig");
 const tasks_impl = @import("vm_interpreter_tasks.zig");
 const taskFromRegister = tasks_impl.taskFromRegister;
@@ -476,6 +477,30 @@ pub fn runPrepared(
                 return error.RuntimeFailure;
             }
             setSlotOwned(vm, &registers[value.dst], &register_owned[value.dst], .{ .integer = @intCast(string_value.string.len) });
+            pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
+        },
+        .string_from_scalar => |value| {
+            try strings_impl.stringFromScalar(vm, registers, register_owned, value);
+            pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
+        },
+        .string_char_at => |value| {
+            try strings_impl.stringCharAt(vm, registers, register_owned, value);
+            pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
+        },
+        .string_substring => |value| {
+            try strings_impl.stringSubstring(vm, registers, register_owned, value);
+            pc += 1;
+            if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
+            continue :dispatch code[pc];
+        },
+        .string_index_of => |value| {
+            try strings_impl.stringIndexOf(vm, registers, register_owned, value);
             pc += 1;
             if (vm.debug) |dbg| dbg.beforeInstruction(function, pc);
             continue :dispatch code[pc];

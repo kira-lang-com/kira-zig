@@ -1,8 +1,8 @@
 // CtxTests.kira
 // Migrated from tests/pass/run/{if_basic_parity, if_condition_trailing_call,
 // for_basic_parity, for_binding_parity, for_empty_parity, for_stateful_parity,
-// switch_basic_parity, empty_control_flow_bodies}.
-// All top-level names use prefix ctx / Ctx.
+// switch_basic_parity, empty_control_flow_bodies, basic}.
+// All top-level names use prefix ctx / Ctx (the `basic` case uses bsx / Bsx).
 
 // ---------------------------------------------------------------------------
 // Helpers (from if_condition_trailing_call)
@@ -42,7 +42,7 @@ Test CtxIfBasic {
         return out
     }
 
-    expect { let e: Result<String, TestFailure> = Result.Ok("if-then"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("if-then"); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ Test CtxIfConditionTrailingCall {
         return out
     }
 
-    expect { let e: Result<String, TestFailure> = Result.Ok("1234"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("1234"); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ Test CtxForBasic {
         return out
     }
 
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ Test CtxForBinding {
         return total
     }
 
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ Test CtxForEmpty {
         return out
     }
 
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ Test CtxForStateful {
         return out
     }
 
-    expect { let e: Result<String, TestFailure> = Result.Ok("one,two,other,done"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("one,two,other,done"); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ Test CtxSwitchBasic {
         return out
     }
 
-    expect { let e: Result<String, TestFailure> = Result.Ok("two"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("two"); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -212,5 +212,30 @@ Test CtxEmptyControlFlowBodies {
         return n
     }
 
-    expect { let e: Result<Int, TestFailure> = Result.Ok(11); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
+}
+
+// ---------------------------------------------------------------------------
+// basic
+// ---------------------------------------------------------------------------
+
+function bsxHelperText() -> String {
+    return "hello from kira"
+}
+
+Test BsxBasicTotal {
+    test {
+        let left = 40
+        let right = 2
+        let total = left + right
+        return total
+    }
+
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}
+
+Test BsxBasicHelper {
+    test { return bsxHelperText() }
+
+    expect { let e: Result<String, TestFailure> = .Ok("hello from kira"); return e }
 }

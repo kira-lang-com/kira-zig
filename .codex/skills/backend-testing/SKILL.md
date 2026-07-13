@@ -1,20 +1,29 @@
 ---
 name: backend-testing
-description: "Kira test/corpus policy: tests/pass/run, tests/pass/check, tests/fail layout, backend matrix declarations, the 11 success layers no marker may skip ahead of, and negative-test requirements after a fake-success or memory bug is found. Read before adding or changing any test or backend-sensitive behavior."
+description: "Kira test/corpus policy: the Kira-native tests-kik suites (Test construct, FailTests, manifest Tests matrix), the parity/leak env gates, the 11 success layers no marker may skip ahead of, and negative-test requirements after a fake-success or memory bug is found. Read before adding or changing any test or backend-sensitive behavior."
 ---
 
 # Backend testing & corpus policy
 
-Targeted tests plus repo-wide when practical.
+Targeted tests plus repo-wide when practical. The legacy `tests/` corpus is GONE
+(deleted 2026-07-13); user-visible behavior lives in Kira-native suites under
+`tests-kik/`, run through `kira test <pkg>`. `zig build test` is package unit
+tests + the repo-purity gate (`build_support/repository_truth.zig`) only.
 
-- Corpus for user-visible behavior: `tests/pass/run/` (execution),
-  `tests/pass/check/` (analysis-only), `tests/fail/` (diagnostics). Each case
-  needs `main.kira` + `expect.toml`.
-- Runnable cases declare an explicit backend matrix, e.g.
-  `["vm", "llvm", "hybrid"]`.
-- Failure cases include the expected diagnostic code/title/stage.
-- VM-only or LLVM-only passing is insufficient for backend-sensitive work —
-  prefer many small tests across the matrix over one broad one.
+- Kai adds executable coverage as Foundation `Test` declarations (assert a scalar
+  via `Result.Ok(...)`; a trap via `Result.Error(TestFailure.Runtime(""))`), and
+  compile-failure coverage as `FailTest` declarations
+  (`Result.Error(TestFailure.Compile("CODE"))`). A multi-file / import-graph /
+  native-lib fail case uses FailTest **fixture mode**:
+  `source { fixture("fixtures/<name>") }` compiling a real package DIR.
+- Each package's `package.kira` declares its own matrix:
+  `Tests { backends: [Backend.Vm, Backend.Llvm, Backend.Hybrid], phase: ... }`.
+  VM-only or LLVM-only passing is insufficient for backend-sensitive work — prefer
+  many small tests across the matrix over one broad one.
+- Cross-backend `@Main` stdout parity: `KIRA_TEST_PARITY=1 kira test <pkg>`.
+- Leak gate (VM live-count 0 + native `leaks --atExit` on any `@Main`):
+  `KIRA_TEST_CHECK_LEAKS=1 kira test <pkg>`.
+- Legacy corpus→kik map + guarantee map: `tests-kik/corpus/COVERAGE.md`.
 
 ## Success layers — a marker from one never satisfies a deeper one
 

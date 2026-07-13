@@ -15,7 +15,7 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
             if (options.offline) try list.append("--offline");
             if (options.locked) try list.append("--locked");
             if (options.timings) try list.append("--timings");
-            try list.append(options.input_path);
+            if (options.quiet) try list.append("--quiet");
         },
         .run => |options| try appendRunOptions(allocator, &list, options),
         .debug => |options| {
@@ -48,6 +48,7 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
             try list.append(options.package_name);
         },
         .remove => |options| try list.append(options.package_name),
+        .migrate_manifest => |options| try list.append(options.input_path),
         .update, .tokens, .ast => |options| {
             if (options.input_path) |path| try list.append(path);
         },

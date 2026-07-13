@@ -4,6 +4,12 @@ pub const ProjectManifest = @import("project_manifest.zig").ProjectManifest;
 pub const PackageKind = @import("project_manifest.zig").PackageKind;
 pub const PackageManifest = @import("package_manifest.zig").PackageManifest;
 pub const NativeLibManifest = @import("native_lib_manifest.zig").NativeLibManifest;
+pub const TestsConfig = @import("tests_config.zig").TestsConfig;
+pub const TestPhase = @import("tests_config.zig").TestPhase;
+pub const loadProjectManifestFromDeclaration = @import("declaration_loader.zig").loadProjectManifestFromDeclaration;
+pub const loadProjectManifestFromText = @import("declaration_loader.zig").loadProjectManifestFromText;
+pub const DeclarationLoadResult = @import("declaration_loader.zig").LoadResult;
+pub const writeProjectManifestAsDeclaration = @import("declaration_writer.zig").writeProjectManifestAsDeclaration;
 pub const RunnerId = @import("platform_config.zig").RunnerId;
 pub const BuildSystem = @import("platform_config.zig").BuildSystem;
 pub const BuildProfile = @import("platform_config.zig").BuildProfile;
@@ -33,3 +39,7 @@ pub const parseNativeLibManifest = @import("parser.zig").parseNativeLibManifest;
 pub const parseLockFile = @import("parser.zig").parseLockFile;
 pub const writeProjectManifest = @import("parser.zig").writeProjectManifest;
 pub const writeLockFile = @import("parser.zig").writeLockFile;
+
+test {
+    _ = @import("declaration_loader_tests.zig");
+}

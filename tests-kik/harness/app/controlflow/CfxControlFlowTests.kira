@@ -158,7 +158,7 @@ Test CfxIfElseSimple {
         if x > 3 { out = 1 } else { out = 2 }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test CfxIfElseFalse {
@@ -168,7 +168,7 @@ Test CfxIfElseFalse {
         if x > 3 { out = 1 } else { out = 2 }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test CfxIfElseIfChain {
@@ -188,7 +188,7 @@ Test CfxIfElseIfChain {
         }
         return grade
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test CfxIfElseIfChainTop {
@@ -208,7 +208,7 @@ Test CfxIfElseIfChainTop {
         }
         return grade
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test CfxIfElseIfChainBottom {
@@ -228,7 +228,7 @@ Test CfxIfElseIfChainBottom {
         }
         return grade
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test CfxDeeplyNestedIf {
@@ -257,7 +257,7 @@ Test CfxDeeplyNestedIf {
         return out
     }
     // a=3,b=7,c=2: a<b T; b>c T; a!=c T; a+c=5 < b=7 T => 999
-    expect { let e: Result<Int, TestFailure> = Result.Ok(999); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(999); return e }
 }
 
 Test CfxIfCountEvenOdd {
@@ -272,7 +272,7 @@ Test CfxIfCountEvenOdd {
         return evens * 100 + odds
     }
     // 0..19: 10 evens, 10 odds
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1010); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1010); return e }
 }
 
 Test CfxIfNestedAccumulate {
@@ -290,7 +290,7 @@ Test CfxIfNestedAccumulate {
         // i in 4,5,6 => 15
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxIfBoolExprComplex {
@@ -308,7 +308,7 @@ Test CfxIfBoolExprComplex {
         // total = 15
         return count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxIfElseTernaryMix {
@@ -329,7 +329,7 @@ Test CfxIfElseTernaryMix {
         // sum = 0-1+6-3+12-5+18-7+24-9 = 35
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(35); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(35); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ Test CfxWhileCountdown {
         }
         return steps
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test CfxWhileAccumulate {
@@ -359,7 +359,7 @@ Test CfxWhileAccumulate {
         }
         return sum
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5050); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5050); return e }
 }
 
 Test CfxWhileMultiply {
@@ -373,7 +373,7 @@ Test CfxWhileMultiply {
         return prod
     }
     // 10! = 3628800
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3628800); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3628800); return e }
 }
 
 Test CfxWhileEarlyReturn {
@@ -388,7 +388,7 @@ Test CfxWhileEarlyReturn {
         return 0 - 1
     }
     // i=23: 23*23=529 > 500 => return 23
-    expect { let e: Result<Int, TestFailure> = Result.Ok(23); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(23); return e }
 }
 
 Test CfxWhileNestedSum {
@@ -406,7 +406,7 @@ Test CfxWhileNestedSum {
         // (1+2+3+4+5)^2 = 15^2 = 225
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(225); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(225); return e }
 }
 
 Test CfxWhileNestedSkip {
@@ -426,7 +426,7 @@ Test CfxWhileNestedSkip {
         // 8*8 - 8 = 56
         return count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(56); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(56); return e }
 }
 
 Test CfxWhileNestedMatrix {
@@ -444,7 +444,7 @@ Test CfxWhileNestedMatrix {
         // sum 0..15 = 120
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 Test CfxWhileTripleNested {
@@ -466,7 +466,7 @@ Test CfxWhileTripleNested {
         // each of a,b,c contributes sum over 3*3=9 times: 9*(0+1+2)=27 each, total=81
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(81); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(81); return e }
 }
 
 Test CfxWhileCountDivisibleBy7 {
@@ -480,7 +480,7 @@ Test CfxWhileCountDivisibleBy7 {
         return count
     }
     // floor(100/7) = 14
-    expect { let e: Result<Int, TestFailure> = Result.Ok(14); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(14); return e }
 }
 
 Test CfxWhileSumSquares {
@@ -494,7 +494,7 @@ Test CfxWhileSumSquares {
         // 1+4+9+16+25+36+49+64+81+100 = 385
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(385); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(385); return e }
 }
 
 Test CfxWhileCollatz {
@@ -512,7 +512,7 @@ Test CfxWhileCollatz {
         return steps
     }
     // Collatz(27) = 111 steps
-    expect { let e: Result<Int, TestFailure> = Result.Ok(111); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(111); return e }
 }
 
 Test CfxWhileCountUp {
@@ -526,7 +526,7 @@ Test CfxWhileCountUp {
         // n goes: 3,6,...,48,51 => 17 steps
         return steps
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(17); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(17); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +541,7 @@ Test CfxForInLiteralSum {
         }
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxForInProduct {
@@ -553,7 +553,7 @@ Test CfxForInProduct {
         return p
     }
     // 5! = 120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 Test CfxForInCount {
@@ -565,7 +565,7 @@ Test CfxForInCount {
         return count
     }
     // 60,70,80,90,100 = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test CfxForInBuiltArray {
@@ -583,7 +583,7 @@ Test CfxForInBuiltArray {
         // 0+1+4+9+16+25+36+49+64+81 = 285
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(285); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(285); return e }
 }
 
 Test CfxForInNested {
@@ -599,7 +599,7 @@ Test CfxForInNested {
         // (1+2+3)*(10+20+30) = 6*60 = 360
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(360); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(360); return e }
 }
 
 Test CfxForInSingleElement {
@@ -610,7 +610,7 @@ Test CfxForInSingleElement {
         }
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test CfxForInMaxFinder {
@@ -621,7 +621,7 @@ Test CfxForInMaxFinder {
         }
         return mx
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test CfxForInMinFinder {
@@ -632,7 +632,7 @@ Test CfxForInMinFinder {
         }
         return mn
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test CfxForInEvenSum {
@@ -644,7 +644,7 @@ Test CfxForInEvenSum {
         // 2+4+6+8+10+12 = 42
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test CfxForInCountLiteral {
@@ -652,7 +652,7 @@ Test CfxForInCountLiteral {
         var xs: [Int] = [10, 20, 30, 40, 50]
         return xs.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test CfxForInAppendAndCount {
@@ -665,7 +665,7 @@ Test CfxForInAppendAndCount {
         }
         return xs.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ Test CfxSwitchExact {
         // 10+20+30+40+50+60+70+80+90+100 = 550
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(550); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(550); return e }
 }
 
 Test CfxSwitchDefault {
@@ -696,7 +696,7 @@ Test CfxSwitchDefault {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test CfxSwitchZero {
@@ -709,7 +709,7 @@ Test CfxSwitchZero {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test CfxSwitchNegativeDefault {
@@ -722,7 +722,7 @@ Test CfxSwitchNegativeDefault {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test CfxSwitchFoldModulo {
@@ -743,7 +743,7 @@ Test CfxSwitchFoldModulo {
         // 5*(1+10+100) = 555
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(555); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(555); return e }
 }
 
 Test CfxSwitchManyArms {
@@ -773,7 +773,7 @@ Test CfxSwitchManyArms {
         // sum of i^2 for i=0..11 = 0+1+4+9+16+25+36+49+64+81+100+121 = 506
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(506); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(506); return e }
 }
 
 Test CfxSwitchLargeScrutinee {
@@ -787,7 +787,7 @@ Test CfxSwitchLargeScrutinee {
         }
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test CfxSwitchDrivenByLoop {
@@ -810,7 +810,7 @@ Test CfxSwitchDrivenByLoop {
     }
     // i=0..19: 20 values, 5 each of 0,1,2,3 mod 4
     // ones=5, twos=5, threes=5, other=5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5555); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5555); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,17 +819,17 @@ Test CfxSwitchDrivenByLoop {
 
 Test CfxMatchPayloadless {
     test {
-        let c = CfxColor.Green
+        let c: CfxColor = .Green
         var out = 0
         out = cfxColorCode(c)
         return out
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test CfxMatchPayloadlessSum {
     test {
-        let colors: [CfxColor] = [CfxColor.Red, CfxColor.Green, CfxColor.Blue, CfxColor.Red]
+        let colors: [CfxColor] = [.Red, .Green, .Blue, .Red]
         var s = 0
         for c in colors {
             s = s + cfxColorCode(c)
@@ -837,7 +837,7 @@ Test CfxMatchPayloadlessSum {
         // 1+2+4+1 = 8
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -846,33 +846,33 @@ Test CfxMatchPayloadlessSum {
 
 Test CfxMatchPayloadCircle {
     test {
-        let s = CfxShape.Circle(5)
+        let s: CfxShape = .Circle(5)
         return cfxShapeArea(s)
     }
     // 5*5 = 25
-    expect { let e: Result<Int, TestFailure> = Result.Ok(25); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(25); return e }
 }
 
 Test CfxMatchPayloadRect {
     test {
-        let s = CfxShape.Rect(3)
+        let s: CfxShape = .Rect(3)
         return cfxShapeArea(s)
     }
     // 3*3*2 = 18
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 Test CfxMatchPayloadPoint {
     test {
-        let s = CfxShape.Point
+        let s: CfxShape = .Point
         return cfxShapeArea(s)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test CfxMatchPayloadSum {
     test {
-        let shapes: [CfxShape] = [CfxShape.Circle(3), CfxShape.Rect(2), CfxShape.Point, CfxShape.Circle(4)]
+        let shapes: [CfxShape] = [.Circle(3), .Rect(2), .Point, .Circle(4)]
         var s = 0
         for sh in shapes {
             s = s + cfxShapeArea(sh)
@@ -880,45 +880,45 @@ Test CfxMatchPayloadSum {
         // 9 + 8 + 0 + 16 = 33
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(33); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(33); return e }
 }
 
 Test CfxMatchSignPos {
     test {
-        let s = CfxSign.Pos(42)
+        let s: CfxSign = .Pos(42)
         return cfxSignVal(s)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test CfxMatchSignNeg {
     test {
-        let s = CfxSign.Neg(7)
+        let s: CfxSign = .Neg(7)
         return cfxSignVal(s)
     }
     // 0 - 7 = -7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 7); return e }
 }
 
 Test CfxMatchSignZero {
     test {
-        let s = CfxSign.Zero
+        let s: CfxSign = .Zero
         return cfxSignVal(s)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test CfxMatchSignFold {
     test {
         var acc = 0
-        let sigs: [CfxSign] = [CfxSign.Pos(10), CfxSign.Neg(3), CfxSign.Zero, CfxSign.Pos(5), CfxSign.Neg(2)]
+        let sigs: [CfxSign] = [.Pos(10), .Neg(3), .Zero, .Pos(5), .Neg(2)]
         for sg in sigs {
             acc = acc + cfxSignVal(sg)
         }
         // 10 - 3 + 0 + 5 - 2 = 10
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -927,93 +927,93 @@ Test CfxMatchSignFold {
 
 Test CfxRecursionFactorial5 {
     test { return cfxFactorial(5) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 Test CfxRecursionFactorial10 {
     test { return cfxFactorial(10) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3628800); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3628800); return e }
 }
 
 Test CfxRecursionFib10 {
     test { return cfxFib(10) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 Test CfxRecursionFib15 {
     test { return cfxFib(15) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(610); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(610); return e }
 }
 
 Test CfxRecursionFib20 {
     test { return cfxFib(20) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6765); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6765); return e }
 }
 
 Test CfxRecursionGcd {
     test { return cfxGcd(48, 18) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test CfxRecursionGcdCoprime {
     test { return cfxGcd(17, 13) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test CfxRecursionGcdLarge {
     test { return cfxGcd(1071, 462) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(21); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(21); return e }
 }
 
 Test CfxRecursionTriangle {
     test { return cfxTriangle(10) }
     // 55
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 Test CfxRecursionTriangle50 {
     test { return cfxTriangle(50) }
     // 1275
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1275); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1275); return e }
 }
 
 Test CfxMutualRecursionEven {
     test { return cfxIsEven(20) }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 Test CfxMutualRecursionOdd {
     test { return cfxIsOdd(15) }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 Test CfxMutualRecursionEvenFalse {
     test { return cfxIsEven(7) }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(false); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
 }
 
 Test CfxRecursionPow {
     test { return cfxPow(3, 10) }
     // 59049
-    expect { let e: Result<Int, TestFailure> = Result.Ok(59049); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(59049); return e }
 }
 
 Test CfxRecursionDigitSum {
     test { return cfxDigitSum(123456789) }
     // 1+2+3+4+5+6+7+8+9 = 45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test CfxRecursionSumRange {
     test { return cfxSumRange(1, 50) }
     // 1275
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1275); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1275); return e }
 }
 
 Test CfxRecursionCountDiv {
     test { return cfxCountDiv(100, 7) }
     // floor(100/7) = 14
-    expect { let e: Result<Int, TestFailure> = Result.Ok(14); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(14); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,7 +1032,7 @@ Test CfxEarlyReturnFromBranch {
         return 0 - 1
     }
     // i=15: 225>=200 => 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxEarlyReturnSwitch {
@@ -1052,7 +1052,7 @@ Test CfxEarlyReturnSwitch {
         return 0 - 1
     }
     // first positive multiple of 7 = 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test CfxEarlyReturnForIn {
@@ -1066,7 +1066,7 @@ Test CfxEarlyReturnForIn {
         return 0 - 1
     }
     // 9 is first > 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,7 +1094,7 @@ Test CfxCombinedFibSwitch {
         // v:   1,2,2,3,1,3,3,2,1,2,2 => sum=22
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(22); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(22); return e }
 }
 
 Test CfxCombinedForIfRecurse {
@@ -1110,7 +1110,7 @@ Test CfxCombinedForIfRecurse {
         // triangle: 3,10,21,36,55 => sum=125
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(125); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(125); return e }
 }
 
 Test CfxCombinedWhileForMatch {
@@ -1118,7 +1118,7 @@ Test CfxCombinedWhileForMatch {
         var acc = 0
         var i = 0
         while i < 5 {
-            let shapes: [CfxShape] = [CfxShape.Circle(i + 1), CfxShape.Rect(i + 1), CfxShape.Point]
+            let shapes: [CfxShape] = [.Circle(i + 1), .Rect(i + 1), .Point]
             for sh in shapes {
                 acc = acc + cfxShapeArea(sh)
             }
@@ -1132,7 +1132,7 @@ Test CfxCombinedWhileForMatch {
         // total = 3+12+27+48+75 = 165
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(165); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(165); return e }
 }
 
 Test CfxCombinedNestedWhileSwitch {
@@ -1168,7 +1168,7 @@ Test CfxCombinedNestedWhileSwitch {
         // acc = 7*1 + 6*2 + 6*4 + 6*8 = 7+12+24+48 = 91
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(91); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(91); return e }
 }
 
 Test CfxCombinedGaussCheck {
@@ -1178,7 +1178,7 @@ Test CfxCombinedGaussCheck {
         let formula = n * (n + 1) / 2
         return loop_sum == formula ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test CfxCombinedFactorialVsLoop {
@@ -1192,20 +1192,20 @@ Test CfxCombinedFactorialVsLoop {
         }
         return rec_val == loop_val ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test CfxForInColorFold {
     test {
         var acc = 0
-        let cs: [CfxColor] = [CfxColor.Red, CfxColor.Blue, CfxColor.Green, CfxColor.Blue, CfxColor.Red]
+        let cs: [CfxColor] = [.Red, .Blue, .Green, .Blue, .Red]
         for c in cs {
             acc = acc + cfxColorCode(c)
         }
         // 1+4+2+4+1 = 12
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test CfxNestedIfEarlyReturn {
@@ -1224,7 +1224,7 @@ Test CfxNestedIfEarlyReturn {
         return 0 - 1
     }
     // first i>10 divisible by 15: 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxLoopBuildAndScanArray {
@@ -1245,7 +1245,7 @@ Test CfxLoopBuildAndScanArray {
         // sum(1..19) = 190, multiples of 3: 3+6+9+12+15+18 = 63 => 127
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(127); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(127); return e }
 }
 
 Test CfxSwitchInsideFor {
@@ -1267,7 +1267,7 @@ Test CfxSwitchInsideFor {
         // sum = 0+1-2+30+4-5+60+7-8+90 = 177
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(177); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(177); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,7 +1280,7 @@ Test CfxTrapArrayOOB {
         let _ = xs[10]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapDivZero {
@@ -1289,7 +1289,7 @@ Test CfxTrapDivZero {
         let b = 0
         return a / b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapModZero {
@@ -1298,7 +1298,7 @@ Test CfxTrapModZero {
         let b = 0
         return a % b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBEmptyArray {
@@ -1307,7 +1307,7 @@ Test CfxTrapOOBEmptyArray {
         let _ = xs[0]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBNegativeIndex {
@@ -1316,7 +1316,7 @@ Test CfxTrapOOBNegativeIndex {
         let _ = xs[0 - 1]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBExactEnd {
@@ -1325,7 +1325,7 @@ Test CfxTrapOOBExactEnd {
         let _ = xs[3]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapDivZeroInLoop {
@@ -1337,7 +1337,7 @@ Test CfxTrapDivZeroInLoop {
         }
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapModZeroInLoop {
@@ -1349,7 +1349,7 @@ Test CfxTrapModZeroInLoop {
         }
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBInLoop {
@@ -1362,7 +1362,7 @@ Test CfxTrapOOBInLoop {
         }
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBAfterAppend {
@@ -1373,7 +1373,7 @@ Test CfxTrapOOBAfterAppend {
         let _ = xs[5]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapDivZeroAfterBranch {
@@ -1382,7 +1382,7 @@ Test CfxTrapDivZeroAfterBranch {
         if x > 5 { x = 0 }
         return 100 / x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBFromFor {
@@ -1394,7 +1394,7 @@ Test CfxTrapOOBFromFor {
         }
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapModZeroSwitch {
@@ -1411,7 +1411,7 @@ Test CfxTrapModZeroSwitch {
         }
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapDivZeroRecursive {
@@ -1420,7 +1420,7 @@ Test CfxTrapDivZeroRecursive {
         return 10 / n
     }
     // cfxFactorial(0)=1, so n=0 => div by zero
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test CfxTrapOOBLargeIndex {
@@ -1429,7 +1429,7 @@ Test CfxTrapOOBLargeIndex {
         let _ = xs[1000000]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,7 +1446,7 @@ Test CfxWhileNoIterations {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(99); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(99); return e }
 }
 
 Test CfxForInEmpty {
@@ -1458,7 +1458,7 @@ Test CfxForInEmpty {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 Test CfxIfOnlyThen {
@@ -1467,7 +1467,7 @@ Test CfxIfOnlyThen {
         if true { x = 5 }
         return x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test CfxIfFalseSkipsThen {
@@ -1476,13 +1476,13 @@ Test CfxIfFalseSkipsThen {
         if false { x = 100 }
         return x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test CfxRecursionPow2_20 {
     test { return cfxPow(2, 20) }
     // 1048576
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1048576); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1048576); return e }
 }
 
 Test CfxMatchDrivenBySwitchResult {
@@ -1490,12 +1490,12 @@ Test CfxMatchDrivenBySwitchResult {
         var acc = 0
         var i = 0
         while i < 6 {
-            var sh = CfxShape.Point
+            var sh: CfxShape = .Point
             switch i % 3 {
-                case 0 { sh = CfxShape.Circle(i + 1) }
-                case 1 { sh = CfxShape.Rect(i + 1) }
-                case 2 { sh = CfxShape.Point }
-                default { sh = CfxShape.Point }
+                case 0 { sh = .Circle(i + 1) }
+                case 1 { sh = .Rect(i + 1) }
+                case 2 { sh = .Point }
+                default { sh = .Point }
             }
             acc = acc + cfxShapeArea(sh)
             i = i + 1
@@ -1505,7 +1505,7 @@ Test CfxMatchDrivenBySwitchResult {
         // total = 1+8+0+16+50+0 = 75
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(75); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(75); return e }
 }
 
 Test CfxDoubleForInCount {
@@ -1523,7 +1523,7 @@ Test CfxDoubleForInCount {
         // total = 15
         return count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test CfxSumOfFibs {
@@ -1538,7 +1538,7 @@ Test CfxSumOfFibs {
         // sum = 1596
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1596); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1596); return e }
 }
 
 Test CfxGcdArray {
@@ -1548,7 +1548,7 @@ Test CfxGcdArray {
         return g
     }
     // gcd(120,168)=24, gcd(24,252)=12
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test CfxRangeForSum {
@@ -1560,7 +1560,7 @@ Test CfxRangeForSum {
         // i = 0,1,2,3,4 -> 10
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test CfxRangeForOffsetStart {
@@ -1572,7 +1572,7 @@ Test CfxRangeForOffsetStart {
         // i = 2,3,4,5 -> 14
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(14); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(14); return e }
 }
 
 Test CfxRangeForEmptyHalfOpen {
@@ -1584,7 +1584,7 @@ Test CfxRangeForEmptyHalfOpen {
         // half-open [5,5) is empty -> body never runs
         return count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test CfxRangeForComputedBounds {
@@ -1598,7 +1598,7 @@ Test CfxRangeForComputedBounds {
         // i = 3,4,5,6 -> 18
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 Test CfxRangeForNested {
@@ -1612,7 +1612,7 @@ Test CfxRangeForNested {
         // sum over i,j in 0..3 of (i*3+j) = sum 0..8 = 36
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(36); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(36); return e }
 }
 
 Test CfxRangeForMatchesWhile {
@@ -1631,7 +1631,7 @@ Test CfxRangeForMatchesWhile {
         // range-for must compute the same total as the equivalent counter while
         return fromFor - fromWhile
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test CfxRangeForBreak {
@@ -1646,5 +1646,5 @@ Test CfxRangeForBreak {
         // i=0,1,2,3,4,5,(break at 6) -> 0+1+2+3+4+5 = 15
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }

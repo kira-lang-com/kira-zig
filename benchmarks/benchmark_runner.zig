@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // Build the native executable once (compile time excluded from the measurement).
         runOnce(allocator, io, &.{ kira, "run", "--backend", "llvm", dir }) catch {};
-        const native_bin = try std.fmt.allocPrint(allocator, "benchmarks/{s}/generated/{s}.run", .{ name, name });
+        const native_bin = try std.fmt.allocPrint(allocator, "benchmarks/{s}/.kira-build/{s}.run", .{ name, name });
 
         const llvm_ns = timeMin(allocator, io, &.{native_bin}, repeats) catch null;
         const vm_ns = timeMin(allocator, io, &.{ kira, "run", "--backend", "vm", dir }, if (repeats > 2) 2 else repeats) catch null;

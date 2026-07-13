@@ -8,11 +8,6 @@ build/
 # Agent scratch: disposable throwaway output lives here (see CLAUDE.md).
 .codex/tmp/
 
-generated/*
-!generated/.gitkeep
-**/generated/*
-!**/generated/.gitkeep
-
 *.kbc
 *.kira.key
 *.obj

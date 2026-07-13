@@ -187,6 +187,10 @@ pub const Instruction = union(enum) {
     c_string_to_string: CStringToString,
     array_len: ArrayLen,
     string_len: StringLen,
+    string_from_scalar: StringFromScalar,
+    string_char_at: StringCharAt,
+    string_substring: StringSubstring,
+    string_index_of: StringIndexOf,
     array_get: ArrayGet,
     array_set: ArraySet,
     array_append: ArrayAppend,
@@ -541,6 +545,37 @@ pub const ArrayLen = struct {
 pub const StringLen = struct {
     dst: u32,
     string: u32,
+};
+
+// Scalar -> String conversion (`String(x)`). `source` selects the byte format.
+pub const StringFromScalarSource = enum { integer, float, boolean };
+pub const StringFromScalar = struct {
+    dst: u32,
+    src: u32,
+    source: StringFromScalarSource,
+};
+
+// `s.charAt(i)` -> Int code unit. Out-of-bounds traps (VM) / mirrors array
+// indexing per backend.
+pub const StringCharAt = struct {
+    dst: u32,
+    string: u32,
+    index: u32,
+};
+
+// `s.substring(start, end)` -> fresh owned String (half-open range).
+pub const StringSubstring = struct {
+    dst: u32,
+    string: u32,
+    start: u32,
+    end: u32,
+};
+
+// `s.indexOf(needle)` -> Int offset, or -1 when absent.
+pub const StringIndexOf = struct {
+    dst: u32,
+    string: u32,
+    needle: u32,
 };
 
 pub const ArrayGet = struct {

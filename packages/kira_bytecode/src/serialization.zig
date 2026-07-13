@@ -294,6 +294,27 @@ pub fn serialize(writer: anytype, module: Module) !void {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.string, .little);
                 },
+                .string_from_scalar => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.src, .little);
+                    try writer.writeByte(@intFromEnum(value.source));
+                },
+                .string_char_at => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.string, .little);
+                    try writer.writeInt(u32, value.index, .little);
+                },
+                .string_substring => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.string, .little);
+                    try writer.writeInt(u32, value.start, .little);
+                    try writer.writeInt(u32, value.end, .little);
+                },
+                .string_index_of => |value| {
+                    try writer.writeInt(u32, value.dst, .little);
+                    try writer.writeInt(u32, value.string, .little);
+                    try writer.writeInt(u32, value.needle, .little);
+                },
                 .array_get => |value| {
                     try writer.writeInt(u32, value.dst, .little);
                     try writer.writeInt(u32, value.array, .little);
@@ -785,6 +806,27 @@ pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Module {
                 .string_len => try instructions.append(.{ .string_len = .{
                     .dst = try reader.takeInt(u32, .little),
                     .string = try reader.takeInt(u32, .little),
+                } }),
+                .string_from_scalar => try instructions.append(.{ .string_from_scalar = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .src = try reader.takeInt(u32, .little),
+                    .source = @enumFromInt(try reader.takeByte()),
+                } }),
+                .string_char_at => try instructions.append(.{ .string_char_at = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .string = try reader.takeInt(u32, .little),
+                    .index = try reader.takeInt(u32, .little),
+                } }),
+                .string_substring => try instructions.append(.{ .string_substring = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .string = try reader.takeInt(u32, .little),
+                    .start = try reader.takeInt(u32, .little),
+                    .end = try reader.takeInt(u32, .little),
+                } }),
+                .string_index_of => try instructions.append(.{ .string_index_of = .{
+                    .dst = try reader.takeInt(u32, .little),
+                    .string = try reader.takeInt(u32, .little),
+                    .needle = try reader.takeInt(u32, .little),
                 } }),
                 .array_get => try instructions.append(.{ .array_get = .{
                     .dst = try reader.takeInt(u32, .little),

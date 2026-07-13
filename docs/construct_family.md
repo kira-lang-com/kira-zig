@@ -9,6 +9,17 @@ below is exercised by the corpus under `tests/pass/check/construct_*`,
 This layer is **validation-complete** (parse + semantic checks + diagnostics). Construct-backed
 declarations themselves do not execute yet; `attempt`/`try`/`handle` does execute (see below).
 
+> **Construct 2.0 update.** The legacy `properties { ... }` schema surface and the named
+> content-channel surface (`content { chan { accepts T; count min..max } }` plus the
+> `content sealed`/`refine`/`passthrough`/`project` composition directives) documented in the
+> sections below have been **removed**. Declaring a `properties { ... }` schema or fill is now
+> rejected (`KSEM164`); declaring a content channel or composition directive is rejected
+> (`KSEM165`). Express caller-provided values as `@Required let` / `let field = default` fields
+> and child content as `some X` / `[some X]` slot fields. A construction's trailing block may
+> carry `let field = value` override members alongside bare children; an unknown override field
+> is `KSEM163`, and a `@Required` field left unprovided at a construction site is `KSEM161`.
+> See [docs/language_inventory.md](language_inventory.md) for the current surface.
+
 ## Inheritance: `extends`
 
 Constructs inherit from other constructs with `extends` (not `:` and not `extend`). Multiple

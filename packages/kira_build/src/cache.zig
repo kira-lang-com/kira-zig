@@ -27,28 +27,55 @@ pub const Cache = struct {
     /// sources/headers (which relinks the binary) invalidates the cached
     /// executable instead of restoring a stale one.
     pub fn entryForBuildWithNativeDeps(self: Cache, source_path: []const u8, target: build_def.ExecutionTarget, native_deps_fingerprint: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, source_path, @tagName(target), native_deps_fingerprint);
-        defer self.allocator.free(key);
         const backend_dir = backendName(target);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", backend_dir, key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, source_path, @tagName(target), native_deps_fingerprint);
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot(backend_dir, source_path, fingerprint);
         return Entry.init(self.allocator, root, target);
     }
 
     pub fn entryForFrontendCheck(self: Cache, source_path: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, source_path, "frontend-check", "");
-        defer self.allocator.free(key);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "frontend-check", key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, source_path, "frontend-check", "");
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot("frontend-check", source_path, fingerprint);
         return Entry.init(self.allocator, root, .vm);
     }
 
     pub fn entryForPackageCheck(self: Cache, representative_source_path: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, representative_source_path, "package-check", "");
-        defer self.allocator.free(key);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "package-check", key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, representative_source_path, "package-check", "");
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot("package-check", representative_source_path, fingerprint);
         return Entry.init(self.allocator, root, .vm);
+    }
+
+    /// Keep exactly one cache directory per source/backend. The content
+    /// fingerprint is metadata inside that stable slot; when inputs change the
+    /// old slot is removed before the replacement is populated. Older Kira
+    /// versions used the content fingerprint itself as the directory name and
+    /// leaked one directory per edit, so those legacy siblings are pruned too.
+    fn prepareSourceSlot(self: Cache, namespace: []const u8, source_path: []const u8, fingerprint: []const u8) ![]const u8 {
+        const namespace_root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", namespace });
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, namespace_root);
+        try removeLegacyFingerprintEntries(namespace_root);
+
+        const slot_key = try sourceSlotKey(self.allocator, source_path);
+        defer self.allocator.free(slot_key);
+        const root = try std.fs.path.join(self.allocator, &.{ namespace_root, slot_key });
+        const fingerprint_path = try std.fs.path.join(self.allocator, &.{ root, "fingerprint" });
+        defer self.allocator.free(fingerprint_path);
+
+        const current = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, self.allocator, .limited(256)) catch null;
+        if (current) |stored| {
+            defer self.allocator.free(stored);
+            if (std.mem.eql(u8, std.mem.trim(u8, stored, "\r\n"), fingerprint)) return root;
+            try deleteTreeAbsolute(root);
+        }
+
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        var text_buffer: [65]u8 = undefined;
+        const fingerprint_text = try std.fmt.bufPrint(&text_buffer, "{s}\n", .{fingerprint});
+        try publishTextFileAtomic(fingerprint_path, fingerprint_text);
+        return root;
     }
 };
 
@@ -320,6 +347,35 @@ fn fingerprintBuild(allocator: std.mem.Allocator, source_path: []const u8, targe
     return hexDigest(allocator, &digest);
 }
 
+fn sourceSlotKey(allocator: std.mem.Allocator, source_path: []const u8) ![]const u8 {
+    const canonical_source = try absolutize(allocator, source_path);
+    defer allocator.free(canonical_source);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical_source, &digest, .{});
+    const hex = try hexDigest(allocator, &digest);
+    defer allocator.free(hex);
+    return std.fmt.allocPrint(allocator, "source-{s}", .{hex});
+}
+
+fn removeLegacyFingerprintEntries(namespace_root: []const u8) !void {
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, namespace_root, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        if (entry.kind != .directory or !isLegacyFingerprintName(entry.name)) continue;
+        try dir.deleteTree(std.Options.debug_io, entry.name);
+    }
+}
+
+fn isLegacyFingerprintName(name: []const u8) bool {
+    if (name.len != 64) return false;
+    for (name) |byte| switch (byte) {
+        '0'...'9', 'a'...'f' => {},
+        else => return false,
+    };
+    return true;
+}
+
 fn hashRepoSupportInputs(allocator: std.mem.Allocator, hasher: anytype) !void {
     const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
     defer allocator.free(helper_source);
@@ -434,7 +490,7 @@ fn projectRootForSource(allocator: std.mem.Allocator, source_path: []const u8) !
 }
 
 fn hasProjectManifest(path: []const u8) bool {
-    return fileExistsAt(path, "kira.toml") or fileExistsAt(path, "project.toml") or fileExistsAt(path, "Kira.toml");
+    return fileExistsAt(path, "package.kira") or fileExistsAt(path, "kira.toml") or fileExistsAt(path, "project.toml") or fileExistsAt(path, "Kira.toml");
 }
 
 fn sourceBelongsToProject(allocator: std.mem.Allocator, root: []const u8, source_path: []const u8) bool {

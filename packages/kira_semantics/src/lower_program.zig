@@ -96,7 +96,6 @@ fn declOrigin(program: syntax.ast.Program, index: usize) syntax.ast.DeclOrigin {
     if (index < program.decl_origins.len) return program.decl_origins[index];
     return .{};
 }
-
 fn scopedTopLevelName(allocator: std.mem.Allocator, origin: syntax.ast.DeclOrigin, name: []const u8) ![]const u8 {
     if (origin.package_name) |package_name| {
         return shared.scopedSymbolName(allocator, package_name, name);
@@ -131,6 +130,9 @@ fn collectRootTopLevelNames(
             .type_decl => |item| try names.put(allocator, item.name, {}),
             .construct_decl => |item| try names.put(allocator, item.name, {}),
             .construct_form_decl => |item| try names.put(allocator, item.name, {}),
+            // A FailTest is compiled by the `kira test` runner as an isolated
+            // synthetic package; it contributes no runtime top-level name here.
+            .fail_test_decl => |item| try names.put(allocator, item.name, {}),
             .function_decl => |item| try names.put(allocator, item.name, {}),
             // Extension declarations add no new top-level name; they extend an existing construct.
             .extend_decl => {},
@@ -309,6 +311,9 @@ pub fn lowerProgramWithOptions(
         const origin = declOrigin(program, decl_index);
         switch (decl) {
             .annotation_decl, .capability_decl, .type_alias_decl, .extend_decl, .macro_decl, .macro_invocation => {},
+            // FailTest bodies are never lowered — their `source` is quoted text the
+            // runner compiles in isolation, so they emit no types/functions here.
+            .fail_test_decl => {},
             .construct_decl => |construct_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, construct_decl.name, construct_decl.span);
                 const lowered = try lowerConstructDecl(&ctx, construct_decl);
@@ -448,6 +453,7 @@ pub fn lowerProgramWithOptions(
             .fields = @constCast(entry.value_ptr.fields),
             .methods = try lowerTypeMethodMembers(allocator, entry.value_ptr.methods),
             .ffi = entry.value_ptr.ffi,
+            .derive_copy = entry.value_ptr.derive_copy,
             .span = entry.value_ptr.span,
         });
     }

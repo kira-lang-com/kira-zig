@@ -1,0 +1,23 @@
+// KikCorpusSokolTriangle — migrated corpus case from
+// tests/pass/run/ffi_sokol_triangle_native: the full `sokol` module
+// (sokol_app + sokol_gfx + sokol_glue, autobound all_public against the real
+// third_party/sokol headers) with @Native lifecycle callbacks wired into an
+// sapp_desc as C function pointers. This lives in its own package because the
+// all_public `sokol` module and the dummy-backend `sokol_gfx` module of
+// tests-kik/corpus/sokol declare overlapping top-level names (sg_desc, ...)
+// and need different lib configs. libsokol is built in-package from
+// NativeLibs/sokol.toml's [build] recipe (sokol_impl.m) and the binding is
+// checked in at app/sokol.kira (the test path resolves imports before
+// bindings regenerate). The case is @Native FFI, so run through the hybrid
+// driver:
+//
+//   kira test --backend hybrid tests-kik/corpus/sokol-triangle
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    print("kik-corpus-sokol-triangle")
+    return
+}

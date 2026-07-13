@@ -133,6 +133,9 @@ pub fn parseTopLevelDecl(self: *Parser, annotations: []const syntax.ast.Annotati
         try self.emitUnexpectedToken("expected a macro invocation", self.peek(), "a top-level '!' must be a `name!(args)` macro call", "Write `name!(args)` to invoke a function macro.");
         return error.DiagnosticsEmitted;
     }
+    if (self.looksLikeFailTest()) {
+        return .{ .fail_test_decl = try self.parseFailTestDecl(annotations) };
+    }
     if (self.looksLikeConstructFormDecl()) {
         return .{ .construct_form_decl = try self.parseConstructFormDeclWithAnnotations(annotations) };
     }

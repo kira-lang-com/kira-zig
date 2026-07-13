@@ -515,6 +515,17 @@ pub const FunctionCodegen = struct {
             .const_closure => |v| try closures.lowerConstClosure(self, v),
             .call_value => |v| try closures.lowerCallValue(self, v),
             .string_len => |v| self.registers[v.dst] = api.LLVMBuildExtractValue(b, self.registers[v.string], 1, "string.len"),
+            .string_from_scalar => |v| {
+                self.registers[v.dst] = try calls.lowerStringFromScalar(self, v);
+                // Fresh malloc'd buffer; the dst's string_buf slot owns it.
+                drop.trackStringRegister(self, v.dst);
+            },
+            .string_char_at => |v| self.registers[v.dst] = calls.lowerStringCharAt(self, v),
+            .string_substring => |v| {
+                self.registers[v.dst] = calls.lowerStringSubstring(self, v);
+                drop.trackStringRegister(self, v.dst);
+            },
+            .string_index_of => |v| self.registers[v.dst] = calls.lowerStringIndexOf(self, v),
             .alloc_enum => |v| {
                 try aggregate.lowerAllocEnum(self, v);
                 drop.onAlloc(self, v.dst);

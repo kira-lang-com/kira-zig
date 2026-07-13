@@ -21,5 +21,5 @@ sources = ["sokol_gles_impl.m"]
 include_dirs = ["../../../third_party/sokol"]
 
 [target.aarch64-ios-simulator]
-static_lib = "../generated/native/aarch64-ios-simulator/libsokol.a"
+static_lib = "../.kira-build/native/aarch64-ios-simulator/libsokol.a"
 frameworks = ["UIKit", "QuartzCore", "OpenGLES", "GLKit"]

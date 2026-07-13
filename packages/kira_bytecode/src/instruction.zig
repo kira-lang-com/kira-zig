@@ -1,6 +1,9 @@
 const std = @import("std");
 const ownership_mode = @import("ownership_mode.zig");
 
+// Selects the byte format for a scalar -> String conversion (`String(x)`).
+pub const StringFromScalarSource = enum(u8) { integer, float, boolean };
+
 pub const OpCode = enum(u8) {
     const_int,
     const_float,
@@ -31,6 +34,10 @@ pub const OpCode = enum(u8) {
     c_string_to_string,
     array_len,
     string_len,
+    string_from_scalar,
+    string_char_at,
+    string_substring,
+    string_index_of,
     array_get,
     array_set,
     array_append,
@@ -138,6 +145,11 @@ pub const Instruction = union(OpCode) {
     c_string_to_string: struct { dst: u32, src: u32 },
     array_len: struct { dst: u32, array: u32 },
     string_len: struct { dst: u32, string: u32 },
+    // Scalar -> String conversion (`String(x)`); `source` picks the byte format.
+    string_from_scalar: struct { dst: u32, src: u32, source: StringFromScalarSource },
+    string_char_at: struct { dst: u32, string: u32, index: u32 },
+    string_substring: struct { dst: u32, string: u32, start: u32, end: u32 },
+    string_index_of: struct { dst: u32, string: u32, needle: u32 },
     // `borrow=true` marks an element read whose result is consumed only as a
     // non-escaping `borrow` argument to an immediately-following call (set by the
     // IR lowering, guarded so the array cannot be mutated/freed during that call).

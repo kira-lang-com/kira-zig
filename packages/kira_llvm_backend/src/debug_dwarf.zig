@@ -14,6 +14,7 @@
 //! trimmed toolchain degrades debug info instead of breaking the native build.
 
 const std = @import("std");
+const progress = @import("progress.zig");
 const ir = @import("kira_ir");
 const source = @import("kira_source");
 const llvm = @import("llvm_c.zig");
@@ -195,8 +196,8 @@ pub const DwarfBuilder = struct {
             if (readLineMap(self.allocator, real_path)) |loaded| {
                 entry.text = loaded.text;
                 entry.line_map = loaded.line_map;
-            } else {
-                std.debug.print("kira llvm backend: could not read '{s}' for debug line table; lines report 0\n", .{real_path});
+            } else if (!std.mem.eql(u8, std.fs.path.basename(real_path), "test.kira")) {
+                progress.print("Skipping debug lines for synthetic source {s}", .{std.fs.path.basename(real_path)});
             }
         }
 

@@ -237,6 +237,18 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 .c_string_to_string => |value| try instructions.append(.{ .c_string_to_string = .{ .dst = value.dst, .src = value.src } }),
                 .array_len => |value| try instructions.append(.{ .array_len = .{ .dst = value.dst, .array = value.array } }),
                 .string_len => |value| try instructions.append(.{ .string_len = .{ .dst = value.dst, .string = value.string } }),
+                .string_from_scalar => |value| try instructions.append(.{ .string_from_scalar = .{
+                    .dst = value.dst,
+                    .src = value.src,
+                    .source = switch (value.source) {
+                        .integer => .integer,
+                        .float => .float,
+                        .boolean => .boolean,
+                    },
+                } }),
+                .string_char_at => |value| try instructions.append(.{ .string_char_at = .{ .dst = value.dst, .string = value.string, .index = value.index } }),
+                .string_substring => |value| try instructions.append(.{ .string_substring = .{ .dst = value.dst, .string = value.string, .start = value.start, .end = value.end } }),
+                .string_index_of => |value| try instructions.append(.{ .string_index_of = .{ .dst = value.dst, .string = value.string, .needle = value.needle } }),
                 .array_get => |value| try instructions.append(.{ .array_get = .{
                     .dst = value.dst,
                     .array = value.array,
