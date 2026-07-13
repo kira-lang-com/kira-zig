@@ -21,6 +21,14 @@ pub fn resolveInlineLibrary(
     pseudo_manifest_path: []const u8,
 ) !native.ResolvedNativeLibrary {
     const artifact_path = try inlineArtifactPath(allocator, project_root, spec.name, spec.link_mode, target);
+    var matched_target: ?native.TargetSpec = null;
+    for (spec.targets) |candidate| {
+        if (candidate.selector.eql(target)) {
+            matched_target = candidate;
+            break;
+        }
+    }
+    if (spec.targets.len > 0 and matched_target == null) return error.UnsupportedTarget;
 
     var resolved = native.ResolvedNativeLibrary{
         .manifest_path = try allocator.dupe(u8, pseudo_manifest_path),
@@ -32,8 +40,8 @@ pub fn resolveInlineLibrary(
         .headers = spec.headers,
         .autobinding = spec.autobinding,
         .build = spec.build,
-        .compiler_flags = &.{},
-        .link = .{},
+        .compiler_flags = if (matched_target) |selected| try cloneStrings(allocator, selected.compiler_flags) else &.{},
+        .link = if (matched_target) |selected| try native.LinkExtras.clone(allocator, selected.link) else .{},
     };
 
     if (try firstUnresolvedEnvVar(allocator, resolved)) |missing| {
@@ -46,6 +54,7 @@ pub fn resolveInlineLibrary(
     const base = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
     resolved.headers = try resolveHeaders(allocator, base, spec.headers);
     resolved.build = try resolveBuildRecipe(allocator, base, spec.build);
+    resolved.link = try resolveLinkExtras(allocator, base, resolved.link);
     resolved.autobinding = if (spec.autobinding) |autobinding| blk: {
         // Autobind law: bindings always land at app/bindings/<module>.kira.
         const output_path = try std.fs.path.join(allocator, &.{ project_root, "app", "bindings", try std.fmt.allocPrint(allocator, "{s}.kira", .{autobinding.module_name}) });
@@ -357,4 +366,35 @@ test "resolveNativeManifestFile carries per-target compiler and linker flags thr
     try std.testing.expectEqual(@as(usize, 2), resolved.link.linker_flags.len);
     try std.testing.expectEqualStrings("--use-port=emdawnwebgpu", resolved.link.linker_flags[0]);
     try std.testing.expectEqualStrings("-sERROR_ON_UNDEFINED_SYMBOLS=0", resolved.link.linker_flags[1]);
+}
+
+test "resolveInlineLibrary applies matching target compiler and linker options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const project_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    const manifest_path = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    const selector = try native.TargetSelector.parse(allocator, "x86_64-linux-gnu");
+    const spec = native.NativeLibrarySpec{
+        .name = "demo",
+        .link_mode = .static,
+        .abi = .c,
+        .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+        .targets = &.{.{
+            .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+            .compiler_flags = &.{"-pthread"},
+            .link = .{ .include_dirs = &.{"NativeLibs/include"}, .system_libs = &.{"X11"}, .linker_flags = &.{"-Wl,--as-needed"} },
+        }},
+    };
+
+    const resolved = try resolveInlineLibrary(allocator, spec, selector, project_root, manifest_path);
+    try std.testing.expectEqualStrings("-pthread", resolved.compiler_flags[0]);
+    try std.testing.expectEqualStrings("X11", resolved.link.system_libs[0]);
+    try std.testing.expectEqualStrings("-Wl,--as-needed", resolved.link.linker_flags[0]);
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "include" }),
+        resolved.link.include_dirs[0],
+    );
 }

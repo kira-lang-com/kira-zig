@@ -30,7 +30,7 @@ pub fn loadManifestLocation(allocator: std.mem.Allocator, input_path: ?[]const u
     return .{
         .root_path = root_path,
         .manifest_path = manifest_path,
-        .manifest = try manifest.parseProjectManifest(allocator, text),
+        .manifest = try manifest.loadProjectManifestFromText(allocator, text, manifest_path),
     };
 }
 
@@ -38,7 +38,11 @@ pub fn writeManifest(manifest_path: []const u8, project_manifest: manifest.Proje
     const allocator = std.heap.page_allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
-    try manifest.writeProjectManifest(&output.writer, project_manifest);
+    if (std.mem.eql(u8, std.fs.path.basename(manifest_path), "package.kira")) {
+        try manifest.writeProjectManifestAsDeclaration(&output.writer, project_manifest);
+    } else {
+        try manifest.writeProjectManifest(&output.writer, project_manifest);
+    }
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_path, .{ .truncate = true });
     defer file.close(std.Options.debug_io);
     try file.writeStreamingAll(std.Options.debug_io, output.written());
@@ -122,7 +126,7 @@ pub fn syncAndRender(
 }
 
 fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
-    const candidates = [_][]const u8{ "kira.toml", "project.toml", "Kira.toml" };
+    const candidates = [_][]const u8{ "package.kira", "kira.toml", "project.toml", "Kira.toml" };
     for (candidates) |name| {
         const path = try std.fs.path.join(allocator, &.{ root_path, name });
         if (fileExists(path)) return path;
@@ -142,7 +146,7 @@ fn isDirectory(path: []const u8) bool {
 
 fn isManifestPath(path: []const u8) bool {
     const base = std.fs.path.basename(path);
-    return std.mem.eql(u8, base, "kira.toml") or std.mem.eql(u8, base, "project.toml") or std.mem.eql(u8, base, "Kira.toml");
+    return std.mem.eql(u8, base, "package.kira") or std.mem.eql(u8, base, "kira.toml") or std.mem.eql(u8, base, "project.toml") or std.mem.eql(u8, base, "Kira.toml");
 }
 
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -157,4 +161,34 @@ fn fileExists(path: []const u8) bool {
         std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
     file.close(std.Options.debug_io);
     return true;
+}
+
+test "package commands load and rewrite package.kira declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "package.kira",
+        .data =
+        \\Package Demo {
+        \\    let dependencies = [Dependency { name: "Foundation", version: "0.1.0" }]
+        \\}
+        ,
+    });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    var location = try loadManifestLocation(allocator, root);
+    try std.testing.expectEqualStrings("package.kira", std.fs.path.basename(location.manifest_path));
+    try upsertDependency(allocator, &location.manifest, .{
+        .name = "Remote",
+        .source = .{ .git = .{ .url = "https://example.com/remote.git", .rev = "abc123" } },
+    });
+    try writeManifest(location.manifest_path, location.manifest);
+
+    const reloaded = try loadManifestLocation(allocator, root);
+    try std.testing.expectEqual(@as(usize, 2), reloaded.manifest.dependencies.len);
+    try std.testing.expect(reloaded.manifest.dependencies[1].source == .git);
+    try std.testing.expectEqualStrings("abc123", reloaded.manifest.dependencies[1].source.git.rev.?);
 }
