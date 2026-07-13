@@ -44,6 +44,7 @@ pub const StringIndexOf = ir.StringIndexOf;
 pub const Compare = ir.Compare;
 pub const LoadIndirect = ir.LoadIndirect;
 pub const StoreIndirect = ir.StoreIndirect;
+pub const CopyIndirect = ir.CopyIndirect;
 pub const ConstClosure = ir.ConstClosure;
 pub const AllocNativeState = ir.AllocNativeState;
 pub const RecoverNativeState = ir.RecoverNativeState;
