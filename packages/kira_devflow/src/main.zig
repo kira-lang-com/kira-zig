@@ -10,6 +10,7 @@
 //!   request-reviews N  always CodeRabbit; --codex to also ping Codex
 //!   wait-ci N           block until exact-head checks are green
 //!   ci-failures N       print exact-head failed workflow logs
+//!   rerun-ci N          rerun completed exact-head workflows
 //!   blacksmith ACTION   enable, disable, or inspect Blacksmith runners
 //!   review-findings N   print exact-head bot review comments
 //!   wait-reviews N     block until reviewers posted + threads resolved
@@ -66,6 +67,7 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "request-reviews")) return commands.requestReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "wait-ci")) return commands.waitCi(ctx, try requireNumber(rest));
     if (eq(verb, "ci-failures")) return commands.ciFailures(ctx, try requireNumber(rest));
+    if (eq(verb, "rerun-ci")) return commands.rerunCi(ctx, try requireNumber(rest));
     if (eq(verb, "blacksmith")) return commands.blacksmith(ctx, positional(rest) orelse "status");
     if (eq(verb, "review-findings")) return commands.reviewFindings(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "wait-reviews")) return commands.waitReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
@@ -160,6 +162,7 @@ fn usage() void {
         \\  request-reviews <pr> [--codex]
         \\  wait-ci <pr>                block until exact-head checks are green
         \\  ci-failures <pr>            print exact-head failed workflow logs
+        \\  rerun-ci <pr>               rerun completed exact-head workflows
         \\  blacksmith [enable|disable|status]
         \\  review-findings <pr> [--codex]
         \\  wait-reviews <pr> [--codex]

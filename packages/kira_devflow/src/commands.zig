@@ -130,6 +130,26 @@ pub fn ciFailures(ctx: Context, number: u32) !void {
     }
 }
 
+/// `rerun-ci <pr>`: rerun every completed workflow attached to the PR's exact
+/// head. Useful after changing repository runner-provider configuration.
+pub fn rerunCi(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.completedRunIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no completed workflow runs to rerun on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        try gh.rerunWorkflow(ctx, slug, run_id);
+        out.print("devflow: reran workflow {s} on #{d} exact head {s}\n", .{ run_id, number, head });
+    }
+}
+
 /// `blacksmith <enable|disable|status>`: manage the repository variable that
 /// selects runner labels across every workflow. Enabling assumes the
 /// Blacksmith GitHub app has already been granted access to this repository.

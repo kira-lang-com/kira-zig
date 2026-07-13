@@ -192,6 +192,17 @@ pub fn failedRunLog(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
     });
 }
 
+pub fn completedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                          slug,   "--commit",                                                                                  head,
+        "--limit", "20",  "--json", "databaseId,status,createdAt", "--jq", "[.[] | select(.status == \"completed\")] | sort_by(.createdAt) | reverse | .[].databaseId",
+    });
+}
+
+pub fn rerunWorkflow(ctx: Context, slug: []const u8, run_id: []const u8) !void {
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "run", "rerun", run_id, "-R", slug });
+}
+
 pub fn setRepositoryVariable(ctx: Context, slug: []const u8, name: []const u8, value: []const u8) !void {
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
         "gh", "variable", "set", name, "-R", slug, "--body", value,
