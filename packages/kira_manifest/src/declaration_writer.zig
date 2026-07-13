@@ -150,7 +150,8 @@ fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
 }
 
 fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
-    if (headers.entrypoint == null and headers.include_dirs.len == 0 and headers.defines.len == 0) return;
+    if (headers.entrypoint == null and headers.include_dirs.len == 0 and headers.defines.len == 0 and
+        headers.frameworks.len == 0 and headers.system_libs.len == 0) return;
     try writer.writeAll("            headers: Headers {");
     var first = true;
     if (headers.entrypoint) |entry| {
@@ -168,6 +169,18 @@ fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
         if (!first) try writer.writeAll(",");
         try writer.writeAll(" defines: ");
         try writeStringArray(writer, headers.defines);
+        first = false;
+    }
+    if (headers.frameworks.len > 0) {
+        if (!first) try writer.writeAll(",");
+        try writer.writeAll(" frameworks: ");
+        try writeStringArray(writer, headers.frameworks);
+        first = false;
+    }
+    if (headers.system_libs.len > 0) {
+        if (!first) try writer.writeAll(",");
+        try writer.writeAll(" systemLibs: ");
+        try writeStringArray(writer, headers.system_libs);
     }
     try writer.writeAll(" },\n");
 }
@@ -293,6 +306,7 @@ test "writes a round-trippable package.kira" {
             .name = "demo",
             .link_mode = .static,
             .abi = .c,
+            .headers = .{ .frameworks = &.{"Metal"}, .system_libs = &.{"m"} },
             .build = .{ .sources = &.{"NativeLibs/demo.c"} },
             .targets = &.{.{
                 .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
@@ -326,6 +340,9 @@ test "writes a round-trippable package.kira" {
     const git_dep = result.manifest.dependencies[1].source.git;
     try std.testing.expectEqualStrings("https://example.com/remote.git", git_dep.url);
     try std.testing.expectEqualStrings("abc123", git_dep.rev.?);
+    const headers = result.manifest.inline_native_libraries[0].headers;
+    try std.testing.expectEqualStrings("Metal", headers.frameworks[0]);
+    try std.testing.expectEqualStrings("m", headers.system_libs[0]);
     const target = result.manifest.inline_native_libraries[0].targets[0];
     try std.testing.expectEqualStrings("linux", target.selector.operating_system);
     try std.testing.expectEqualStrings("-pthread", target.compiler_flags[0]);
