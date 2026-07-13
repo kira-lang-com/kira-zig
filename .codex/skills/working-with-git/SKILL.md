@@ -15,7 +15,8 @@ discard irreversibly.
 zig build devflow -- status              # content diff, not ahead/behind counts
 zig build devflow -- commit [-m "..."]   # stage all + signed commit
 zig build devflow -- push                # push branch to fork over SSH
-zig build devflow -- open-fork-pr [t]    # open ONE PR against upstream
+zig build devflow -- pr-scope            # inspect complete-branch PR metadata
+zig build devflow -- open-fork-pr        # open/refresh ONE PR against upstream
 zig build devflow -- request-reviews N [--codex]
 zig build devflow -- wait-reviews N [--codex]      # blocks until resolved
 zig build devflow -- land N              # squash-merge, mirror fork, resync local
@@ -24,6 +25,11 @@ zig build devflow -- sync                # resync local main if drifted
 
 Branch off `upstream/main`. `open-fork-pr` opens directly on upstream
 (single-stage — owner is a maintainer, no fork→upstream double-landing).
+Before opening or refreshing a PR, Kai runs `pr-scope` and checks that its title
+and body describe the complete `upstream/main...HEAD` diff and branch commit
+history. The current Codex task, conversation, session, and latest commit are
+never the PR scope. `open-fork-pr` regenerates both fields from the full branch
+and also replaces stale metadata on an already-open PR.
 `land` squash-merges with subject `Merge pull request #N from <owner>/<branch>`,
 then force-mirrors fork `main` to `upstream/main`.
 

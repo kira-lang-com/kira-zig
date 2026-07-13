@@ -33,6 +33,36 @@ test "loads a full package.kira declaration" {
     try std.testing.expect(result.manifest.dependencies[0].source == .registry);
 }
 
+test "loads git dependency without changing its source kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try loadProjectManifestFromDeclaration(arena.allocator(),
+        \\Package GitConsumer {
+        \\    let dependencies = [ Dependency { name: "Remote", git: "https://example.com/remote.git", rev: "abc123", tag: "v1" } ]
+        \\}
+    , "package.kira");
+
+    try std.testing.expect(result.ok());
+    const source = result.manifest.dependencies[0].source.git;
+    try std.testing.expectEqualStrings("https://example.com/remote.git", source.url);
+    try std.testing.expectEqualStrings("abc123", source.rev.?);
+    try std.testing.expectEqualStrings("v1", source.tag.?);
+}
+
+test "maps Wasm package default to the CLI backend spelling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try loadProjectManifestFromDeclaration(arena.allocator(),
+        \\Package WebApp {
+        \\    let defaults = Defaults { executionMode: .Wasm, buildTarget: .Wasm }
+        \\}
+    , "package.kira");
+
+    try std.testing.expect(result.ok());
+    try std.testing.expectEqualStrings("wasm32-emscripten", result.manifest.execution_mode);
+    try std.testing.expectEqual(@import("platform_config.zig").ExecutionBackend.wasm_runtime, result.manifest.execution_policy.default_backend);
+}
+
 test "loads inline native library" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -49,7 +79,7 @@ test "loads inline native library" {
         \\            linkMode: .Static,
         \\            headers: Headers { entrypoint: "third_party/sokol/sokol_gfx.h", includeDirs: ["third_party/sokol"], defines: ["SOKOL_DUMMY_BACKEND"] },
         \\            sources: ["third_party/sokol/sokol_gfx_impl.c"],
-        \\            autobind: Autobind { module: "sokol_gfx", functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] }
+        \\            autobind: Autobind { module: "sokol_gfx", headers: ["third_party/sokol/sokol_gfx.h"], functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] }
         \\        }
         \\    ]
         \\}
@@ -64,6 +94,7 @@ test "loads inline native library" {
     try std.testing.expectEqual(@as(usize, 1), lib.build.sources.len);
     try std.testing.expect(lib.autobinding != null);
     try std.testing.expectEqualStrings("sokol_gfx", lib.autobinding.?.module_name);
+    try std.testing.expectEqualStrings("third_party/sokol/sokol_gfx.h", lib.autobinding.?.headers[0]);
     try std.testing.expectEqual(@as(usize, 2), lib.autobinding.?.bindings.functions.len);
 }
 

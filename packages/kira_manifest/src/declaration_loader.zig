@@ -275,6 +275,9 @@ fn applyDependencies(loader: *Loader, manifest: *ProjectManifest, value: *Expr) 
         var name: ?[]const u8 = null;
         var version: ?[]const u8 = null;
         var path: ?[]const u8 = null;
+        var git: ?[]const u8 = null;
+        var rev: ?[]const u8 = null;
+        var tag: ?[]const u8 = null;
         for (lit.fields) |f| {
             if (std.mem.eql(u8, f.name, "name")) {
                 name = try stringValue(loader, f.value);
@@ -282,6 +285,12 @@ fn applyDependencies(loader: *Loader, manifest: *ProjectManifest, value: *Expr) 
                 version = try stringValue(loader, f.value);
             } else if (std.mem.eql(u8, f.name, "path")) {
                 path = try stringValue(loader, f.value);
+            } else if (std.mem.eql(u8, f.name, "git")) {
+                git = try stringValue(loader, f.value);
+            } else if (std.mem.eql(u8, f.name, "rev")) {
+                rev = try stringValue(loader, f.value);
+            } else if (std.mem.eql(u8, f.name, "tag")) {
+                tag = try stringValue(loader, f.value);
             } else {
                 try loader.err(f.span, "KMAN004", "unknown Dependency field", "This field is not part of the Dependency schema.");
             }
@@ -290,12 +299,17 @@ fn applyDependencies(loader: *Loader, manifest: *ProjectManifest, value: *Expr) 
             try loader.err(exprSpan(el), "KMAN009", "Dependency requires name", "Every Dependency must declare a name.");
             continue;
         }
-        if (path) |p| {
+        const source_count = @as(u8, if (path != null) 1 else 0) + @as(u8, if (version != null) 1 else 0) + @as(u8, if (git != null) 1 else 0);
+        if (source_count > 1) {
+            try loader.err(exprSpan(el), "KMAN009", "Dependency has multiple sources", "A Dependency must declare exactly one of version, path, or git.");
+        } else if (path) |p| {
             try deps.append(.{ .name = name.?, .source = .{ .path = .{ .path = p } } });
         } else if (version) |v| {
             try deps.append(.{ .name = name.?, .source = .{ .registry = .{ .version = v } } });
+        } else if (git) |url| {
+            try deps.append(.{ .name = name.?, .source = .{ .git = .{ .url = url, .rev = rev, .tag = tag } } });
         } else {
-            try loader.err(exprSpan(el), "KMAN009", "Dependency requires version or path", "A Dependency must declare either a version or a path.");
+            try loader.err(exprSpan(el), "KMAN009", "Dependency requires a source", "A Dependency must declare one of version, path, or git.");
         }
     }
     manifest.dependencies = try deps.toOwnedSlice();
@@ -384,6 +398,7 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
     var functions: []const []const u8 = &.{};
     var structs: []const []const u8 = &.{};
     var callbacks: []const []const u8 = &.{};
+    var headers: []const []const u8 = &.{};
 
     for (fields.fields) |f| {
         if (std.mem.eql(u8, f.name, "module")) {
@@ -396,6 +411,8 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
             if (try enumValue(loader, f.value, "AutobindMode")) |variant| {
                 mode = if (std.mem.eql(u8, variant, "AllPublic") or std.mem.eql(u8, variant, "all_public")) .all_public else .listed;
             }
+        } else if (std.mem.eql(u8, f.name, "headers")) {
+            headers = try stringArray(loader, f.value);
         } else if (std.mem.eql(u8, f.name, "functions")) {
             functions = try stringArray(loader, f.value);
         } else if (std.mem.eql(u8, f.name, "structs")) {
@@ -416,7 +433,7 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
         .module_name = module_name,
         // Placeholder; kira_build derives the real path (app/bindings/<module>.kira).
         .output_path = "",
-        .headers = &.{},
+        .headers = headers,
         .bindings = .{ .mode = mode, .functions = functions, .structs = structs, .callbacks = callbacks },
     };
 }
@@ -499,7 +516,7 @@ fn backendMode(variant: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, variant, "Vm")) return "vm";
     if (std.mem.eql(u8, variant, "Llvm")) return "llvm";
     if (std.mem.eql(u8, variant, "Hybrid")) return "hybrid";
-    if (std.mem.eql(u8, variant, "Wasm")) return "wasm_runtime";
+    if (std.mem.eql(u8, variant, "Wasm")) return "wasm32-emscripten";
     return null;
 }
 

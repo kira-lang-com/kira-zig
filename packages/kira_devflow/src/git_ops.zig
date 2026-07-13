@@ -70,6 +70,22 @@ pub fn contentDiffStat(ctx: Context, a: []const u8, b: []const u8) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "diff", "--stat", a, b });
 }
 
+/// Every path changed by the complete branch, relative to its merge base with
+/// `base`. This is PR scope; the working tree and the current agent session are
+/// deliberately irrelevant.
+pub fn branchChangedFiles(ctx: Context, base: []const u8) ![]u8 {
+    const range = try std.fmt.allocPrint(ctx.allocator, "{s}...HEAD", .{base});
+    defer ctx.allocator.free(range);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", range });
+}
+
+/// Subjects of every commit in the complete branch, oldest first.
+pub fn branchCommitSubjects(ctx: Context, base: []const u8) ![]u8 {
+    const range = try std.fmt.allocPrint(ctx.allocator, "{s}..HEAD", .{base});
+    defer ctx.allocator.free(range);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "log", "--reverse", "--format=%s", range });
+}
+
 /// True when refs `a` and `b` point at identical trees (empty content diff).
 pub fn treesIdentical(ctx: Context, a: []const u8, b: []const u8) !bool {
     const stat = try contentDiffStat(ctx, a, b);

@@ -41,7 +41,11 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
             switch (dep.source) {
                 .registry => |r| try writer.print(", version: \"{s}\"", .{r.version}),
                 .path => |p| try writer.print(", path: \"{s}\"", .{p.path}),
-                .git => |g| try writer.print(", version: \"{s}\"", .{g.url}),
+                .git => |g| {
+                    try writer.print(", git: \"{s}\"", .{g.url});
+                    if (g.rev) |rev| try writer.print(", rev: \"{s}\"", .{rev});
+                    if (g.tag) |tag| try writer.print(", tag: \"{s}\"", .{tag});
+                },
             }
             try writer.writeAll(" }\n");
         }
@@ -101,6 +105,10 @@ fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
 
 fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
     try writer.print("            autobind: Autobind {{ module: \"{s}\"", .{auto.module_name});
+    if (auto.headers.len > 0) {
+        try writer.writeAll(", headers: ");
+        try writeStringArray(writer, auto.headers);
+    }
     if (auto.bindings.mode == .all_public) {
         try writer.writeAll(", mode: AutobindMode.AllPublic");
     }
@@ -190,6 +198,7 @@ test "writes a round-trippable package.kira" {
         .build_target = "host",
         .dependencies = &.{
             .{ .name = "Foundation", .source = .{ .registry = .{ .version = "0.1.0" } } },
+            .{ .name = "Remote", .source = .{ .git = .{ .url = "https://example.com/remote.git", .rev = "abc123" } } },
         },
     };
 
@@ -201,6 +210,7 @@ test "writes a round-trippable package.kira" {
     try std.testing.expect(std.mem.indexOf(u8, text, "Package DemoApp {") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "executionMode: Backend.Hybrid") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Foundation\", version: \"0.1.0\" }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Remote\", git: \"https://example.com/remote.git\", rev: \"abc123\" }") != null);
 
     // Reload it through the declaration loader for a true round trip.
     const loader = @import("declaration_loader.zig");
@@ -208,5 +218,8 @@ test "writes a round-trippable package.kira" {
     try std.testing.expect(result.ok());
     try std.testing.expectEqualStrings("DemoApp", result.manifest.name);
     try std.testing.expectEqualStrings("hybrid", result.manifest.execution_mode);
-    try std.testing.expectEqual(@as(usize, 1), result.manifest.dependencies.len);
+    try std.testing.expectEqual(@as(usize, 2), result.manifest.dependencies.len);
+    const git_dep = result.manifest.dependencies[1].source.git;
+    try std.testing.expectEqualStrings("https://example.com/remote.git", git_dep.url);
+    try std.testing.expectEqualStrings("abc123", git_dep.rev.?);
 }

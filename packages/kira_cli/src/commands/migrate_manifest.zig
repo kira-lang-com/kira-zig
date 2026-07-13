@@ -47,7 +47,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
                 try stderr.print("warning: could not parse native library manifest {s}; skipping\n", .{lib_path});
                 continue;
             };
-            try libs.append(parsed.library);
+            const legacy_base = std.fs.path.dirname(rel) orelse ".";
+            try libs.append(try rebaseNativeLibrary(allocator, legacy_base, parsed.library));
         }
         project.inline_native_libraries = try libs.toOwnedSlice();
         project.native_libraries = &.{};
@@ -61,6 +62,60 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     try writeFileAt(output_path, rendered.written());
 
     try stdout.print("wrote {s} (kira.toml left in place; package.kira takes precedence)\n", .{output_path});
+}
+
+/// Legacy NativeLib paths are relative to the referenced TOML file. Inline
+/// package.kira libraries resolve paths from the project root, so migration
+/// must carry the TOML directory into every path-bearing field.
+fn rebaseNativeLibrary(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    library: @import("kira_native_lib_definition").NativeLibrarySpec,
+) !@import("kira_native_lib_definition").NativeLibrarySpec {
+    var rebased = library;
+    rebased.headers.entrypoint = if (library.headers.entrypoint) |value| try rebasePath(allocator, base, value) else null;
+    rebased.headers.include_dirs = try rebasePaths(allocator, base, library.headers.include_dirs);
+    rebased.build.sources = try rebasePaths(allocator, base, library.build.sources);
+    rebased.build.include_dirs = try rebasePaths(allocator, base, library.build.include_dirs);
+    if (library.autobinding) |autobinding| {
+        var rebased_autobinding = autobinding;
+        rebased_autobinding.headers = try rebasePaths(allocator, base, autobinding.headers);
+        rebased.autobinding = rebased_autobinding;
+    }
+    return rebased;
+}
+
+fn rebasePaths(allocator: std.mem.Allocator, base: []const u8, values: []const []const u8) ![]const []const u8 {
+    var paths = std.array_list.Managed([]const u8).init(allocator);
+    for (values) |value| try paths.append(try rebasePath(allocator, base, value));
+    return paths.toOwnedSlice();
+}
+
+fn rebasePath(allocator: std.mem.Allocator, base: []const u8, value: []const u8) ![]const u8 {
+    if (value.len == 0 or std.fs.path.isAbsolute(value) or std.mem.startsWith(u8, value, "${")) return allocator.dupe(u8, value);
+    if (std.mem.eql(u8, base, ".") or base.len == 0) return allocator.dupe(u8, value);
+    return std.fs.path.join(allocator, &.{ base, value });
+}
+
+test "migration rebases native library paths from TOML directory to project root" {
+    const native = @import("kira_native_lib_definition");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const library = native.NativeLibrarySpec{
+        .name = "demo",
+        .link_mode = .static,
+        .abi = .c,
+        .headers = .{ .entrypoint = "include/demo.h", .include_dirs = &.{"include"} },
+        .autobinding = .{ .module_name = "demo", .output_path = "generated/demo.kira", .headers = &.{"include/demo.h"} },
+        .build = .{ .sources = &.{"src/demo.c"}, .include_dirs = &.{"include"} },
+        .targets = &.{},
+    };
+    const rebased = try rebaseNativeLibrary(allocator, "NativeLibs", library);
+    try std.testing.expectEqualStrings("NativeLibs/include/demo.h", rebased.headers.entrypoint.?);
+    try std.testing.expectEqualStrings("NativeLibs/include", rebased.headers.include_dirs[0]);
+    try std.testing.expectEqualStrings("NativeLibs/src/demo.c", rebased.build.sources[0]);
+    try std.testing.expectEqualStrings("NativeLibs/include/demo.h", rebased.autobinding.?.headers[0]);
 }
 
 fn resolveTomlPath(allocator: std.mem.Allocator, input: []const u8) !?[]const u8 {

@@ -1,7 +1,8 @@
 //! GitHub operations for devflow, via the `gh` CLI. Every query uses `--jq` so
 //! the extraction happens in gh and this module stays free of JSON parsing.
-//! Guards baked in here: PRs open against an explicit base with an empty body
-//! (CodeRabbit authors the description), and merges are squash-with-merge-subject: one flat entry per PR reading "Merge pull request #N from owner/branch".
+//! Guards baked in here: PRs open against an explicit base with complete-branch
+//! metadata, and merges are squash-with-merge-subject: one flat entry per PR
+//! reading "Merge pull request #N from owner/branch".
 
 const std = @import("std");
 const proc = @import("proc.zig");
@@ -17,7 +18,7 @@ pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
 /// Used to keep PR opens idempotent across retry/resume.
 pub fn prNumberOn(ctx: Context, slug: []const u8, head: []const u8) !?u32 {
     const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "list", "-R", slug, "--head", head,
+        "gh",     "pr",     "list", "-R",                   slug, "--head", head,
         "--json", "number", "--jq", ".[0].number // empty",
     });
     defer ctx.allocator.free(out);
@@ -27,25 +28,37 @@ pub fn prNumberOn(ctx: Context, slug: []const u8, head: []const u8) !?u32 {
 
 /// Open a PR on the fork: base = `base`, head = `head`, empty body.
 /// Returns the new PR number.
-pub fn openForkPr(ctx: Context, base: []const u8, head: []const u8, title: []const u8) !u32 {
+pub fn openForkPr(ctx: Context, base: []const u8, head: []const u8, title: []const u8, body: []const u8) !u32 {
     const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "create", "-R", ctx.fork_slug,
-        "--base", base, "--head", head, "--title", title, "--body", "",
+        "gh",     "pr",     "create", "-R", ctx.fork_slug,
+        "--base", base,     "--head", head, "--title",
+        title,    "--body", body,
     });
     defer ctx.allocator.free(url);
     return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
 }
 
 /// Open a PR from the fork's default branch to upstream's default branch.
-pub fn openUpstreamPr(ctx: Context, head_slug: []const u8, base: []const u8, head: []const u8, title: []const u8) !u32 {
+pub fn openUpstreamPr(ctx: Context, head_slug: []const u8, base: []const u8, head: []const u8, title: []const u8, body: []const u8) !u32 {
     const head_ref = try std.fmt.allocPrint(ctx.allocator, "{s}:{s}", .{ ownerOf(head_slug), head });
     defer ctx.allocator.free(head_ref);
     const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "create", "-R", ctx.upstream_slug,
-        "--base", base, "--head", head_ref, "--title", title, "--body", "",
+        "gh",     "pr",     "create", "-R",     ctx.upstream_slug,
+        "--base", base,     "--head", head_ref, "--title",
+        title,    "--body", body,
     });
     defer ctx.allocator.free(url);
     return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
+}
+
+/// Refresh an existing PR from the same complete-branch metadata used to open
+/// it. Retries therefore correct stale or session-scoped descriptions.
+pub fn updatePr(ctx: Context, slug: []const u8, number: u32, title: []const u8, body: []const u8) !void {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "edit", num_str, "-R", slug, "--title", title, "--body", body,
+    });
 }
 
 pub fn comment(ctx: Context, slug: []const u8, number: u32, body: []const u8) !void {
@@ -64,11 +77,10 @@ pub fn reviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "view", num_str, "-R", slug, "--json", "reviews",
+        "gh",   "pr",                                               "view", num_str, "-R", slug, "--json", "reviews",
         "--jq", "[.reviews[].author.login] | unique | join(\",\")",
     });
 }
-
 
 /// Count of unresolved review threads across ALL pages (0 = all findings
 /// resolved). Pages through `reviewThreads` so a PR with >100 threads cannot
@@ -98,7 +110,7 @@ pub fn unresolvedThreadCount(ctx: Context, slug: []const u8, number: u32) !u32 {
 
         // Emit: "<unresolved-on-page>\t<hasNextPage>\t<endCursor>".
         const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-            "gh", "api", "graphql", "-f", query_arg,
+            "gh",   "api", "graphql", "-f", query_arg,
             "--jq",
             ".data.repository.pullRequest.reviewThreads | " ++
                 "\"\\([.nodes[]|select(.isResolved==false)]|length)\\t\\(.pageInfo.hasNextPage)\\t\\(.pageInfo.endCursor // \"\")\"",
@@ -147,11 +159,11 @@ pub fn landAsPullRequest(ctx: Context, slug: []const u8, number: u32) !void {
 
     // head owner + branch + PR title, tab-separated.
     const info = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh",                                                          "pr",
-        "view",                                                        num_str,
-        "-R",                                                          slug,
-        "--json",                                                      "headRefName,headRepositoryOwner,title",
-        "--jq",                                                        "(.headRepositoryOwner.login // \"\") + \"\\t\" + .headRefName + \"\\t\" + .title",
+        "gh",     "pr",
+        "view",   num_str,
+        "-R",     slug,
+        "--json", "headRefName,headRepositoryOwner,title",
+        "--jq",   "(.headRepositoryOwner.login // \"\") + \"\\t\" + .headRefName + \"\\t\" + .title",
     });
     defer ctx.allocator.free(info);
 
@@ -164,9 +176,9 @@ pub fn landAsPullRequest(ctx: Context, slug: []const u8, number: u32) !void {
     defer ctx.allocator.free(subject);
 
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh",        "pr",   "merge",   num_str,
-        "-R",        slug,   "--squash", "--subject",
-        subject,     "--body", title,
+        "gh",    "pr",     "merge",    num_str,
+        "-R",    slug,     "--squash", "--subject",
+        subject, "--body", title,
     });
 }
 

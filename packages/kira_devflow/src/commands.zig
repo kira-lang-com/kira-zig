@@ -8,6 +8,7 @@ const Context = @import("context.zig").Context;
 const git = @import("git_ops.zig");
 const gh = @import("gh_ops.zig");
 const commit_msg = @import("commit_msg.zig");
+const pr_scope = @import("pr_scope.zig");
 const out = @import("out.zig");
 
 const poll_interval_ns: u64 = 30 * std.time.ns_per_s;
@@ -89,29 +90,40 @@ pub fn push(ctx: Context) !void {
     out.print("devflow: pushed {s} to {s}\n", .{ branch, ctx.fork_ssh_url });
 }
 
-/// `open-pr [title]`: open ONE PR against upstream (single-stage) from the
-/// current branch. With no upstream remote, opens a fork-internal PR instead.
-pub fn openForkPr(ctx: Context, title_opt: ?[]const u8) !void {
+/// `pr-scope`: print metadata computed from the complete branch.
+pub fn prScope(ctx: Context) !void {
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
+    out.print("{s}\n\n{s}", .{ metadata.title, metadata.body });
+}
+
+/// `open-pr`: open ONE PR against upstream (single-stage) from the current
+/// branch, or refresh an existing PR. Title and body always come from the
+/// complete base...HEAD branch inventory.
+pub fn openForkPr(ctx: Context) !void {
     const branch = try git.currentBranch(ctx);
     defer ctx.allocator.free(branch);
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
 
-    const title = title_opt orelse branch;
     if (ctx.hasUpstream()) {
         // Idempotent: if the upstream PR for this branch already exists (retry/
         // resume), report it instead of erroring on `gh pr create`.
         if (try gh.prNumberOn(ctx, ctx.upstream_slug, branch)) |existing| {
-            out.print("devflow: PR #{d} already open on {s} for {s}\n", .{ existing, ctx.upstream_slug, branch });
+            try gh.updatePr(ctx, ctx.upstream_slug, existing, metadata.title, metadata.body);
+            out.print("devflow: refreshed PR #{d} on {s} from complete branch scope\n", .{ existing, ctx.upstream_slug });
             return;
         }
-        const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, title);
+        const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, metadata.title, metadata.body);
         out.print("devflow: opened PR #{d} on {s} ({s}:{s} -> {s})\n", .{ number, ctx.upstream_slug, ownerLogin(ctx.fork_slug), branch, ctx.default_branch });
         return;
     }
     if (try gh.prNumberForBranch(ctx, branch)) |existing| {
-        out.print("devflow: PR #{d} already open for {s}\n", .{ existing, branch });
+        try gh.updatePr(ctx, ctx.fork_slug, existing, metadata.title, metadata.body);
+        out.print("devflow: refreshed fork PR #{d} from complete branch scope\n", .{existing});
         return;
     }
-    const number = try gh.openForkPr(ctx, ctx.default_branch, branch, title);
+    const number = try gh.openForkPr(ctx, ctx.default_branch, branch, metadata.title, metadata.body);
     out.print("devflow: opened fork PR #{d} ({s} -> {s})\n", .{ number, branch, ctx.default_branch });
 }
 
@@ -226,17 +238,18 @@ pub fn sync(ctx: Context) !void {
     }
 }
 
-/// `open-upstream-pr [title]`: only valid after the fork PR has merged and the
+/// `open-upstream-pr`: only valid after the fork PR has merged and the
 /// fork default branch matches upstream-ready content. Refuses without upstream.
-pub fn openUpstreamPr(ctx: Context, title_opt: ?[]const u8) !void {
+pub fn openUpstreamPr(ctx: Context) !void {
     if (!ctx.hasUpstream()) {
         out.line("devflow: no `upstream` remote configured");
         return error.NoUpstream;
     }
     try git.fetchRemote(ctx, "origin");
 
-    const title = title_opt orelse ctx.default_branch;
-    const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, ctx.default_branch, title);
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
+    const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, ctx.default_branch, metadata.title, metadata.body);
     out.print("devflow: opened upstream PR #{d} ({s}:{s} -> {s}:{s})\n", .{
         number, ctx.fork_slug, ctx.default_branch, ctx.upstream_slug, ctx.default_branch,
     });

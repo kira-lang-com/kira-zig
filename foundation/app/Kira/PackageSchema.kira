@@ -60,11 +60,14 @@ struct Tests {
     let phase: TestPhase
 }
 
-// A package dependency, by version (registry) or path.
+// A package dependency, by registry version, local path, or Git source.
 struct Dependency {
     let name: String
     let version: String
     let path: String
+    let git: String
+    let rev: String
+    let tag: String
 }
 
 // C headers a native library exposes to autobind and compilation.
@@ -78,6 +81,7 @@ struct Headers {
 // is intentionally no `output` field.
 struct Autobind {
     let module: String
+    let headers: [String]
     let mode: AutobindMode
     let functions: [String]
     let structs: [String]
