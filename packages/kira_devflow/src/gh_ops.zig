@@ -199,23 +199,24 @@ pub fn completedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) 
     });
 }
 
+pub fn runIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                   slug,   "--commit",                                       head,
+        "--limit", "20",  "--json", "databaseId,createdAt", "--jq", "sort_by(.createdAt) | reverse | .[].databaseId",
+    });
+}
+
+pub fn workflowRunnerDetails(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/runs/{s}/jobs", .{ slug, run_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",                                                                                                                                 "api", "--paginate", endpoint, "--jq",
+        ".jobs[] | [.name, (.status // \"\"), (.runner_name // \"\"), (.runner_group_name // \"\"), ((.labels // []) | join(\",\"))] | @tsv",
+    });
+}
+
 pub fn rerunWorkflow(ctx: Context, slug: []const u8, run_id: []const u8) !void {
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "run", "rerun", run_id, "-R", slug });
-}
-
-pub fn setRepositoryVariable(ctx: Context, slug: []const u8, name: []const u8, value: []const u8) !void {
-    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "variable", "set", name, "-R", slug, "--body", value,
-    });
-}
-
-pub fn repositoryVariable(ctx: Context, slug: []const u8, name: []const u8) !?[]u8 {
-    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "variable", "get", name, "-R", slug, "--json", "value", "--jq", ".value",
-    });
-    defer result.deinit(ctx.allocator);
-    if (!result.ok()) return null;
-    return @as(?[]u8, try ctx.allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n")));
 }
 
 /// CodeRabbit may decline oversized PRs through a successful head check rather

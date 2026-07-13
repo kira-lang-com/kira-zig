@@ -16,7 +16,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ vars.KIRA_CI_RUNNER == 'blacksmith' && matrix.blacksmith_runner || matrix.github_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -25,20 +25,17 @@ jobs:
         include:
           - os: linux
             arch: x64
-            github_runner: ubuntu-24.04
-            blacksmith_runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-4vcpu-ubuntu-2404
             artifact_suffix: linux-x64
             archive_ext: tar.gz
           - os: macos
             arch: arm64
-            github_runner: macos-14
-            blacksmith_runner: blacksmith-6vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             artifact_suffix: macos-arm64
             archive_ext: tar.gz
           - os: windows
             arch: x64
-            github_runner: windows-2022
-            blacksmith_runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-4vcpu-windows-2025
             artifact_suffix: windows-x64
             archive_ext: zip
 
@@ -310,7 +307,7 @@ jobs:
   checksum:
     name: Generate checksums
     needs: build
-    runs-on: ${{ vars.KIRA_CI_RUNNER == 'blacksmith' && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: read
     steps:
@@ -336,7 +333,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [build, checksum]
-    runs-on: ${{ vars.KIRA_CI_RUNNER == 'blacksmith' && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:

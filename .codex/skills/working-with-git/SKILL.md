@@ -21,7 +21,6 @@ zig build devflow -- request-reviews N [--codex]
 zig build devflow -- wait-ci N                      # exact-head CI gate
 zig build devflow -- ci-failures N                  # exact-head failed job logs
 zig build devflow -- rerun-ci N                     # exact-head workflow rerun
-zig build devflow -- blacksmith [enable|disable|status]
 zig build devflow -- review-findings N [--codex]   # exact-head inline findings
 zig build devflow -- wait-reviews N [--codex]      # blocks until resolved
 zig build devflow -- land N              # squash-merge, mirror fork, resync local

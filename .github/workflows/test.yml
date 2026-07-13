@@ -13,7 +13,7 @@ permissions:
 jobs:
   test:
     name: Test on ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ vars.KIRA_CI_RUNNER == 'blacksmith' && matrix.blacksmith_runner || matrix.github_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -23,16 +23,13 @@ jobs:
         include:
           - os: linux
             arch: x64
-            github_runner: ubuntu-24.04
-            blacksmith_runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-4vcpu-ubuntu-2404
           - os: macos
             arch: arm64
-            github_runner: macos-14
-            blacksmith_runner: blacksmith-6vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
           - os: windows
             arch: x64
-            github_runner: windows-2022
-            blacksmith_runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-4vcpu-windows-2025
 
     steps:
       - name: Check out Kira
@@ -230,3 +227,18 @@ jobs:
       - name: Run test suite
         run: |
           zig build test
+
+      - name: Run Kira tests-kik harness (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          KIRA_TEST_PARITY: "1"
+        run: |
+          ./zig-out/bin/kira test tests-kik/harness
+
+      - name: Run Kira tests-kik harness (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_TEST_PARITY: "1"
+        run: |
+          .\zig-out\bin\kira.exe test tests-kik/harness

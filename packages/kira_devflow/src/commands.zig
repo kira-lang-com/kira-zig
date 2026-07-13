@@ -130,6 +130,33 @@ pub fn ciFailures(ctx: Context, number: u32) !void {
     }
 }
 
+/// `ci-runners <pr>`: report the actual runner assigned to every job attached
+/// to the PR's exact current head, including the requested runner labels.
+pub fn ciRunners(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.runIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no workflow runs on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+
+    out.print("devflow: CI runners on #{d} exact head {s}\n", .{ number, head });
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        const details = try gh.workflowRunnerDetails(ctx, slug, run_id);
+        defer ctx.allocator.free(details);
+        if (details.len == 0) {
+            out.print("  run {s}: jobs have not been created yet\n", .{run_id});
+        } else {
+            out.print("  run {s}\n{s}\n", .{ run_id, details });
+        }
+    }
+}
+
 /// `rerun-ci <pr>`: rerun every completed workflow attached to the PR's exact
 /// head. Useful after changing repository runner-provider configuration.
 pub fn rerunCi(ctx: Context, number: u32) !void {
@@ -148,31 +175,6 @@ pub fn rerunCi(ctx: Context, number: u32) !void {
         try gh.rerunWorkflow(ctx, slug, run_id);
         out.print("devflow: reran workflow {s} on #{d} exact head {s}\n", .{ run_id, number, head });
     }
-}
-
-/// `blacksmith <enable|disable|status>`: manage the repository variable that
-/// selects runner labels across every workflow. Enabling assumes the
-/// Blacksmith GitHub app has already been granted access to this repository.
-pub fn blacksmith(ctx: Context, action: []const u8) !void {
-    const slug = prSlug(ctx);
-    if (std.mem.eql(u8, action, "enable")) {
-        try gh.setRepositoryVariable(ctx, slug, "KIRA_CI_RUNNER", "blacksmith");
-        out.print("devflow: Blacksmith runners enabled on {s}\n", .{slug});
-        return;
-    }
-    if (std.mem.eql(u8, action, "disable")) {
-        try gh.setRepositoryVariable(ctx, slug, "KIRA_CI_RUNNER", "github");
-        out.print("devflow: GitHub-hosted runners enabled on {s}\n", .{slug});
-        return;
-    }
-    if (std.mem.eql(u8, action, "status")) {
-        const value = try gh.repositoryVariable(ctx, slug, "KIRA_CI_RUNNER");
-        defer if (value) |owned| ctx.allocator.free(owned);
-        out.print("devflow: CI runner provider on {s}: {s}\n", .{ slug, value orelse "github (default)" });
-        return;
-    }
-    out.line("devflow: blacksmith requires enable, disable, or status");
-    return error.InvalidBlacksmithAction;
 }
 
 /// Single-stage: the PR lives on upstream when there is an upstream remote
