@@ -67,6 +67,20 @@ pub fn combineObjects(
     selector: ?native.TargetSelector,
 ) !void {
     try ensureParentDir(output_object_path);
+    if (combineObjectsAsArchive(selector)) {
+        // COFF/MSVC has no GNU-style relocatable `-r` link. Passing `-r` to
+        // clang on Windows reaches link.exe as `/r`, which is ignored and then
+        // accidentally attempts an executable link. A COFF archive preserves
+        // the per-CGU objects as one cacheable artifact and is accepted as an
+        // ordinary input by the final clang/link.exe invocation.
+        const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+        const ar_path = try llvm_toolchain.llvmArPath(allocator);
+        var archive_argv = std.array_list.Managed([]const u8).init(allocator);
+        try archive_argv.appendSlice(&.{ ar_path, "rcs", output_object_path });
+        for (object_paths) |path| try archive_argv.append(path);
+        try runCommand(allocator, archive_argv.items);
+        return;
+    }
     const driver_path = try compilerDriverPathForSelector(allocator, selector);
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
@@ -302,6 +316,10 @@ fn isWindowsTarget(selector: ?native.TargetSelector) bool {
     return std.mem.eql(u8, value.operating_system, "windows");
 }
 
+fn combineObjectsAsArchive(selector: ?native.TargetSelector) bool {
+    return isWindowsTarget(selector);
+}
+
 fn isLinuxTarget(selector: ?native.TargetSelector) bool {
     const value = selector orelse return builtin.os.tag == .linux;
     return std.mem.eql(u8, value.operating_system, "linux");
@@ -461,4 +479,17 @@ test "linux executable links explicitly disable pie" {
         .abi = "msvc",
     });
     try std.testing.expectEqual(@as(usize, 0), windows_args.items.len);
+}
+
+test "windows object combination uses the coff archive path" {
+    try std.testing.expect(combineObjectsAsArchive(.{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "msvc",
+    }));
+    try std.testing.expect(!combineObjectsAsArchive(.{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    }));
 }

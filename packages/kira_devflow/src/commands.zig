@@ -163,7 +163,7 @@ fn failureRelevant(line: []const u8) bool {
     const needles = [_][]const u8{
         "##[error]",                        " error:",                     "error[",   "failed", "FAIL ",             "ExternalCommandFailed",
         "undefined reference",              "linker",                      "clang:",   "lld:",   "kira llvm backend", "/usr/bin/x86_64-linux-gnu-ld:",
-        "Process completed with exit code", "A connection attempt failed", "dial tcp",
+        "Process completed with exit code", "A connection attempt failed", "dial tcp", "LNK",
     };
     for (needles) |needle| if (std.mem.indexOf(u8, line, needle) != null) return true;
     return false;
