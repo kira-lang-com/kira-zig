@@ -34,10 +34,6 @@ pub const OpCode = enum(u8) {
     c_string_to_string,
     array_len,
     string_len,
-    string_from_scalar,
-    string_char_at,
-    string_substring,
-    string_index_of,
     array_get,
     array_set,
     array_append,
@@ -93,6 +89,14 @@ pub const OpCode = enum(u8) {
     // Park the current task for at least N milliseconds (blocking sleep
     // outside a suspendable body). Carried by KBCC.
     task_sleep,
+    // String construction and indexing operations. These must remain appended
+    // after the complete pre-existing serialized range: inserting them beside
+    // `string_len` would renumber `array_get` and every later persisted opcode,
+    // corrupting cached KBCC/KBCD modules.
+    string_from_scalar,
+    string_char_at,
+    string_substring,
+    string_index_of,
     // --- VM-internal fused instructions ------------------------------------
     // Produced exclusively by the VM's decode pass (vm_prepare.zig) inside its
     // private per-function code copies. They never appear in compiler output
@@ -145,11 +149,6 @@ pub const Instruction = union(OpCode) {
     c_string_to_string: struct { dst: u32, src: u32 },
     array_len: struct { dst: u32, array: u32 },
     string_len: struct { dst: u32, string: u32 },
-    // Scalar -> String conversion (`String(x)`); `source` picks the byte format.
-    string_from_scalar: struct { dst: u32, src: u32, source: StringFromScalarSource },
-    string_char_at: struct { dst: u32, string: u32, index: u32 },
-    string_substring: struct { dst: u32, string: u32, start: u32, end: u32 },
-    string_index_of: struct { dst: u32, string: u32, needle: u32 },
     // `borrow=true` marks an element read whose result is consumed only as a
     // non-escaping `borrow` argument to an immediately-following call (set by the
     // IR lowering, guarded so the array cannot be mutated/freed during that call).
@@ -198,6 +197,11 @@ pub const Instruction = union(OpCode) {
     frame_set: struct { frame: u32, slot: u32, src: u32, ty: TypeRef = .{ .kind = .void } },
     task_is_complete: struct { dst: u32, task: u32 },
     task_sleep: struct { milliseconds: u32 },
+    // Scalar -> String conversion (`String(x)`); `source` picks the byte format.
+    string_from_scalar: struct { dst: u32, src: u32, source: StringFromScalarSource },
+    string_char_at: struct { dst: u32, string: u32, index: u32 },
+    string_substring: struct { dst: u32, string: u32, start: u32, end: u32 },
+    string_index_of: struct { dst: u32, string: u32, needle: u32 },
     // VM-internal fused forms; see the OpCode comment above.
     // compare(dst, lhs, rhs); branch(dst, ...) where dst is pattern-private.
     fused_compare_branch: struct { lhs: u32, rhs: u32, op: CompareOp, true_target: u32, false_target: u32 },
@@ -267,6 +271,13 @@ test "isFused classifies every opcode by its fused_ naming" {
             isFused(op),
         );
     }
+}
+
+test "persisted opcode tags remain stable when string operations are added" {
+    try std.testing.expectEqual(@as(u8, 29), @intFromEnum(OpCode.array_get));
+    try std.testing.expectEqual(@as(u8, 46), @intFromEnum(OpCode.ret));
+    try std.testing.expectEqual(@as(u8, 59), @intFromEnum(OpCode.task_sleep));
+    try std.testing.expectEqual(@as(u8, 60), @intFromEnum(OpCode.string_from_scalar));
 }
 
 pub const ArithKind = enum(u8) {

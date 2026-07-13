@@ -17,7 +17,7 @@ pub fn compileStaticLibrary(allocator: std.mem.Allocator, library: *native.Resol
     const staged_artifact_path = try stagedArtifactPath(allocator, library.artifact_path, build_suffix);
     defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, staged_artifact_path) catch {};
 
-    try compileSourcesToObjects(allocator, compiler_path, is_emscripten, library.*, build_suffix, &object_paths);
+    try compileSourcesToObjects(allocator, compiler_path, is_emscripten, false, library.*, build_suffix, &object_paths);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.appendSlice(&.{ archiver_path, "rcs", staged_artifact_path });
@@ -40,7 +40,7 @@ pub fn compileSharedLibrary(allocator: std.mem.Allocator, library: *native.Resol
     const staged_artifact_path = try stagedArtifactPath(allocator, library.artifact_path, build_suffix);
     defer std.Io.Dir.cwd().deleteFile(std.Options.debug_io, staged_artifact_path) catch {};
 
-    try compileSourcesToObjects(allocator, compiler_path, is_emscripten, library.*, build_suffix, &object_paths);
+    try compileSourcesToObjects(allocator, compiler_path, is_emscripten, !isWindowsOperatingSystem(library.target.operating_system), library.*, build_suffix, &object_paths);
 
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(compiler_path);
@@ -82,6 +82,7 @@ fn compileSourcesToObjects(
     allocator: std.mem.Allocator,
     compiler_path: []const u8,
     is_emscripten: bool,
+    position_independent: bool,
     library: native.ResolvedNativeLibrary,
     build_suffix: u64,
     object_paths: *std.array_list.Managed([]const u8),
@@ -91,7 +92,7 @@ fn compileSourcesToObjects(
         try object_paths.append(object_path);
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
-        try appendCompileCommand(&argv, compiler_path, is_emscripten, library, source_path, object_path);
+        try appendCompileCommand(&argv, compiler_path, is_emscripten, position_independent, library, source_path, object_path);
         for (library.headers.include_dirs) |include_dir| try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         for (library.build.include_dirs) |include_dir| try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         for (library.link.include_dirs) |include_dir| try argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
@@ -107,11 +108,13 @@ fn appendCompileCommand(
     argv: *std.array_list.Managed([]const u8),
     compiler_path: []const u8,
     is_emscripten: bool,
+    position_independent: bool,
     library: native.ResolvedNativeLibrary,
     source_path: []const u8,
     object_path: []const u8,
 ) !void {
     try argv.appendSlice(&.{ compiler_path, "-c", "-O3" });
+    if (position_independent) try argv.append("-fPIC");
     if (!is_emscripten) {
         try llvm_backend.clangDriver.appendClangDriverArgs(argv.allocator, argv, library.target);
         if (shouldCompileAsObjectiveC(library.target, library, source_path)) try argv.appendSlice(&.{ "-x", "objective-c" });
@@ -141,6 +144,33 @@ fn isAppleOperatingSystem(operating_system: []const u8) bool {
         std.mem.eql(u8, operating_system, "ios") or
         std.mem.eql(u8, operating_system, "tvos") or
         std.mem.eql(u8, operating_system, "xros");
+}
+
+fn isWindowsOperatingSystem(operating_system: []const u8) bool {
+    return std.mem.eql(u8, operating_system, "windows");
+}
+
+test "shared-library object compilation uses PIC outside Windows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    defer argv.deinit();
+    const library = native.ResolvedNativeLibrary{
+        .name = "demo",
+        .link_mode = .dynamic,
+        .abi = .c,
+        .artifact_path = "libdemo.so",
+        .target = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+        .headers = .{},
+        .link = .{},
+    };
+    try appendCompileCommand(&argv, "clang", false, true, library, "demo.c", "demo.o");
+    var found_pic = false;
+    for (argv.items) |arg| if (std.mem.eql(u8, arg, "-fPIC")) {
+        found_pic = true;
+    };
+    try std.testing.expect(found_pic);
 }
 
 fn sourceObjectPath(allocator: std.mem.Allocator, artifact_path: []const u8, index: usize, build_suffix: u64) ![]const u8 {
