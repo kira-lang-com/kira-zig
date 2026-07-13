@@ -112,10 +112,22 @@ test "migration rebases native library paths from TOML directory to project root
         .targets = &.{},
     };
     const rebased = try rebaseNativeLibrary(allocator, "NativeLibs", library);
-    try std.testing.expectEqualStrings("NativeLibs/include/demo.h", rebased.headers.entrypoint.?);
-    try std.testing.expectEqualStrings("NativeLibs/include", rebased.headers.include_dirs[0]);
-    try std.testing.expectEqualStrings("NativeLibs/src/demo.c", rebased.build.sources[0]);
-    try std.testing.expectEqualStrings("NativeLibs/include/demo.h", rebased.autobinding.?.headers[0]);
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ "NativeLibs", "include", "demo.h" }),
+        rebased.headers.entrypoint.?,
+    );
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ "NativeLibs", "include" }),
+        rebased.headers.include_dirs[0],
+    );
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ "NativeLibs", "src", "demo.c" }),
+        rebased.build.sources[0],
+    );
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ "NativeLibs", "include", "demo.h" }),
+        rebased.autobinding.?.headers[0],
+    );
 }
 
 fn resolveTomlPath(allocator: std.mem.Allocator, input: []const u8) !?[]const u8 {
