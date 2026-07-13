@@ -213,7 +213,7 @@ fn runOneBackend(
     }
 
     switch (backend) {
-        .vm => return try runVm(allocator, &system, output_path, result, backendLabel(backend)),
+        .vm => return try runVm(allocator, &system, output_path, result, root_path, backendLabel(backend)),
         .hybrid => return try runHybrid(allocator, output_path, root_path, backendLabel(backend)),
         .llvm_native => return try runLlvm(allocator, result, root_path, check_leaks, backendLabel(backend), writer),
         .wasm32_emscripten => return .failed,
@@ -225,6 +225,7 @@ fn runVm(
     system: *build.BuildSystem,
     output_path: []const u8,
     result: build.BuildArtifactOutcome,
+    root_path: ?[]const u8,
     label: []const u8,
 ) !BackendOutcome {
     const module = try system.readBytecode(output_path);
@@ -233,6 +234,9 @@ fn runVm(
     var ffi_dispatcher = vm_runtime.FfiDispatcher.init(std.heap.smp_allocator, &module);
     defer ffi_dispatcher.deinit();
     for (result.native_libraries) |library| try ffi_dispatcher.registerLibrary(library.name, library.artifact_path);
+
+    var restore = try ScopedCwd.enter(root_path);
+    defer restore.exit();
 
     var captured: std.Io.Writer.Allocating = .init(allocator);
     try vm.runMainWithHooks(&module, &captured.writer, .{

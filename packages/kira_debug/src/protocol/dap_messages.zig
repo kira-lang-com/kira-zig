@@ -28,6 +28,7 @@ pub const Capabilities = struct {
 pub const SourceBreakpointInput = struct {
     line: u32,
     column: ?u32 = null,
+    condition: ?[]const u8 = null,
 };
 
 /// The handler's verdict on one requested breakpoint, returned from
@@ -124,7 +125,11 @@ pub fn extractBreakpointLines(
         for (bps.items) |item| {
             if (item != .object) continue;
             const line = getU32(item, "line") orelse continue;
-            try out.append(arena, .{ .line = line, .column = getU32(item, "column") });
+            try out.append(arena, .{
+                .line = line,
+                .column = getU32(item, "column"),
+                .condition = getString(item, "condition"),
+            });
         }
     } else if (getArray(arguments, "lines")) |lines| {
         for (lines.items) |item| {
@@ -170,7 +175,7 @@ test "extractBreakpointLines honors breakpoints[] then lines[]" {
     const arena = arena_state.allocator();
 
     const a =
-        \\{"source":{"path":"/x/main.kira"},"breakpoints":[{"line":3},{"line":9,"column":2}]}
+        \\{"source":{"path":"/x/main.kira"},"breakpoints":[{"line":3},{"line":9,"column":2,"condition":"n > 0"}]}
     ;
     var pa = try std.json.parseFromSlice(std.json.Value, alloc, a, .{});
     defer pa.deinit();
@@ -179,6 +184,7 @@ test "extractBreakpointLines honors breakpoints[] then lines[]" {
     try std.testing.expectEqual(@as(u32, 3), lines_a[0].line);
     try std.testing.expectEqual(@as(u32, 9), lines_a[1].line);
     try std.testing.expectEqual(@as(?u32, 2), lines_a[1].column);
+    try std.testing.expectEqualStrings("n > 0", lines_a[1].condition.?);
     try std.testing.expectEqualStrings("/x/main.kira", extractSourcePath(pa.value).?);
 
     const b =

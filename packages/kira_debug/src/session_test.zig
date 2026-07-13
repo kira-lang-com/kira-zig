@@ -241,10 +241,11 @@ test "DapHandler delegates setBreakpoints, initialize, and continue to the sessi
     const caps = h.initialize();
     try testing.expect(caps.supportsConditionalBreakpoints);
 
-    const inputs = [_]msg.SourceBreakpointInput{.{ .line = 10 }};
+    const inputs = [_]msg.SourceBreakpointInput{.{ .line = 10, .condition = "n > 0" }};
     const verified = try h.setBreakpoints(a, "main.kira", inputs[0..]);
     try testing.expectEqual(@as(usize, 1), verified.len);
     try testing.expect(verified[0].verified);
+    try testing.expectEqualStrings("n > 0", session.table.get(verified[0].id).?.condition.?);
 
     // continue runs the target; the breakpoint's handle resolves to the same id.
     const stop = try h.cont();

@@ -77,6 +77,13 @@ fn rebaseNativeLibrary(
     rebased.headers.include_dirs = try rebasePaths(allocator, base, library.headers.include_dirs);
     rebased.build.sources = try rebasePaths(allocator, base, library.build.sources);
     rebased.build.include_dirs = try rebasePaths(allocator, base, library.build.include_dirs);
+    var targets = std.array_list.Managed(@import("kira_native_lib_definition").TargetSpec).init(allocator);
+    for (library.targets) |target| {
+        var rebased_target = target;
+        rebased_target.link.include_dirs = try rebasePaths(allocator, base, target.link.include_dirs);
+        try targets.append(rebased_target);
+    }
+    rebased.targets = try targets.toOwnedSlice();
     if (library.autobinding) |autobinding| {
         var rebased_autobinding = autobinding;
         rebased_autobinding.headers = try rebasePaths(allocator, base, autobinding.headers);
@@ -109,7 +116,10 @@ test "migration rebases native library paths from TOML directory to project root
         .headers = .{ .entrypoint = "include/demo.h", .include_dirs = &.{"include"} },
         .autobinding = .{ .module_name = "demo", .output_path = "generated/demo.kira", .headers = &.{"include/demo.h"} },
         .build = .{ .sources = &.{"src/demo.c"}, .include_dirs = &.{"include"} },
-        .targets = &.{},
+        .targets = &.{.{
+            .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+            .link = .{ .include_dirs = &.{"target/include"}, .system_libs = &.{"X11"} },
+        }},
     };
     const rebased = try rebaseNativeLibrary(allocator, "NativeLibs", library);
     try std.testing.expectEqualStrings(
@@ -128,6 +138,11 @@ test "migration rebases native library paths from TOML directory to project root
         try std.fs.path.join(allocator, &.{ "NativeLibs", "include", "demo.h" }),
         rebased.autobinding.?.headers[0],
     );
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ "NativeLibs", "target", "include" }),
+        rebased.targets[0].link.include_dirs[0],
+    );
+    try std.testing.expectEqualStrings("X11", rebased.targets[0].link.system_libs[0]);
 }
 
 fn resolveTomlPath(allocator: std.mem.Allocator, input: []const u8) !?[]const u8 {

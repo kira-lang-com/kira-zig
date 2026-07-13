@@ -332,6 +332,7 @@ fn parseNativeLibrary(loader: *Loader, value: *Expr) !?native.NativeLibrarySpec 
     var headers = native.HeaderSpec{};
     var sources: []const []const u8 = &.{};
     var autobinding: ?native.AutobindingSpec = null;
+    var targets: []const native.TargetSpec = &.{};
 
     for (fields.fields) |f| {
         if (std.mem.eql(u8, f.name, "name")) {
@@ -349,6 +350,8 @@ fn parseNativeLibrary(loader: *Loader, value: *Expr) !?native.NativeLibrarySpec 
             sources = try stringArray(loader, f.value);
         } else if (std.mem.eql(u8, f.name, "autobind") or std.mem.eql(u8, f.name, "autobinding")) {
             autobinding = try parseAutobind(loader, f.value);
+        } else if (std.mem.eql(u8, f.name, "targets")) {
+            targets = try parseNativeTargets(loader, f.value);
         } else {
             try loader.err(f.span, "KMAN004", "unknown NativeLibrary field", "This field is not part of the NativeLibrary schema.");
         }
@@ -366,8 +369,48 @@ fn parseNativeLibrary(loader: *Loader, value: *Expr) !?native.NativeLibrarySpec 
         .headers = headers,
         .autobinding = autobinding,
         .build = .{ .sources = sources, .include_dirs = headers.include_dirs, .defines = headers.defines },
-        .targets = &.{},
+        .targets = targets,
     };
+}
+
+fn parseNativeTargets(loader: *Loader, value: *Expr) ![]const native.TargetSpec {
+    const elements = (try arrayElements(loader, value)) orelse return &.{};
+    var targets = std.array_list.Managed(native.TargetSpec).init(loader.allocator);
+    for (elements) |element| {
+        const fields = (try structValue(loader, element, "NativeTarget")) orelse continue;
+        var triple: ?[]const u8 = null;
+        var compiler_flags: []const []const u8 = &.{};
+        var link = native.LinkExtras{};
+        for (fields.fields) |field| {
+            if (std.mem.eql(u8, field.name, "triple")) {
+                triple = try stringValue(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "compilerFlags") or std.mem.eql(u8, field.name, "compiler_flags")) {
+                compiler_flags = try stringArray(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "includeDirs") or std.mem.eql(u8, field.name, "include_dirs")) {
+                link.include_dirs = try stringArray(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "defines")) {
+                link.defines = try stringArray(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "frameworks")) {
+                link.frameworks = try stringArray(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "systemLibs") or std.mem.eql(u8, field.name, "system_libs")) {
+                link.system_libs = try stringArray(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "linkerFlags") or std.mem.eql(u8, field.name, "linker_flags")) {
+                link.linker_flags = try stringArray(loader, field.value);
+            } else {
+                try loader.err(field.span, "KMAN004", "unknown NativeTarget field", "This field is not part of the NativeTarget schema.");
+            }
+        }
+        const target_triple = triple orelse {
+            try loader.err(exprSpan(element), "KMAN009", "NativeTarget requires triple", "Every NativeTarget must declare a target triple.");
+            continue;
+        };
+        const selector = native.TargetSelector.parse(loader.allocator, target_triple) catch {
+            try loader.err(exprSpan(element), "KMAN009", "invalid NativeTarget triple", "Expected an architecture-operating_system-abi target triple.");
+            continue;
+        };
+        try targets.append(.{ .selector = selector, .compiler_flags = compiler_flags, .link = link });
+    }
+    return targets.toOwnedSlice();
 }
 
 fn parseHeaders(loader: *Loader, value: *Expr) !native.HeaderSpec {

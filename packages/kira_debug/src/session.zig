@@ -391,7 +391,7 @@ fn dapSetBreakpoints(
     for (breakpoints, 0..) |bp, i| {
         const id = self.setBreakpoint(
             .{ .line = .{ .file = source_path, .line = bp.line } },
-            null,
+            bp.condition,
         ) catch {
             out[i] = .{ .id = 0, .verified = false, .line = bp.line, .message = "could not resolve breakpoint location" };
             continue;

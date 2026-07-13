@@ -36,7 +36,7 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
 
     if (manifest.dependencies.len > 0) {
         try writer.writeAll("    let dependencies = [\n");
-        for (manifest.dependencies) |dep| {
+        for (manifest.dependencies, 0..) |dep, index| {
             try writer.print("        Dependency {{ name: \"{s}\"", .{dep.name});
             switch (dep.source) {
                 .registry => |r| try writer.print(", version: \"{s}\"", .{r.version}),
@@ -47,7 +47,7 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
                     if (g.tag) |tag| try writer.print(", tag: \"{s}\"", .{tag});
                 },
             }
-            try writer.writeAll(" }\n");
+            try writer.writeAll(if (index + 1 == manifest.dependencies.len) " }\n" else " },\n");
         }
         try writer.writeAll("    ]\n");
     }
@@ -78,7 +78,46 @@ fn writeNativeLibrary(writer: anytype, lib: native.NativeLibrarySpec) !void {
     if (lib.autobinding) |auto| {
         try writeAutobind(writer, auto);
     }
+    if (lib.targets.len > 0) {
+        try writeTargets(writer, lib.targets);
+    }
     try writer.writeAll("        }");
+}
+
+fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
+    try writer.writeAll("            targets: [\n");
+    for (targets, 0..) |target, index| {
+        try writer.print(
+            "                NativeTarget {{ triple: \"{s}-{s}-{s}\"",
+            .{ target.selector.architecture, target.selector.operating_system, target.selector.abi },
+        );
+        if (target.compiler_flags.len > 0) {
+            try writer.writeAll(", compilerFlags: ");
+            try writeStringArray(writer, target.compiler_flags);
+        }
+        if (target.link.include_dirs.len > 0) {
+            try writer.writeAll(", includeDirs: ");
+            try writeStringArray(writer, target.link.include_dirs);
+        }
+        if (target.link.defines.len > 0) {
+            try writer.writeAll(", defines: ");
+            try writeStringArray(writer, target.link.defines);
+        }
+        if (target.link.frameworks.len > 0) {
+            try writer.writeAll(", frameworks: ");
+            try writeStringArray(writer, target.link.frameworks);
+        }
+        if (target.link.system_libs.len > 0) {
+            try writer.writeAll(", systemLibs: ");
+            try writeStringArray(writer, target.link.system_libs);
+        }
+        if (target.link.linker_flags.len > 0) {
+            try writer.writeAll(", linkerFlags: ");
+            try writeStringArray(writer, target.link.linker_flags);
+        }
+        try writer.writeAll(if (index + 1 == targets.len) " }\n" else " },\n");
+    }
+    try writer.writeAll("            ],\n");
 }
 
 fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
@@ -200,6 +239,17 @@ test "writes a round-trippable package.kira" {
             .{ .name = "Foundation", .source = .{ .registry = .{ .version = "0.1.0" } } },
             .{ .name = "Remote", .source = .{ .git = .{ .url = "https://example.com/remote.git", .rev = "abc123" } } },
         },
+        .inline_native_libraries = &.{.{
+            .name = "demo",
+            .link_mode = .static,
+            .abi = .c,
+            .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+            .targets = &.{.{
+                .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+                .compiler_flags = &.{"-pthread"},
+                .link = .{ .frameworks = &.{"AppKit"}, .system_libs = &.{"X11"} },
+            }},
+        }},
     };
 
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -211,6 +261,7 @@ test "writes a round-trippable package.kira" {
     try std.testing.expect(std.mem.indexOf(u8, text, "executionMode: Backend.Hybrid") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Foundation\", version: \"0.1.0\" }") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Remote\", git: \"https://example.com/remote.git\", rev: \"abc123\" }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "NativeTarget { triple: \"x86_64-linux-gnu\"") != null);
 
     // Reload it through the declaration loader for a true round trip.
     const loader = @import("declaration_loader.zig");
@@ -222,4 +273,9 @@ test "writes a round-trippable package.kira" {
     const git_dep = result.manifest.dependencies[1].source.git;
     try std.testing.expectEqualStrings("https://example.com/remote.git", git_dep.url);
     try std.testing.expectEqualStrings("abc123", git_dep.rev.?);
+    const target = result.manifest.inline_native_libraries[0].targets[0];
+    try std.testing.expectEqualStrings("linux", target.selector.operating_system);
+    try std.testing.expectEqualStrings("-pthread", target.compiler_flags[0]);
+    try std.testing.expectEqualStrings("AppKit", target.link.frameworks[0]);
+    try std.testing.expectEqualStrings("X11", target.link.system_libs[0]);
 }

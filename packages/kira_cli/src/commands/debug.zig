@@ -145,8 +145,11 @@ fn debugVm(
 
     // The VM debug target owns stepping/breakpoint control over the loaded module
     // and VM. It exposes the shared `DebugTarget` vtable the session drives. The
-    // debuggee's program output goes to the same stdout the REPL renders to.
-    var vm_target = kira_debug.VmTarget.init(runtime_allocator, &vm, &module, stdout, .{
+    // DAP stdout is a framed protocol transport, so raw debuggee bytes must not
+    // share it. Until DAP output events are supported, route program output to
+    // stderr; the interactive REPL continues to render it on stdout.
+    const program_output = if (parsed.dap) stderr else stdout;
+    var vm_target = kira_debug.VmTarget.init(runtime_allocator, &vm, &module, program_output, .{
         .context = &ffi_dispatcher,
         .call_native = vm_runtime.FfiDispatcher.hook,
     });
@@ -174,8 +177,18 @@ fn debugNative(
 
     // The native target duplicates argv internally; argv[0] is the executable it
     // launches and reads DWARF/symbols from. The debuggee inherits this process's
-    // cwd, which the build already anchored under the project root.
-    _ = project_root;
+    // cwd. Keep the project root active for the full session so programs that
+    // open relative assets behave exactly as they do under `kira run`.
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+    defer {
+        if (project_root) |_| std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
+    }
+    if (project_root) |root| {
+        var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, root, .{});
+        defer dir.close(std.Options.debug_io);
+        try std.process.setCurrentDir(std.Options.debug_io, dir);
+    }
     const argv = [_][]const u8{executable.path};
     // The debugger shells out to `llvm-dwarfdump`/`llvm-nm` to resolve source
     // lines and symbols. The managed LLVM toolchain (what the build just used)
