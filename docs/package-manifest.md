@@ -34,7 +34,10 @@ Package LiquidGlass {
                 defines: ["SOKOL_DUMMY_BACKEND"]
             },
             sources: ["third_party/sokol/sokol_gfx_impl.c"],
-            autobind: Autobind { module: "sokol_gfx", functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] }
+            autobind: Autobind { module: "sokol_gfx", functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-linux-gnu", systemLibs: ["X11"] }
+            ]
         }
     ]
 }
@@ -73,6 +76,10 @@ Enums: `Backend { Vm Llvm Hybrid Wasm }`, `BuildTarget { Host Wasm }`,
 `TestPhase { Check Run Both }`, `LinkMode { Static Dynamic }`,
 `AutobindMode { Listed AllPublic }`.
 
+Target-specific native compile/link settings use `nativeTargets` rather than
+the reserved Kira keyword `targets`; each `NativeTarget` identifies a full
+`<arch>-<os>-<abi>` triple.
+
 ### `NativeLibrary`
 
 ```kira
@@ -86,7 +93,7 @@ NativeLibrary {
 ```
 
 Native libraries are compiled **from source** for the active target into
-`.kira-build/native/<arch>-<os>/lib<name>.a` — there are no per-target
+`.kira-build/native/<arch>-<os>-<abi>/lib<name>.a` — there are no per-target
 `static_lib` paths in `package.kira`. All paths are resolved relative to the
 package root.
 
@@ -130,6 +137,9 @@ beside it. `kira.toml` is left in place (deleting it is your choice; because
 `package.kira` wins, tests immediately load from the new manifest). Per-target
 `static_lib` paths and the autobind `output` field are dropped — build-from-
 source and the `app/bindings/` law replace them.
+Legacy package names that are not Kira identifiers are normalized for the
+declaration name (for example, `backend-policy-app` becomes
+`backend_policy_app`).
 
 > After migrating a native library, review the inlined `headers`/`sources`
 > paths: they are copied verbatim from the `NativeLibs/*.toml` (whose paths were
@@ -162,5 +172,5 @@ unusable; warnings do not.
 Loader diagnostics are manifest-level (they describe `package.kira` itself),
 not source-level Kira diagnostics, so they cannot be expressed as Foundation
 `FailTest` cases (which assert diagnostics for a quoted Kira **source**
-snippet). They are covered by Zig unit tests in
-`packages/kira_manifest/src/declaration_loader.zig`.
+snippet). They are covered by the manifest loader and declaration-writer unit
+tests.

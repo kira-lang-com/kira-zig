@@ -140,6 +140,7 @@ test "initialize dispatch calls the handler and emits capabilities + initialized
     try std.testing.expect(std.mem.indexOf(u8, written, "\"command\":\"initialize\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"event\":\"initialized\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "supportsConfigurationDoneRequest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"supportsTerminateRequest\":false") != null);
 }
 
 test "setBreakpoints dispatch produces the expected handler call and verified body" {
@@ -187,6 +188,28 @@ test "continue dispatch emits continued then a breakpoint stopped event" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"event\":\"continued\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"reason\":\"breakpoint\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"hitBreakpointIds\":[1]") != null);
+}
+
+test "configurationDone starts the target and emits its first stop" {
+    const alloc = std.testing.allocator;
+    const framed = try frame(alloc,
+        \\{"seq":10,"type":"request","command":"configurationDone"}
+    );
+    defer alloc.free(framed);
+
+    var reader_state = std.Io.Reader.fixed(framed);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+
+    var rec: RecordingHandler = .{};
+    var server = Server.init(alloc, &reader_state, &out.writer, rec.handler());
+    try std.testing.expect(try server.serveOne());
+
+    try std.testing.expectEqual(@as(u32, 1), rec.cont_calls);
+    const written = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"command\":\"configurationDone\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"event\":\"stopped\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"reason\":\"breakpoint\"") != null);
 }
 
 test "next dispatch steps over and emits a step stopped event" {
@@ -250,13 +273,13 @@ test "scopes, variables and evaluate each serialize their bodies" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { req: []const u8, needle: []const u8 }{
         .{ .req =
-            \\{"seq":6,"type":"request","command":"scopes","arguments":{"frameId":0}}
+        \\{"seq":6,"type":"request","command":"scopes","arguments":{"frameId":0}}
         , .needle = "\"variablesReference\":1000" },
         .{ .req =
-            \\{"seq":7,"type":"request","command":"variables","arguments":{"variablesReference":1000}}
+        \\{"seq":7,"type":"request","command":"variables","arguments":{"variablesReference":1000}}
         , .needle = "\"type\":\"Int\"" },
         .{ .req =
-            \\{"seq":8,"type":"request","command":"evaluate","arguments":{"expression":"x + 1","frameId":0}}
+        \\{"seq":8,"type":"request","command":"evaluate","arguments":{"expression":"x + 1","frameId":0}}
         , .needle = "eval(x + 1)" },
     };
     for (cases) |c| {

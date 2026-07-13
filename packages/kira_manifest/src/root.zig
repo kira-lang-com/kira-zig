@@ -42,4 +42,5 @@ pub const writeLockFile = @import("parser.zig").writeLockFile;
 
 test {
     _ = @import("declaration_loader_tests.zig");
+    _ = @import("declaration_writer.zig");
 }

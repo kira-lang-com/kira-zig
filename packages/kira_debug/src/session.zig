@@ -362,7 +362,7 @@ fn fromCtx(ptr: *anyopaque) *DebugSession {
 
 fn dapInitialize(ctx: *anyopaque) msg.Capabilities {
     _ = ctx;
-    // We honor conditional breakpoints and a terminate request; everything else in
+    // We honor conditional breakpoints; everything else in
     // the subset stays at its conservative default so a client never sends a
     // request the session would reject.
     return .{ .supportsConditionalBreakpoints = true };

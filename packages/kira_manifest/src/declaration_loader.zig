@@ -350,7 +350,7 @@ fn parseNativeLibrary(loader: *Loader, value: *Expr) !?native.NativeLibrarySpec 
             sources = try stringArray(loader, f.value);
         } else if (std.mem.eql(u8, f.name, "autobind") or std.mem.eql(u8, f.name, "autobinding")) {
             autobinding = try parseAutobind(loader, f.value);
-        } else if (std.mem.eql(u8, f.name, "targets")) {
+        } else if (std.mem.eql(u8, f.name, "nativeTargets") or std.mem.eql(u8, f.name, "targets")) {
             targets = try parseNativeTargets(loader, f.value);
         } else {
             try loader.err(f.span, "KMAN004", "unknown NativeLibrary field", "This field is not part of the NativeLibrary schema.");

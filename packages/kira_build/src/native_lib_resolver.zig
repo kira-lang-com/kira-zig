@@ -81,7 +81,7 @@ fn inlineArtifactPath(
     link_mode: native.LinkMode,
     target: native.TargetSelector,
 ) ![]const u8 {
-    const triple_dir = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ target.architecture, target.operating_system });
+    const triple_dir = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ target.architecture, target.operating_system, target.abi });
     const is_windows = std.mem.eql(u8, target.operating_system, "windows");
     const file_name = if (link_mode == .dynamic)
         try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ if (is_windows) "" else "lib", name, if (is_windows) ".dll" else ".dylib" })
@@ -395,4 +395,18 @@ test "resolveInlineLibrary applies matching target compiler and linker options" 
         try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "include" }),
         resolved.link.include_dirs[0],
     );
+    try std.testing.expect(std.mem.indexOf(u8, resolved.artifact_path, ".kira-build/native/x86_64-linux-gnu/") != null);
+}
+
+test "inline native artifact paths distinguish target ABIs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const gnu = try native.TargetSelector.parse(allocator, "x86_64-linux-gnu");
+    const musl = try native.TargetSelector.parse(allocator, "x86_64-linux-musl");
+    const gnu_path = try inlineArtifactPath(allocator, "/project", "demo", .static, gnu);
+    const musl_path = try inlineArtifactPath(allocator, "/project", "demo", .static, musl);
+    try std.testing.expect(!std.mem.eql(u8, gnu_path, musl_path));
+    try std.testing.expect(std.mem.indexOf(u8, gnu_path, "x86_64-linux-gnu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, musl_path, "x86_64-linux-musl") != null);
 }

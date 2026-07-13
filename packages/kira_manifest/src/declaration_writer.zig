@@ -14,7 +14,9 @@ const PackageKind = @import("project_manifest.zig").PackageKind;
 /// are intentionally dropped: prebuilt targets are replaced by build-from-source
 /// and bindings always write to `app/bindings/<module>.kira`.
 pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManifest) !void {
-    try writer.print("Package {s} {{\n", .{packageName(manifest.name)});
+    try writer.writeAll("Package ");
+    try writePackageName(writer, manifest.name);
+    try writer.writeAll(" {\n");
     try writer.writeAll("    let version = ");
     try writeQuotedString(writer, manifest.version);
     try writer.writeAll("\n");
@@ -111,7 +113,7 @@ fn writeNativeLibrary(writer: anytype, lib: native.NativeLibrarySpec) !void {
 }
 
 fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
-    try writer.writeAll("            targets: [\n");
+    try writer.writeAll("            nativeTargets: [\n");
     for (targets, 0..) |target, index| {
         try writer.writeAll("                NativeTarget { triple: \"");
         try writeEscapedStringContents(writer, target.selector.architecture);
@@ -237,9 +239,16 @@ fn writeEscapedStringContents(writer: anytype, value: []const u8) !void {
     };
 }
 
-fn packageName(name: []const u8) []const u8 {
-    if (name.len == 0) return "Package";
-    return name;
+fn writePackageName(writer: anytype, name: []const u8) !void {
+    if (name.len == 0) return writer.writeAll("Package");
+    if (std.ascii.isDigit(name[0])) try writer.writeAll("_");
+    for (name) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '_') {
+            try writer.writeByte(byte);
+        } else {
+            try writer.writeAll("_");
+        }
+    }
 }
 
 fn kindVariant(kind: PackageKind) []const u8 {
@@ -331,6 +340,10 @@ test "writes a round-trippable package.kira" {
     // Reload it through the declaration loader for a true round trip.
     const loader = @import("declaration_loader.zig");
     const result = try loader.loadProjectManifestFromDeclaration(allocator, text, "package.kira");
+    if (!result.ok()) {
+        std.debug.print("generated declaration:\n{s}\n", .{text});
+        for (result.diagnostics) |diagnostic| std.debug.print("{s}: {s}\n", .{ diagnostic.code orelse "diagnostic", diagnostic.message });
+    }
     try std.testing.expect(result.ok());
     try std.testing.expectEqualStrings("DemoApp", result.manifest.name);
     try std.testing.expectEqualStrings("hybrid", result.manifest.execution_mode);
@@ -348,4 +361,22 @@ test "writes a round-trippable package.kira" {
     try std.testing.expectEqualStrings("-pthread", target.compiler_flags[0]);
     try std.testing.expectEqualStrings("AppKit", target.link.frameworks[0]);
     try std.testing.expectEqualStrings("X11", target.link.system_libs[0]);
+}
+
+test "migration sanitizes legacy package names into declaration identifiers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const manifest = ProjectManifest{ .name = "backend-policy-app", .version = "0.1.0" };
+
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try writeProjectManifestAsDeclaration(&output.writer, manifest);
+
+    const text = output.written();
+    try std.testing.expect(std.mem.startsWith(u8, text, "Package backend_policy_app {"));
+    const loader = @import("declaration_loader.zig");
+    const result = try loader.loadProjectManifestFromDeclaration(allocator, text, "package.kira");
+    try std.testing.expect(result.ok());
+    try std.testing.expectEqualStrings("backend_policy_app", result.manifest.name);
 }

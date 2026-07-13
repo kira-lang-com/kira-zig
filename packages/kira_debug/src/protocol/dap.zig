@@ -208,6 +208,7 @@ pub const Server = struct {
         } else if (eq(cmd, "configurationDone")) {
             try self.handler.configurationDone();
             try self.sendResponse(arena, req, empty_body);
+            try self.emitStop(arena, try self.handler.cont());
         } else if (eq(cmd, "continue")) {
             try self.sendResponse(arena, req, .{ .allThreadsContinued = true });
             try self.sendEvent(arena, "continued", .{ .threadId = default_thread_id, .allThreadsContinued = true });
@@ -291,7 +292,7 @@ pub const Server = struct {
         for (locals, 0..) |v, i| wire[i] = .{
             .name = v.name,
             .value = v.value,
-            .@"type" = v.type_name,
+            .type = v.type_name,
             .variablesReference = 0,
         };
         try self.sendResponse(arena, req, .{ .variables = wire });
@@ -353,7 +354,7 @@ pub const Server = struct {
     fn sendResponse(self: *Server, arena: std.mem.Allocator, req: Request, body: anytype) !void {
         try self.send(arena, .{
             .seq = self.nextSeq(),
-            .@"type" = "response",
+            .type = "response",
             .request_seq = req.seq,
             .success = true,
             .command = req.command,
@@ -364,7 +365,7 @@ pub const Server = struct {
     fn sendErrorResponse(self: *Server, arena: std.mem.Allocator, req: Request, message: []const u8) !void {
         try self.send(arena, .{
             .seq = self.nextSeq(),
-            .@"type" = "response",
+            .type = "response",
             .request_seq = req.seq,
             .success = false,
             .command = req.command,
@@ -375,7 +376,7 @@ pub const Server = struct {
     fn sendEvent(self: *Server, arena: std.mem.Allocator, event: []const u8, body: anytype) !void {
         try self.send(arena, .{
             .seq = self.nextSeq(),
-            .@"type" = "event",
+            .type = "event",
             .event = event,
             .body = body,
         });
@@ -419,7 +420,7 @@ const ScopeWire = struct {
 const VariableWire = struct {
     name: []const u8,
     value: []const u8,
-    @"type": []const u8,
+    type: []const u8,
     variablesReference: u32,
 };
 

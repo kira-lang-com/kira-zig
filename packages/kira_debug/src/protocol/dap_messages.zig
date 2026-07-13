@@ -20,7 +20,7 @@ pub const Capabilities = struct {
     supportsConditionalBreakpoints: bool = false,
     supportsSetVariable: bool = false,
     supportsRestartRequest: bool = false,
-    supportsTerminateRequest: bool = true,
+    supportsTerminateRequest: bool = false,
 };
 
 /// One requested source breakpoint from a `setBreakpoints` request. `column` is
