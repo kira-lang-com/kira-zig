@@ -56,7 +56,7 @@ pub const DeveloperFacade = struct {
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();
-        const input = try resolveInput(allocator, path);
+        const input = (try self.resolveInputForCommand(path)) orelse return false;
         const target_backend = selectedBackend(input, backend);
         var system = build.BuildSystem.init(allocator);
         const result = switch (input.target.target_kind) {
@@ -86,7 +86,7 @@ pub const DeveloperFacade = struct {
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();
-        const input = try resolveInput(allocator, path);
+        const input = (try self.resolveInputForCommand(path)) orelse return false;
         const resolved_backend = selectedBackend(input, backend) orelse input.default_backend orelse .vm;
         var system = build.BuildSystem.init(allocator);
         if (input.target.target_kind == .library) {
@@ -137,14 +137,12 @@ pub const DeveloperFacade = struct {
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();
+        const root_input = (try self.resolveInputForCommand(path)) orelse return false;
         const leaves = try discoverTestLeaves(allocator, path);
 
         // Read the manifest `Tests { backends, phase }` config (best-effort). A
         // package without it keeps the historical single-backend behavior.
-        const project_manifest: ?manifest_pkg.ProjectManifest = blk: {
-            const input = resolveInput(allocator, path) catch break :blk null;
-            break :blk if (input.target.project) |project| project.manifest else null;
-        };
+        const project_manifest: ?manifest_pkg.ProjectManifest = if (root_input.target.project) |project| project.manifest else null;
         const plan = try tests_config.resolvePlan(allocator, project_manifest, backend);
 
         var full = ProgressReport.init(allocator);
@@ -325,6 +323,23 @@ pub const DeveloperFacade = struct {
         defer output.deinit();
         try writeDiagnostics(&output.writer, source, items);
         try self.setReport(output.written());
+    }
+
+    fn resolveInputForCommand(self: *DeveloperFacade, path: []const u8) !?ResolvedInput {
+        const allocator = self.arena.allocator();
+        var manifest_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        defer manifest_diagnostics.deinit();
+        const target = kira_project.resolveTargetFromPathWithDiagnostics(allocator, path, &manifest_diagnostics) catch |err| {
+            if (err == error.DiagnosticsEmitted) {
+                try self.setDiagnosticsReport(null, manifest_diagnostics.items);
+                return null;
+            }
+            return err;
+        };
+        return .{
+            .target = target,
+            .default_backend = if (target.project) |project| parseExecutionTarget(project.manifest.execution_mode) catch null else null,
+        };
     }
 
     fn setReportFmt(self: *DeveloperFacade, comptime fmt: []const u8, args: anytype) !void {

@@ -7,19 +7,26 @@ const kira_project = @import("kira_project");
 const kira_toolchain = @import("kira_toolchain");
 const kira_live = @import("kira_live");
 const support = @import("../support.zig");
+const diagnostics = @import("kira_diagnostics");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
     if (parsed.xcode_rebuild_platform) |platform_name| {
         return apple_export.xcodeRebuild(allocator, stdout, stderr, parsed.input_path, platform_name);
     }
-    const target = kira_project.resolveTargetFromPath(allocator, parsed.input_path) catch |err| switch (err) {
+    var manifest_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    defer manifest_diagnostics.deinit();
+    const target = kira_project.resolveTargetFromPathWithDiagnostics(allocator, parsed.input_path, &manifest_diagnostics) catch |err| switch (err) {
         error.InvalidProjectPath => {
             try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, parsed.input_path));
             return error.CommandFailed;
         },
         error.ProjectManifestNotFound => {
             try support.renderStandaloneDiagnostic(stderr, try diag_messages.PackageMessages.missingProjectManifest(allocator, parsed.input_path));
+            return error.CommandFailed;
+        },
+        error.DiagnosticsEmitted => {
+            try support.renderStandaloneDiagnostics(stderr, manifest_diagnostics.items);
             return error.CommandFailed;
         },
         else => return err,

@@ -216,6 +216,39 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
     try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "panic") == null);
 }
 
+test "invalid package declaration renders manifest diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "BadManifest/app");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "BadManifest/package.kira",
+        .data =
+        \\Package BadManifest {
+        \\    let tests = Tests { backendz: [.Vm] }
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "BadManifest/app/main.kira",
+        .data = "@Main\nfunction main() {}\n",
+    });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "BadManifest", arena.allocator());
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
+    const exit_code = try runWithWriters(arena.allocator(), &.{ "kirac", "check", path }, &stdout, &stderr);
+
+    try std.testing.expectEqual(@as(u8, 1), exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "error[KMAN004]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "internal compiler error") == null);
+}
+
 test "invalid hybrid input exits cleanly without renderer crash" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

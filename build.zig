@@ -54,7 +54,7 @@ const packages = [_]Package{
     .{ .name = "kira_llvm_backend", .path = "packages/kira_llvm_backend/src/root.zig", .imports = &.{ "kira_core", "kira_ir", "kira_backend_api", "kira_native_lib_definition", "kira_runtime_abi", "kira_toolchain", "kira_llvm_toolchain_layout", "kira_dynamic_ffi", "kira_source" } },
     .{ .name = "kira_manifest", .path = "packages/kira_manifest/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition", "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser" } },
     .{ .name = "kira_wasm_runtime", .path = "packages/kira_wasm_runtime/src/root.zig", .imports = &.{} },
-    .{ .name = "kira_project", .path = "packages/kira_project/src/root.zig", .imports = &.{ "kira_core", "kira_manifest" } },
+    .{ .name = "kira_project", .path = "packages/kira_project/src/root.zig", .imports = &.{ "kira_core", "kira_diagnostics", "kira_manifest" } },
     .{ .name = "kira_package_manager", .path = "packages/kira_package_manager/src/root.zig", .imports = &.{ "kira_manifest", "kira_diagnostics", "kira_toolchain" } },
     .{ .name = "kira_program_graph", .path = "packages/kira_program_graph/src/root.zig", .imports = &.{ "kira_source", "kira_diagnostics", "kira_syntax_model", "kira_lexer", "kira_parser", "kira_package_manager" } },
     .{ .name = "kira_build_definition", .path = "packages/kira_build_definition/src/root.zig", .imports = &.{ "kira_core", "kira_native_lib_definition" } },

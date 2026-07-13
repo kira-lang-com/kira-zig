@@ -16,7 +16,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     defer build.setNativePreparationMode(.full);
 
     const input_path = support.defaultCommandInputPath();
-    const input = support.resolveCliInput(allocator, input_path) catch |err| switch (err) {
+    const input = support.resolveCliInputWithDiagnostics(allocator, input_path, stderr) catch |err| switch (err) {
         error.InvalidProjectPath => {
             try support.renderStandaloneDiagnostic(stderr, try diag_messages.CliMessages.invalidProjectPath(allocator, input_path));
             return error.CommandFailed;

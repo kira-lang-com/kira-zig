@@ -193,8 +193,36 @@ pub fn resolveCliInput(allocator: std.mem.Allocator, path: []const u8) !Resolved
     };
 }
 
+pub fn resolveCliInputWithDiagnostics(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !ResolvedCliInput {
+    var manifest_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    defer manifest_diagnostics.deinit();
+    const target = kira_project.resolveTargetFromPathWithDiagnostics(allocator, path, &manifest_diagnostics) catch |err| {
+        if (err == error.DiagnosticsEmitted) {
+            try renderStandaloneDiagnostics(stderr, manifest_diagnostics.items);
+            return error.CommandFailed;
+        }
+        return err;
+    };
+    const default_backend = if (target.project) |project|
+        try parseExecutionTarget(project.manifest.execution_mode)
+    else
+        null;
+    return .{ .target = target, .default_backend = default_backend };
+}
+
 pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedCommandInput {
     const input = try resolveCliInput(allocator, path);
+    const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
+    return .{
+        .source_path = source_path,
+        .project_root = input.target.root_path,
+        .project_name = input.target.project_name,
+        .default_backend = input.default_backend,
+    };
+}
+
+pub fn resolveCommandInputWithDiagnostics(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !ResolvedCommandInput {
+    const input = try resolveCliInputWithDiagnostics(allocator, path, stderr);
     const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
     return .{
         .source_path = source_path,
@@ -211,7 +239,10 @@ pub fn syncCommandDependencies(
     locked: bool,
     stderr: anytype,
 ) !void {
-    const input = resolveCliInput(allocator, input_path) catch return;
+    const input = resolveCliInputWithDiagnostics(allocator, input_path, stderr) catch |err| {
+        if (err == error.CommandFailed) return err;
+        return;
+    };
     const project_root = input.target.root_path orelse return;
     var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     _ = package_manager.syncProject(allocator, project_root, versionString(), .{
