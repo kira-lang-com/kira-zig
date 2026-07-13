@@ -17,15 +17,17 @@ pub fn emit(comptime fmt: []const u8, args: anytype) void {
 
 test "package progress formats and publishes immediately" {
     const Capture = struct {
-        var text: []const u8 = "";
+        var buffer: [512]u8 = undefined;
+        var len: usize = 0;
 
         fn receive(_: ?*anyopaque, message: []const u8) void {
-            text = message;
+            @memcpy(buffer[0..message.len], message);
+            len = message.len;
         }
     };
 
     setCallback(null, Capture.receive);
     defer setCallback(null, null);
     emit("Resolving dependency {s}", .{"FrostUI"});
-    try std.testing.expectEqualStrings("Resolving dependency FrostUI", Capture.text);
+    try std.testing.expectEqualStrings("Resolving dependency FrostUI", Capture.buffer[0..Capture.len]);
 }

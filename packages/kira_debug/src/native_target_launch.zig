@@ -88,27 +88,43 @@ fn linuxLaunch(gpa: std.mem.Allocator, argv: []const []const u8) LaunchError!Lau
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const path0 = try arena.dupeZ(u8, argv[0]);
+    const path0 = try resolveExecutable(arena, argv[0]);
     const child_argv = try dupeArgv(arena, argv);
     const envp = try currentEnvp(arena);
 
-    const pid = std.posix.fork() catch return LaunchError.SpawnFailed;
+    // Zig 0.16 no longer exposes `std.posix.fork`; kira_debug links libc, so
+    // call the libc surface and translate its -1 failure convention here.
+    const pid = std.c.fork();
+    if (pid < 0) return LaunchError.SpawnFailed;
     if (pid == 0) {
         // Child: stop before exec so the tracer can PTRACE_ATTACH, then exec.
         std.posix.raise(std.posix.SIG.STOP) catch {};
-        const err = std.posix.execvpeZ(path0, child_argv.ptr, envp.ptr);
+        _ = std.c.execve(path0, child_argv.ptr, envp.ptr);
         // Only reached if exec failed.
-        _ = err;
-        std.posix.exit(127);
+        std.c._exit(127);
     }
 
     // Parent: reap the SIGSTOP group-stop so the inferior is known-stopped.
-    _ = std.posix.waitpid(pid, W_UNTRACED);
+    if (std.c.waitpid(pid, null, W_UNTRACED) < 0) return LaunchError.SpawnFailed;
     return .{ .pid = @intCast(pid), .needs_run_to_entry = true };
 }
 
 // `WUNTRACED`: also report children stopped (not only terminated).
-const W_UNTRACED: u32 = 2;
+const W_UNTRACED: c_int = 2;
+
+/// Resolve a bare executable name through the inherited PATH before forking;
+/// allocation and environment parsing are not safe in the fork child.
+fn resolveExecutable(allocator: std.mem.Allocator, program: []const u8) ![:0]const u8 {
+    if (std.mem.indexOfScalar(u8, program, '/') != null) return allocator.dupeZ(u8, program);
+    const path_value = std.c.getenv("PATH") orelse return allocator.dupeZ(u8, program);
+    var directories = std.mem.splitScalar(u8, std.mem.span(path_value), ':');
+    while (directories.next()) |directory| {
+        const candidate = try std.fs.path.join(allocator, &.{ if (directory.len == 0) "." else directory, program });
+        const candidate_z = try allocator.dupeZ(u8, candidate);
+        if (std.c.access(candidate_z, 1) == 0) return candidate_z;
+    }
+    return allocator.dupeZ(u8, program);
+}
 
 // ---------------------------------------------------------------------------
 // macOS: posix_spawn(START_SUSPENDED).
@@ -187,6 +203,6 @@ test "currentEnvp mirrors the process environment length and is null-terminated"
     const arena = arena_state.allocator();
 
     const envp = try currentEnvp(arena);
-    try testing.expectEqual(std.os.environ.len, envp.len);
+    try testing.expectEqual(std.mem.span(std.c.environ).len, envp.len);
     try testing.expectEqual(@as(?[*:0]const u8, null), envp[envp.len]);
 }
