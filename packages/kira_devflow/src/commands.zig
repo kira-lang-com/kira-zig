@@ -42,11 +42,70 @@ pub fn status(ctx: Context) !void {
 
     const branch = try git.currentBranch(ctx);
     defer ctx.allocator.free(branch);
+    const head = try git.headOid(ctx);
+    defer ctx.allocator.free(head);
+    out.print("  active head: {s} {s}\n", .{ branch, head });
+    const working_tree = try git.workingTreeSummary(ctx);
+    defer ctx.allocator.free(working_tree);
+    if (working_tree.len == 0) {
+        out.line("  working tree: CLEAN");
+    } else {
+        out.print("  working tree: CHANGES\n{s}\n", .{working_tree});
+    }
     if (!std.mem.eql(u8, branch, ctx.default_branch) and !std.mem.eql(u8, branch, "HEAD")) {
         const fork_branch_ref = try std.fmt.allocPrint(ctx.allocator, "origin/{s}", .{branch});
         defer ctx.allocator.free(fork_branch_ref);
         try reportPair(ctx, "active branch vs fork", "HEAD", fork_branch_ref);
     }
+}
+
+/// `wait-ci <pr>`: block on the checks attached to the PR's exact current head.
+pub fn waitCi(ctx: Context, number: u32) !void {
+    var waited: u64 = 0;
+    const timeout_ns = waitTimeoutNs();
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    out.print("devflow: waiting for CI on #{d} exact head {s}\n", .{ number, head });
+
+    while (true) {
+        const current_head = try gh.prHeadOid(ctx, slug, number);
+        defer ctx.allocator.free(current_head);
+        if (!std.mem.eql(u8, head, current_head)) {
+            out.print("devflow: PR #{d} head changed while waiting ({s} -> {s}); restart the exact-head gate\n", .{ number, head, current_head });
+            return error.PrHeadChanged;
+        }
+        const checks = try gh.prCheckStatus(ctx, slug, number);
+        defer checks.deinit(ctx.allocator);
+        if (checks.failing != 0) {
+            out.print("devflow: CI failed on #{d} ({d} failing check(s))\n{s}\n", .{ number, checks.failing, checks.lines });
+            return error.CiFailed;
+        }
+        if (checks.green()) {
+            out.print("devflow: CI green on #{d} exact head {s} ({d} checks)\n", .{ number, head, checks.total });
+            return;
+        }
+        if (checks.total == 0) {
+            out.print("devflow: #{d} has no checks on exact head yet; waiting...\n", .{number});
+        } else {
+            out.print("devflow: #{d} has {d} pending check(s)\n{s}\n", .{ number, checks.pending, checks.lines });
+        }
+        if (waited >= timeout_ns) return error.CiWaitTimeout;
+        try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+        waited += poll_interval_ns;
+    }
+}
+
+/// `review-findings <pr> [--codex]`: print exact-head inline findings without
+/// bypassing devflow for ad-hoc GitHub reads.
+pub fn reviewFindings(ctx: Context, number: u32, include_codex: bool) !void {
+    const findings = try gh.headReviewFindings(ctx, prSlug(ctx), number, include_codex);
+    defer ctx.allocator.free(findings);
+    if (findings.len == 0) {
+        out.print("devflow: no exact-head inline findings on #{d}\n", .{number});
+        return;
+    }
+    out.print("devflow: exact-head inline findings on #{d}\n{s}\n", .{ number, findings });
 }
 
 /// Single-stage: the PR lives on upstream when there is an upstream remote
@@ -191,6 +250,12 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 /// wait-reviews (Codex P2: "Require reviewer completion before merging").
 pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
     const slug = prSlug(ctx);
+    const checks = try gh.prCheckStatus(ctx, slug, number);
+    defer checks.deinit(ctx.allocator);
+    if (!checks.green()) {
+        out.print("devflow: refusing to land #{d}: CI is not green ({d} pending, {d} failing)\n{s}\n", .{ number, checks.pending, checks.failing, checks.lines });
+        return error.CiNotGreen;
+    }
     const logins = try gh.headReviewerLogins(ctx, slug, number);
     defer ctx.allocator.free(logins);
     const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null or try gh.codeRabbitCheckResponded(ctx, slug, number);

@@ -8,6 +8,21 @@ const std = @import("std");
 const proc = @import("proc.zig");
 const Context = @import("context.zig").Context;
 
+pub const CheckStatus = struct {
+    lines: []u8,
+    total: u32,
+    pending: u32,
+    failing: u32,
+
+    pub fn deinit(self: CheckStatus, allocator: std.mem.Allocator) void {
+        allocator.free(self.lines);
+    }
+
+    pub fn green(self: CheckStatus) bool {
+        return self.total != 0 and self.pending == 0 and self.failing == 0;
+    }
+};
+
 /// Number of an open PR for `head` against the fork, or null if none.
 pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
     return prNumberOn(ctx, ctx.fork_slug, head);
@@ -92,6 +107,76 @@ pub fn headReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
         "gh",   "pr",                                                                                                        "view", num_str, "-R", slug, "--json", "headRefOid,reviews",
         "--jq", ".headRefOid as $head | [.reviews[] | select(.commit.oid == $head) | .author.login] | unique | join(\",\")",
     });
+}
+
+pub fn prHeadOid(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "view", num_str, "-R", slug, "--json", "headRefOid", "--jq", ".headRefOid",
+    });
+}
+
+/// Current-head check state. `gh pr checks` deliberately exits non-zero while
+/// checks are pending or failing, so those documented states are parsed rather
+/// than mistaken for an invocation failure.
+pub fn prCheckStatus(ctx: Context, slug: []const u8, number: u32) !CheckStatus {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",     "pr",                            "checks", num_str,                                                         "-R", slug,
+        "--json", "bucket,name,state,description", "--jq",   ".[] | [.bucket, .name, .state, (.description // \"\")] | @tsv",
+    });
+    defer result.deinit(ctx.allocator);
+
+    const accepted = switch (result.term) {
+        .exited => |code| code == 0 or code == 1 or code == 8,
+        else => false,
+    };
+    if (!accepted) return error.CheckQueryFailed;
+
+    const lines = try ctx.allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
+    errdefer ctx.allocator.free(lines);
+    const counts = countChecks(lines);
+    return .{ .lines = lines, .total = counts.total, .pending = counts.pending, .failing = counts.failing };
+}
+
+const CheckCounts = struct { total: u32 = 0, pending: u32 = 0, failing: u32 = 0 };
+
+fn countChecks(lines: []const u8) CheckCounts {
+    var counts: CheckCounts = .{};
+    var rows = std.mem.splitScalar(u8, lines, '\n');
+    while (rows.next()) |row| {
+        if (row.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, row, '\t') orelse continue;
+        const bucket = row[0..tab];
+        counts.total += 1;
+        if (std.ascii.eqlIgnoreCase(bucket, "pending")) counts.pending += 1;
+        if (std.ascii.eqlIgnoreCase(bucket, "fail") or
+            std.ascii.eqlIgnoreCase(bucket, "cancel") or
+            std.ascii.eqlIgnoreCase(bucket, "cancelled")) counts.failing += 1;
+    }
+    return counts;
+}
+
+/// Exact-head inline findings from bot reviews. Without `include_codex`, this
+/// reports CodeRabbit; with it, both required bot reviewers are included.
+pub fn headReviewFindings(ctx: Context, slug: []const u8, number: u32, include_codex: bool) ![]u8 {
+    const head = try prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const filter = if (include_codex)
+        "((.user.login | ascii_downcase | contains(\"coderabbit\")) or (.user.login | ascii_downcase | contains(\"codex\")))"
+    else
+        "(.user.login | ascii_downcase | contains(\"coderabbit\"))";
+    const jq = try std.fmt.allocPrint(
+        ctx.allocator,
+        ".[] | select(.original_commit_id == \"{s}\") | select({s}) | \"[\\(.user.login)] \\(.path):\\(.line // .original_line // 0)\\n\\(.body)\\n\\(.html_url)\"",
+        .{ head, filter },
+    );
+    defer ctx.allocator.free(jq);
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/pulls/{d}/comments", .{ slug, number });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "api", "--paginate", endpoint, "--jq", jq });
 }
 
 /// CodeRabbit may decline oversized PRs through a successful head check rather
@@ -231,4 +316,16 @@ test "numberFromPrUrl" {
 test "owner/repo split" {
     try std.testing.expectEqualStrings("iPriam", ownerOf("iPriam/kira"));
     try std.testing.expectEqualStrings("kira", repoOf("iPriam/kira"));
+}
+
+test "countChecks classifies current check buckets" {
+    const counts = countChecks(
+        "pass\tlinux\tSUCCESS\t\n" ++
+            "pending\tmacos\tIN_PROGRESS\t\n" ++
+            "fail\twindows\tFAILURE\tbroken\n" ++
+            "skipping\tCodeRabbit\tSUCCESS\toversized",
+    );
+    try std.testing.expectEqual(@as(u32, 4), counts.total);
+    try std.testing.expectEqual(@as(u32, 1), counts.pending);
+    try std.testing.expectEqual(@as(u32, 1), counts.failing);
 }

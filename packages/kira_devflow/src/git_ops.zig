@@ -11,6 +11,14 @@ pub fn currentBranch(ctx: Context) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
 }
 
+pub fn headOid(ctx: Context) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "rev-parse", "HEAD" });
+}
+
+pub fn workingTreeSummary(ctx: Context) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "status", "--short" });
+}
+
 pub fn fetchRemote(ctx: Context, remote: []const u8) !void {
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "fetch", "--quiet", remote });
 }

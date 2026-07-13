@@ -8,6 +8,8 @@
 //!   pr-scope           title/body from the complete base...HEAD branch
 //!   open-fork-pr       open or refresh PR with complete-branch metadata
 //!   request-reviews N  always CodeRabbit; --codex to also ping Codex
+//!   wait-ci N           block until exact-head checks are green
+//!   review-findings N   print exact-head bot review comments
 //!   wait-reviews N     block until reviewers posted + threads resolved
 //!   land N             squash-as-PR (one flat entry) + resync local default branch
 //!   sync               resync local default branch to the fork
@@ -60,6 +62,8 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "pr-scope")) return commands.prScope(ctx);
     if (eq(verb, "open-fork-pr")) return commands.openForkPr(ctx);
     if (eq(verb, "request-reviews")) return commands.requestReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
+    if (eq(verb, "wait-ci")) return commands.waitCi(ctx, try requireNumber(rest));
+    if (eq(verb, "review-findings")) return commands.reviewFindings(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "wait-reviews")) return commands.waitReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "land")) return commands.land(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "sync")) return commands.sync(ctx);
@@ -150,6 +154,8 @@ fn usage() void {
         \\  pr-scope                   print title/body derived from complete branch scope
         \\  open-fork-pr               open or refresh ONE PR with complete-branch metadata
         \\  request-reviews <pr> [--codex]
+        \\  wait-ci <pr>                block until exact-head checks are green
+        \\  review-findings <pr> [--codex]
         \\  wait-reviews <pr> [--codex]
         \\  land <pr> [--codex]        squash-merge upstream PR (merge subject) + mirror fork + resync
         \\  sync                       resync local default branch to the fork

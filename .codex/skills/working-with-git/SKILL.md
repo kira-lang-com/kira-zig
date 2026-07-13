@@ -18,6 +18,8 @@ zig build devflow -- push                # push branch to fork over SSH
 zig build devflow -- pr-scope            # inspect complete-branch PR metadata
 zig build devflow -- open-fork-pr        # open/refresh ONE PR against upstream
 zig build devflow -- request-reviews N [--codex]
+zig build devflow -- wait-ci N                      # exact-head CI gate
+zig build devflow -- review-findings N [--codex]   # exact-head inline findings
 zig build devflow -- wait-reviews N [--codex]      # blocks until resolved
 zig build devflow -- land N              # squash-merge, mirror fork, resync local
 zig build devflow -- sync                # resync local main if drifted
@@ -39,6 +41,9 @@ status` reports actual content diff instead, trust that. Always resync local
 
 `wait-reviews` and `land` only accept submitted reviews attached to the current
 PR head; a stale review from an earlier push never satisfies the gate.
+`wait-ci` reports and blocks on checks attached to that exact head, and `land`
+applies the same green-CI gate itself. Use `review-findings` instead of raw
+GitHub commands to read current-head bot comments.
 CodeRabbit's successful head check counts as its response when it explicitly
 skips an oversized PR. `land` refuses with `ReviewsPending` or
 `UnresolvedReviews` if CI isn't green or a requested review (CodeRabbit always,
