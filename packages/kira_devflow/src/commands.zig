@@ -146,9 +146,13 @@ fn failureExcerpt(allocator: std.mem.Allocator, log: []const u8) ![]u8 {
     errdefer result.deinit();
     var lines = std.mem.splitScalar(u8, log, '\n');
     var emitted: usize = 0;
+    var parity_context: usize = 0;
     while (lines.next()) |line| {
-        if (!failureRelevant(line)) continue;
+        const relevant = failureRelevant(line);
+        if (std.mem.indexOf(u8, line, "FAIL <parity") != null) parity_context = 40;
+        if (!relevant and parity_context == 0) continue;
         try result.writer.print("{s}\n", .{line});
+        if (!relevant and parity_context != 0) parity_context -= 1;
         emitted += 1;
         if (emitted == 400) {
             try result.writer.writeAll("... failure excerpt capped at 400 matching lines ...\n");
