@@ -1,4 +1,5 @@
 const std = @import("std");
+const core = @import("kira_core");
 
 pub fn copyTemplateTree(allocator: std.mem.Allocator, src_path: []const u8, dst_path: []const u8, app_name: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dst_path);
@@ -36,21 +37,36 @@ fn copyDirRecursive(allocator: std.mem.Allocator, src_path: []const u8, dst_path
 }
 
 fn renderTemplateContents(allocator: std.mem.Allocator, contents: []const u8, app_name: []const u8) ![]u8 {
-    const lower_name = try std.ascii.allocLowerString(allocator, app_name);
+    const safe_name = try core.sanitizeKiraIdentifier(allocator, app_name, "KiraApp");
+    defer allocator.free(safe_name);
+    const lower_name = try std.ascii.allocLowerString(allocator, safe_name);
     defer allocator.free(lower_name);
 
-    const with_app = try std.mem.replaceOwned(u8, allocator, contents, "DemoApp", app_name);
+    const with_app = try std.mem.replaceOwned(u8, allocator, contents, "DemoApp", safe_name);
     defer allocator.free(with_app);
-    const with_library = try std.mem.replaceOwned(u8, allocator, with_app, "DemoLibrary", app_name);
+    const with_library = try std.mem.replaceOwned(u8, allocator, with_app, "DemoLibrary", safe_name);
     defer allocator.free(with_library);
     return std.mem.replaceOwned(u8, allocator, with_library, "demolibrary", lower_name);
 }
 
 fn renderTemplateName(allocator: std.mem.Allocator, name: []const u8, app_name: []const u8) ![]u8 {
-    const lower_name = try std.ascii.allocLowerString(allocator, app_name);
+    const safe_name = try core.sanitizeKiraIdentifier(allocator, app_name, "KiraApp");
+    defer allocator.free(safe_name);
+    const lower_name = try std.ascii.allocLowerString(allocator, safe_name);
     defer allocator.free(lower_name);
 
-    const with_library = try std.mem.replaceOwned(u8, allocator, name, "DemoLibrary", app_name);
+    const with_library = try std.mem.replaceOwned(u8, allocator, name, "DemoLibrary", safe_name);
     defer allocator.free(with_library);
     return std.mem.replaceOwned(u8, allocator, with_library, "demolibrary", lower_name);
+}
+
+test "template substitutions use valid Kira identifiers" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderTemplateContents(allocator, "Package DemoApp { DemoLibrary demolibrary }", "hello-world");
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings("Package hello_world { hello_world hello_world }", rendered);
+
+    const keyword = try renderTemplateContents(allocator, "Package DemoApp {}", "class");
+    defer allocator.free(keyword);
+    try std.testing.expectEqualStrings("Package _class {}", keyword);
 }

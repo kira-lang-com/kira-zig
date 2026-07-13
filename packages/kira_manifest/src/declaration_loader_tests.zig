@@ -194,3 +194,22 @@ test "warns on explicit autobind output" {
     }
     try std.testing.expect(found);
 }
+
+test "diagnoses unknown AutobindMode variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try loadProjectManifestFromDeclaration(arena.allocator(),
+        \\Package Demo {
+        \\    let nativeLibraries = [
+        \\        NativeLibrary { name: "x", autobind: Autobind { module: "x", mode: .AllPublc } }
+        \\    ]
+        \\}
+    , "package.kira");
+
+    try std.testing.expect(!result.ok());
+    var found = false;
+    for (result.diagnostics) |diagnostic| {
+        if (diagnostic.code != null and std.mem.eql(u8, diagnostic.code.?, "KMAN006")) found = true;
+    }
+    try std.testing.expect(found);
+}

@@ -452,7 +452,13 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
             try loader.warn(f.span, "KMAN011", "ignored autobind output", "`output` is ignored; bindings always write to app/bindings/<module>.kira.");
         } else if (std.mem.eql(u8, f.name, "mode")) {
             if (try enumValue(loader, f.value, "AutobindMode")) |variant| {
-                mode = if (std.mem.eql(u8, variant, "AllPublic") or std.mem.eql(u8, variant, "all_public")) .all_public else .listed;
+                if (std.mem.eql(u8, variant, "AllPublic") or std.mem.eql(u8, variant, "all_public")) {
+                    mode = .all_public;
+                } else if (std.mem.eql(u8, variant, "Listed") or std.mem.eql(u8, variant, "listed")) {
+                    mode = .listed;
+                } else {
+                    try loader.err(exprSpan(f.value), "KMAN006", "unknown AutobindMode", "Expected AutobindMode.Listed or AutobindMode.AllPublic.");
+                }
             }
         } else if (std.mem.eql(u8, f.name, "headers")) {
             headers = try stringArray(loader, f.value);

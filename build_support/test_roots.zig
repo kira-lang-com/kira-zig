@@ -1,4 +1,5 @@
 pub const test_roots = [_][]const u8{
+    "kira_core",
     "kira_runtime_abi",
     "kira_toolchain",
     "kira_lexer",
@@ -24,6 +25,7 @@ pub const test_roots = [_][]const u8{
     "kira_native_lib_definition",
     "kira_dynamic_ffi",
     "kira_build",
+    "kira_app_generation",
     "kira_instruments",
     "kira_cli",
     "kira_live",

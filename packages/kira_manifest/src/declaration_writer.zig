@@ -1,4 +1,5 @@
 const std = @import("std");
+const core = @import("kira_core");
 const dependency = @import("dependency.zig");
 const native = @import("kira_native_lib_definition");
 const ProjectManifest = @import("project_manifest.zig").ProjectManifest;
@@ -240,15 +241,7 @@ fn writeEscapedStringContents(writer: anytype, value: []const u8) !void {
 }
 
 fn writePackageName(writer: anytype, name: []const u8) !void {
-    if (name.len == 0) return writer.writeAll("Package");
-    if (std.ascii.isDigit(name[0])) try writer.writeAll("_");
-    for (name) |byte| {
-        if (std.ascii.isAlphanumeric(byte) or byte == '_') {
-            try writer.writeByte(byte);
-        } else {
-            try writer.writeAll("_");
-        }
-    }
+    try core.writeKiraIdentifier(writer, name, "Package");
 }
 
 fn kindVariant(kind: PackageKind) []const u8 {
