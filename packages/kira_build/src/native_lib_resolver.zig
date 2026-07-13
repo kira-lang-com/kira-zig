@@ -208,16 +208,14 @@ fn absolutizePaths(allocator: std.mem.Allocator, manifest_path: []const u8, valu
 
 fn absolutizePath(allocator: std.mem.Allocator, manifest_path: []const u8, value: []const u8) ![]const u8 {
     if (value.len == 0) return allocator.dupe(u8, value);
-    if (try expandEnvPath(allocator, value)) |expanded| return expanded;
-    if (std.fs.path.isAbsolute(value)) return allocator.dupe(u8, value);
+    if (try expandEnvPath(allocator, value)) |expanded| {
+        defer allocator.free(expanded);
+        return std.fs.path.resolve(allocator, &.{expanded});
+    }
+    if (std.fs.path.isAbsolute(value)) return std.fs.path.resolve(allocator, &.{value});
 
     const base_dir = std.fs.path.dirname(manifest_path) orelse ".";
-    const joined = try std.fs.path.join(allocator, &.{ base_dir, value });
-    if (std.fs.path.isAbsolute(joined)) return joined;
-
-    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
-    defer allocator.free(cwd);
-    return std.fs.path.join(allocator, &.{ cwd, joined });
+    return std.fs.path.resolve(allocator, &.{ base_dir, value });
 }
 
 fn expandEnvPath(allocator: std.mem.Allocator, value: []const u8) !?[]const u8 {
