@@ -5,14 +5,14 @@ const package_support = @import("package_support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len == 0) return error.InvalidArguments;
-    if (std.mem.eql(u8, args[0], "pack")) return executePack(allocator, args[1..], stdout);
+    if (std.mem.eql(u8, args[0], "pack")) return executePack(allocator, args[1..], stdout, stderr);
     if (std.mem.eql(u8, args[0], "inspect")) return executeInspect(allocator, args[1..], stdout, stderr);
     return error.InvalidArguments;
 }
 
-fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype) !void {
+fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len > 1) return error.InvalidArguments;
-    const location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0]);
+    const location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0], stderr);
     for (location.manifest.dependencies) |dep_spec| {
         if (dep_spec.source == .path) return error.InvalidArguments;
     }
@@ -48,11 +48,10 @@ fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 }
 
 fn executeInspect(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
-    _ = stderr;
     if (args.len > 1) return error.InvalidArguments;
     const target = args[0];
     if (isDirectory(target)) {
-        const location = try package_support.loadManifestLocation(allocator, target);
+        const location = try package_support.loadManifestLocation(allocator, target, stderr);
         try printManifestSummary(stdout, location.manifest);
         return;
     }
@@ -68,13 +67,13 @@ fn executeInspect(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const manifest_path = try printExtractedTree(allocator, stdout, temp_dir, temp_dir);
     if (manifest_path) |path| {
         const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(2 * 1024 * 1024));
-        const parsed = try parseExtractedManifest(allocator, path, text);
+        const parsed = try parseExtractedManifest(allocator, path, text, stderr);
         try printManifestSummary(stdout, parsed);
     }
 }
 
-fn parseExtractedManifest(allocator: std.mem.Allocator, path: []const u8, text: []const u8) !manifest.ProjectManifest {
-    return manifest.loadProjectManifestFromText(allocator, text, path);
+fn parseExtractedManifest(allocator: std.mem.Allocator, path: []const u8, text: []const u8, stderr: anytype) !manifest.ProjectManifest {
+    return package_support.loadManifestTextWithDiagnostics(allocator, text, path, stderr);
 }
 
 fn printManifestSummary(stdout: anytype, project_manifest: manifest.ProjectManifest) !void {
@@ -230,11 +229,13 @@ test "archive inspection recognizes and loads package.kira" {
     const allocator = arena.allocator();
     try std.testing.expect(isManifestFile("nested/package.kira"));
     try std.testing.expect(prefersManifest("package.kira", "kira.toml"));
+    var stderr: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr.deinit();
     const parsed = try parseExtractedManifest(allocator, "/archive/package.kira",
         \\Package Archived {
         \\    let version = "1.2.3"
         \\}
-    );
+    , &stderr.writer);
     try std.testing.expectEqualStrings("Archived", parsed.name);
     try std.testing.expectEqualStrings("1.2.3", parsed.version);
 }
@@ -264,7 +265,7 @@ test "packed package.kira archive can be inspected" {
 
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
-    try executePack(allocator, &.{root}, &output.writer);
+    try executePack(allocator, &.{root}, &output.writer, &output.writer);
     const archive_path = try std.fs.path.join(allocator, &.{ root, ".kira-build", "package", "ArchiveDemo-1.2.3.tar" });
     try executeInspect(allocator, &.{archive_path}, &output.writer, &output.writer);
     try std.testing.expect(std.mem.indexOf(u8, output.written(), "package ArchiveDemo 1.2.3") != null);

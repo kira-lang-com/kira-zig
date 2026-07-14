@@ -406,8 +406,7 @@ fn pbxproj(
 }
 
 fn expectedBundleIdForValidationApp(allocator: std.mem.Allocator, validation_manifest_path: []const u8) ![]const u8 {
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, validation_manifest_path, allocator, .limited(1024 * 1024));
-    const parsed = try @import("kira_manifest").parseProjectManifest(allocator, text);
+    const parsed = try @import("manifest_loader.zig").load(allocator, validation_manifest_path);
     return bundleIdForName(allocator, parsed.name);
 }
 
