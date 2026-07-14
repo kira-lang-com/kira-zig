@@ -1,0 +1,386 @@
+// SgxTests.kira — migrated corpus cases from tests/pass/run/{string_*,call_*,
+// ime_pinyin_prediction}.
+// PREFIX: sgx / Sgx (ime_pinyin_prediction uses imx / Imx).
+// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+
+// ---------------------------------------------------------------------------
+// Helpers (copied from source programs, prefixed)
+// ---------------------------------------------------------------------------
+
+function sgxGreet(name: String) -> String {
+    return "hello, " + name
+}
+
+function sgxPick(i: Int) -> String {
+    if i == 0 { return "alpha" }
+    return "beta"
+}
+
+function sgxPickWord(i: Int) -> String {
+    if i == 0 {
+        return "hello"
+    }
+    return "worldwide"
+}
+
+function sgxEchoText(value: String): String {
+    return value
+}
+
+function sgxAddPair(left: Int, right: Int): Int {
+    return left + right
+}
+
+function sgxEchoFlag(value: Bool): Bool {
+    return value
+}
+
+// ---------------------------------------------------------------------------
+// string_array_overwrite_no_leak
+// ---------------------------------------------------------------------------
+
+Test SgxArrayOverwriteNoLeak {
+    test {
+        let head = "item"
+        let sep = "-"
+        var names: [String] = []
+        names.append("seed-a")
+        names.append("seed-b")
+        names.append("seed-c")
+        var round = 0
+        while round < 200 {
+            // Each store is a freshly heap-allocated concatenation; the previous
+            // cloned buffer in the slot must be released, not orphaned.
+            names[0] = head + sep + "alpha"
+            names[1] = head + sep + "beta"
+            names[2] = head + sep + "gamma"
+            round = round + 1
+        }
+        return names[0] + "|" + names[2]
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("item-alpha|item-gamma"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// string_concat_parity
+// ---------------------------------------------------------------------------
+
+Test SgxConcatSimple {
+    test { return "a" + "b" }
+    expect { let e: Result<String, TestFailure> = .Ok("ab"); return e }
+}
+
+Test SgxConcatEmptyLeft {
+    test { return "" + "x" }
+    expect { let e: Result<String, TestFailure> = .Ok("x"); return e }
+}
+
+Test SgxConcatEmptyRight {
+    test { return "y" + "" }
+    expect { let e: Result<String, TestFailure> = .Ok("y"); return e }
+}
+
+Test SgxConcatGreet {
+    test { return sgxGreet("kira") }
+    expect { let e: Result<String, TestFailure> = .Ok("hello, kira"); return e }
+}
+
+Test SgxConcatLoopAccum {
+    test {
+        var s = ""
+        var i = 0
+        while i < 4 {
+            s = s + "ab"
+            i = i + 1
+        }
+        return s
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("abababab"); return e }
+}
+
+Test SgxConcatLoopEquality {
+    test {
+        var s = ""
+        var i = 0
+        while i < 4 {
+            s = s + "ab"
+            i = i + 1
+        }
+        return s == "abababab"
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxConcatNested {
+    test { return ("p" + "q") + ("r" + "s") }
+    expect { let e: Result<String, TestFailure> = .Ok("pqrs"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// string_count_parity
+// ---------------------------------------------------------------------------
+
+Test SgxCountTitle {
+    test {
+        let title = "KIRA"
+        return title.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
+}
+
+Test SgxCountSubtitle {
+    test {
+        let subtitle = "UI FOUNDATION"
+        return subtitle.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
+}
+
+// ---------------------------------------------------------------------------
+// string_equality_parity
+// ---------------------------------------------------------------------------
+
+Test SgxEqAlphaAlpha {
+    test { return "alpha" == "alpha" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxEqAlphaBeta {
+    test { return "alpha" == "beta" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+Test SgxNeqAlphaBeta {
+    test { return "alpha" != "beta" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxEqEmptyEmpty {
+    test { return "" == "" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxEqPrefixMismatch {
+    test { return "a" == "ab" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+Test SgxEqPickComputed {
+    test { return sgxPick(0) == "alpha" }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxEqPickPick {
+    test { return sgxPick(1) == sgxPick(1) }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// call_temp_string_count_parity
+// ---------------------------------------------------------------------------
+
+Test SgxCallTempCountHello {
+    test { return sgxPickWord(0).count }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}
+
+Test SgxCallTempCountWorldwide {
+    test { return sgxPickWord(1).count }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
+}
+
+// ---------------------------------------------------------------------------
+// call_value_parity
+// ---------------------------------------------------------------------------
+
+Test SgxCallEchoText {
+    test { return sgxEchoText("hello parity") }
+    expect { let e: Result<String, TestFailure> = .Ok("hello parity"); return e }
+}
+
+Test SgxCallAddPair {
+    test { return sgxAddPair(20, 22) }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}
+
+Test SgxCallEchoFlagTrue {
+    test { return sgxEchoFlag(true) }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test SgxCallEchoFlagFalse {
+    test { return sgxEchoFlag(false) }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// ime_pinyin_prediction
+// ---------------------------------------------------------------------------
+// Backend-parity coverage for the Kira-owned pinyin -> Hanzi IME engine model
+// used by UI Foundation. The engine is pure integer logic (codepoints in,
+// codepoint candidates out), mirroring the algorithm in
+// ui-foundation/app/Core/InputMethod.kira: pack pinyin letters into a base-27
+// key, predict ordered Hanzi candidates, and commit by index.
+
+struct ImxComp {
+    var letters: [Int] = []
+    var candidates: [Int] = []
+    var activeIndex: Int = 0
+}
+
+function imxCloneInts(src: borrow [Int]) -> [Int] {
+    var out: [Int] = []
+    var index = 0
+    while index < src.count {
+        out.append(src[index])
+        index = index + 1
+    }
+    return out
+}
+
+function imxLowerIndex(codepoint: Int) -> Int {
+    if codepoint >= 65 && codepoint <= 90 {
+        return codepoint - 65 + 1
+    }
+    if codepoint >= 97 && codepoint <= 122 {
+        return codepoint - 97 + 1
+    }
+    return 0
+}
+
+function imxKeyFromLetters(letters: borrow [Int]) -> Int {
+    var key = 0
+    var index = 0
+    while index < letters.count {
+        key = key * 27 + imxLowerIndex(letters[index])
+        index = index + 1
+    }
+    return key
+}
+
+function imxSylKey(a: Int, b: Int, c: Int) -> Int {
+    var key = 0
+    if a > 0 {
+        key = key * 27 + a
+    }
+    if b > 0 {
+        key = key * 27 + b
+    }
+    if c > 0 {
+        key = key * 27 + c
+    }
+    return key
+}
+
+function imxCandidatesForKey(key: Int) -> [Int] {
+    let kNi = imxSylKey(14, 9, 0)
+    if key == kNi {
+        return [20320, 24744, 23612]
+    }
+    let kHao = imxSylKey(8, 1, 15)
+    if key == kHao {
+        return [22909, 21495, 27627]
+    }
+    let kWo = imxSylKey(23, 15, 0)
+    if key == kWo {
+        return [25105, 25569]
+    }
+    return []
+}
+
+function imxAppendLetter(comp: borrow ImxComp, codepoint: Int) -> ImxComp {
+    var letters = imxCloneInts(comp.letters)
+    letters.append(codepoint)
+    let candidates = imxCandidatesForKey(imxKeyFromLetters(letters))
+    return ImxComp {
+        letters: move letters
+        candidates: move candidates
+        activeIndex: 0
+    }
+}
+
+function imxBackspace(comp: borrow ImxComp) -> ImxComp {
+    var letters: [Int] = []
+    var index = 0
+    let keep = comp.letters.count - 1
+    while index < keep {
+        letters.append(comp.letters[index])
+        index = index + 1
+    }
+    let candidates = imxCandidatesForKey(imxKeyFromLetters(letters))
+    return ImxComp {
+        letters: move letters
+        candidates: move candidates
+        activeIndex: 0
+    }
+}
+
+function imxCandidateAt(comp: borrow ImxComp, index: Int) -> Int {
+    if comp.candidates.count == 0 {
+        return 0
+    }
+    var clamped = index
+    if clamped < 0 {
+        clamped = 0
+    }
+    if clamped >= comp.candidates.count {
+        clamped = comp.candidates.count - 1
+    }
+    return comp.candidates[clamped]
+}
+
+// Type "ni" (n=110, i=105).
+function imxTypeNi() -> ImxComp {
+    var comp = ImxComp {}
+    comp = imxAppendLetter(comp, 110)
+    comp = imxAppendLetter(comp, 105)
+    return comp
+}
+
+Test ImxPinyinNiCandidateCount {
+    test {
+        let comp = imxTypeNi()
+        return comp.candidates.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+Test ImxPinyinNiTopCandidate {
+    // Top candidate for "ni" is U+4F60 = 20320.
+    test {
+        let comp = imxTypeNi()
+        return imxCandidateAt(comp, 0)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(20320); return e }
+}
+
+Test ImxPinyinNiSecondCandidate {
+    // Second candidate is U+60A8 = 24744.
+    test {
+        let comp = imxTypeNi()
+        return imxCandidateAt(comp, 1)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(24744); return e }
+}
+
+Test ImxPinyinBackspaceIncomplete {
+    // Backspacing to just "n" is an incomplete syllable: no prediction.
+    test {
+        let comp = imxTypeNi()
+        let trimmed = imxBackspace(comp)
+        return trimmed.candidates.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test ImxPinyinHaoTopCandidate {
+    // Type "hao": the top candidate is U+597D = 22909.
+    test {
+        var second = ImxComp {}
+        second = imxAppendLetter(second, 104)
+        second = imxAppendLetter(second, 97)
+        second = imxAppendLetter(second, 111)
+        return imxCandidateAt(second, 0)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(22909); return e }
+}

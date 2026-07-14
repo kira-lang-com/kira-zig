@@ -15,9 +15,15 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
             if (options.offline) try list.append("--offline");
             if (options.locked) try list.append("--locked");
             if (options.timings) try list.append("--timings");
-            try list.append(options.input_path);
+            if (options.quiet) try list.append("--quiet");
         },
         .run => |options| try appendRunOptions(allocator, &list, options),
+        .debug => |options| {
+            if (options.backend) |backend| try list.appendSlice(&.{ "--backend", backendLabel(backend) });
+            if (options.dap) try list.append("--dap");
+            if (options.port) |port| try list.appendSlice(&.{ "--port", try std.fmt.allocPrint(allocator, "{d}", .{port}) });
+            try list.append(options.input_path);
+        },
         .live => |options| try appendLiveOptions(allocator, &list, options),
         .export_cmd => |options| try appendExportOptions(allocator, &list, options),
         .new => |options| {
@@ -42,6 +48,7 @@ pub fn toArgs(allocator: std.mem.Allocator, command: ParsedCommand) ![]const []c
             try list.append(options.package_name);
         },
         .remove => |options| try list.append(options.package_name),
+        .migrate_manifest => |options| try list.append(options.input_path),
         .update, .tokens, .ast => |options| {
             if (options.input_path) |path| try list.append(path);
         },

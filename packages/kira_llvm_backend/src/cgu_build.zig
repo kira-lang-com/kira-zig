@@ -66,6 +66,12 @@ fn isHostTarget(target_selector: ?native.TargetSelector) bool {
 }
 
 fn dropEnabled() bool {
+    // Debug builds must keep the per-CGU objects: on macOS the linker leaves DWARF
+    // in them and `dsymutil` collects it into the `.dSYM` the source-level debugger
+    // reads. Dropping them yields an empty dSYM — no line table, no breakpoints.
+    // This also forks the incremental cache key (drop vs no-drop), so debug and
+    // release objects never clobber each other.
+    if (runtime_utils.debugInfoRequested()) return false;
     const raw = std.c.getenv("KIRA_CAPI_DROP") orelse return true;
     const value = std.mem.span(raw);
     return value.len != 0 and value[0] != '0';

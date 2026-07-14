@@ -1,7 +1,0 @@
-@Main
-function entry() {
-    var value: String
-    print(value)
-    return
-}
-

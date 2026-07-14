@@ -1,0 +1,285 @@
+// GdxTests.kira
+// Migrated from tests/pass/run/large_graphics_descriptor_stress.
+// All top-level names use prefix gdx / Gdx. No `import Foundation` here —
+// main.kira imports it for the whole package.
+// A render-pipeline descriptor shaped like Kira Graphics' (nested structs,
+// arrays of structs, Bool fields, struct copies mutated locally) reduced to
+// Int/Bool scalars.
+
+// ---------------------------------------------------------------------------
+// large_graphics_descriptor_stress
+// ---------------------------------------------------------------------------
+
+struct GdxVertexAttributeDescriptor {
+    var location: Int
+    var format: Int
+    var offset: Int
+    var bufferIndex: Int
+}
+
+struct GdxVertexLayoutDescriptor {
+    var stride: Int
+    var stepMode: Int
+    var attributes: [GdxVertexAttributeDescriptor]
+}
+
+struct GdxBlendDescriptor {
+    var enabled: Bool
+    var preset: Int
+    var srcFactor: Int
+    var dstFactor: Int
+}
+
+struct GdxColorTargetDescriptor {
+    var format: Int
+    var writeMask: Int
+    var blend: GdxBlendDescriptor
+}
+
+struct GdxDepthStencilDescriptor {
+    var enabled: Bool
+    var compare: Int
+    var writeEnabled: Bool
+    var bias: Int
+}
+
+struct GdxUniformBlockDescriptor {
+    var binding: Int
+    var size: Int
+    var stageMask: Int
+}
+
+struct GdxShaderResourceDescriptor {
+    var binding: Int
+    var kind: Int
+    var stageMask: Int
+}
+
+struct GdxRenderPipelineDescriptor {
+    var vertexLayout: GdxVertexLayoutDescriptor
+    var colorTargets: [GdxColorTargetDescriptor]
+    var depth: GdxDepthStencilDescriptor
+    var uniformBlocks: [GdxUniformBlockDescriptor]
+    var shaderResources: [GdxShaderResourceDescriptor]
+}
+
+function gdxAttributeScore(attr: borrow GdxVertexAttributeDescriptor) -> Int {
+    return attr.location * 1000 + attr.format * 100 + attr.offset * 10 + attr.bufferIndex
+}
+
+function gdxBlendScore(blend: borrow GdxBlendDescriptor) -> Int {
+    if blend.enabled {
+        return blend.preset * 100 + blend.srcFactor * 10 + blend.dstFactor
+    }
+    return blend.preset
+}
+
+function gdxDepthScore(depth: borrow GdxDepthStencilDescriptor) -> Int {
+    var score = depth.compare * 100 + depth.bias
+    if depth.enabled {
+        score = score + 7
+    }
+    if depth.writeEnabled {
+        score = score + 11
+    }
+    return score
+}
+
+function gdxShiftAttribute(attr: borrow GdxVertexAttributeDescriptor, delta: Int) -> GdxVertexAttributeDescriptor {
+    var next = attr
+    next.offset = next.offset + delta
+    next.location = next.location + 10
+    return next
+}
+
+function gdxMakeDescriptor() -> GdxRenderPipelineDescriptor {
+    let attrs = [
+        GdxVertexAttributeDescriptor { location: 0, format: 31, offset: 0, bufferIndex: 0 },
+        GdxVertexAttributeDescriptor { location: 1, format: 32, offset: 12, bufferIndex: 0 },
+        GdxVertexAttributeDescriptor { location: 2, format: 21, offset: 24, bufferIndex: 1 },
+        GdxVertexAttributeDescriptor { location: 3, format: 44, offset: 40, bufferIndex: 1 }
+    ]
+    let colors = [
+        GdxColorTargetDescriptor { format: 80, writeMask: 15, blend: GdxBlendDescriptor { enabled: true, preset: 3, srcFactor: 6, dstFactor: 7 } },
+        GdxColorTargetDescriptor { format: 81, writeMask: 7, blend: GdxBlendDescriptor { enabled: false, preset: 9, srcFactor: 1, dstFactor: 0 } },
+        GdxColorTargetDescriptor { format: 82, writeMask: 3, blend: GdxBlendDescriptor { enabled: true, preset: 4, srcFactor: 5, dstFactor: 2 } }
+    ]
+    let uniforms = [
+        GdxUniformBlockDescriptor { binding: 0, size: 96, stageMask: 1 },
+        GdxUniformBlockDescriptor { binding: 1, size: 80, stageMask: 2 },
+        GdxUniformBlockDescriptor { binding: 2, size: 32, stageMask: 3 }
+    ]
+    let resources = [
+        GdxShaderResourceDescriptor { binding: 4, kind: 1, stageMask: 2 },
+        GdxShaderResourceDescriptor { binding: 5, kind: 2, stageMask: 3 },
+        GdxShaderResourceDescriptor { binding: 6, kind: 3, stageMask: 1 }
+    ]
+    return GdxRenderPipelineDescriptor {
+        vertexLayout: GdxVertexLayoutDescriptor { stride: 48, stepMode: 0, attributes: move attrs },
+        colorTargets: move colors,
+        depth: GdxDepthStencilDescriptor { enabled: true, compare: 5, writeEnabled: true, bias: 13 },
+        uniformBlocks: move uniforms,
+        shaderResources: move resources
+    }
+}
+
+function gdxChecksumDescriptor(descriptor: borrow GdxRenderPipelineDescriptor) -> Int {
+    var checksum = descriptor.vertexLayout.stride * 13 + descriptor.vertexLayout.stepMode
+    var i = 0
+    while i < 4 {
+        let attr = descriptor.vertexLayout.attributes[i]
+        checksum = checksum + gdxAttributeScore(attr)
+        checksum = checksum + descriptor.vertexLayout.attributes[i].format * 3
+        checksum = checksum + descriptor.vertexLayout.attributes[i].offset * 5
+        i = i + 1
+    }
+
+    var c = 0
+    while c < 3 {
+        let target = descriptor.colorTargets[c]
+        let blend = descriptor.colorTargets[c].blend
+        checksum = checksum + target.format * 17 + target.writeMask
+        checksum = checksum + gdxBlendScore(blend)
+        checksum = checksum + descriptor.colorTargets[c].blend.preset * 19
+        if descriptor.colorTargets[c].blend.enabled {
+            checksum = checksum + 23
+        }
+        c = c + 1
+    }
+
+    checksum = checksum + gdxDepthScore(descriptor.depth)
+    checksum = checksum + descriptor.depth.compare * 29
+    if descriptor.depth.writeEnabled {
+        checksum = checksum + 31
+    }
+
+    var u = 0
+    while u < 3 {
+        checksum = checksum + descriptor.uniformBlocks[u].binding * 37
+        checksum = checksum + descriptor.uniformBlocks[u].size
+        checksum = checksum + descriptor.uniformBlocks[u].stageMask * 41
+        u = u + 1
+    }
+
+    var r = 0
+    while r < 3 {
+        let resource = descriptor.shaderResources[r]
+        checksum = checksum + resource.binding * 43 + resource.kind * 47 + resource.stageMask
+        checksum = checksum + descriptor.shaderResources[r].binding
+        r = r + 1
+    }
+    return checksum
+}
+
+// The original @Main body for the Int prints; `which` selects the value.
+function gdxScenario(which: Int) -> Int {
+    let descriptor = gdxMakeDescriptor()
+    let i = 2
+    let attr = descriptor.vertexLayout.attributes[i]
+    let shifted = gdxShiftAttribute(attr, 100)
+    let blend = descriptor.colorTargets[0].blend
+
+    if which == 0 {
+        return descriptor.vertexLayout.attributes[0].format
+    }
+    if which == 1 {
+        return descriptor.vertexLayout.attributes[0].offset
+    }
+    if which == 2 {
+        return descriptor.vertexLayout.attributes[2].format
+    }
+    if which == 3 {
+        return descriptor.vertexLayout.attributes[2].offset
+    }
+    if which == 4 {
+        return descriptor.colorTargets[0].blend.preset
+    }
+    if which == 5 {
+        return descriptor.depth.compare
+    }
+    if which == 6 {
+        return descriptor.uniformBlocks[2].stageMask
+    }
+    if which == 7 {
+        return descriptor.shaderResources[1].binding
+    }
+    if which == 8 {
+        return gdxAttributeScore(shifted)
+    }
+    if which == 9 {
+        return gdxBlendScore(blend)
+    }
+    return gdxChecksumDescriptor(descriptor)
+}
+
+Test GdxAttr0Format {
+    test { return gdxScenario(0) }
+    expect { let e: Result<Int, TestFailure> = .Ok(31); return e }
+}
+
+Test GdxAttr0Offset {
+    test { return gdxScenario(1) }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test GdxAttr2Format {
+    test { return gdxScenario(2) }
+    expect { let e: Result<Int, TestFailure> = .Ok(21); return e }
+}
+
+Test GdxAttr2Offset {
+    test { return gdxScenario(3) }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
+}
+
+Test GdxBlendPreset {
+    test { return gdxScenario(4) }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+Test GdxBlendEnabled {
+    test {
+        let descriptor = gdxMakeDescriptor()
+        return descriptor.colorTargets[0].blend.enabled
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test GdxDepthCompare {
+    test { return gdxScenario(5) }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}
+
+Test GdxDepthWriteEnabled {
+    test {
+        let descriptor = gdxMakeDescriptor()
+        return descriptor.depth.writeEnabled
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test GdxUniformStageMask {
+    test { return gdxScenario(6) }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+Test GdxResourceBinding {
+    test { return gdxScenario(7) }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}
+
+Test GdxShiftedAttributeScore {
+    // Copy-and-mutate of an array element must not write back into the array.
+    test { return gdxScenario(8) }
+    expect { let e: Result<Int, TestFailure> = .Ok(15341); return e }
+}
+
+Test GdxBlendScoreCopied {
+    test { return gdxScenario(9) }
+    expect { let e: Result<Int, TestFailure> = .Ok(367); return e }
+}
+
+Test GdxDescriptorChecksum {
+    test { return gdxScenario(10) }
+    expect { let e: Result<Int, TestFailure> = .Ok(28504); return e }
+}

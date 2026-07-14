@@ -1,0 +1,30 @@
+// WvrTests.kira — migrated from tests/pass/run/widget_value_runtime.
+// PREFIX: wvr / Wvr (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_value_runtime
+// ---------------------------------------------------------------------------
+// A concrete declaration is a runtime struct of its stored scalar fields: it
+// can be constructed with call syntax and its fields read. Original printed
+// `label.text` (stdout "hello widget runtime"). NOTE: `Node` and `TextNode`
+// are deliberately left undeclared exactly as in the original case — the
+// computed `node` accessor is never invoked.
+
+construct WvrWidget {
+    @Required let body: WvrWidget
+    let node: Node { body.node }
+}
+
+WvrWidget WvrText {
+    let text: String = ""
+    let node: Node { TextNode(text: text) }
+}
+
+Test WvrValueRuntimeFieldRead {
+    test {
+        let label = WvrText(text: "hello widget runtime")
+        return label.text
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("hello widget runtime"); return e }
+}

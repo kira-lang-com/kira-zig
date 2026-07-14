@@ -184,7 +184,7 @@ pub fn ffiAutobindingFailed() diagnostics.Diagnostic {
         .phase = .backend_prepare,
         .title = "native FFI autobinding failed",
         .message = "Kira could not generate native FFI bindings because clang failed to parse a native library header. See the clang output above for the underlying error.",
-        .help = "Check the native library manifest headers/include paths, ensure any required SDK is installed, then re-run `kira ffi autobind <target>`.",
+        .help = "Check the native library manifest headers/include paths, ensure any required SDK is installed, then re-run `kira ffi autobind` from the project directory.",
     });
 }
 

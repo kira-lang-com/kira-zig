@@ -1,0 +1,163 @@
+// nativeState / nativeUserData / nativeRecover / nativeStateFree bridging —
+// migrated corpus cases from tests/pass/run/. PREFIX: hbn / Hbn.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// hybrid_native_state_nested_enum_array — an enum payload nested inside an
+// array field must survive the nativeState round-trip. Original stdout: 1.
+// ---------------------------------------------------------------------------
+
+enum HbnMode {
+    None
+    Surface
+}
+
+struct HbnLayer {
+    let payload: HbnMode
+}
+
+struct HbnState {
+    let layers: [HbnLayer]
+}
+
+function hbnLayerCode(m: HbnMode) -> Int {
+    match m {
+        Surface -> return 1;
+        None -> return 0;
+    }
+    return 0
+}
+
+Test HbnNestedEnumArrayState {
+    test {
+        let state = nativeState(HbnState {
+            layers: [
+                HbnLayer {
+                    payload: .Surface
+                }
+            ]
+        })
+        let token = nativeUserData(state)
+        let recovered = nativeRecover<HbnState>(token)
+        let first = recovered.layers[0]
+        return hbnLayerCode(first.payload)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_state_enum_field — regression: an enum field stored in nativeState
+// must be CLONED into the state (not pointer-copied); the source struct drop
+// would otherwise free the enum block and recovery would read freed memory.
+// The 50-iteration nativeState churn perturbs the heap to surface a dangling
+// block; the churn count is preserved. Original stdout: 2 / 42.
+// ---------------------------------------------------------------------------
+
+enum HbnRgb { Red Green Blue }
+
+struct HbnHolder {
+    var mode: HbnRgb
+    var count: Int
+}
+
+function hbnRgbCode(m: HbnRgb) -> Int {
+    match m {
+        Red -> return 1;
+        Green -> return 2;
+        Blue -> return 3;
+    }
+    return 0
+}
+
+Test HbnStateEnumFieldChurn {
+    test {
+        let state = nativeState(HbnHolder { mode: .Green, count: 42 })
+        var i = 0
+        while i < 50 {
+            let scratch = nativeState(HbnHolder { mode: .Blue, count: i })
+            i = i + 1
+        }
+        var recovered = nativeRecover<HbnHolder>(nativeUserData(state))
+        // encoding of the printed 2 (mode code) / 42 (count): code * 1000 + count
+        return hbnRgbCode(recovered.mode) * 1000 + recovered.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(2042); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_state_field_moveout_parity — Codex P1 regression: moving an array
+// field OUT of a recovered nativeState (`let taken = view.nodes; view.nodes =
+// []`) must VOID the state's slot on every backend, or the re-init destroys
+// the payload the binding now owns (use-after-free / double free). The
+// 100-round churn is preserved. Original stdout: 10000.
+// ---------------------------------------------------------------------------
+
+struct HbnTree {
+    var nodes: [Int] = []
+    var generation: Int = 0
+}
+
+Test HbnStateFieldMoveoutParity {
+    test {
+        let state = nativeState(HbnTree {})
+        let handle = nativeUserData(state)
+        var round = 0
+        var checksum = 0
+        while round < 100 {
+            var view = nativeRecover<HbnTree>(handle)
+            view.nodes.append(round)
+            view.nodes.append(round + 1)
+            // Move the array field out of the recovered state, then re-initialize
+            // the field. The moved binding must survive the re-init's drop.
+            let taken = view.nodes
+            view.nodes = []
+            view.generation = view.generation + 1
+            var i = 0
+            while i < taken.count {
+                checksum = checksum + taken[i]
+                i = i + 1
+            }
+            round = round + 1
+        }
+        return checksum
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(10000); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_state_free_parity — recover, mutate through the view, read back,
+// free, then allocate/recover/free a second state (free-then-reuse parity).
+// Original stdout: 7 / 12 / 10 / 3.
+// ---------------------------------------------------------------------------
+
+struct HbnCounterState {
+    var count: Int
+    var total: Int
+}
+
+Test HbnStateFreeParity {
+    test {
+        var state = nativeState(HbnCounterState {
+            count: 7
+            total: 10
+        })
+        let token = nativeUserData(state)
+        var view = nativeRecover<HbnCounterState>(token)
+        let a = view.count
+        view.count = 12
+        let b = view.count
+        let c = view.total
+        nativeStateFree(token)
+
+        var second = nativeState(HbnCounterState {
+            count: 3
+            total: 4
+        })
+        var secondView = nativeRecover<HbnCounterState>(nativeUserData(second))
+        let d = secondView.count
+        nativeStateFree(second)
+        // positional encoding of the printed 7 / 12 / 10 / 3
+        return a * 1000000 + b * 10000 + c * 100 + d
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(7121003); return e }
+}

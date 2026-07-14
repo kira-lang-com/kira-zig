@@ -4,6 +4,7 @@
 //! `callback` expression into a generated IR function plus its capture wiring.
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const parent = @import("lower_from_hir.zig");
@@ -69,7 +70,7 @@ fn lowerGeneratedCallbackFunction(
     defer lowerer.loop_stack.deinit();
     errdefer |err| parent.recordUnsupported(state.unsupported, lowerer.current_span, lowerer.current_construct, err);
 
-    var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
+    var instructions = InstructionBuf.init(allocator, &InstructionBuf.null_span);
     for (callback.captures, 0..) |capture, index| {
         const param_slot: u32 = @intCast(callback.params.len + index);
         const capture_local = lowerer.mapLocal(capture.local_id);
@@ -79,7 +80,7 @@ fn lowerGeneratedCallbackFunction(
         try instructions.append(.{ .store_local = .{ .src = reg, .local = capture_local } });
     }
     const terminated = try lowerer.lowerStatements(&instructions, callback.body);
-    if (!terminated and (instructions.items.len == 0 or instructions.items[instructions.items.len - 1] != .ret)) {
+    if (!terminated and (instructions.list.items.len == 0 or instructions.list.items[instructions.list.items.len - 1] != .ret)) {
         try instructions.append(.{ .ret = .{ .src = null } });
     }
 
@@ -96,7 +97,8 @@ fn lowerGeneratedCallbackFunction(
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
         .local_types = try lowerCallbackLocalTypes(allocator, program, callback, local_remap, callback_local_count, lowerer.hidden_local_types.items, boxed_locals),
-        .instructions = try instructions.toOwnedSlice(),
+        .instructions = try instructions.toOwnedInstructions(),
+        .locations = try instructions.toOwnedLocations(),
     };
 }
 
@@ -180,6 +182,10 @@ fn countCallbacksInExpr(expr: *model.Expr) u32 {
         .c_string_to_string => |node| countCallbacksInExpr(node.value),
         .array_len => |node| countCallbacksInExpr(node.object),
         .string_len => |node| countCallbacksInExpr(node.object),
+        .string_from_scalar => |node| countCallbacksInExpr(node.operand),
+        .string_char_at => |node| countCallbacksInExpr(node.object) + countCallbacksInExpr(node.index),
+        .string_substring => |node| countCallbacksInExpr(node.object) + countCallbacksInExpr(node.start) + countCallbacksInExpr(node.end),
+        .string_index_of => |node| countCallbacksInExpr(node.object) + countCallbacksInExpr(node.needle),
         .field => |node| countCallbacksInExpr(node.object),
         .binary => |node| countCallbacksInExpr(node.lhs) + countCallbacksInExpr(node.rhs),
         .conditional => |node| countCallbacksInExpr(node.condition) + countCallbacksInExpr(node.then_expr) + countCallbacksInExpr(node.else_expr),

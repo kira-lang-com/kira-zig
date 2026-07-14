@@ -1,0 +1,49 @@
+// WtcTests.kira — migrated from tests/pass/run/widget_tree_construction.
+// PREFIX: wtc / Wtc (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_tree_construction
+// ---------------------------------------------------------------------------
+// Caller-provided content executes: a trailing `{ ... }` block at a construction
+// site fills the declaration's `@Content` fields — a `[Widget]` list, a single
+// `Widget`, and named fills for multiple content fields. Original printed
+// `tree.children.count` (stdout "3").
+
+construct WtcWidget {
+}
+
+WtcWidget WtcText {
+    let text: String = ""
+}
+
+WtcWidget WtcVStack {
+    @Content let children: [WtcWidget]
+}
+
+WtcWidget WtcPadding {
+    let amount: Float = 0
+    @Content let child: WtcWidget
+}
+
+WtcWidget WtcDialog {
+    @Content let header: WtcWidget
+    @Content let content: WtcWidget
+}
+
+Test WtcTreeConstructionChildCount {
+    test {
+        let tree = WtcVStack {
+            WtcText(text: "title")
+            WtcPadding(amount: 8) {
+                WtcText(text: "inner")
+            }
+            WtcDialog {
+                header { WtcText(text: "H") }
+                content { WtcText(text: "C") }
+            }
+        }
+        return tree.children.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}

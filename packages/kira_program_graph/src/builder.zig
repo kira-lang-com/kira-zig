@@ -10,9 +10,23 @@ const imports = @import("imports.zig");
 const paths = @import("paths.zig");
 
 var timings_enabled: bool = false;
+var progress_context: ?*anyopaque = null;
+var progress_callback: ?*const fn (?*anyopaque, []const u8) void = null;
 
 pub fn setTimingsEnabled(enabled: bool) void {
     timings_enabled = enabled;
+}
+
+pub fn setProgressCallback(context: ?*anyopaque, callback: ?*const fn (?*anyopaque, []const u8) void) void {
+    progress_context = context;
+    progress_callback = callback;
+}
+
+fn progressPrint(comptime fmt: []const u8, args: anytype) void {
+    const callback = progress_callback orelse return;
+    var buffer: [512]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+    callback(progress_context, message);
 }
 
 // Monotonic clock; previously returned 0 on non-Windows, making all non-Windows graph
@@ -188,6 +202,7 @@ fn appendProgramGraph(
 
     for (program.imports) |import_decl| {
         if (imports.packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
+            progressPrint("Scanning dependency {s}", .{owner.package_name});
             const collect_start = nowNs();
             const module_files = try collectPackageModuleFiles(allocator, owner.source_root);
             const collect_ns = elapsedNs(collect_start);
@@ -204,6 +219,7 @@ fn appendProgramGraph(
             }
             for (module_files) |module_path| {
                 try stats.addPackageParse(owner.package_name);
+                progressPrint("Parsing {s} from dependency {s}", .{ std.fs.path.basename(module_path), owner.package_name });
                 const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, owner.package_name);
                 try appendProgramGraph(allocator, stats, visited, import_list, import_origins, decls, decl_origins, functions, function_origins, module_path, imported_program, module_map, diags, false, owner.package_name);
             }
@@ -217,6 +233,7 @@ fn appendProgramGraph(
             try appendUnresolvedImportDiagnostic(allocator, diags, import_decl, resolved);
             return error.DiagnosticsEmitted;
         };
+        progressPrint("Parsing imported module {s}", .{std.fs.path.basename(module_path)});
         const imported_program = try parseModuleProgramTimed(allocator, stats, module_path, diags, null);
         try appendProgramGraph(allocator, stats, visited, import_list, import_origins, decls, decl_origins, functions, function_origins, module_path, imported_program, module_map, diags, false, origin_package);
     }

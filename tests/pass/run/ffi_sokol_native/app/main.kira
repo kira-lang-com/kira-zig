@@ -1,9 +1,0 @@
-import sokol_gfx as sg
-
-@Main
-@Native
-function main() {
-    sg.sg_isvalid()
-    print("sokol ffi")
-    return
-}

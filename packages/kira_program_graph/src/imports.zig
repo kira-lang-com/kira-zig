@@ -139,9 +139,19 @@ fn appendRootedModuleCandidates(
     if (separator == '/') {
         try candidates.append(try std.fmt.allocPrint(allocator, "{s}/{s}.kira", .{ source_root, relative }));
         try candidates.append(try std.fmt.allocPrint(allocator, "{s}/{s}/main.kira", .{ source_root, relative }));
+        // Autobind law: generated FFI bindings always live at
+        // `app/bindings/<module>.kira` (a child of the `app/` source root), so
+        // `import <module>` resolves the generated binding without a per-library
+        // `output` path. This is additive to the historical sibling
+        // `<pkg>/bindings/` root (see paths.zig:bindingsRootForSourceRoot),
+        // which Foundation still uses.
+        try candidates.append(try std.fmt.allocPrint(allocator, "{s}/bindings/{s}.kira", .{ source_root, relative }));
+        try candidates.append(try std.fmt.allocPrint(allocator, "{s}/bindings/{s}/main.kira", .{ source_root, relative }));
     } else {
         try candidates.append(try std.fmt.allocPrint(allocator, "{s}\\{s}.kira", .{ source_root, relative }));
         try candidates.append(try std.fmt.allocPrint(allocator, "{s}\\{s}\\main.kira", .{ source_root, relative }));
+        try candidates.append(try std.fmt.allocPrint(allocator, "{s}\\bindings\\{s}.kira", .{ source_root, relative }));
+        try candidates.append(try std.fmt.allocPrint(allocator, "{s}\\bindings\\{s}\\main.kira", .{ source_root, relative }));
     }
 }
 
@@ -236,6 +246,43 @@ test "same-package import resolves sibling app files from source directory" {
 
     try std.testing.expect(resolved.exists);
     try std.testing.expect(resolved.candidates.len >= 2);
+}
+
+test "import resolves generated binding under app/bindings" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "Project/app/bindings");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Project/app/main.kira", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Project/app/bindings/sokol_gfx.kira", .data = "" });
+
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "Project/app", allocator);
+    defer allocator.free(app_root);
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "Project/app/main.kira", allocator);
+    defer allocator.free(source_path);
+
+    var segments = [_]syntax.ast.NameSegment{.{ .text = "sokol_gfx", .span = .{ .start = 0, .end = 9 } }};
+    const module_name: syntax.ast.QualifiedName = .{ .segments = segments[0..], .span = .{ .start = 0, .end = 9 } };
+    const owners = [_]package_manager.ModuleMap.ModuleOwner{.{
+        .module_root = "App",
+        .package_name = "App",
+        .source_root = app_root,
+    }};
+
+    const resolved = try resolveImportPath(allocator, source_path, module_name, .{ .owners = owners[0..] });
+    defer allocator.free(resolved.display_name);
+    defer {
+        for (resolved.candidates) |candidate| allocator.free(candidate);
+        allocator.free(resolved.candidates);
+    }
+
+    try std.testing.expect(resolved.exists);
+    var saw_bindings_candidate = false;
+    for (resolved.candidates) |candidate| {
+        if (std.mem.endsWith(u8, candidate, "/bindings/sokol_gfx.kira")) saw_bindings_candidate = true;
+    }
+    try std.testing.expect(saw_bindings_candidate);
 }
 
 test "same-package import resolves inside canonical app root from source directory" {

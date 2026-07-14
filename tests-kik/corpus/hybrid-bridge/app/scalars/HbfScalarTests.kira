@@ -1,0 +1,49 @@
+// Scalar bridging and multi-hop round-trips — migrated corpus cases from
+// tests/pass/run/. PREFIX: hbf / Hbf.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// float_hybrid_bridge — F64 arguments and return across the runtime->native
+// bridge. Original stdout: 5.5; the F64 is compared in Kira and the verdict
+// returned as a Bool (the runner compares only scalars).
+// ---------------------------------------------------------------------------
+
+@Native
+function hbfNativeMix(left: F64, right: F64): F64 {
+    return left + right
+}
+
+Test HbfFloatHybridBridge {
+    test {
+        let mixed = hbfNativeMix(3.5, 2.0)
+        return mixed == 5.5
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid_roundtrip — native main -> runtime helper -> native helper.
+// Original stdout: "native main" / "runtime helper" / "native helper"; each
+// hop now appends a digit instead of printing (1 = native entry, 2 = runtime
+// helper, 3 = native helper), preserving the N -> R -> N crossing chain.
+// ---------------------------------------------------------------------------
+
+@Native
+function hbfNativeEntry() -> Int {
+    return hbfRuntimeHelper(1)
+}
+
+@Runtime
+function hbfRuntimeHelper(acc: Int) -> Int {
+    return hbfNativeHelper(acc * 10 + 2)
+}
+
+@Native
+function hbfNativeHelper(acc: Int) -> Int {
+    return acc * 10 + 3
+}
+
+Test HbfHybridRoundtrip {
+    test { return hbfNativeEntry() }
+    expect { let e: Result<Int, TestFailure> = .Ok(123); return e }
+}

@@ -15,6 +15,7 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\  build        Build a project, example, library, or source file.
         \\  ffi          Run explicit FFI maintenance tasks.
         \\  run          Build and execute a runnable target.
+        \\  debug        Debug a runnable target (interactive REPL or DAP server).
         \\  live         Start a live server/client session for an app/example target.
         \\  shader       Check, inspect, or build KSL shaders.
         \\  instruments  Run a target under process instrumentation.
@@ -23,6 +24,7 @@ pub fn print(writer: anytype, command: ?CommandKind) !void {
         \\  remove       Remove a package dependency.
         \\  update       Update registry package dependencies.
         \\  package      Pack or inspect Kira package archives.
+        \\  migrate-manifest  Convert a legacy kira.toml to package.kira.
         \\  export       Generate platform project/export scaffolds.
         \\  new          Scaffold an app or library package.
         \\  fetch-llvm   Install or describe the managed LLVM toolchain.
@@ -58,13 +60,19 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
             \\
         ),
         .ffi => try writer.writeAll(
-            \\usage: kira ffi autobind [--backend vm|llvm|hybrid|wasm32-emscripten] [--offline] [--locked] [--timings] [<project-dir|manifest|source>]
-            \\Regenerate native FFI bindings explicitly instead of doing heavy autobinding during normal check/build/run flows.
+            \\usage: kira ffi autobind [--backend vm|llvm|hybrid|wasm32-emscripten] [--offline] [--locked] [--timings] [--quiet]
+            \\Regenerate native FFI bindings for the current project.
             \\
         ),
         .run => try writer.writeAll(
             \\usage: kira run [--backend vm|llvm|hybrid] [--offline] [--locked] [--trace-execution] [--timings] [--quit-after <duration>] [<project-dir|manifest|source>]
             \\Run an app, example, or source file. `--quit-after` accepts values like 5s, 5000ms, or 5.
+            \\
+        ),
+        .debug => try writer.writeAll(
+            \\usage: kira debug [--backend vm|llvm] [--dap] [<project-dir|manifest|source>]
+            \\Build and debug an app, example, or source file. Without `--dap`, starts an interactive source-level REPL.
+            \\With `--dap`, serves the Debug Adapter Protocol over stdio for an editor client.
             \\
         ),
         .live => try writer.writeAll(
@@ -99,6 +107,11 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
         .remove => try writer.writeAll("usage: kira remove <Package>\n"),
         .update => try writer.writeAll("usage: kira update [<project-dir|manifest>]\n"),
         .package => try writer.writeAll("usage: kira package pack [<project-dir|manifest>]\n       kira package inspect <archive-path|project-dir>\n"),
+        .migrate_manifest => try writer.writeAll(
+            \\usage: kira migrate-manifest <project-dir|kira.toml>
+            \\Write an equivalent package.kira beside a legacy kira.toml (which is left in place; package.kira takes precedence).
+            \\
+        ),
         .export_cmd => try writer.writeAll(
             \\usage: kira export apple|macos|ios|tvos|visionos|windows|android|web|linux [<project-dir|manifest>] [--profile debug|profiler|release] [--surface dom|webgpu|hybrid]
             \\Generate platform exports. Target defaults to the current project.

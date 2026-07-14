@@ -11,7 +11,7 @@
 //     copyEnumToNativeLayout, including following a wrapper slot to the managed
 //     enum and preserving a payload).
 // These run on the hybrid bridge (the @Native/@Runtime mix is hybrid-only) and
-// reduce to scalars via Result.Ok so a wrong tag/payload or a crash both fail.
+// reduce to scalars via .Ok so a wrong tag/payload or a crash both fail.
 
 enum FerKind { A B C }
 enum FerVal { Empty Loaded(Int) }
@@ -19,16 +19,16 @@ enum FerVal { Empty Loaded(Int) }
 // @Native — RETURN a bare enum (native -> VM materialization).
 @Native
 function ferMakeKind(i: Int) -> FerKind {
-    if i == 0 { return FerKind.A }
-    if i == 1 { return FerKind.B }
-    return FerKind.C
+    if i == 0 { return .A }
+    if i == 1 { return .B }
+    return .C
 }
 
 // @Native — RETURN an enum WITH a payload.
 @Native
 function ferMakeVal(i: Int) -> FerVal {
-    if i <= 0 { return FerVal.Empty }
-    return FerVal.Loaded(i * 10)
+    if i <= 0 { return .Empty }
+    return .Loaded(i * 10)
 }
 
 // @Native — TAKE a payload-less enum (VM -> native lowering) and dispatch.
@@ -57,7 +57,7 @@ Test FerNativeReturnsKindB {
         let k = ferMakeKind(1)
         return ferKindCode(k)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test FerNativeReturnsKindC {
@@ -66,7 +66,7 @@ Test FerNativeReturnsKindC {
         return ferKindCode(k)
     }
     // C -> 3
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ── Group B: @Native returns an enum WITH a payload ──────────────────────────
@@ -77,7 +77,7 @@ Test FerNativeReturnsLoadedPayload {
         return ferValSum(move v)
     }
     // Loaded(50)
-    expect { let e: Result<Int, TestFailure> = Result.Ok(50); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(50); return e }
 }
 
 Test FerNativeReturnsEmpty {
@@ -85,7 +85,7 @@ Test FerNativeReturnsEmpty {
         let v = ferMakeVal(0)
         return ferValSum(move v)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 @Runtime
@@ -102,7 +102,7 @@ Test FerNativePayloadReadInVm {
         return ferValReadInVm(v)
     }
     // Loaded(70) -> 71 (enum returned from @Native, matched in a @Runtime fn)
-    expect { let e: Result<Int, TestFailure> = Result.Ok(71); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(71); return e }
 }
 
 // ── Group C: round-trip churn — return from native, pass back to native ──────
@@ -119,7 +119,7 @@ Test FerNativeEnumRoundTripLoop {
         // ferKindCode over i%3 = 0,1,2 -> 1,2,3 repeating; sum per 3 = 6; 10 cycles = 60
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test FerNativePayloadRoundTripLoop {
@@ -134,5 +134,5 @@ Test FerNativePayloadRoundTripLoop {
         // sum of i*10 for i in 1..10 = 10 * 55 = 550
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(550); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(550); return e }
 }

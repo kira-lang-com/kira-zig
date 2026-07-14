@@ -6,7 +6,7 @@ const support = @import("../support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len > 1) return error.InvalidArguments;
-    const input = try support.resolveCommandInput(allocator, if (args.len == 0) support.defaultCommandInputPath() else args[0]);
+    const input = try support.resolveCommandInputWithDiagnostics(allocator, if (args.len == 0) support.defaultCommandInputPath() else args[0], stderr);
 
     try support.logFrontendStarted(stderr, "ast", input.source_path);
     const result = try build.parseFile(allocator, input.source_path);

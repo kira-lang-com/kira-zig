@@ -55,6 +55,7 @@ pub fn lowerEnumDecl(ctx: *shared.Context, enum_decl: syntax.ast.EnumDecl) !mode
         .name = try ctx.allocator.dupe(u8, enum_decl.name),
         .type_params = try cloneStringSlice(ctx.allocator, enum_decl.type_params),
         .variants = try variants.toOwnedSlice(),
+        .derive_copy = enum_decl.derive_copy,
         .span = enum_decl.span,
     };
 }
@@ -81,6 +82,7 @@ pub fn monomorphizeEnum(ctx: *shared.Context, base_decl: model.EnumDecl, concret
         .name = concrete_name,
         .type_params = &.{},
         .variants = try variants.toOwnedSlice(),
+        .derive_copy = base_decl.derive_copy,
         .span = base_decl.span,
     };
     if (ctx.concrete_enums) |concrete_enums| try concrete_enums.put(ctx.allocator, lowered.name, lowered);
@@ -110,6 +112,8 @@ pub fn registerGenericEnumInstantiations(ctx: *shared.Context, program: syntax.a
             .extend_decl => {},
             // Macros and macro invocations are expanded and removed before semantics.
             .macro_decl, .macro_invocation => {},
+            // FailTest bodies are quoted text compiled in isolation by the runner.
+            .fail_test_decl => {},
         }
     }
 }
@@ -286,6 +290,7 @@ fn registerBuilderBlock(ctx: *shared.Context, block: syntax.ast.BuilderBlock) an
                 }
                 if (value.default_block) |default_block| try registerBuilderBlock(ctx, default_block);
             },
+            .field_override => |value| try registerExpr(ctx, value.value),
         }
     }
 }
@@ -425,6 +430,7 @@ fn enumDefaultSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .binary => |node| node.span,
         .conditional => |node| node.span,
         .identifier => |node| node.span,
+        .implicit_member => |node| node.span,
         .member => |node| node.span,
         .index => |node| node.span,
         .call => |node| node.span,

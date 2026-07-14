@@ -1,0 +1,301 @@
+// MacTests.kira — migrated corpus cases from tests/pass/run/macro_*.
+// PREFIXES: mfx/Mfx (macro_field_trigger_rewrite), mpw/Mpw (macro_property_wrapper),
+// mws/Mws (macro_wrapper_state). All top-level names use a per-case prefix.
+// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+// Macro expansion is a frontend AST transform, so VM / LLVM / hybrid are identical by
+// construction; the Tests assert the values the legacy cases printed.
+
+// ---------------------------------------------------------------------------
+// macro_field_trigger_rewrite
+// ---------------------------------------------------------------------------
+
+comptime macro MfxTracked {
+    kind { attribute }
+    appliesTo { form }
+    trigger { field }
+    replace { true }
+
+    expand(target: Declaration) -> Syntax {
+        var stateFields: [Syntax] = []
+        var accessors: [Syntax] = []
+        var rewritten: Syntax = target.syntax
+        for field in target.fields {
+            if field.hasAnnotation("MfxTracked") {
+                stateFields.append(quote {
+                    var #{field.name}: #{field.type.asSyntax()} = #{field.initializer}
+                })
+                accessors.append(quote {
+                    function __state_#{target.name}_get_#{field.name}() -> #{field.type.asSyntax()} {
+                        print("get:" + #{field.name.asString()})
+                        let store = __State_#{target.name} {}
+                        return store.#{field.name}
+                    }
+                    function __state_#{target.name}_set_#{field.name}(value: #{field.type.asSyntax()}) {
+                        print("set:" + #{field.name.asString()})
+                        return
+                    }
+                })
+                rewritten = rewritten.dropField(field.name)
+                rewritten = rewritten.rewriteProperty(
+                    field.name,
+                    quote { __state_#{target.name}_get_#{field.name}() },
+                    quote { __state_#{target.name}_set_#{field.name} }
+                )
+            }
+        }
+        return quote {
+            struct __State_#{target.name} {
+                #{stateFields}
+            }
+            #{accessors}
+            #{rewritten}
+        }
+    }
+}
+
+construct MfxPanel {
+    @Required let body: Int
+}
+
+MfxPanel MfxDemo() {
+    @MfxTracked var count: Int = 7
+    @MfxTracked var label: String = "hello"
+    let body: Int = 1
+
+    function poke() -> Int {
+        count = count + 1
+        return count
+    }
+
+    function readLabel() -> String {
+        return label
+    }
+
+    function shadowed() -> Int {
+        let count = 99
+        return count
+    }
+}
+
+// Legacy stdout: poke() returned the (rewritten getter's) default 7, readLabel()
+// the default "hello", shadowed() the local 99.
+
+Test MfxPokeReturnsDefault {
+    test {
+        let d = MfxDemo()
+        return d.poke()
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
+}
+
+Test MfxLabelDefault {
+    test {
+        let d = MfxDemo()
+        return d.readLabel()
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("hello"); return e }
+}
+
+Test MfxShadowRespected {
+    test {
+        let d = MfxDemo()
+        return d.shadowed()
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(99); return e }
+}
+
+// ---------------------------------------------------------------------------
+// macro_property_wrapper
+// ---------------------------------------------------------------------------
+
+comptime macro MpwPropertyWrapper {
+    kind { attribute }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var hasWrapped: Bool = false
+        var hasProjected: Bool = false
+        for field in target.fields {
+            if field.name.asString() == "wrappedValue" {
+                hasWrapped = true
+            }
+            if field.name.asString() == "projectedValue" {
+                hasProjected = true
+            }
+        }
+        if hasWrapped == false {
+            Diagnostics.error("MpwPropertyWrapper requires a wrappedValue field", at: target.syntax)
+            return quote { }
+        }
+        return quote {
+            function is_#{target.name}_propertyWrapper() -> Bool {
+                return true
+            }
+            function has_#{target.name}_projectedValue() -> Bool {
+                return #{hasProjected}
+            }
+        }
+    }
+}
+
+@MpwPropertyWrapper
+struct MpwState {
+    var wrappedValue: Int
+    var projectedValue: Bool
+}
+
+@MpwPropertyWrapper
+struct MpwClamped {
+    var wrappedValue: Int
+}
+
+Test MpwStateIsPropertyWrapper {
+    test { return is_MpwState_propertyWrapper() }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test MpwStateHasProjectedValue {
+    test { return has_MpwState_projectedValue() }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test MpwClampedHasNoProjectedValue {
+    test { return has_MpwClamped_projectedValue() }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// macro_wrapper_state
+// ---------------------------------------------------------------------------
+
+comptime macro MwsPropertyWrapper {
+    kind { wrapper }
+    appliesTo { form }
+
+    expand(target: Declaration, wrapper: Declaration) -> Syntax {
+        if target.name.asString() == wrapper.name.asString() {
+            var hasWrapped: Bool = false
+            for field in target.fields {
+                if field.name.asString() == "wrappedValue" {
+                    hasWrapped = true
+                }
+            }
+            if hasWrapped == false {
+                Diagnostics.error("MwsPropertyWrapper requires a wrappedValue field", at: target.syntax)
+                return quote { }
+            }
+            return quote {
+                function is_#{target.name}_propertyWrapper() -> Bool {
+                    return true
+                }
+            }
+        }
+        var monos: [Syntax] = []
+        var accessors: [Syntax] = []
+        var rewritten: Syntax = target.syntax
+        for field in target.fields {
+            if field.hasAnnotation(wrapper.name.asString()) {
+                let monoName = "__pw_" + target.name.asString() + "_" + field.name.asString()
+                var mono: Syntax = wrapper.syntax.replaceIdentifier(wrapper.name.asString(), monoName)
+                mono = mono.replaceIdentifier("Wrapped", field.type.asSyntax())
+                monos.append(mono)
+                accessors.append(quote {
+                    function __pw_#{target.name}_get_#{field.name}() -> #{field.type.asSyntax()} {
+                        let backing = __pw_#{target.name}_#{field.name} {
+                            wrappedValue: #{field.initializer}
+                            key: #{target.name.asString() + "." + field.name.asString()}
+                        }
+                        return backing.get()
+                    }
+                    function __pw_#{target.name}_set_#{field.name}(value: #{field.type.asSyntax()}) {
+                        let backing = __pw_#{target.name}_#{field.name} {
+                            wrappedValue: #{field.initializer}
+                            key: #{target.name.asString() + "." + field.name.asString()}
+                        }
+                        backing.set(move value)
+                        return
+                    }
+                })
+                rewritten = rewritten.dropField(field.name)
+                rewritten = rewritten.rewriteProperty(
+                    field.name,
+                    quote { __pw_#{target.name}_get_#{field.name}() },
+                    quote { __pw_#{target.name}_set_#{field.name} }
+                )
+            }
+        }
+        return quote {
+            #{monos}
+            #{accessors}
+            #{rewritten}
+        }
+    }
+}
+
+@MwsPropertyWrapper
+struct MwsState {
+    var wrappedValue: Wrapped
+    var key: String = ""
+
+    function get() -> Wrapped {
+        print("get:" + self.key)
+        return self.wrappedValue
+    }
+
+    function set(value: Wrapped) {
+        print("set:" + self.key)
+        return
+    }
+}
+
+construct MwsPanel {
+    @Required let body: Int
+}
+
+MwsPanel MwsDemo() {
+    @MwsState var count: Int = 7
+    @MwsState var label: String = "hello"
+    let body: Int = 1
+
+    function poke() -> Int {
+        count = count + 1
+        return count
+    }
+
+    function readLabel() -> String {
+        return label
+    }
+
+    function shadowed() -> Int {
+        let count = 99
+        return count
+    }
+}
+
+Test MwsStateIsWrapper {
+    test { return is_MwsState_propertyWrapper() }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test MwsPokeReturnsDefault {
+    test {
+        let d = MwsDemo()
+        return d.poke()
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
+}
+
+Test MwsLabelDefault {
+    test {
+        let d = MwsDemo()
+        return d.readLabel()
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("hello"); return e }
+}
+
+Test MwsShadowRespected {
+    test {
+        let d = MwsDemo()
+        return d.shadowed()
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(99); return e }
+}

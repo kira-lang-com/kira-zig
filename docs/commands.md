@@ -27,6 +27,7 @@ Standalone CLI:
 - `kira tokens examples/hello`
 - `kira ast examples/hello`
 - `kira check examples/hello`
+- `kira test tests-kik/corpus/macros`
 - `kira build examples/hello`
 - `kira shader check examples/shaders/textured_quad.ksl`
 - `kira shader ast examples/shaders/textured_quad.ksl`
@@ -40,11 +41,11 @@ Standalone CLI:
 - `kira remove FrostUI`
 - `kira update`
 - `kira package pack`
-- `kira package inspect generated/DemoApp-0.1.0.tar`
-- `kira new --lib GraphicsKit generated/GraphicsKit`
+- `kira package inspect .kira-build/package/DemoApp-0.1.0.tar`
+- `kira new --lib GraphicsKit .codex/tmp/GraphicsKit`
 - `kira build --backend llvm examples/hello`
 - `kira build --backend hybrid examples/hybrid_roundtrip`
-- `kira new DemoApp generated/DemoApp`
+- `kira new DemoApp .codex/tmp/DemoApp`
 
 Build-system convenience:
 
@@ -69,23 +70,28 @@ Build-system convenience:
 - `zig build run -- instruments run examples/arithmetic --backend runtime --track memory --track cpu --duration 500ms --sample-rate 10hz --json-out .kira/instruments/arithmetic.runtime.json`
 - `zig build run -- build --backend llvm examples/hello`
 - `zig build run -- build --backend hybrid examples/hybrid_roundtrip`
-- `zig build run -- new DemoApp generated/DemoApp`
+- `zig build run -- new DemoApp .codex/tmp/DemoApp`
 
 Install notes:
 
 - `zig build install` installs `kira` into `zig-out/bin/` by default and installs the active real toolchain into `~/.kira/toolchains/<channel>/<version>/`
 - `zig build install-kirac` installs the same managed toolchain plus launcher flow without changing the rest of the repo install names
 - `zig build install -p .local` installs into `.local/bin/` instead of `zig-out/bin/`
+- `zig build` refreshes Foundation's generated FFI bindings inside the installed managed dev toolchain and preserves its compiled native-library cache; no manual Foundation `kira ffi autobind` pass is required
 - `~/.kira/toolchains/current.toml` selects which real toolchain `kira` forwards to
 - GitHub release archives ship the `kira` launcher separately from the managed toolchain payload; on first run, the release launcher downloads the matching `kira-toolchain-<platform>` archive into `~/.kira/toolchains/release/<version>/` and activates it automatically
 - add the chosen launcher `bin/` directory to `PATH` to make direct `kira` invocation global for your shell session
 
 CLI behavior:
 
+- In an ANSI-capable terminal, `run`, `build`, `check`, and `test` render an in-place status surface with a command title and the six latest dependency, frontend, backend, linking, and test events. Redirected output remains plain and complete for scripts and CI; `--timings` keeps its explicit line-oriented diagnostic output instead of using the surface.
+- Interactive `kira test` removes the scrolling surface on completion and prints only the combined `test result:` tally. Individual `CHECK`, `PASS`, `FAIL`, backend-result, and program-output lines remain available while the command runs in the six-line history and in full whenever output is redirected. The machine-readable tally is written to `.kira-build/test-report.json`.
+- A successful `kira build` finishes with `Successfully built`; a failed build prints `Failed to build` followed by the normal structured compiler diagnostics. Artifact paths are not dumped into the final output.
+- Build caches use one stable slot per source/backend under `.kira-build/cache/`. Input changes replace that slot instead of accumulating one content-hash directory per build.
 - `fetch-llvm` reads `llvm-metadata.toml`, resolves the current host bundle, downloads the matching GitHub release asset, installs it into `~/.kira/toolchains/llvm/<llvm-version>/<target>/`, and skips when the install marker already matches
 - `fetch-llvm --ci-metadata --json` prints Kira-owned machine-readable metadata for CI without downloading or extracting anything
 - `fetch-llvm --archive <path>` installs a previously downloaded archive into the managed LLVM location using the same validation, extraction, marker, and layout rules as the normal fetch flow
-- `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `kira.toml` first, then legacy `project.toml`
+- `run`, `build`, `check`, `tokens`, and `ast` default to the current directory and discover `package.kira` first, then legacy `kira.toml`, then legacy `project.toml`
 - `run` defaults to the VM backend; `run --backend llvm` builds and runs a native executable
 - `run --backend hybrid` builds a hybrid manifest, bytecode sidecar, and native shared library, then runs the mixed program in the hybrid host
 - `run <target> --quit-after <duration>` starts the target and requests or enforces bounded shutdown after a positive duration such as `5s`, `5000ms`, or plain integer seconds. This is intended for non-disruptive bounded runs of graphical and long-running examples.
@@ -107,12 +113,12 @@ CLI behavior:
 - `tokens` dumps lexer output
 - `ast` dumps the parsed AST
 - `check` runs parse and semantics
-- `build` defaults to writing a `.kbc` bytecode artifact into `generated/`
+- `build` writes compiler artifacts into the project-local `.kira-build/` directory
 - `shader check` runs the dedicated `.ksl` lexer, parser, import loader, semantic pass, and typed shader IR validation
 - `shader ast` dumps the parsed KSL module shape without routing through the executable `.kira` frontend
-- `shader build <file.ksl>` emits GLSL 330 vertex/fragment source plus reflection JSON into `generated/shaders/` next to the source file by default, or `--out-dir <dir>`
+- `shader build <file.ksl>` emits GLSL 330 vertex/fragment source plus reflection JSON into `.kira-build/shaders/` next to the source file by default, or `--out-dir <dir>`
 - `shader build <file.ksl> --target wgsl|hlsl|msl|metal|spirv|spv` emits target-specific graphics shader artifacts plus reflection JSON. `glsl`, `glsl330`, and `glsl_330` select GLSL 330; `mlsl` and `metal` select MSL; `spir-v` and `spv` select textual SPIR-V assembly output.
-- `shader build` with no explicit file discovers all top-level PascalCase `*.ksl` entry shaders under `Shaders/` in the current project root and writes outputs to `generated/Shaders/`
+- `shader build` with no explicit file discovers all top-level PascalCase `*.ksl` entry shaders under `Shaders/` in the current project root and writes outputs to `.kira-build/shaders/`
 - `shader build` rejects compute shaders today with an explicit backend diagnostic because the current validated KSL lowerers are graphics shader paths, not compute-capable pipelines
 - `instruments run <target>` builds the target through the normal pipeline, launches the selected backend as a child process, samples process metrics over the requested duration, prints a stable human report, and optionally writes stable JSON with `--json-out`
 - `instruments run` accepts `--backend runtime|llvm|hybrid`, repeated `--track memory` and `--track cpu`, `--duration` values like `30s`, `1m`, or `500ms`, `--sample-rate` values like `10hz` or `2.5hz`, and `--fail-on-growth` byte thresholds like `10mb`, `512kb`, or `1048576`
@@ -120,11 +126,11 @@ CLI behavior:
 - `instruments run --track cpu` reports measured CPU percent when enough samples are available, and reports CPU data as unavailable rather than inventing values when the run is too short or the platform data is not available
 - `instruments run --fail-on-growth <bytes>` exits non-zero when measured memory growth is greater than the threshold; equality is treated as passing
 - `sync` resolves registry, path, and git dependencies into `kira.lock`, verifies registry archive SHA-256 checksums, and populates the local cache under `~/.kira/cache/packages/`
-- `add`, `remove`, and `update` edit `kira.toml` and then refresh `kira.lock`
-- `package pack` writes a validated source-only `.tar` archive into `generated/`
+- `add`, `remove`, and `update` edit the package manifest (`package.kira`, or legacy `kira.toml`) and then refresh `kira.lock`
+- `package pack` writes a validated source-only `.tar` archive into `.kira-build/package/`
 - `package inspect` prints manifest metadata and archive contents without extracting package scripts because package scripts are not supported
-- `build --backend llvm` writes both a native object file and a native executable into `generated/`
-- `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `generated/`
+- `build --backend llvm` writes both a native object file and a native executable into `.kira-build/`
+- `build --backend hybrid` writes a `.khm` hybrid manifest plus the bytecode, native object, and native shared library sidecars into `.kira-build/`
 - `build --profile debug|profiler|release` selects the resolved profile backend. `profiles.profiler` is the profiling profile; `profiles.profile` is reserved/rejected.
 - `export apple|macos|ios|tvos|visionos|windows|android|web|linux [target]` infers the current project/app target when omitted. `apple` emits the merged Xcode workspace; individual Apple exports reuse that system. Windows/Linux emit CMake/Ninja scaffolds, Android emits a Gradle scaffold, and Web emits Kira Wasm DOM HTML/JS/Wasm artifacts.
 - `new` scaffolds either an app or a library package; use `new --lib` for a library template with `kind = "library"`, `module_root`, and a root module file under `app/`

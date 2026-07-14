@@ -1,0 +1,5 @@
+Package llvm_enum_var_local {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+}

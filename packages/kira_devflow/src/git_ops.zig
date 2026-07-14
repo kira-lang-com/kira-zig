@@ -11,6 +11,14 @@ pub fn currentBranch(ctx: Context) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
 }
 
+pub fn headOid(ctx: Context) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "rev-parse", "HEAD" });
+}
+
+pub fn workingTreeSummary(ctx: Context) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "status", "--short" });
+}
+
 pub fn fetchRemote(ctx: Context, remote: []const u8) !void {
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "fetch", "--quiet", remote });
 }
@@ -68,6 +76,22 @@ pub fn pushForkBranch(ctx: Context, branch: []const u8) !void {
 /// trees. Caller owns the returned slice.
 pub fn contentDiffStat(ctx: Context, a: []const u8, b: []const u8) ![]u8 {
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "diff", "--stat", a, b });
+}
+
+/// Every path changed by the complete branch, relative to its merge base with
+/// `base`. This is PR scope; the working tree and the current agent session are
+/// deliberately irrelevant.
+pub fn branchChangedFiles(ctx: Context, base: []const u8) ![]u8 {
+    const range = try std.fmt.allocPrint(ctx.allocator, "{s}...HEAD", .{base});
+    defer ctx.allocator.free(range);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", range });
+}
+
+/// Subjects of every commit in the complete branch, oldest first.
+pub fn branchCommitSubjects(ctx: Context, base: []const u8) ![]u8 {
+    const range = try std.fmt.allocPrint(ctx.allocator, "{s}..HEAD", .{base});
+    defer ctx.allocator.free(range);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "log", "--reverse", "--format=%s", range });
 }
 
 /// True when refs `a` and `b` point at identical trees (empty content diff).

@@ -1,0 +1,174 @@
+// Native indexing/append policy on arrays of structs — migrated corpus cases
+// from tests/pass/run/. PREFIX: hbx / Hbx.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// hybrid_runtime_array_struct_native_indexing — @Native code indexes into a
+// runtime [struct] (element copy, nested-field chains, mixed fixed/param
+// indices) and mutates through indexed field chains; the runtime and native
+// scores must agree. Original stdout: 2382 / 2382 / 762.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbxNested {
+    var x: Int
+    var y: Int
+}
+
+@Runtime
+struct HbxItem {
+    var x: Int
+    var nested: HbxNested
+}
+
+@Runtime
+function hbxMakeItems() -> [HbxItem] {
+    return [
+        HbxItem { x: 11, nested: HbxNested { x: 101, y: 1001 } },
+        HbxItem { x: 22, nested: HbxNested { x: 202, y: 2002 } },
+        HbxItem { x: 33, nested: HbxNested { x: 303, y: 3003 } }
+    ]
+}
+
+@Native
+function hbxNativeScore(items: borrow [HbxItem], i: Int) -> Int {
+    let item = items[i]
+    let nested = items[i].nested
+    return items[i].x + items[i].nested.x + item.x + nested.y + items[0].nested.x + items[2].x
+}
+
+@Native
+function hbxNativeMutate(items: borrow mut [HbxItem], i: Int) {
+    items[i].x = 55
+    items[i].nested.x = 707
+    return
+}
+
+@Runtime
+function hbxRuntimeScore(items: borrow [HbxItem], i: Int) -> Int {
+    let item = items[i]
+    let nested = items[i].nested
+    return items[i].x + items[i].nested.x + item.x + nested.y + items[0].nested.x + items[2].x
+}
+
+Test HbxIndexRuntimeScore {
+    test {
+        var items = hbxMakeItems()
+        return hbxRuntimeScore(items, 1)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(2382); return e }
+}
+
+Test HbxIndexNativeScore {
+    test {
+        var items = hbxMakeItems()
+        return hbxNativeScore(items, 1)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(2382); return e }
+}
+
+Test HbxIndexNativeMutateReadback {
+    test {
+        var items = hbxMakeItems()
+        hbxNativeMutate(items, 1)
+        return items[1].x + items[1].nested.x
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(762); return e }
+}
+
+// ---------------------------------------------------------------------------
+// llvm_append_struct_then_mutate_nested_field_policy — an all-@Native
+// append-then-mutate over [@Native struct] (the LLVM-side mutation policy);
+// the whole exercise stays in native code like the original @Native main.
+// Original stdout: 3 / 212453 / 4101 / 4202 / 4307.
+// ---------------------------------------------------------------------------
+
+@Native
+struct HbxPolicyInner {
+    var left: Int
+    var right: Int
+}
+
+@Native
+struct HbxPolicyElement {
+    var id: Int
+    var inner: HbxPolicyInner
+    var tail: Int
+}
+
+@Native
+function hbxScorePolicy(elements: borrow [HbxPolicyElement]) -> Int {
+    var total = 0
+    var index = 0
+    while index < elements.count {
+        let element = elements[index]
+        total = total + element.id * 3 + element.inner.left * 5 + element.inner.right * 7 + element.tail * 11 + index * 13
+        index = index + 1
+    }
+    return total
+}
+
+@Native
+function hbxAppendPolicy(elements: borrow mut [HbxPolicyElement], base: Int) {
+    let start = elements.count
+    elements.append(HbxPolicyElement {
+        id: base + 1,
+        inner: HbxPolicyInner { left: base + 2, right: base + 3 },
+        tail: base + 4
+    })
+    elements.append(HbxPolicyElement {
+        id: base + 5,
+        inner: HbxPolicyInner { left: base + 6, right: base + 7 },
+        tail: base + 8
+    })
+    elements[start].id = elements[start].id + 100
+    elements[start].inner.left = elements[start].inner.left + 200
+    elements[start + 1].inner.right = elements[start + 1].inner.right + 300
+    return
+}
+
+@Native
+function hbxPolicyCountScoreRun() -> Int {
+    var elements: [HbxPolicyElement] = [
+        HbxPolicyElement { id: 9, inner: HbxPolicyInner { left: 19, right: 29 }, tail: 39 }
+    ]
+    hbxAppendPolicy(elements, 4000)
+    // encoding of the printed 3 (count) / 212453 (score): count * 1000000 + score
+    return elements.count * 1000000 + hbxScorePolicy(elements)
+}
+
+@Native
+function hbxPolicyFieldReadsRun() -> Int {
+    var elements: [HbxPolicyElement] = [
+        HbxPolicyElement { id: 9, inner: HbxPolicyInner { left: 19, right: 29 }, tail: 39 }
+    ]
+    hbxAppendPolicy(elements, 4000)
+    // printed values 4101 ([1].id) + 4202 ([1].inner.left) + 4307 ([2].inner.right)
+    return elements[1].id + elements[1].inner.left + elements[2].inner.right
+}
+
+Test HbxPolicyCountScore {
+    test { return hbxPolicyCountScoreRun() }
+    expect { let e: Result<Int, TestFailure> = .Ok(3212453); return e }
+}
+
+Test HbxPolicyFieldReads {
+    test { return hbxPolicyFieldReadsRun() }
+    expect { let e: Result<Int, TestFailure> = .Ok(12610); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_runtime_array_callback_pinning — an owned [Int] literal passed from
+// the runtime into a @Native function (argument array pinning).
+// Original stdout: 15.
+// ---------------------------------------------------------------------------
+
+@Native
+function hbxPinnedSum(values: [Int]) -> Int {
+    return values[0] + values[1] + values[2]
+}
+
+Test HbxArrayCallbackPinning {
+    test { return hbxPinnedSum([4, 5, 6]) }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
+}

@@ -1,0 +1,52 @@
+// FdmTests.kira — migrated corpus case from tests/pass/run/ffi_dynamic_vm.
+// PREFIX: fdm / Fdm (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// ffi_dynamic_vm
+// ---------------------------------------------------------------------------
+// Hand-written binding for the dynamically linked `ffimath` test library.
+// The VM dispatches each call through LibFFI; no @Native boundary is required
+// (the test bodies run on the VM side of the hybrid driver, matching the
+// original execution_mode = "vm" case).
+
+@FFI.Extern { library: ffimath; symbol: kira_ffi_add; abi: c; }
+function fdmAdd(a: I32, b: I32): I32;
+
+@FFI.Extern { library: ffimath; symbol: kira_ffi_scale; abi: c; }
+function fdmScale(x: F64): F64;
+
+@FFI.Extern { library: ffimath; symbol: kira_ffi_strlen; abi: c; }
+function fdmStrlen(text: CString): I64;
+
+// Original stdout: "42\n25\n15\n" — each print becomes one scalar assertion.
+
+Test FdmDynamicAdd {
+    test {
+        let sum: I32 = fdmAdd(40, 2)
+        var out = 0
+        if sum == 42 { out = 1 }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+Test FdmDynamicScale {
+    test {
+        let scaled: F64 = fdmScale(10.0)
+        var out = 0
+        if scaled == 25.0 { out = 1 }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+Test FdmDynamicStrlen {
+    test {
+        let length: I64 = fdmStrlen("hello, kira ffi")
+        var out = 0
+        if length == 15 { out = 1 }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}

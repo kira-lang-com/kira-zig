@@ -89,9 +89,9 @@ function strTokLen(t: borrow StrTok) -> Int {
 // Produce a token, returning the enum directly from each branch.
 function strTokFor(i: Int) -> StrTok {
     let m = i % 3
-    if m == 0 { return StrTok.Word("redred") }
-    if m == 1 { return StrTok.Blank }
-    return StrTok.Word("xy")
+    if m == 0 { return .Word("redred") }
+    if m == 1 { return .Blank }
+    return .Word("xy")
 }
 
 // Bump an Int field of a local struct through `borrow mut` (writeback to a local).
@@ -214,8 +214,8 @@ function strSection() -> Int {
 
     // 11. Single String-payload enum: direct matches plus an array of tokens
     //     iterated and matched (payload-less and payload-carrying interleaved).
-    let w1 = StrTok.Word("hello")
-    let w2 = StrTok.Blank
+    let w1: StrTok = .Word("hello")
+    let w2: StrTok = .Blank
     acc = acc + strTokLen(w1) + strTokLen(w2) // 5 + 0
 
     var toks: [StrTok] = []
@@ -235,4 +235,3 @@ function strSection() -> Int {
 
     return acc
 }
-

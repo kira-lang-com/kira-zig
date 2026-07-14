@@ -1,0 +1,106 @@
+// Fc2FailTests.kira — Construct 2.0 negative surface (items 1/2/6).
+// Each FailTest inlines a self-contained source that must fail to compile with the stated
+// diagnostic on every listed backend. PREFIX: Fc2 / KikFailConstruct2.
+//
+//   KSEM161  a construction that omits a `@Required` field
+//   KSEM163  an override block naming a field the type does not declare
+//   KSEM164  a construct that declares a removed `properties { ... }` schema
+//   KSEM165  a construct that declares a removed content channel / composition directive
+//
+// (KSEM162 — filling a slot field via a parens argument — is covered in
+// fail-corpus/semantics-a as FsaConstructSlotViaParens.)
+
+// --- KSEM161: a `@Required` field left unprovided at a construction site.
+FailTest Fc2MissingRequiredField {
+    backends { vm llvm hybrid }
+    source {
+construct Panel {
+    @Required let body: Panel
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Panel Card() {
+    @Required let title: String
+    function render() -> [String] {
+        return [title]
+    }
+}
+
+@Main
+function main() {
+    let c = Card()
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM161")); return e }
+}
+
+// --- KSEM163: an override member names a field the constructed type does not declare.
+FailTest Fc2UnknownOverrideField {
+    backends { vm llvm hybrid }
+    source {
+construct Panel {
+    @Required let body: Panel
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Panel Card() {
+    let title: String = "t"
+    function render() -> [String] {
+        return [title]
+    }
+}
+
+@Main
+function main() {
+    let c = Card() {
+        let subtitle = "x"
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM163")); return e }
+}
+
+// --- KSEM164: the `properties { ... }` schema surface is removed in Construct 2.0.
+FailTest Fc2PropertiesRemoved {
+    backends { vm llvm hybrid }
+    source {
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM164")); return e }
+}
+
+// --- KSEM165: named content channels / `accepts` / `count` are removed in Construct 2.0.
+FailTest Fc2ContentChannelsRemoved {
+    backends { vm llvm hybrid }
+    source {
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}

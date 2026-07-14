@@ -183,6 +183,7 @@ pub const BuildSystem = struct {
     }
 
     pub fn build(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
+        pipeline.progressPrint("Building {s} for {s}", .{ std.fs.path.basename(request.source_path), @tagName(request.target.execution) });
         const total_start = nowTimestamp();
         // Test builds keep Test sections / the synthesized driver that a normal
         // build drops, so the on-disk cache (keyed only by source+backend) must
@@ -196,6 +197,7 @@ pub const BuildSystem = struct {
                 const maybe_entry = build_cache.entryForBuildWithNativeDeps(request.source_path, request.target.execution, native_deps_fp orelse "") catch null;
                 if (maybe_entry) |entry| {
                     if (entry.hasArtifacts()) {
+                        pipeline.progressPrint("Restoring cached artifacts", .{});
                         const restore_start = nowTimestamp();
                         const artifacts = try entry.restoreTo(request.output_path);
                         const restore_ns = elapsedNs(restore_start);
@@ -209,6 +211,8 @@ pub const BuildSystem = struct {
                         // project's native libraries (artifacts already exist)
                         // to keep the VM's LibFFI dispatcher able to load them.
                         const restored_native_libraries = self.resolveCachedNativeLibraries(request);
+                        pipeline.progressPrint("Build artifacts restored", .{});
+                        pipeline.progressPrint("[kira:control] build-finished", .{});
                         return .{
                             .artifacts = artifacts,
                             .native_libraries = restored_native_libraries,
@@ -220,6 +224,7 @@ pub const BuildSystem = struct {
                     var uncached = try self.buildUncached(request);
                     uncached.cache_status = .miss;
                     if (!uncached.failed()) {
+                        pipeline.progressPrint("Saving build artifacts to cache", .{});
                         const store_start = nowTimestamp();
                         entry.storeFrom(request.output_path) catch {};
                         uncached.cache_status = .stored;
@@ -230,6 +235,7 @@ pub const BuildSystem = struct {
                             uncached.cache_store_ns,
                             elapsedNs(total_start),
                         });
+                        pipeline.progressPrint("[kira:control] build-finished", .{});
                     }
                     return uncached;
                 }
@@ -237,6 +243,7 @@ pub const BuildSystem = struct {
         }
         const result = try self.buildUncached(request);
         pipeline.timingPrint("[kira:timing] build.total path={s} backend={s} cached=false ns={d}\n", .{ request.source_path, @tagName(request.target.execution), elapsedNs(total_start) });
+        if (!result.failed()) pipeline.progressPrint("[kira:control] build-finished", .{});
         return result;
     }
 
@@ -324,6 +331,7 @@ pub const BuildSystem = struct {
             };
         }
 
+        pipeline.progressPrint("Writing bytecode artifact {s}", .{std.fs.path.basename(request.output_path)});
         try compiled.bytecode_module.?.writeToFile(request.output_path);
 
         const artifacts = try self.allocator.alloc(build_def.Artifact, 1);
@@ -340,6 +348,7 @@ pub const BuildSystem = struct {
 
     pub fn buildWasmEmscriptenArtifact(self: BuildSystem, request: build_def.BuildRequest) !BuildArtifactOutcome {
         var wasm_request = request;
+        pipeline.progressPrint("Validating Emscripten toolchain", .{});
         wasm_request.target.selector = try llvm_backend.emscripten.selector(self.allocator);
         llvm_backend.emscripten.validateAvailable(self.allocator) catch |err| {
             const source = try @import("kira_source").SourceFile.fromPath(self.allocator, request.source_path);
@@ -373,6 +382,7 @@ pub const BuildSystem = struct {
         // read the same paths from disk at runtime). A missing declared asset
         // fails the build with a clear diagnostic instead of silently shipping
         // an incomplete package.
+        pipeline.progressPrint("Resolving packaged assets", .{});
         const asset_resolution = ffi_support.prepareProjectAssets(self.allocator, request.source_path) catch ffi_support.AssetResolution{ .mounts = &.{} };
         if (asset_resolution.missing) |missing_entry| {
             return .{
@@ -384,6 +394,7 @@ pub const BuildSystem = struct {
         }
 
         const object_path = try defaultObjectPath(self.allocator, request.output_path);
+        pipeline.progressPrint("Generating and linking {s} executable", .{@tagName(mode)});
         const emit_start = nowTimestamp();
         const backend_result = llvm_backend.compile(self.allocator, .{
             .mode = .llvm_native,
@@ -455,10 +466,12 @@ pub const BuildSystem = struct {
             .failure_kind = .build,
             .failure_stage = compiled.failure_stage,
         };
+        pipeline.progressPrint("Writing hybrid bytecode {s}", .{std.fs.path.basename(bytecode_path)});
         const bytecode_write_start = nowTimestamp();
         try bytecode_module.writeToFile(bytecode_path);
         pipeline.timingPrint("[kira:timing] bytecode.writeToFile path={s} ns={d}\n", .{ bytecode_path, elapsedNs(bytecode_write_start) });
 
+        pipeline.progressPrint("Generating and linking hybrid native library", .{});
         const emit_start = nowTimestamp();
         const backend_result = llvm_backend.compile(self.allocator, .{
             .mode = .hybrid,
@@ -481,6 +494,7 @@ pub const BuildSystem = struct {
         };
         pipeline.timingPrint("[kira:timing] llvm_backend.compile path={s} backend=hybrid ns={d}\n", .{ request.source_path, elapsedNs(emit_start) });
 
+        pipeline.progressPrint("Writing hybrid manifest {s}", .{std.fs.path.basename(request.output_path)});
         const manifest_start = nowTimestamp();
         const manifest = buildHybridManifest(self.allocator, ir_program, std.fs.path.stem(request.source_path), bytecode_path, library_path) catch |err| {
             const backend_diagnostics = try pipeline.backendDiagnostics(self.allocator, compiled.source.path, err);

@@ -3,7 +3,7 @@ const package_support = @import("package_support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
-    const location = try package_support.loadManifestLocation(allocator, parsed.input_path);
+    const location = try package_support.loadManifestLocation(allocator, parsed.input_path, stderr);
     try package_support.syncAndRender(allocator, location.root_path, stdout, stderr, .{
         .offline = parsed.offline,
         .locked = parsed.locked,

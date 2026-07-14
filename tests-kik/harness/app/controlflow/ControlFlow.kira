@@ -98,13 +98,13 @@ function cfGrade(score: Int) -> Int {
 
 // switch driving an enum selection, then folded.
 function cfDirWeight(i: Int) -> Int {
-    var d = cfDir.North
+    var d: cfDir = .North
     switch i % 4 {
-        case 0 { d = cfDir.North }
-        case 1 { d = cfDir.East }
-        case 2 { d = cfDir.South }
-        case 3 { d = cfDir.West }
-        default { d = cfDir.North }
+        case 0 { d = .North }
+        case 1 { d = .East }
+        case 2 { d = .South }
+        case 3 { d = .West }
+        default { d = .North }
     }
     return cfDirScore(d)
 }
@@ -133,12 +133,12 @@ function cfStepValue(s: borrow cfStep) -> Int {
 function cfStepFor(i: Int) -> cfStep {
     // Build a payload-carrying enum based on i, returning enums directly per branch.
     if i % 5 == 0 {
-        return cfStep.Halt
+        return .Halt
     }
     if i % 2 == 0 {
-        return cfStep.Go(i)
+        return .Go(i)
     }
-    return cfStep.Skip(i)
+    return .Skip(i)
 }
 
 // ---------------------------------------------------------------------------
@@ -491,4 +491,3 @@ function cfSection() -> Int {
 
     return checksum
 }
-

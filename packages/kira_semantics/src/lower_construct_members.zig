@@ -36,6 +36,30 @@ pub fn hasContentAnnotation(annotations: []const syntax.ast.Annotation) bool {
     return hasAnnotation(annotations, "Content");
 }
 
+// Construct 2.0 slot-by-type: a construct-form field typed as an existential `some X` or a list
+// of them `[some X]` IS a caller-provided child slot, with no `@Content` annotation required. A
+// slot field is filled by the trailing content block, never by constructor parens (KSEM162).
+pub fn typeExprIsSlot(type_expr: ?*const syntax.ast.TypeExpr) bool {
+    const te = type_expr orelse return false;
+    return switch (te.*) {
+        .any => |a| a.existential,
+        .array => |arr| switch (arr.element_type.*) {
+            .any => |a| a.existential,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+// A construct-form field is a content/child slot when it carries the (legacy, compat-only)
+// `@Content` annotation OR is typed `some X` / `[some X]` (slot-by-type). Block-bodied computed
+// members (`let node: T { ... }`) are bridge/default members, never fillable slots — callers
+// guard on `field.body == null` before treating a field as a slot.
+pub fn fieldIsContentSlot(field: syntax.ast.FieldDecl) bool {
+    if (hasContentAnnotation(field.annotations)) return true;
+    return typeExprIsSlot(field.type_expr);
+}
+
 pub fn collectConstructDirectMembers(
     ctx: *shared.Context,
     construct_decl: syntax.ast.ConstructDecl,

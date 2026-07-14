@@ -1,6 +1,0 @@
-@Main
-function entry() {
-    let value: I64 = 1;
-    value = 2;
-    return;
-}

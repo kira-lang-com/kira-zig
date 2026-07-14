@@ -1,0 +1,72 @@
+// FnsTests.kira — migrated corpus cases from tests/pass/run/{ffi_struct_return_parity,foundation_filesystem_compile}.
+// PREFIX: fns / Fns (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure/FS API already available.
+// File IO uses unique package-relative paths created and removed inside each
+// exercise.
+
+// ---------------------------------------------------------------------------
+// ffi_struct_return_parity
+// ---------------------------------------------------------------------------
+// Regression: extern functions returning a struct BY VALUE larger than 16 bytes.
+// SysV x86-64 and AAPCS64 return such composites in memory via a hidden pointer
+// (x8 on arm64) — the sret path. Previously modeled as a huge integer register
+// return on non-Windows, which read garbage and segfaulted (foundation's
+// fs_read_file returning the 24-byte fs_read_result was unusable natively).
+// Exercises foundation readFile end-to-end: write, read back through the struct
+// return, fold ok flag + round-tripped contents into the scalar verdict.
+
+@Native
+function fnsStructReturnRoundtrip() -> String {
+    let path = "kik_corpus_fns_struct_return.txt"
+    let wrote = writeFile(path, "roundtrip-ok")
+    if !wrote {
+        return "write-failed"
+    }
+    let c = readFile(path)
+    let removed = removePath(path)
+    if !c.ok {
+        return "read-failed"
+    }
+    if !removed {
+        return "remove-failed"
+    }
+    return c.text
+}
+
+Test FnsStructReturnParity {
+    test { return fnsStructReturnRoundtrip() }
+    expect { let e: Result<String, TestFailure> = .Ok("roundtrip-ok"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// foundation_filesystem_compile
+// ---------------------------------------------------------------------------
+// The original case read app/sample.txt ("Kira file contents\n\n" on stdout)
+// through openFile/readAll/close; here the sample file is created first so the
+// handle read has deterministic contents.
+
+@Native
+function fnsHandleReadSample() -> String {
+    let path = "kik_corpus_fns_handle_read.txt"
+    let wrote = writeFile(path, "Kira file contents\n")
+    if !wrote {
+        return "write-failed"
+    }
+    let file = openFile(path)
+    let contents = file.readAll()
+    let text: String = contents.text
+    file.close()
+    let removed = removePath(path)
+    if !removed {
+        return "remove-failed"
+    }
+    if contents.ok {
+        return text
+    }
+    return "read-failed"
+}
+
+Test FnsFilesystemHandleRead {
+    test { return fnsHandleReadSample() }
+    expect { let e: Result<String, TestFailure> = .Ok("Kira file contents\n"); return e }
+}

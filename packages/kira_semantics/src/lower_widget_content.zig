@@ -42,7 +42,10 @@ pub fn validateWidgetContent(ctx: *shared.Context, program: syntax.ast.Program) 
         for (form_decl.body.members) |member| {
             if (member != .field_decl) continue;
             const field = member.field_decl;
-            if (!hasContent(field.annotations)) continue;
+            // A block-bodied computed member is a bridge accessor, never a fillable slot.
+            if (field.body != null) continue;
+            // `@Content` (legacy) OR `some X` / `[some X]` slot-by-type fields are child slots.
+            if (!members.fieldIsContentSlot(field)) continue;
             try fields.append(.{
                 .name = field.name,
                 .is_list = field.type_expr != null and field.type_expr.?.* == .array,
@@ -69,13 +72,6 @@ pub fn validateWidgetContent(ctx: *shared.Context, program: syntax.ast.Program) 
             }
         }
     }
-}
-
-fn hasContent(annotations: []const syntax.ast.Annotation) bool {
-    for (annotations) |annotation| {
-        if (members.isAnnotation(annotation, "Content")) return true;
-    }
-    return false;
 }
 
 fn walkBlock(ctx: *shared.Context, block: syntax.ast.Block, forms: *const std.StringHashMapUnmanaged(FormContent)) !void {
@@ -158,8 +154,15 @@ fn validateContentBlock(
     forms: *const std.StringHashMapUnmanaged(FormContent),
 ) !void {
     if (content.fields.len == 0) {
-        try emit(ctx, "KSEM142", "unexpected content block", block.span, try std.fmt.allocPrint(ctx.allocator, "The declaration '{s}' has no `@Content` field, so it cannot take a trailing content block.", .{form_name}), "Remove the block, or add an `@Content` field to the declaration.");
-        return error.DiagnosticsEmitted;
+        // Construct 2.0 (items 1/5): a block that carries only `let field = value` override
+        // members (no bare children) is an override block, legal on a slot-less declaration.
+        // Only a bare child (a non-override item) needs a `some X` / `[some X]` slot to fill.
+        for (block.items) |item| {
+            if (item == .field_override) continue;
+            try emit(ctx, "KSEM142", "unexpected content block", block.span, try std.fmt.allocPrint(ctx.allocator, "The declaration '{s}' has no child slot, so it cannot take bare children in a trailing content block.", .{form_name}), "Remove the children (a `let field = value` override block is still allowed), or add a `some X` / `[some X]` slot field to the declaration.");
+            return error.DiagnosticsEmitted;
+        }
+        return;
     }
 
     if (content.fields.len == 1) {

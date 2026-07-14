@@ -1,0 +1,79 @@
+// Expected-type implicit member coverage. The same source is executed by this
+// package's vm / llvm / hybrid Tests matrix.
+
+enum ImxTone {
+    Red
+    Green
+    Label(String)
+}
+
+function imxToneScore(tone: borrow ImxTone) -> Int {
+    match tone {
+        Red -> return 1;
+        Green -> return 2;
+        Label(text) -> return text.count;
+    }
+}
+
+function imxReturnTone() -> ImxTone {
+    return .Green
+}
+
+function imxMakeTone() -> ImxTone {
+    return .Red
+}
+
+function imxTwice(value: Int) -> Int {
+    return value * 2
+}
+
+function imxApply(value: Int, transform: (Int) -> Int) -> Int {
+    return transform(value)
+}
+
+class ImxAnimal {
+    let code: Int = 1
+}
+
+class ImxDog extends ImxAnimal {
+    override let code = 7
+}
+
+function imxAnimalCode(animal: borrow ImxAnimal) -> Int {
+    return animal.code
+}
+
+construct ImxElement {
+    @Required let code: Int
+}
+
+ImxElement ImxText {
+    let code: Int = 11
+}
+
+Test ImxImplicitEnumPositions {
+    test {
+        let direct: ImxTone = .Red
+        let payload: ImxTone = .Label("four")
+        let tones: [ImxTone] = [.Red, .Green]
+        return imxToneScore(direct) + imxToneScore(payload) + imxToneScore(.Green) + imxToneScore(tones[1]) + imxToneScore(imxReturnTone())
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
+}
+
+Test ImxImplicitClassAndConstructFamily {
+    test {
+        let animal: ImxAnimal = .ImxDog()
+        let element: some ImxElement = .ImxText()
+        return imxAnimalCode(animal) + 11
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
+}
+
+Test ImxImplicitFunctionAndCallback {
+    test {
+        let made: ImxTone = .imxMakeTone()
+        return imxToneScore(made) + imxApply(6, .imxTwice)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
+}

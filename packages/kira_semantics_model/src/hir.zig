@@ -57,6 +57,9 @@ pub const EnumDecl = struct {
     name: []const u8,
     type_params: [][]const u8 = &.{},
     variants: []EnumVariantHir,
+    // Carries the `@Derive(Copy)` opt-in copyability assertion. When set, the mid-IR
+    // ownership checker verifies every variant payload is structurally copyable (KIR005).
+    derive_copy: bool = false,
     span: source_pkg.Span,
 };
 
@@ -228,6 +231,9 @@ pub const TypeDecl = struct {
     fields: []const Field,
     methods: []const MethodMember = &.{},
     ffi: ?ffi.NamedTypeInfo = null,
+    // Carries the `@Derive(Copy)` opt-in copyability assertion. When set, the mid-IR
+    // ownership checker verifies every field is structurally copyable (KIR005).
+    derive_copy: bool = false,
     span: source_pkg.Span,
 };
 
@@ -488,6 +494,10 @@ pub const Expr = union(enum) {
     c_string_to_string: CStringToStringExpr,
     array_len: ArrayLenExpr,
     string_len: StringLenExpr,
+    string_from_scalar: StringFromScalarExpr,
+    string_char_at: StringCharAtExpr,
+    string_substring: StringSubstringExpr,
+    string_index_of: StringIndexOfExpr,
     field: FieldExpr,
     native_state: NativeStateExpr,
     native_user_data: NativeUserDataExpr,
@@ -653,6 +663,45 @@ pub const ArrayLenExpr = struct {
 
 pub const StringLenExpr = struct {
     object: *Expr,
+    ty: ResolvedType = .{ .kind = .integer },
+    span: source_pkg.Span,
+};
+
+// `String(x)` — deterministic scalar -> String conversion. `source_kind` records
+// the operand's primitive kind so codegen can pick the byte format (integers
+// base-10, Bool "true"/"false", Float matches per-backend `print(float)`).
+pub const StringFromScalarSource = enum { integer, float, boolean };
+pub const StringFromScalarExpr = struct {
+    operand: *Expr,
+    source_kind: StringFromScalarSource,
+    ty: ResolvedType = .{ .kind = .string },
+    span: source_pkg.Span,
+};
+
+// `s.charAt(i)` — the UTF-8 code UNIT (byte, not codepoint) at byte offset `i`,
+// as an Int. Out-of-bounds indexing traps, consistent with array indexing.
+pub const StringCharAtExpr = struct {
+    object: *Expr,
+    index: *Expr,
+    ty: ResolvedType = .{ .kind = .integer },
+    span: source_pkg.Span,
+};
+
+// `s.substring(start, end)` — the half-open byte range [start, end) as a fresh
+// owned String. An invalid range (start<0, end>len, start>end) traps.
+pub const StringSubstringExpr = struct {
+    object: *Expr,
+    start: *Expr,
+    end: *Expr,
+    ty: ResolvedType = .{ .kind = .string },
+    span: source_pkg.Span,
+};
+
+// `s.indexOf(needle)` — the byte offset of the first occurrence of `needle`, or
+// -1 when absent. An empty needle matches at offset 0.
+pub const StringIndexOfExpr = struct {
+    object: *Expr,
+    needle: *Expr,
     ty: ResolvedType = .{ .kind = .integer },
     span: source_pkg.Span,
 };
@@ -881,6 +930,10 @@ pub fn exprType(expr: Expr) ResolvedType {
         .c_string_to_string => |node| node.ty,
         .array_len => |node| node.ty,
         .string_len => |node| node.ty,
+        .string_from_scalar => |node| node.ty,
+        .string_char_at => |node| node.ty,
+        .string_substring => |node| node.ty,
+        .string_index_of => |node| node.ty,
         .field => |node| node.ty,
         .native_state => |node| node.ty,
         .native_user_data => |node| node.ty,

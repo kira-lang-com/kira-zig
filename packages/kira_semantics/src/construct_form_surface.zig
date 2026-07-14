@@ -20,9 +20,9 @@ pub fn effectiveMembers(
         } });
     }
 
-    const widget_surface = isWidgetSurface(ctx, form_decl);
-    const has_explicit_body = widget_surface and hasExplicitMemberNamedBody(form_decl);
-    const has_body_rule = widget_surface and findBodyRule(form_decl) != null;
+    const construct_surface = isConstructSurface(ctx, form_decl);
+    const has_explicit_body = construct_surface and hasExplicitMemberNamedBody(form_decl);
+    const has_body_rule = construct_surface and findBodyRule(form_decl) != null;
     var hoisted_body_fields = std.array_list.Managed(syntax.ast.FieldDecl).init(ctx.allocator);
     var saw_body_section = false;
     for (form_decl.body.members) |member| {
@@ -30,10 +30,10 @@ pub fn effectiveMembers(
             try hoisted_body_fields.append(member.field_decl);
             continue;
         }
-        if (widget_surface and member == .named_rule and isBodyRule(member.named_rule)) {
+        if (construct_surface and member == .named_rule and isBodyRule(member.named_rule)) {
             const rule = member.named_rule;
             if (rule.block == null or rule.args.len != 0 or rule.type_expr != null or rule.value != null) {
-                try emitInvalidBodySection(ctx, rule.span, "A widget body section is written as `body { ... }` with no arguments or assigned value.");
+                try emitInvalidBodySection(ctx, rule.span, "A construct body section is written as `body { ... }` with no arguments or assigned value.");
                 return error.DiagnosticsEmitted;
             }
             if (saw_body_section or has_explicit_body) {
@@ -65,13 +65,15 @@ fn isBodyRule(rule: syntax.ast.NamedRule) bool {
     return rule.name.segments.len == 1 and std.mem.eql(u8, rule.name.segments[0].text, "body");
 }
 
-fn isWidgetSurface(ctx: *shared.Context, form_decl: syntax.ast.ConstructFormDecl) bool {
+// A `body { ... }` builder-block section is legal on ANY construct-backed form, not just a
+// literal `Widget` family. The form is a construct surface as long as it resolves to a known
+// construct family (`ctx.form_families` has an entry for it); a form whose family does not
+// resolve locally (imported/unknown parent, already rejected elsewhere) is not treated as one.
+fn isConstructSurface(ctx: *shared.Context, form_decl: syntax.ast.ConstructFormDecl) bool {
     const families = ctx.form_families orelse return false;
     const form_families = families.get(form_decl.name) orelse return false;
-    for (form_families) |family| {
-        if (std.mem.eql(u8, family, "Widget")) return true;
-    }
-    return false;
+    if (form_families.len == 0) return false;
+    return true;
 }
 
 fn findBodyRule(form_decl: syntax.ast.ConstructFormDecl) ?syntax.ast.NamedRule {
@@ -156,7 +158,7 @@ fn emitInvalidBodySection(ctx: *shared.Context, span: source_pkg.Span, help: []c
         .severity = .@"error",
         .code = "KSEM154",
         .title = "invalid body section",
-        .message = "This declaration's `body` section does not match the widget app surface.",
+        .message = "This declaration's `body` section does not match the construct's body surface.",
         .labels = &.{diagnostics.primaryLabel(span, "invalid body section")},
         .help = help,
     });

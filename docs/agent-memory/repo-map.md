@@ -9,7 +9,7 @@ Internal implementation orientation for `kirac`.
 - `examples/` — runnable Kira programs and library-ish showcases.
 - `docs/` — public docs; this memory corpus stays separate under `docs/agent-memory/`.
 - `templates/` — scaffolds used by `kira new` / installer flow.
-- `generated/`, `.zig-cache/`, `zig-out/`, `.kira/` — build/install outputs; do not hand-edit.
+- `.kira-build/`, `.zig-cache/`, `zig-out/`, `.kira/` — build/install outputs; do not hand-edit.
 
 ## High-value directories
 

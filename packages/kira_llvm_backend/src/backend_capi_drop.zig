@@ -244,6 +244,19 @@ pub fn onMoveLocalHeapShell(fc: *FunctionCodegen, local: u32, src_ptr: llvm.c.LL
     _ = fc.api.LLVMBuildCall2(fc.builder, fc.runtime_decls.struct_free.ty, fc.runtime_decls.struct_free.fn_value, &args, args.len, "");
 }
 
+// A copy_indirect consumed a fresh heap struct register (for example the result
+// of `Grid { cells: move cells }`). Its contents move into the destination's
+// stack backing, so only the now-empty source shell is freed; nulling the
+// producer slot prevents scope-exit teardown from destroying the moved fields.
+pub fn onMoveRegisterHeapShell(fc: *FunctionCodegen, reg: u32, src_ptr: llvm.c.LLVMValueRef) void {
+    if (!fc.drop_enabled or reg >= fc.register_slot.len) return;
+    const index = fc.register_slot[reg] orelse return;
+    if (fc.drop_slots.items[index].kind != .struct_heap) return;
+    var args = [_]llvm.c.LLVMValueRef{src_ptr};
+    _ = fc.api.LLVMBuildCall2(fc.builder, fc.runtime_decls.struct_free.ty, fc.runtime_decls.struct_free.fn_value, &args, args.len, "");
+    nullSlot(fc, index);
+}
+
 // Is `reg` a tracked, owned (freshly allocated, not borrowed) value?
 pub fn isOwned(fc: *FunctionCodegen, reg: u32) bool {
     return fc.drop_enabled and reg < fc.register_slot.len and fc.register_slot[reg] != null;

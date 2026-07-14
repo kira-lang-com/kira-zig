@@ -1,6 +1,0 @@
-// MUST COMPILE: a well-formed trivial program (positive control).
-@Main
-function main() {
-    let x = 1 + 1
-    return
-}

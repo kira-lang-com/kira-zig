@@ -3,6 +3,92 @@ const builtin = @import("builtin");
 const manifest = @import("kira_manifest");
 const native = @import("kira_native_lib_definition");
 
+/// Resolve a native library declared inline in a `package.kira` manifest (a
+/// `NativeLibrary { ... }` entry) into a `ResolvedNativeLibrary`, using the
+/// project root as the base for every relative path.
+///
+/// Inline libraries carry no per-target `static_lib` paths and no `output`: the
+/// artifact is compiled from `sources` into a project-local, target-scoped path,
+/// and — the autobind law — bindings always write to
+/// `<project_root>/app/bindings/<module>.kira`. `pseudo_manifest_path` is a
+/// synthetic path (the project's `package.kira`) used only for diagnostics and
+/// identity.
+pub fn resolveInlineLibrary(
+    allocator: std.mem.Allocator,
+    spec: native.NativeLibrarySpec,
+    target: native.TargetSelector,
+    project_root: []const u8,
+    pseudo_manifest_path: []const u8,
+) !native.ResolvedNativeLibrary {
+    const artifact_path = try inlineArtifactPath(allocator, project_root, spec.name, spec.link_mode, target);
+    var matched_target: ?native.TargetSpec = null;
+    for (spec.targets) |candidate| {
+        if (candidate.selector.eql(target)) {
+            matched_target = candidate;
+            break;
+        }
+    }
+    var resolved = native.ResolvedNativeLibrary{
+        .manifest_path = try allocator.dupe(u8, pseudo_manifest_path),
+        .name = try allocator.dupe(u8, spec.name),
+        .link_mode = spec.link_mode,
+        .abi = spec.abi,
+        .artifact_path = artifact_path,
+        .target = target,
+        .headers = spec.headers,
+        .autobinding = spec.autobinding,
+        .build = spec.build,
+        .compiler_flags = if (matched_target) |selected| try cloneStrings(allocator, selected.compiler_flags) else &.{},
+        .link = if (matched_target) |selected| try native.LinkExtras.clone(allocator, selected.link) else .{},
+    };
+
+    if (try firstUnresolvedEnvVar(allocator, resolved)) |missing| {
+        resolved.unavailable = .{ .reason = .missing_environment_variable, .detail = missing };
+        return resolved;
+    }
+
+    // Every relative path is resolved against the project root (there is no
+    // sibling `.toml` file for an inline library).
+    const base = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    resolved.headers = try resolveHeaders(allocator, base, spec.headers);
+    resolved.build = try resolveBuildRecipe(allocator, base, spec.build);
+    resolved.link = try resolveLinkExtras(allocator, base, resolved.link);
+    resolved.autobinding = if (spec.autobinding) |autobinding| blk: {
+        // Autobind law: bindings always land at app/bindings/<module>.kira.
+        const output_path = try std.fs.path.join(allocator, &.{ project_root, "app", "bindings", try std.fmt.allocPrint(allocator, "{s}.kira", .{autobinding.module_name}) });
+        break :blk native.AutobindingSpec{
+            .module_name = try allocator.dupe(u8, autobinding.module_name),
+            .output_path = output_path,
+            .headers = try absolutizePaths(allocator, base, autobinding.headers),
+            .bindings = .{
+                .mode = autobinding.bindings.mode,
+                .profile = autobinding.bindings.profile,
+                .functions = try cloneStrings(allocator, autobinding.bindings.functions),
+                .structs = try cloneStrings(allocator, autobinding.bindings.structs),
+                .callbacks = try cloneStrings(allocator, autobinding.bindings.callbacks),
+            },
+        };
+    } else null;
+    return resolved;
+}
+
+fn inlineArtifactPath(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    name: []const u8,
+    link_mode: native.LinkMode,
+    target: native.TargetSelector,
+) ![]const u8 {
+    const triple_dir = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ target.architecture, target.operating_system, target.abi });
+    const is_windows = std.mem.eql(u8, target.operating_system, "windows");
+    const file_name = if (link_mode == .dynamic)
+        try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ if (is_windows) "" else "lib", name, if (is_windows) ".dll" else ".dylib" })
+    else
+        try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ if (is_windows) "" else "lib", name, if (is_windows) ".lib" else ".a" });
+    const rel = try std.fs.path.join(allocator, &.{ ".kira-build", "native", triple_dir, file_name });
+    return absolutizePath(allocator, try std.fs.path.join(allocator, &.{ project_root, "package.kira" }), rel);
+}
+
 pub fn resolveNativeManifestFile(allocator: std.mem.Allocator, path: []const u8, target: native.TargetSelector) !native.ResolvedNativeLibrary {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
     const parsed = try manifest.parseNativeLibManifest(allocator, text);
@@ -120,16 +206,14 @@ fn absolutizePaths(allocator: std.mem.Allocator, manifest_path: []const u8, valu
 
 fn absolutizePath(allocator: std.mem.Allocator, manifest_path: []const u8, value: []const u8) ![]const u8 {
     if (value.len == 0) return allocator.dupe(u8, value);
-    if (try expandEnvPath(allocator, value)) |expanded| return expanded;
-    if (std.fs.path.isAbsolute(value)) return allocator.dupe(u8, value);
+    if (try expandEnvPath(allocator, value)) |expanded| {
+        defer allocator.free(expanded);
+        return std.fs.path.resolve(allocator, &.{expanded});
+    }
+    if (std.fs.path.isAbsolute(value)) return std.fs.path.resolve(allocator, &.{value});
 
     const base_dir = std.fs.path.dirname(manifest_path) orelse ".";
-    const joined = try std.fs.path.join(allocator, &.{ base_dir, value });
-    if (std.fs.path.isAbsolute(joined)) return joined;
-
-    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
-    defer allocator.free(cwd);
-    return std.fs.path.join(allocator, &.{ cwd, joined });
+    return std.fs.path.resolve(allocator, &.{ base_dir, value });
 }
 
 fn expandEnvPath(allocator: std.mem.Allocator, value: []const u8) !?[]const u8 {
@@ -278,4 +362,80 @@ test "resolveNativeManifestFile carries per-target compiler and linker flags thr
     try std.testing.expectEqual(@as(usize, 2), resolved.link.linker_flags.len);
     try std.testing.expectEqualStrings("--use-port=emdawnwebgpu", resolved.link.linker_flags[0]);
     try std.testing.expectEqualStrings("-sERROR_ON_UNDEFINED_SYMBOLS=0", resolved.link.linker_flags[1]);
+}
+
+test "resolveInlineLibrary applies matching target compiler and linker options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const project_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    const manifest_path = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    const selector = try native.TargetSelector.parse(allocator, "x86_64-linux-gnu");
+    const spec = native.NativeLibrarySpec{
+        .name = "demo",
+        .link_mode = .static,
+        .abi = .c,
+        .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+        .targets = &.{.{
+            .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+            .compiler_flags = &.{"-pthread"},
+            .link = .{ .include_dirs = &.{"NativeLibs/include"}, .system_libs = &.{"X11"}, .linker_flags = &.{"-Wl,--as-needed"} },
+        }},
+    };
+
+    const resolved = try resolveInlineLibrary(allocator, spec, selector, project_root, manifest_path);
+    try std.testing.expectEqualStrings("-pthread", resolved.compiler_flags[0]);
+    try std.testing.expectEqualStrings("X11", resolved.link.system_libs[0]);
+    try std.testing.expectEqualStrings("-Wl,--as-needed", resolved.link.linker_flags[0]);
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "include" }),
+        resolved.link.include_dirs[0],
+    );
+    const expected_target_dir = try std.fs.path.join(allocator, &.{ ".kira-build", "native", "x86_64-linux-gnu" });
+    try std.testing.expect(std.mem.indexOf(u8, resolved.artifact_path, expected_target_dir) != null);
+}
+
+test "resolveInlineLibrary keeps generic sources without a matching target override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const project_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    const manifest_path = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    const macos = try native.TargetSelector.parse(allocator, "aarch64-macos-none");
+    const spec = native.NativeLibrarySpec{
+        .name = "demo",
+        .link_mode = .static,
+        .abi = .c,
+        .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+        .targets = &.{.{
+            .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+            .compiler_flags = &.{"-pthread"},
+            .link = .{ .system_libs = &.{"X11"} },
+        }},
+    };
+
+    const resolved = try resolveInlineLibrary(allocator, spec, macos, project_root, manifest_path);
+    try std.testing.expectEqual(@as(usize, 0), resolved.compiler_flags.len);
+    try std.testing.expectEqual(@as(usize, 0), resolved.link.system_libs.len);
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "demo.c" }),
+        resolved.build.sources[0],
+    );
+}
+
+test "inline native artifact paths distinguish target ABIs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const gnu = try native.TargetSelector.parse(allocator, "x86_64-linux-gnu");
+    const musl = try native.TargetSelector.parse(allocator, "x86_64-linux-musl");
+    const gnu_path = try inlineArtifactPath(allocator, "/project", "demo", .static, gnu);
+    const musl_path = try inlineArtifactPath(allocator, "/project", "demo", .static, musl);
+    try std.testing.expect(!std.mem.eql(u8, gnu_path, musl_path));
+    try std.testing.expect(std.mem.indexOf(u8, gnu_path, "x86_64-linux-gnu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, musl_path, "x86_64-linux-musl") != null);
 }

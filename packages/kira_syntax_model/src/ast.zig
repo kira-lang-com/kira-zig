@@ -25,6 +25,7 @@ pub const Decl = union(enum) {
     type_decl: TypeDecl,
     construct_decl: ConstructDecl,
     construct_form_decl: ConstructFormDecl,
+    fail_test_decl: FailTestDecl,
     extend_decl: ExtendDecl,
     macro_decl: MacroDecl,
     // A top-level `name!(args)` invocation of a function-position procedural macro. The
@@ -236,6 +237,10 @@ pub const EnumDecl = struct {
     name: []const u8,
     type_params: [][]const u8,
     variants: []EnumVariantDecl,
+    // Set by the macro expander when `@Derive(Copy)` is present. It transports the
+    // opt-in copyability assertion past annotation stripping down into semantics/mid-IR,
+    // where the structural `Copy` classifier verifies every variant payload is copyable.
+    derive_copy: bool = false,
     span: Span,
 };
 
@@ -252,6 +257,10 @@ pub const TypeDecl = struct {
     name: []const u8,
     parents: []QualifiedName,
     members: []BodyMember,
+    // Set by the macro expander when `@Derive(Copy)` is present. It transports the
+    // opt-in copyability assertion past annotation stripping down into semantics/mid-IR,
+    // where the structural `Copy` classifier verifies every field is copyable.
+    derive_copy: bool = false,
     span: Span,
 };
 
@@ -387,6 +396,35 @@ pub const ConstructBody = struct {
     span: Span,
 };
 
+// A `FailTest Name { backends {...} source {...} expect {...} }` declaration: an
+// expected-compile-outcome test written in pure Kira. Its `source` is QUOTED —
+// the parser captures the block's raw text and the enclosing package's semantic
+// analysis never sees its contents (ill-formed code must not poison the suite).
+// The `kira test` runner compiles the captured text as a synthetic single-file
+// package, once per declared backend, and passes iff the compile outcome matches
+// the `expect` block. See packages/kira_main/src/developer_failtest.zig.
+pub const FailTestSource = union(enum) {
+    /// Raw source text captured verbatim from a `source { ... }` block.
+    block: []const u8,
+    /// The decoded value of a `source = "..."` string literal (raw-string tier,
+    /// for sources that must NOT even tokenize/brace-balance — parser diagnostics).
+    string: []const u8,
+};
+
+pub const FailTestDecl = struct {
+    annotations: []const Annotation,
+    name: []const u8,
+    /// Declared backends (lowercase idents from `backends { ... }`), a subset of
+    /// {vm, llvm, hybrid}. Empty means the omitted-block default: vm only.
+    backends: []const []const u8,
+    /// The quoted source to compile, or null when the `source` section is missing.
+    source: ?FailTestSource,
+    /// Raw text of the `expect { ... }` block, for textual extraction of the
+    /// expected diagnostic code and Ok/Error polarity. Null when missing.
+    expect_text: ?[]const u8,
+    span: Span,
+};
+
 pub const BodyMember = union(enum) {
     field_decl: FieldDecl,
     function_decl: FunctionDecl,
@@ -462,6 +500,7 @@ pub const SwitchCase = exprs.SwitchCase;
 pub const BuilderBlock = exprs.BuilderBlock;
 pub const BuilderItem = exprs.BuilderItem;
 pub const BuilderExprItem = exprs.BuilderExprItem;
+pub const BuilderFieldOverrideItem = exprs.BuilderFieldOverrideItem;
 pub const BuilderIfItem = exprs.BuilderIfItem;
 pub const BuilderForItem = exprs.BuilderForItem;
 pub const BuilderSwitchItem = exprs.BuilderSwitchItem;

@@ -4,6 +4,30 @@ const build_def = @import("kira_build_definition");
 const build_options = @import("kira_build_build_options");
 const hybrid = @import("kira_hybrid_definition");
 const kira_toolchain = @import("kira_toolchain");
+const cache_files = @import("cache_files.zig");
+
+const copyFile = cache_files.copyFile;
+const makeExecutable = cache_files.makeExecutable;
+const publishStagedFileAtomic = cache_files.publishStagedFileAtomic;
+const publishTextFileAtomic = cache_files.publishTextFileAtomic;
+const ensureParentDir = cache_files.ensureParentDir;
+const deleteTreeAbsolute = cache_files.deleteTreeAbsolute;
+const fileExistsAt = cache_files.fileExistsAt;
+const fileExistsJoin = cache_files.fileExistsJoin;
+const fileExistsNonEmptyJoin = cache_files.fileExistsNonEmptyJoin;
+const fileExists = cache_files.fileExists;
+const fileExistsNonEmpty = cache_files.fileExistsNonEmpty;
+const absolutize = cache_files.absolutize;
+const hexDigest = cache_files.hexDigest;
+const backendName = cache_files.backendName;
+const objectName = cache_files.objectName;
+const objectExtension = cache_files.objectExtension;
+const executableNamePage = cache_files.executableNamePage;
+const executableName = cache_files.executableName;
+const sharedLibraryName = cache_files.sharedLibraryName;
+const sharedLibraryExtension = cache_files.sharedLibraryExtension;
+const defaultObjectPath = cache_files.defaultObjectPath;
+const replaceExtension = cache_files.replaceExtension;
 
 pub const Cache = struct {
     allocator: std.mem.Allocator,
@@ -27,28 +51,55 @@ pub const Cache = struct {
     /// sources/headers (which relinks the binary) invalidates the cached
     /// executable instead of restoring a stale one.
     pub fn entryForBuildWithNativeDeps(self: Cache, source_path: []const u8, target: build_def.ExecutionTarget, native_deps_fingerprint: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, source_path, @tagName(target), native_deps_fingerprint);
-        defer self.allocator.free(key);
         const backend_dir = backendName(target);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", backend_dir, key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, source_path, @tagName(target), native_deps_fingerprint);
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot(backend_dir, source_path, fingerprint);
         return Entry.init(self.allocator, root, target);
     }
 
     pub fn entryForFrontendCheck(self: Cache, source_path: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, source_path, "frontend-check", "");
-        defer self.allocator.free(key);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "frontend-check", key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, source_path, "frontend-check", "");
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot("frontend-check", source_path, fingerprint);
         return Entry.init(self.allocator, root, .vm);
     }
 
     pub fn entryForPackageCheck(self: Cache, representative_source_path: []const u8) !Entry {
-        const key = try fingerprintBuild(self.allocator, representative_source_path, "package-check", "");
-        defer self.allocator.free(key);
-        const root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", "package-check", key });
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        const fingerprint = try fingerprintBuild(self.allocator, representative_source_path, "package-check", "");
+        defer self.allocator.free(fingerprint);
+        const root = try self.prepareSourceSlot("package-check", representative_source_path, fingerprint);
         return Entry.init(self.allocator, root, .vm);
+    }
+
+    /// Keep exactly one cache directory per source/backend. The content
+    /// fingerprint is metadata inside that stable slot; when inputs change the
+    /// old slot is removed before the replacement is populated. Older Kira
+    /// versions used the content fingerprint itself as the directory name and
+    /// leaked one directory per edit, so those legacy siblings are pruned too.
+    fn prepareSourceSlot(self: Cache, namespace: []const u8, source_path: []const u8, fingerprint: []const u8) ![]const u8 {
+        const namespace_root = try std.fs.path.join(self.allocator, &.{ self.root_path, "cache", namespace });
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, namespace_root);
+        try removeLegacyFingerprintEntries(namespace_root);
+
+        const slot_key = try sourceSlotKey(self.allocator, source_path);
+        defer self.allocator.free(slot_key);
+        const root = try std.fs.path.join(self.allocator, &.{ namespace_root, slot_key });
+        const fingerprint_path = try std.fs.path.join(self.allocator, &.{ root, "fingerprint" });
+        defer self.allocator.free(fingerprint_path);
+
+        const current = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fingerprint_path, self.allocator, .limited(256)) catch null;
+        if (current) |stored| {
+            defer self.allocator.free(stored);
+            if (std.mem.eql(u8, std.mem.trim(u8, stored, "\r\n"), fingerprint)) return root;
+            try deleteTreeAbsolute(root);
+        }
+
+        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, root);
+        var text_buffer: [65]u8 = undefined;
+        const fingerprint_text = try std.fmt.bufPrint(&text_buffer, "{s}\n", .{fingerprint});
+        try publishTextFileAtomic(fingerprint_path, fingerprint_text);
+        return root;
     }
 };
 
@@ -320,10 +371,47 @@ fn fingerprintBuild(allocator: std.mem.Allocator, source_path: []const u8, targe
     return hexDigest(allocator, &digest);
 }
 
+fn sourceSlotKey(allocator: std.mem.Allocator, source_path: []const u8) ![]const u8 {
+    const canonical_source = try absolutize(allocator, source_path);
+    defer allocator.free(canonical_source);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical_source, &digest, .{});
+    const hex = try hexDigest(allocator, &digest);
+    defer allocator.free(hex);
+    return std.fmt.allocPrint(allocator, "source-{s}", .{hex});
+}
+
+fn removeLegacyFingerprintEntries(namespace_root: []const u8) !void {
+    var dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, namespace_root, .{ .iterate = true });
+    defer dir.close(std.Options.debug_io);
+    var iterator = dir.iterate();
+    while (try iterator.next(std.Options.debug_io)) |entry| {
+        if (entry.kind != .directory or !isLegacyFingerprintName(entry.name)) continue;
+        try dir.deleteTree(std.Options.debug_io, entry.name);
+    }
+}
+
+fn isLegacyFingerprintName(name: []const u8) bool {
+    if (name.len != 64) return false;
+    for (name) |byte| switch (byte) {
+        '0'...'9', 'a'...'f' => {},
+        else => return false,
+    };
+    return true;
+}
+
 fn hashRepoSupportInputs(allocator: std.mem.Allocator, hasher: anytype) !void {
-    const helper_source = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", "runtime_helpers.c" });
-    defer allocator.free(helper_source);
-    try hashFileIfPresent(allocator, hasher, "native_bridge_runtime_helpers", helper_source);
+    const inputs = [_]struct { label: []const u8, name: []const u8 }{
+        .{ .label = "native_bridge_runtime_helpers", .name = "runtime_helpers.c" },
+        .{ .label = "native_bridge_runtime_arrays", .name = "runtime_helpers_arrays.inc" },
+        .{ .label = "native_bridge_runtime_native_state", .name = "runtime_helpers_native_state.inc" },
+        .{ .label = "native_bridge_runtime_tasks", .name = "runtime_helpers_tasks.inc" },
+    };
+    for (inputs) |input| {
+        const path = try std.fs.path.join(allocator, &.{ build_options.repo_root, "packages", "kira_native_bridge", "src", input.name });
+        defer allocator.free(path);
+        try hashFileIfPresent(allocator, hasher, input.label, path);
+    }
 }
 
 fn hashFileIfPresent(allocator: std.mem.Allocator, hasher: anytype, label: []const u8, path: []const u8) !void {
@@ -434,7 +522,7 @@ fn projectRootForSource(allocator: std.mem.Allocator, source_path: []const u8) !
 }
 
 fn hasProjectManifest(path: []const u8) bool {
-    return fileExistsAt(path, "kira.toml") or fileExistsAt(path, "project.toml") or fileExistsAt(path, "Kira.toml");
+    return fileExistsAt(path, "package.kira") or fileExistsAt(path, "kira.toml") or fileExistsAt(path, "project.toml") or fileExistsAt(path, "Kira.toml");
 }
 
 fn sourceBelongsToProject(allocator: std.mem.Allocator, root: []const u8, source_path: []const u8) bool {
@@ -480,181 +568,4 @@ fn sortStrings(items: [][]const u8) void {
             return std.mem.lessThan(u8, lhs, rhs);
         }
     }.lessThan);
-}
-
-fn copyFile(source_path: []const u8, destination_path: []const u8) !void {
-    const data = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, source_path, std.heap.page_allocator, .limited(256 * 1024 * 1024));
-    defer std.heap.page_allocator.free(data);
-    try ensureParentDir(destination_path);
-    const file = if (std.fs.path.isAbsolute(destination_path))
-        try std.Io.Dir.createFileAbsolute(std.Options.debug_io, destination_path, .{ .truncate = true })
-    else
-        try std.Io.Dir.cwd().createFile(std.Options.debug_io, destination_path, .{ .truncate = true });
-    defer file.close(std.Options.debug_io);
-    try file.writeStreamingAll(std.Options.debug_io, data);
-}
-
-fn makeExecutable(path: []const u8) !void {
-    if (!std.Io.File.Permissions.has_executable_bit) return;
-
-    const permissions: std.Io.File.Permissions = @enumFromInt(0o755);
-    if (std.fs.path.isAbsolute(path)) {
-        const parent_path = std.fs.path.dirname(path) orelse return error.InvalidCachePath;
-        const base_name = std.fs.path.basename(path);
-        var parent_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{});
-        defer parent_dir.close(std.Options.debug_io);
-        try parent_dir.setFilePermissions(std.Options.debug_io, base_name, permissions, .{});
-        return;
-    }
-
-    try std.Io.Dir.cwd().setFilePermissions(std.Options.debug_io, path, permissions, .{});
-}
-
-fn publishStagedFileAtomic(source_path: []const u8, destination_path: []const u8) !void {
-    const data = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, source_path, std.heap.page_allocator, .limited(256 * 1024 * 1024));
-    defer std.heap.page_allocator.free(data);
-    try publishFileAtomic(destination_path, data);
-}
-
-fn publishTextFileAtomic(path: []const u8, data: []const u8) !void {
-    try publishFileAtomic(path, data);
-}
-
-fn publishFileAtomic(path: []const u8, data: []const u8) !void {
-    try ensureParentDir(path);
-    const parent_path = std.fs.path.dirname(path) orelse return error.InvalidCachePath;
-    const base_name = std.fs.path.basename(path);
-    var parent_dir = if (std.fs.path.isAbsolute(parent_path))
-        try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{})
-    else
-        try std.Io.Dir.cwd().openDir(std.Options.debug_io, parent_path, .{});
-    defer parent_dir.close(std.Options.debug_io);
-
-    var atomic_file = try parent_dir.createFileAtomic(std.Options.debug_io, base_name, .{
-        .replace = false,
-        .make_path = false,
-    });
-    defer atomic_file.deinit(std.Options.debug_io);
-    try atomic_file.file.writeStreamingAll(std.Options.debug_io, data);
-    atomic_file.link(std.Options.debug_io) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-}
-
-fn ensureParentDir(path: []const u8) !void {
-    const dir = std.fs.path.dirname(path) orelse return;
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir);
-}
-
-fn deleteTreeAbsolute(path: []const u8) !void {
-    const parent_path = std.fs.path.dirname(path) orelse return;
-    const base_name = std.fs.path.basename(path);
-    var parent_dir = try std.Io.Dir.openDirAbsolute(std.Options.debug_io, parent_path, .{});
-    defer parent_dir.close(std.Options.debug_io);
-    try parent_dir.deleteTree(std.Options.debug_io, base_name);
-}
-
-fn fileExistsAt(root: []const u8, name: []const u8) bool {
-    const path = std.fs.path.join(std.heap.page_allocator, &.{ root, name }) catch return false;
-    defer std.heap.page_allocator.free(path);
-    return fileExists(path);
-}
-
-fn fileExistsJoin(root: []const u8, name: []const u8) bool {
-    const path = std.fs.path.join(std.heap.page_allocator, &.{ root, name }) catch return false;
-    defer std.heap.page_allocator.free(path);
-    return fileExists(path);
-}
-
-fn fileExistsNonEmptyJoin(root: []const u8, name: []const u8) bool {
-    const path = std.fs.path.join(std.heap.page_allocator, &.{ root, name }) catch return false;
-    defer std.heap.page_allocator.free(path);
-    return fileExistsNonEmpty(path);
-}
-
-fn fileExists(path: []const u8) bool {
-    var file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
-    file.close(std.Options.debug_io);
-    return true;
-}
-
-fn fileExistsNonEmpty(path: []const u8) bool {
-    var file = if (std.fs.path.isAbsolute(path))
-        std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return false
-    else
-        std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{}) catch return false;
-    defer file.close(std.Options.debug_io);
-    const stat = file.stat(std.Options.debug_io) catch return false;
-    return stat.size != 0;
-}
-
-fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
-    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
-}
-
-fn hexDigest(allocator: std.mem.Allocator, digest: []const u8) ![]const u8 {
-    const alphabet = "0123456789abcdef";
-    const out = try allocator.alloc(u8, digest.len * 2);
-    for (digest, 0..) |byte, index| {
-        out[index * 2] = alphabet[byte >> 4];
-        out[index * 2 + 1] = alphabet[byte & 0x0f];
-    }
-    return out;
-}
-
-fn backendName(target: build_def.ExecutionTarget) []const u8 {
-    return switch (target) {
-        .vm => "vm",
-        .llvm_native => "llvm",
-        .wasm32_emscripten => "wasm32-emscripten",
-        .hybrid => "hybrid",
-    };
-}
-
-fn objectName() []const u8 {
-    return if (builtin.os.tag == .windows) "main.obj" else "main.o";
-}
-
-fn objectExtension() []const u8 {
-    return if (builtin.os.tag == .windows) ".obj" else ".o";
-}
-
-fn executableNamePage(comptime base: []const u8) []const u8 {
-    return if (builtin.os.tag == .windows) base ++ ".exe" else base;
-}
-
-fn executableName(allocator: std.mem.Allocator, base: []const u8) ![]const u8 {
-    return if (builtin.os.tag == .windows) std.fmt.allocPrint(allocator, "{s}.exe", .{base}) else allocator.dupe(u8, base);
-}
-
-fn sharedLibraryName() []const u8 {
-    return switch (builtin.os.tag) {
-        .windows => "main.dll",
-        .macos => "main.dylib",
-        else => "main.so",
-    };
-}
-
-fn sharedLibraryExtension() []const u8 {
-    return switch (builtin.os.tag) {
-        .windows => ".dll",
-        .macos => ".dylib",
-        else => ".so",
-    };
-}
-
-fn defaultObjectPath(allocator: std.mem.Allocator, executable_path: []const u8) ![]const u8 {
-    const ext = if (builtin.os.tag == .windows) ".exe" else "";
-    if (ext.len > 0 and std.mem.endsWith(u8, executable_path, ext)) {
-        return std.fmt.allocPrint(allocator, "{s}{s}", .{ executable_path[0 .. executable_path.len - ext.len], objectExtension() });
-    }
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ executable_path, objectExtension() });
-}
-
-fn replaceExtension(allocator: std.mem.Allocator, path: []const u8, extension: []const u8) ![]const u8 {
-    const ext = std.fs.path.extension(path);
-    if (ext.len == 0) return std.fmt.allocPrint(allocator, "{s}{s}", .{ path, extension });
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ path[0 .. path.len - ext.len], extension });
 }

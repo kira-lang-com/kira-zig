@@ -12,7 +12,14 @@ pub fn isEnabled() bool {
 
 pub fn emit(comptime domain: []const u8, comptime event: []const u8, comptime fmt: []const u8, args: anytype) void {
     if (!execution_trace_enabled) return;
+    emitSlow(domain, event, fmt, args);
+}
 
+/// The buffer lives in a `noinline` slow path so the many trace call sites in
+/// the interpreter dispatch loop don't each fold a 1 KiB slot into the
+/// caller's frame — `runPrepared` recurses per Kira call, and its frame size
+/// bounds real recursion depth (S6).
+noinline fn emitSlow(comptime domain: []const u8, comptime event: []const u8, comptime fmt: []const u8, args: anytype) void {
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.File.stderr().writer(std.Options.debug_io, &buffer);
     defer writer.interface.flush() catch {};
