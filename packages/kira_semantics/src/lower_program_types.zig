@@ -91,7 +91,26 @@ pub fn registerImportAliases(ctx: *shared.Context, imports: []const model.Import
     for (imports) |import_decl| {
         if (import_decl.package_name != null) continue;
         const visible = import_decl.alias orelse import_decl.module_name;
-        try shared.registerTopLevelName(ctx.allocator, ctx.diagnostics, map, visible, import_decl.span);
+        // Imports are file-scoped, so the same module may be imported by sibling files
+        // without conflict. Dedupe per file (keyed by source path) and flag only a
+        // repeated import within the SAME file. The composite key never collides with
+        // the plain top-level decl names also stored in this map.
+        const key = try std.fmt.allocPrint(ctx.allocator, "{s}\x00import\x00{s}", .{ import_decl.source_path, visible });
+        if (map.get(key)) |previous_span| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM003",
+                .title = "duplicate top-level name",
+                .message = try std.fmt.allocPrint(ctx.allocator, "Kira found more than one import named '{s}' in this file.", .{visible}),
+                .labels = &.{
+                    diagnostics.primaryLabel(import_decl.span, "duplicate import"),
+                    diagnostics.secondaryLabel(previous_span, "first import was here"),
+                },
+                .help = "Import each module at most once per file.",
+            });
+            return error.DiagnosticsEmitted;
+        }
+        try map.put(ctx.allocator, key, import_decl.span);
     }
 }
 

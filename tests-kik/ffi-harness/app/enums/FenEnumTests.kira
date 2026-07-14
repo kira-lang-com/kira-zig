@@ -1,3 +1,5 @@
+import Foundation
+
 // Hybrid FFI / enum-bridge tests.
 // No imports — main.kira covers Foundation package-wide.
 // All top-level names use prefix fen / Fen.

@@ -1,3 +1,5 @@
+import Foundation
+
 // NuxTests.kira
 // Migrated from tests/pass/run/{integer_arithmetic_parity, float_basic_parity,
 // float32_reinterpret_parity, negative_modulo_truncation_parity,
@@ -5,7 +7,7 @@
 // logical_short_circuit_parity, unary_not_parity, conditional_expr_parity,
 // foundation_math_operators, control_flow_parity, cast_call_reachability,
 // float32_width_parity (fwx / Fwx prefix)}.
-// All other top-level names use the Nux/nux prefix. No `import Foundation`
+// All other top-level names use the Nux/nux prefix. this file imports Foundation (imports are file-scoped)
 // here — main.kira imports it for the whole package.
 
 // ---------------------------------------------------------------------------

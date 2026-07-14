@@ -1,3 +1,5 @@
+import Foundation
+
 // Migrated from tests/pass/run/ownership_* and consuming_* corpus cases.
 // See tests-kik/corpus/ownership-b/SKIPPED.md for cases that depend on
 // @Widget body/children builder syntax and could not be reduced.

@@ -1,9 +1,11 @@
+import Foundation
+
 // WblTests.kira — migrated from tests/pass/run/widget_body_locals_and_for.
 // PREFIX: wbl / Wbl (all top-level names use this prefix, except the shared
 // `Widget` family from WidgetFamily.kira, reused verbatim across the migrated
 // body-block cases). The `Widget` name is a sharing convention, not a
 // requirement: `body {}` builder blocks are family-generic (Construct 2.0).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 
 // ---------------------------------------------------------------------------
 // widget_body_locals_and_for

@@ -1,0 +1,8 @@
+// app/main.kira imports Foundation; the sibling cannot borrow that import.
+import Foundation
+
+@Main
+function main() {
+    printLine("main")
+    return
+}

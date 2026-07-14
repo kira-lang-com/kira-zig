@@ -1,6 +1,8 @@
+import Foundation
+
 // Struct bridging across @Native <-> @Runtime — migrated corpus cases from
 // tests/pass/run/. PREFIX: hbs / Hbs (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // hybrid_nested_struct_array_bridge — nested struct + [Int] borrowed into a

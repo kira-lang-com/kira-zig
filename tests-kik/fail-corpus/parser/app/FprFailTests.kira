@@ -1,3 +1,5 @@
+import Foundation
+
 // FprFailTests.kira — parser-stage expected-diagnostic cases migrated from tests/fail/parser/.
 // PREFIX: Fpr.
 //

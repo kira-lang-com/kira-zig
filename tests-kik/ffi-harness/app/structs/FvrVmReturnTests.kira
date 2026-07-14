@@ -1,3 +1,5 @@
+import Foundation
+
 // VM-to-native return ownership regressions. Prefix: fvr / Fvr.
 //
 // These drive the hybrid-only shape where @Native code calls a @Runtime builder,

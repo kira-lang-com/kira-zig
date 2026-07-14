@@ -1,3 +1,5 @@
+import Foundation
+
 // DcxTests.kira — coverage for the opt-in `@Derive(Copy)` copyability assertion.
 // PREFIX: dcx / Dcx.
 //
@@ -9,7 +11,7 @@
 // semantics at runtime (no move, independent duplicates) plus interop with Foundation's
 // `@Derive(Equatable)` macro.
 //
-// No `import Foundation` here — Test / Result / TestFailure and the `Equatable` derive macro
+// This file imports Foundation (imports are file-scoped); Test / Result / TestFailure and the `Equatable` derive macro
 // are all package-wide once main.kira imports Foundation.
 
 // ---------------------------------------------------------------------------

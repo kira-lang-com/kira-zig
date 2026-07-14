@@ -1,3 +1,5 @@
+import Foundation
+
 // Deep `kira test` suite for scalar arithmetic, comparisons, boolean logic,
 // conditional expressions, integer-division/modulo edge cases, and recursion.
 //

@@ -1,6 +1,8 @@
+import Foundation
+
 // TgxTests.kira
 // Migrated from tests/pass/run/llvm_textcore_glyphrun_parity.
-// All top-level names use prefix tgx / Tgx. No `import Foundation` here —
+// All top-level names use prefix tgx / Tgx. This file imports Foundation (imports are file-scoped);
 // main.kira imports it for the whole package.
 // Text-core shaped stress: glyph runs, clusters, fallback runs and multi-line
 // layouts (deep struct/array nesting, dynamic indexing, copies mutated

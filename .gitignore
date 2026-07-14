@@ -31,3 +31,4 @@ __pycache__/
 !CMakeLists.txt
 !**/sample.txt
 !**/empty.txt
+kira.lock

@@ -1,3 +1,5 @@
+import Foundation
+
 // Hybrid enum-field copy regression tests. Prefix: feb / Feb.
 // No imports — main.kira covers Foundation package-wide.
 //

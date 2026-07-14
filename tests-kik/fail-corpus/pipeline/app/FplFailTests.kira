@@ -1,3 +1,5 @@
+import Foundation
+
 // FplFailTests.kira — pipeline-stage (semantics / mid-IR) expected-diagnostic cases migrated
 // from tests/fail/pipeline/.
 // PREFIX: Fpl.

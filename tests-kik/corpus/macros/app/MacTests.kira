@@ -1,7 +1,9 @@
+import Foundation
+
 // MacTests.kira — migrated corpus cases from tests/pass/run/macro_*.
 // PREFIXES: mfx/Mfx (macro_field_trigger_rewrite), mpw/Mpw (macro_property_wrapper),
 // mws/Mws (macro_wrapper_state). All top-level names use a per-case prefix.
-// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure/print already available.
 // Macro expansion is a frontend AST transform, so VM / LLVM / hybrid are identical by
 // construction; the Tests assert the values the legacy cases printed.
 

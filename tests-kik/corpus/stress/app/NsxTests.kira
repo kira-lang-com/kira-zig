@@ -1,6 +1,8 @@
+import Foundation
+
 // NsxTests.kira
 // Migrated from tests/pass/run/large_nested_struct_copy_source_must_be_pointer_regression.
-// All top-level names use prefix nsx / Nsx. No `import Foundation` here —
+// All top-level names use prefix nsx / Nsx. This file imports Foundation (imports are file-scoped);
 // main.kira imports it for the whole package.
 // Regression: copying a nested struct out of an array element must read
 // through a pointer to the element, not from a stale materialized temporary;

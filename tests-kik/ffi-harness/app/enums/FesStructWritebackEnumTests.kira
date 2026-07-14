@@ -1,3 +1,5 @@
+import Foundation
+
 // Mutable native-struct writeback with enum fields. Prefix: fes / Fes.
 //
 // A borrow-mut native struct passed into a @Runtime callback is materialized as a

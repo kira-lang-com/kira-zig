@@ -143,6 +143,62 @@ fn collectRootTopLevelNames(
     }
 }
 
+fn declTopLevelName(decl: syntax.ast.Decl) ?[]const u8 {
+    return switch (decl) {
+        .annotation_decl => |item| item.name,
+        .capability_decl => |item| item.name,
+        .enum_decl => |item| item.name,
+        .type_alias_decl => |item| item.name,
+        .type_decl => |item| item.name,
+        .construct_decl => |item| item.name,
+        .construct_form_decl => |item| item.name,
+        .fail_test_decl => |item| item.name,
+        .function_decl => |item| item.name,
+        .extend_decl, .macro_decl, .macro_invocation => null,
+    };
+}
+
+// Map each top-level symbol declared by a NON-root (dependency) package to that
+// package, unless a root declaration shadows the name. A name absent from the map is
+// a root/local symbol and is always visible; the file-scope gate consults this map to
+// reject a dependency symbol referenced from a file that did not import its module.
+fn collectImportedSymbolOwners(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    root_top_level_names: *const std.StringHashMapUnmanaged(void),
+    owners: *std.StringHashMapUnmanaged([]const u8),
+) !void {
+    for (program.decls, 0..) |decl, decl_index| {
+        const package_name = declOrigin(program, decl_index).package_name orelse continue;
+        const name = declTopLevelName(decl) orelse continue;
+        // A root declaration of the same name wins the bare slot (see putFunctionHeader),
+        // so the dependency symbol is not reachable bare and must not be gated by module.
+        if (root_top_level_names.contains(name)) continue;
+        if (owners.contains(name)) continue;
+        try owners.put(allocator, name, package_name);
+    }
+}
+
+// Map each file's canonical source path to the set of module-root names it imports.
+// The module root is what a file references (e.g. `import Foundation` -> "Foundation"),
+// which — for the packages in this repo — matches the owning package name recorded in
+// decl origins, so the two maps join on that identity.
+fn collectFileModuleImports(
+    allocator: std.mem.Allocator,
+    program: syntax.ast.Program,
+    file_imports: *std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)),
+) !void {
+    for (program.imports, 0..) |import_decl, import_index| {
+        const origin = if (import_index < program.import_origins.len) program.import_origins[import_index] else syntax.ast.DeclOrigin{};
+        if (origin.source_path.len == 0) continue;
+        if (import_decl.module_name.segments.len == 0) continue;
+        const module_root = import_decl.module_name.segments[0].text;
+        const entry = try file_imports.getOrPut(allocator, origin.source_path);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        try entry.value_ptr.put(allocator, module_root, {});
+    }
+}
+
 fn putFunctionHeader(
     allocator: std.mem.Allocator,
     headers: *std.StringHashMapUnmanaged(shared.FunctionHeader),
@@ -231,6 +287,23 @@ pub fn lowerProgramWithOptions(
     var root_top_level_names = std.StringHashMapUnmanaged(void){};
     defer root_top_level_names.deinit(allocator);
     try collectRootTopLevelNames(allocator, program, &root_top_level_names);
+
+    // Imports are file-scoped: build the owner index (dependency symbol -> package) and
+    // the per-file import set, then expose them on the context so name resolution can
+    // reject a dependency symbol used in a file that never imported its module.
+    var imported_symbol_owner = std.StringHashMapUnmanaged([]const u8){};
+    defer imported_symbol_owner.deinit(allocator);
+    try collectImportedSymbolOwners(allocator, program, &root_top_level_names, &imported_symbol_owner);
+    ctx.imported_symbol_owner = &imported_symbol_owner;
+
+    var file_module_imports = std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)){};
+    defer {
+        var file_import_it = file_module_imports.valueIterator();
+        while (file_import_it.next()) |set| set.deinit(allocator);
+        file_module_imports.deinit(allocator);
+    }
+    try collectFileModuleImports(allocator, program, &file_module_imports);
+    ctx.file_module_imports = &file_module_imports;
 
     for (program.decls, 0..) |decl, decl_index| {
         const origin = declOrigin(program, decl_index);

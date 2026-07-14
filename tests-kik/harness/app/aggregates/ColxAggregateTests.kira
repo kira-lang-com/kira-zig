@@ -1,3 +1,5 @@
+import Foundation
+
 // ColxAggregateTests.kira
 // Aggregate pipeline test suite. All new names use colxa / ColxA prefix.
 // Reuses colxSum, colxBuildRange, colxBuildSquares, colxBuildFib, ColxPt,
