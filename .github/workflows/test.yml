@@ -228,17 +228,17 @@ jobs:
         run: |
           zig build test
 
-      - name: Run Kira tests-kik harness (Unix)
+      - name: Run all Kira tests-kik suites (Unix)
         if: ${{ matrix.os != 'windows' }}
         env:
           KIRA_TEST_PARITY: "1"
         run: |
-          ./zig-out/bin/kira test tests-kik/harness
+          ./zig-out/bin/kira test tests-kik
 
-      - name: Run Kira tests-kik harness (Windows)
+      - name: Run all Kira tests-kik suites (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         env:
           KIRA_TEST_PARITY: "1"
         run: |
-          .\zig-out\bin\kira.exe test tests-kik/harness
+          .\zig-out\bin\kira.exe test tests-kik

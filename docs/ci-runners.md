@@ -14,7 +14,8 @@ To enable Blacksmith:
    use larger runners.
 
 Each Test matrix job runs both `zig build test` (package unit tests and
-repository policy) and the Kira-native `tests-kik/harness` through `kira test`.
+repository policy) and every Kira-native suite under `tests-kik` through the
+recursive `kira test tests-kik` runner.
 The latter uses the manifest's VM/LLVM/hybrid backend matrix and enables stdout
 parity checks.
 
