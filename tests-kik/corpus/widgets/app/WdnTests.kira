@@ -1,0 +1,84 @@
+// WdnTests.kira — migrated from tests/pass/run/widget_dynamic_node.
+// PREFIX: wdn / Wdn (all top-level names use this prefix, including the extend
+// method).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_dynamic_node
+// ---------------------------------------------------------------------------
+// Dynamic dispatch through `some Widget` parameters, both via the computed
+// `node` accessor and via an `extend` method. Original printed
+// "text\nspacer\nbadge" twice (accessor path, then method path) — reduced
+// here to two "|"-joined Strings.
+
+construct WdnNode {
+    @Required let label: String
+}
+
+WdnNode WdnTextNode {
+    let text: String = ""
+
+    let label: String {
+        text
+    }
+}
+
+WdnNode WdnSpacerNode {
+    let label: String {
+        "spacer"
+    }
+}
+
+construct WdnWidget {
+    @Required let body: WdnWidget
+    let node: WdnNode { body.node }
+}
+
+WdnWidget WdnText {
+    let text: String = ""
+
+    let node: WdnNode {
+        WdnTextNode(text: text)
+    }
+}
+
+WdnWidget WdnSpacer {
+    let node: WdnNode {
+        WdnSpacerNode()
+    }
+}
+
+WdnWidget WdnBadge {
+    let body: WdnWidget {
+        WdnText(text: "badge")
+    }
+}
+
+extend WdnWidget {
+    function wdnDescribe() -> String {
+        return self.node.label
+    }
+}
+
+function wdnShow(widget: some WdnWidget) -> String {
+    let node: some WdnNode = widget.node
+    return node.label
+}
+
+function wdnShowMethod(widget: some WdnWidget) -> String {
+    return widget.wdnDescribe()
+}
+
+Test WdnDynamicNodeAccessorPath {
+    test {
+        return wdnShow(WdnText(text: "text")) + "|" + wdnShow(WdnSpacer()) + "|" + wdnShow(WdnBadge())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("text|spacer|badge"); return e }
+}
+
+Test WdnDynamicNodeMethodPath {
+    test {
+        return wdnShowMethod(WdnText(text: "text")) + "|" + wdnShowMethod(WdnSpacer()) + "|" + wdnShowMethod(WdnBadge())
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("text|spacer|badge"); return e }
+}

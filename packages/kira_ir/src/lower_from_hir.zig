@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const source = @import("kira_source");
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
@@ -20,6 +21,7 @@ pub const lowerEnumTypeDecls = program_impl.lowerEnumTypeDecls;
 pub const lowerConstructs = program_impl.lowerConstructs;
 pub const lowerConstructImplementations = program_impl.lowerConstructImplementations;
 pub const markReachableFunction = program_impl.markReachableFunction;
+pub const markReachableFunctionSet = program_impl.markReachableFunctionSet;
 pub const markReferencedType = program_impl.markReferencedType;
 pub const lowerFieldTypes = program_impl.lowerFieldTypes;
 pub const lowerFfiTypeInfo = program_impl.lowerFfiTypeInfo;
@@ -96,17 +98,31 @@ pub fn recordUnsupported(out: ?*UnsupportedFeature, span: ?source.Span, construc
 pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Program, options: LowerProgramOptions) !ir.Program {
     var reachable = std.AutoHashMapUnmanaged(u32, void){};
     defer reachable.deinit(allocator);
-    try markReachableFunction(allocator, program, &reachable, program.functions[program.entry_index].id);
+    // Collect every root first, then mark them against ONE Reach context —
+    // per-root marking rebuilds Reach's whole-program lookup maps and made
+    // test-mode lowering quadratic in suite size.
+    var roots = std.array_list.Managed(u32).init(allocator);
+    defer roots.deinit();
+    try roots.append(program.functions[program.entry_index].id);
     if (options.include_tests) {
+        var id_by_name = std.StringHashMapUnmanaged(u32){};
+        defer id_by_name.deinit(allocator);
+        try id_by_name.ensureTotalCapacity(allocator, @intCast(program.functions.len));
+        for (program.functions) |function_decl| {
+            if (!id_by_name.contains(function_decl.name)) {
+                id_by_name.putAssumeCapacity(function_decl.name, function_decl.id);
+            }
+        }
         for (program.tests) |test_case| {
-            try markReachableFunctionByName(allocator, program, &reachable, test_case.test_function);
-            try markReachableFunctionByName(allocator, program, &reachable, test_case.expect_function);
+            if (id_by_name.get(test_case.test_function)) |id| try roots.append(id);
+            if (id_by_name.get(test_case.expect_function)) |id| try roots.append(id);
         }
         // The synthesized pure-Kira test driver (when present) is the entry the
         // test runner invokes by name; keep it (and everything it calls) live.
         // No-op when the driver was not synthesized.
-        try markReachableFunctionByName(allocator, program, &reachable, "__kira_test_main");
+        if (id_by_name.get("__kira_test_main")) |id| try roots.append(id);
     }
+    try program_impl.markReachableFunctionSet(allocator, program, &reachable, roots.items);
 
     const constructs = try lowerConstructs(allocator, program);
     const construct_implementations = try lowerConstructImplementations(allocator, program);
@@ -157,20 +173,6 @@ pub fn lowerProgramWithOptions(allocator: std.mem.Allocator, program: model.Prog
     // the nested-drive yield.
     try @import("async_state_machine.zig").run(allocator, &lowered_program);
     return lowered_program;
-}
-
-fn markReachableFunctionByName(
-    allocator: std.mem.Allocator,
-    program: model.Program,
-    reachable: *std.AutoHashMapUnmanaged(u32, void),
-    name: []const u8,
-) !void {
-    for (program.functions) |function_decl| {
-        if (std.mem.eql(u8, function_decl.name, name)) {
-            try markReachableFunction(allocator, program, reachable, function_decl.id);
-            return;
-        }
-    }
 }
 
 pub fn lowerOwnershipModeSlice(allocator: std.mem.Allocator, modes: []const model.OwnershipMode) ![]const ir.OwnershipMode {
@@ -248,14 +250,14 @@ pub const Lowerer = struct {
         return local < self.boxed_locals.len and self.boxed_locals[local];
     }
 
-    pub fn lowerStatements(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statements: []const model.Statement) !bool {
+    pub fn lowerStatements(self: *Lowerer, instructions: *InstructionBuf, statements: []const model.Statement) !bool {
         for (statements) |statement| {
             if (try self.lowerStatement(instructions, statement)) return true;
         }
         return false;
     }
 
-    fn lowerStatement(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), statement: model.Statement) !bool {
+    fn lowerStatement(self: *Lowerer, instructions: *InstructionBuf, statement: model.Statement) !bool {
         self.current_span = statementSpan(statement);
         self.current_construct = @tagName(statement);
         switch (statement) {
@@ -326,7 +328,7 @@ pub const Lowerer = struct {
         }
     }
 
-    fn lowerReturnExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
+    fn lowerReturnExpr(self: *Lowerer, instructions: *InstructionBuf, expr: *model.Expr) anyerror!u32 {
         if (expr.* == .local and !self.isBoxedLocal(expr.local.local_id)) {
             const dst = self.freshRegister();
             try instructions.append(.{ .load_local = .{
@@ -352,7 +354,7 @@ pub const Lowerer = struct {
         return self.lowerExpr(instructions, expr);
     }
 
-    pub fn lowerExpr(self: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) anyerror!u32 {
+    pub fn lowerExpr(self: *Lowerer, instructions: *InstructionBuf, expr: *model.Expr) anyerror!u32 {
         self.current_span = exprSpan(expr);
         self.current_construct = @tagName(expr.*);
         return switch (expr.*) {
@@ -753,6 +755,55 @@ pub const Lowerer = struct {
                 } });
                 break :blk dst;
             },
+            .string_from_scalar => |node| blk: {
+                const src = try self.lowerExpr(instructions, node.operand);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .string_from_scalar = .{
+                    .dst = dst,
+                    .src = src,
+                    .source = switch (node.source_kind) {
+                        .integer => .integer,
+                        .float => .float,
+                        .boolean => .boolean,
+                    },
+                } });
+                break :blk dst;
+            },
+            .string_char_at => |node| blk: {
+                const string_reg = try self.lowerExpr(instructions, node.object);
+                const index_reg = try self.lowerExpr(instructions, node.index);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .string_char_at = .{
+                    .dst = dst,
+                    .string = string_reg,
+                    .index = index_reg,
+                } });
+                break :blk dst;
+            },
+            .string_substring => |node| blk: {
+                const string_reg = try self.lowerExpr(instructions, node.object);
+                const start_reg = try self.lowerExpr(instructions, node.start);
+                const end_reg = try self.lowerExpr(instructions, node.end);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .string_substring = .{
+                    .dst = dst,
+                    .string = string_reg,
+                    .start = start_reg,
+                    .end = end_reg,
+                } });
+                break :blk dst;
+            },
+            .string_index_of => |node| blk: {
+                const string_reg = try self.lowerExpr(instructions, node.object);
+                const needle_reg = try self.lowerExpr(instructions, node.needle);
+                const dst = self.freshRegister();
+                try instructions.append(.{ .string_index_of = .{
+                    .dst = dst,
+                    .string = string_reg,
+                    .needle = needle_reg,
+                } });
+                break :blk dst;
+            },
             .field => |node| blk: {
                 // Peephole: `arr[i].f` reading a *scalar* field of an array
                 // element. Lowering `arr[i]` the normal way emits a deep-cloning
@@ -921,7 +972,7 @@ pub const Lowerer = struct {
 
     pub fn storeValueToLocal(
         self: *Lowerer,
-        instructions: *std.array_list.Managed(ir.Instruction),
+        instructions: *InstructionBuf,
         local: u32,
         ty: ir.ValueType,
         src: u32,
@@ -947,7 +998,7 @@ pub const Lowerer = struct {
 
     pub fn initializeBoxedLocal(
         self: *Lowerer,
-        instructions: *std.array_list.Managed(ir.Instruction),
+        instructions: *InstructionBuf,
         local: u32,
         ty: ir.ValueType,
         initial_value: ?u32,

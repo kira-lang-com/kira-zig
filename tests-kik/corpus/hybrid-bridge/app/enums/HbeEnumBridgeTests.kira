@@ -1,0 +1,57 @@
+// Enums crossing the @Native <-> @Runtime bridge — migrated corpus case from
+// tests/pass/run/. PREFIX: hbe / Hbe.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// runtime_native_enum_bridge — a @Native struct with an enum field is built
+// natively (enum chosen by a @Runtime picker), copied, and the copy is
+// dispatched into a @Runtime handler (mirrors RunFoundationApp's event
+// handler, runtime 206 / impl_218); both copies then drop.
+// Original stdout: 1 / 2.
+// ---------------------------------------------------------------------------
+
+enum HbeShade {
+    Light,
+    Dark
+}
+
+@Native
+struct HbeSwatch {
+    let shade: HbeShade = .Light
+    let weight: Int = 0
+}
+
+@Runtime
+function hbePickShade(flag: Bool) -> HbeShade {
+    if flag { return .Dark }
+    return .Light
+}
+
+@Native
+function hbeMakeSwatch(flag: Bool) -> HbeSwatch {
+    return HbeSwatch { shade: hbePickShade(flag), weight: 3 }
+}
+
+@Runtime
+function hbeOnSwatch(s: borrow HbeSwatch) -> Int {
+    match s.shade {
+        Light -> { return 1 }
+        Dark -> { return 2 }
+    }
+}
+
+@Native
+function hbeHandle(flag: Bool) -> Int {
+    var original = hbeMakeSwatch(flag)
+    var copy = original
+    let r = hbeOnSwatch(copy)
+    return r
+}
+
+Test HbeRuntimeNativeEnumBridge {
+    test {
+        // positional encoding of the printed 1 / 2
+        return hbeHandle(false) * 10 + hbeHandle(true)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
+}

@@ -52,7 +52,7 @@ pub fn functionDeclNeedsTextIrFallback(
             .const_int, .const_string, .const_bool, .const_null_ptr, .add, .subtract, .multiply, .divide, .modulo, .unary, .store_local, .load_local, .local_ptr => {},
             .const_float => return true,
             .compare, .branch, .jump, .label => return true,
-            .alloc_struct, .alloc_enum, .alloc_native_state, .alloc_array, .const_function, .const_closure, .subobject_ptr, .field_ptr, .recover_native_state, .free_native_state, .native_state_field_get, .native_state_field_set, .c_string_to_string, .array_len, .string_len, .array_get, .array_set, .array_append, .enum_tag, .enum_payload, .load_indirect, .store_indirect, .copy_indirect => return true,
+            .alloc_struct, .alloc_enum, .alloc_native_state, .alloc_array, .const_function, .const_closure, .subobject_ptr, .field_ptr, .recover_native_state, .free_native_state, .native_state_field_get, .native_state_field_set, .c_string_to_string, .array_len, .string_len, .string_from_scalar, .string_char_at, .string_substring, .string_index_of, .array_get, .array_set, .array_append, .enum_tag, .enum_payload, .load_indirect, .store_indirect, .copy_indirect => return true,
             .print => |value| if (value.ty.kind != .integer and value.ty.kind != .string and value.ty.kind != .float and value.ty.kind != .enum_instance) return true,
             .call => |value| {
                 if (value.args.len != 0 or value.dst != null) return true;

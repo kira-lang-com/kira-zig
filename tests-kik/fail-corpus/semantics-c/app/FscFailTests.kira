@@ -1,0 +1,596 @@
+// FscFailTests.kira
+// Migrated compile-failure cases from tests/fail/semantics (slice: dirs 81-103,
+// sorted). Each legacy main.kira is inlined VERBATIM in its FailTest source block.
+// All FailTest names use the Fsc prefix.
+//
+// Manifest (legacy case -> FailTest name -> expected Compile code):
+//   ownership_returned_borrow_reserved      -> FscOwnershipReturnedBorrowReserved   KSEM112
+//   ownership_use_after_move                -> FscOwnershipUseAfterMove             KSEM107
+//   some_requires_construct                 -> FscSomeRequiresConstruct             KSEM097
+//   trailing_callback_not_accepted          -> FscTrailingCallbackNotAccepted       KSEM081
+//   trailing_callback_parameter_mismatch    -> FscTrailingCallbackParameterMismatch KSEM083
+//   try_non_result                          -> FscTryNonResult                      KSEM134
+//   try_outside_attempt                     -> FscTryOutsideAttempt                 KSEM133
+//   typed_float_initializer_requires_float  -> FscTypedFloatInitializerRequiresFloat KSEM085
+//   undeclared_construct_annotation         -> FscUndeclaredConstructAnnotation     KSEM063
+//   unknown_annotation_parameter            -> FscUnknownAnnotationParameter        KSEM066
+//   unknown_struct_literal_field            -> FscUnknownStructLiteralField         KSEM082
+//   unresolved_import                       -> FscUnresolvedImport                  KSEM032
+//   unresolved_namespace                    -> FscUnresolvedNamespace               KSEM027
+//   use_before_initialization               -> FscUseBeforeInitialization           KSEM086
+//   widget_body_self_recursion              -> FscWidgetBodySelfRecursion           KSEM141
+//   widget_content_ambiguous                -> FscWidgetContentAmbiguous            KSEM144
+//   widget_content_count_empty              -> FscWidgetContentCountEmpty           KSEM143
+//   widget_content_count_two                -> FscWidgetContentCountTwo             KSEM143
+//   widget_content_no_field                 -> FscWidgetContentNoField              KSEM142
+//   widget_content_non_widget               -> FscWidgetContentNonWidget            KSEM145
+//   widget_dynamic_missing_method           -> FscWidgetDynamicMissingMethod        KSEM066
+//   widget_extend_unknown_target            -> FscWidgetExtendUnknownTarget         KSEM146
+//   widget_missing_body_and_node            -> FscWidgetMissingBodyAndNode          KSEM140
+
+// --- ownership_returned_borrow_reserved (tests/fail/semantics/ownership_returned_borrow_reserved)
+FailTest FscOwnershipReturnedBorrowReserved {
+    backends { hybrid vm llvm }
+    source {
+        struct Mesh {
+            let id: Int
+        }
+
+        function first(mesh: borrow Mesh) -> borrow Mesh {
+            return mesh
+        }
+
+        @Main
+        function main() {
+            let mesh = Mesh { id: 1 }
+            first(mesh)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM112")); return e }
+}
+
+// --- ownership_use_after_move (tests/fail/semantics/ownership_use_after_move)
+FailTest FscOwnershipUseAfterMove {
+    backends { hybrid vm llvm }
+    source {
+        struct Mesh {
+            let id: Int
+        }
+
+        function consume(mesh: Mesh) -> Int {
+            return mesh.id
+        }
+
+        function inspect(mesh: borrow Mesh) -> Int {
+            return mesh.id
+        }
+
+        @Main
+        function main() {
+            var mesh = Mesh { id: 3 }
+            print(consume(move mesh))
+            print(inspect(mesh))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM107")); return e }
+}
+
+// --- some_requires_construct (tests/fail/semantics/some_requires_construct)
+FailTest FscSomeRequiresConstruct {
+    backends { vm llvm hybrid }
+    source {
+        // `some` is existential over a construct family, so it requires a construct — the same rule as
+        // `any` today, but the diagnostic must name the `some` keyword the author actually wrote.
+        function acceptInt(value: some Int) {
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM097")); return e }
+}
+
+// --- trailing_callback_not_accepted (tests/fail/semantics/trailing_callback_not_accepted)
+FailTest FscTrailingCallbackNotAccepted {
+    backends { hybrid vm }
+    source {
+        function draw(value: Int) {
+            print(value)
+            return
+        }
+
+        @Main
+        function main() {
+            draw(1) { value in
+                print(value)
+            }
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM081")); return e }
+}
+
+// --- trailing_callback_parameter_mismatch (tests/fail/semantics/trailing_callback_parameter_mismatch)
+FailTest FscTrailingCallbackParameterMismatch {
+    backends { hybrid vm }
+    source {
+        function register(handler: (Int) -> Void) {
+            return;
+        }
+
+        @Main
+        function main() {
+            register { in
+                return;
+            }
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM083")); return e }
+}
+
+// --- try_non_result (tests/fail/semantics/try_non_result)
+FailTest FscTryNonResult {
+    backends { hybrid vm }
+    source {
+        // `try` may only unwrap a `Result`-shaped value (an enum with `Ok` and `Error` variants).
+        // Here it is applied to an integer.
+
+        enum AppError {
+            NotFound: String = "nf"
+        }
+
+        @Main
+        function main() {
+            attempt {
+                let value = try 42
+                print(value)
+            } handle {
+                NotFound {
+                    print("nf")
+                }
+            }
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM134")); return e }
+}
+
+// --- try_outside_attempt (tests/fail/semantics/try_outside_attempt)
+FailTest FscTryOutsideAttempt {
+    backends { hybrid vm }
+    source {
+        // `try` is only valid inside an `attempt { ... }` block. Here it is used directly in a
+        // function body.
+
+        enum AppError {
+            NotFound: String = "nf"
+            Denied: String = "denied"
+        }
+
+        enum Outcome {
+            Ok: Int
+            Error: AppError
+        }
+
+        function load() -> Outcome {
+            return .Ok(1)
+        }
+
+        @Main
+        function main() {
+            let value = try load()
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM133")); return e }
+}
+
+// --- typed_float_initializer_requires_float (tests/fail/semantics/typed_float_initializer_requires_float)
+FailTest FscTypedFloatInitializerRequiresFloat {
+    backends { hybrid vm }
+    source {
+        @Main
+        function entry() {
+            var value: Float = 0
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM085")); return e }
+}
+
+// --- undeclared_construct_annotation (tests/fail/semantics/undeclared_construct_annotation)
+FailTest FscUndeclaredConstructAnnotation {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            annotations {
+                @State;
+            }
+        }
+
+        @Main
+        function entry() {
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM063")); return e }
+}
+
+// --- unknown_annotation_parameter (tests/fail/semantics/unknown_annotation_parameter)
+FailTest FscUnknownAnnotationParameter {
+    backends { hybrid vm }
+    source {
+        annotation Attribute {
+            parameters {
+                index: Int
+            }
+        }
+
+        construct Widget {
+            annotations {
+                @Attribute;
+            }
+        }
+
+        Widget Button() {
+            @Attribute(offset: 0)
+            let position: Float = 0.0;
+
+            content {
+            }
+        }
+
+        @Main
+        function entry() {
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM066")); return e }
+}
+
+// --- unknown_struct_literal_field (tests/fail/semantics/unknown_struct_literal_field)
+FailTest FscUnknownStructLiteralField {
+    backends { hybrid vm }
+    source {
+        struct Point {
+            let x: Int = 0
+            let y: Int = 0
+        }
+
+        @Main
+        function entry() {
+            let point = Point { x: 1 z: 2 }
+            print(point.x)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM082")); return e }
+}
+
+// --- unresolved_import (tests/fail/semantics/unresolved_import)
+FailTest FscUnresolvedImport {
+    backends { hybrid vm }
+    source {
+        import missing as Missing
+
+        @Main
+        function entry() {
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM032")); return e }
+}
+
+// --- unresolved_namespace (tests/fail/semantics/unresolved_namespace)
+FailTest FscUnresolvedNamespace {
+    backends { hybrid vm }
+    source {
+        @Main
+        function entry() {
+            Missing.value;
+            return;
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM027")); return e }
+}
+
+// --- use_before_initialization (tests/fail/semantics/use_before_initialization)
+FailTest FscUseBeforeInitialization {
+    backends { hybrid vm }
+    source {
+        @Main
+        function entry() {
+            var value: String
+            print(value)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM086")); return e }
+}
+
+// --- widget_body_self_recursion (tests/fail/semantics/widget_body_self_recursion)
+FailTest FscWidgetBodySelfRecursion {
+    backends { hybrid vm }
+    source {
+        // A widget that defines `body` as itself, without overriding the default `node = body.node`,
+        // would resolve forever (`Loop.node -> body.node -> Loop.node -> ...`). It is rejected.
+
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+
+        Widget Loop {
+            let body: Widget {
+                Loop()
+            }
+        }
+
+        @Main
+        function main() {
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM141")); return e }
+}
+
+// --- widget_content_ambiguous (tests/fail/semantics/widget_content_ambiguous)
+FailTest FscWidgetContentAmbiguous {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+        Widget Text {
+            let text: String = ""
+            let node: Node { TextNode(text: text) }
+        }
+        Widget Padding {
+            @Content let child: Widget
+            let node: Node { PaddingNode() }
+        }
+        Widget VStack {
+            @Content let children: [Widget]
+            let node: Node { VStackNode() }
+        }
+        Widget Dialog {
+            @Content let header: Widget
+            @Content let content: Widget
+            let node: Node { DialogNode() }
+        }
+        Widget Screen {
+            let body: Widget {
+                Dialog { Text(text: "a") }
+            }
+        }
+        @Main
+        function main() { return }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM144")); return e }
+}
+
+// --- widget_content_count_empty (tests/fail/semantics/widget_content_count_empty)
+FailTest FscWidgetContentCountEmpty {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+        Widget Text {
+            let text: String = ""
+            let node: Node { TextNode(text: text) }
+        }
+        Widget Padding {
+            @Content let child: Widget
+            let node: Node { PaddingNode() }
+        }
+        Widget VStack {
+            @Content let children: [Widget]
+            let node: Node { VStackNode() }
+        }
+        Widget Dialog {
+            @Content let header: Widget
+            @Content let content: Widget
+            let node: Node { DialogNode() }
+        }
+        Widget Screen {
+            let body: Widget {
+                Padding { }
+            }
+        }
+        @Main
+        function main() { return }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM143")); return e }
+}
+
+// --- widget_content_count_two (tests/fail/semantics/widget_content_count_two)
+FailTest FscWidgetContentCountTwo {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+        Widget Text {
+            let text: String = ""
+            let node: Node { TextNode(text: text) }
+        }
+        Widget Padding {
+            @Content let child: Widget
+            let node: Node { PaddingNode() }
+        }
+        Widget VStack {
+            @Content let children: [Widget]
+            let node: Node { VStackNode() }
+        }
+        Widget Dialog {
+            @Content let header: Widget
+            @Content let content: Widget
+            let node: Node { DialogNode() }
+        }
+        Widget Screen {
+            let body: Widget {
+                Padding { Text(text: "a") Text(text: "b") }
+            }
+        }
+        @Main
+        function main() { return }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM143")); return e }
+}
+
+// --- widget_content_no_field (tests/fail/semantics/widget_content_no_field)
+FailTest FscWidgetContentNoField {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+        Widget Text {
+            let text: String = ""
+            let node: Node { TextNode(text: text) }
+        }
+        Widget Padding {
+            @Content let child: Widget
+            let node: Node { PaddingNode() }
+        }
+        Widget VStack {
+            @Content let children: [Widget]
+            let node: Node { VStackNode() }
+        }
+        Widget Dialog {
+            @Content let header: Widget
+            @Content let content: Widget
+            let node: Node { DialogNode() }
+        }
+        Widget Screen {
+            let body: Widget {
+                Text(text: "x") { Text(text: "y") }
+            }
+        }
+        @Main
+        function main() { return }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM142")); return e }
+}
+
+// --- widget_content_non_widget (tests/fail/semantics/widget_content_non_widget)
+FailTest FscWidgetContentNonWidget {
+    backends { hybrid vm }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+        Widget Text {
+            let text: String = ""
+            let node: Node { TextNode(text: text) }
+        }
+        Widget Padding {
+            @Content let child: Widget
+            let node: Node { PaddingNode() }
+        }
+        Widget VStack {
+            @Content let children: [Widget]
+            let node: Node { VStackNode() }
+        }
+        Widget Dialog {
+            @Content let header: Widget
+            @Content let content: Widget
+            let node: Node { DialogNode() }
+        }
+        Widget Screen {
+            let body: Widget {
+                VStack { "hello" }
+            }
+        }
+        @Main
+        function main() { return }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM145")); return e }
+}
+
+// --- widget_dynamic_missing_method (tests/fail/semantics/widget_dynamic_missing_method)
+FailTest FscWidgetDynamicMissingMethod {
+    backends { vm llvm hybrid }
+    source {
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+
+        construct Node {
+        }
+
+        Widget Text {
+            let node: Node {
+                TextNode()
+            }
+        }
+
+        Widget Spacer {
+        }
+
+        Node TextNode {
+        }
+
+        function show(widget: some Widget) {
+            widget.node
+        }
+
+        @Main
+        function main() {
+            show(Text())
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM066")); return e }
+}
+
+// --- widget_extend_unknown_target (tests/fail/semantics/widget_extend_unknown_target)
+FailTest FscWidgetExtendUnknownTarget {
+    backends { hybrid vm }
+    source {
+        // `extend` must target a known construct family.
+        extend NoSuchConstruct {
+            function foo() -> Int {
+                return 0
+            }
+        }
+
+        @Main
+        function main() {
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM146")); return e }
+}
+
+// --- widget_missing_body_and_node (tests/fail/semantics/widget_missing_body_and_node)
+FailTest FscWidgetMissingBodyAndNode {
+    backends { hybrid vm }
+    source {
+        // A widget must provide `body` (and inherit the default `node`) or provide `node` directly.
+        // `Broken` provides neither, so the required `body` member cannot be satisfied.
+
+        construct Widget {
+            @Required let body: Widget
+            let node: Node { body.node }
+        }
+
+        Widget Broken {
+            let title: String = ""
+        }
+
+        @Main
+        function main() {
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM140")); return e }
+}

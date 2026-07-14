@@ -82,24 +82,28 @@ surface only and emits no success markers.
 
 Emscripten has no host filesystem, so an app that reads files at runtime (shader
 sources, fonts, data tables) finds nothing on wasm unless those files are packaged
-into the module. Declare them in `kira.toml` with a project-root-relative
+into the module. Declare them in `package.kira` with a project-root-relative
 `assets` list:
 
-```toml
-[package]
-name = "triangle"
-assets = ["generated/Shaders", "fonts"]
+```kira
+Package Triangle {
+    let version = "0.1.0"
+    let assets = [".kira-build/shaders", "fonts"]
+}
 ```
+
+The equivalent legacy `kira.toml` form (`[package]` with an `assets = [...]`
+list) is still supported.
 
 Each entry must exist at build time; a missing entry fails the build with a
 `KPK025` diagnostic (surfaced on every target, not just wasm) instead of silently
 shipping an incomplete package. Generate build-time assets first — e.g.
-`kira shader build Shaders/Name.ksl --target wgsl --out-dir generated/Shaders`.
+`kira shader build Shaders/Name.ksl --target wgsl --out-dir .kira-build/shaders`.
 
 For a `wasm32-emscripten` build the linker passes each entry to `emcc` as
 `--preload-file <abs>@/<project-relative-path>`, mounting the directory at its
 project-relative location inside the browser MEMFS. Because the app's working
-directory on MEMFS is `/`, a runtime-relative open (`fopen("generated/Shaders/…")`)
+directory on MEMFS is `/`, a runtime-relative open (`fopen(".kira-build/shaders/…")`)
 resolves against the mounted tree exactly as it does on a host build reading from
 disk. emcc emits a `.data` side-package next to `main.js`; `kira live/run web`
 copies it into the served/exported web root (as `main.data`, plus the linked

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const runtime_abi = @import("kira_runtime_abi");
 const parent = @import("lower_from_hir.zig");
@@ -121,6 +122,20 @@ fn markReferencedTypesInExpr(
         .array_len => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
         .field => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
         .string_len => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.object),
+        .string_from_scalar => |node| try markReferencedTypesInExpr(allocator, program, referenced, node.operand),
+        .string_char_at => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.object);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.index);
+        },
+        .string_substring => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.object);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.start);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.end);
+        },
+        .string_index_of => |node| {
+            try markReferencedTypesInExpr(allocator, program, referenced, node.object);
+            try markReferencedTypesInExpr(allocator, program, referenced, node.needle);
+        },
         .binary => |node| {
             try markReferencedTypesInExpr(allocator, program, referenced, node.lhs);
             try markReferencedTypesInExpr(allocator, program, referenced, node.rhs);
@@ -441,6 +456,20 @@ const Reach = struct {
             .c_string_to_string => |node| try self.markExpr(node.value),
             .array_len => |node| try self.markExpr(node.object),
             .string_len => |node| try self.markExpr(node.object),
+            .string_from_scalar => |node| try self.markExpr(node.operand),
+            .string_char_at => |node| {
+                try self.markExpr(node.object);
+                try self.markExpr(node.index);
+            },
+            .string_substring => |node| {
+                try self.markExpr(node.object);
+                try self.markExpr(node.start);
+                try self.markExpr(node.end);
+            },
+            .string_index_of => |node| {
+                try self.markExpr(node.object);
+                try self.markExpr(node.needle);
+            },
             .field => |node| try self.markExpr(node.object),
             .binary => |node| {
                 try self.markExpr(node.lhs);
@@ -540,9 +569,23 @@ pub fn markReachableFunction(
     reachable: *std.AutoHashMapUnmanaged(u32, void),
     function_id: u32,
 ) anyerror!void {
+    try markReachableFunctionSet(allocator, program, reachable, &.{function_id});
+}
+
+/// Mark many roots against ONE `Reach` traversal context. `Reach.init` walks
+/// every function/type/form in the program to build its lookup maps, so
+/// callers with many roots (test mode marks two functions per Test
+/// declaration) must not pay that walk per root — doing so made `kira test`
+/// lowering quadratic in suite size (~90 s on the 1162-test harness).
+pub fn markReachableFunctionSet(
+    allocator: std.mem.Allocator,
+    program: model.Program,
+    reachable: *std.AutoHashMapUnmanaged(u32, void),
+    function_ids: []const u32,
+) anyerror!void {
     var reach = try Reach.init(allocator, program, reachable);
     defer reach.deinit();
-    try reach.markFunction(function_id);
+    for (function_ids) |function_id| try reach.markFunction(function_id);
 }
 
 pub fn markReferencedType(
@@ -617,7 +660,7 @@ pub fn lowerFfiTypeInfo(allocator: std.mem.Allocator, program: model.Program, ff
 
 pub fn lowerAssignmentStatement(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     program: model.Program,
     node: model.AssignStatement,
 ) !void {

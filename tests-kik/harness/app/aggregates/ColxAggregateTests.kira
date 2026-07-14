@@ -151,7 +151,7 @@ Test ColxAStatSumRange10 {
         return st.sum
     }
     // [0..9] sum=45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test ColxAStatCountRange10 {
@@ -160,7 +160,7 @@ Test ColxAStatCountRange10 {
         let st = colxaStatFrom(xs)
         return st.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxAStatMinRange10 {
@@ -169,7 +169,7 @@ Test ColxAStatMinRange10 {
         let st = colxaStatFrom(xs)
         return st.minVal
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test ColxAStatMaxRange10 {
@@ -178,7 +178,7 @@ Test ColxAStatMaxRange10 {
         let st = colxaStatFrom(xs)
         return st.maxVal
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test ColxAStatSumPlusCountPlusMax {
@@ -188,7 +188,7 @@ Test ColxAStatSumPlusCountPlusMax {
         return st.sum + st.count + st.maxVal
     }
     // 45+10+9=64
-    expect { let e: Result<Int, TestFailure> = Result.Ok(64); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(64); return e }
 }
 
 Test ColxAStatFromLiteral {
@@ -208,7 +208,7 @@ Test ColxAStatFromLiteral {
         return st.maxVal - st.minVal
     }
     // [3,1,4,1,5,9,2,6,5,3] sum=39, min=1, max=9 -> 8
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test ColxAStatSumLiteral {
@@ -228,7 +228,7 @@ Test ColxAStatSumLiteral {
         return st.sum
     }
     // 3+1+4+1+5+9+2+6+5+3 = 39
-    expect { let e: Result<Int, TestFailure> = Result.Ok(39); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(39); return e }
 }
 
 Test ColxAStatSingle {
@@ -239,7 +239,7 @@ Test ColxAStatSingle {
         return st.sum + st.count + st.minVal + st.maxVal
     }
     // sum=42, count=1, min=42, max=42 -> 127
-    expect { let e: Result<Int, TestFailure> = Result.Ok(127); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(127); return e }
 }
 
 Test ColxAStatRange20Sum {
@@ -249,7 +249,7 @@ Test ColxAStatRange20Sum {
         return st.sum - st.count
     }
     // sum=190, count=20 -> 170
-    expect { let e: Result<Int, TestFailure> = Result.Ok(170); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(170); return e }
 }
 
 Test ColxAStatEvenOnly {
@@ -264,7 +264,7 @@ Test ColxAStatEvenOnly {
         return st.sum + st.count + st.maxVal - st.minVal
     }
     // sum=30, count=5, max=10, min=2 -> 30+5+10-2=43
-    expect { let e: Result<Int, TestFailure> = Result.Ok(43); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(43); return e }
 }
 
 Test ColxAStatAccumLoop {
@@ -278,7 +278,7 @@ Test ColxAStatAccumLoop {
         return stat.sum
     }
     // values: 1,3,5,7,9 -> sum=25
-    expect { let e: Result<Int, TestFailure> = Result.Ok(25); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(25); return e }
 }
 
 Test ColxAStatAccumMin {
@@ -291,7 +291,7 @@ Test ColxAStatAccumMin {
         colxaAccumStat(stat, 5)
         return stat.minVal
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test ColxAStatAccumMax {
@@ -304,7 +304,7 @@ Test ColxAStatAccumMax {
         colxaAccumStat(stat, 5)
         return stat.maxVal
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxAStatFromSquares {
@@ -314,7 +314,7 @@ Test ColxAStatFromSquares {
         return st.maxVal
     }
     // [0,1,4,9,16,25] -> max=25
-    expect { let e: Result<Int, TestFailure> = Result.Ok(25); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(25); return e }
 }
 
 Test ColxAStatChurn50 {
@@ -335,7 +335,7 @@ Test ColxAStatChurn50 {
     // sum(r^2 for r=0..49) = 49*50*99/6 = 40425
     // sum(r for r=0..49) = 1225
     // total = (40425+1225)/2 = 41650/2 = 20825
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20825); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20825); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ Test ColxARowSum5 {
         let row = ColxARow { vals: move vals }
         return row.rowSum()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test ColxARowCount5 {
@@ -367,7 +367,7 @@ Test ColxARowCount5 {
         let row = ColxARow { vals: move vals }
         return row.rowCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test ColxARowSumRange10 {
@@ -376,7 +376,7 @@ Test ColxARowSumRange10 {
         let row = ColxARow { vals: move vals }
         return row.rowSum()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test ColxARowCountRange10 {
@@ -385,7 +385,7 @@ Test ColxARowCountRange10 {
         let row = ColxARow { vals: move vals }
         return row.rowCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxARowEmpty {
@@ -394,7 +394,7 @@ Test ColxARowEmpty {
         let row = ColxARow { vals: move vals }
         return row.rowSum() + row.rowCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test ColxARowMatrixTotalSum {
@@ -416,7 +416,7 @@ Test ColxARowMatrixTotalSum {
         return total
     }
     // r=0:6, r=1:22, r=2:38, r=3:54, r=4:70 -> 190
-    expect { let e: Result<Int, TestFailure> = Result.Ok(190); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(190); return e }
 }
 
 Test ColxARowMatrixRowCounts {
@@ -437,7 +437,7 @@ Test ColxARowMatrixRowCounts {
         return totalCells
     }
     // row counts: 1+2+3+4+5=15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test ColxARowSquaresSum {
@@ -447,7 +447,7 @@ Test ColxARowSquaresSum {
         return row.rowSum()
     }
     // [0,1,4,9,16] -> 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test ColxARowFibSum {
@@ -457,7 +457,7 @@ Test ColxARowFibSum {
         return row.rowSum()
     }
     // [0,1,1,2,3,5,8,13] -> 33
-    expect { let e: Result<Int, TestFailure> = Result.Ok(33); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(33); return e }
 }
 
 Test ColxARowChurn30 {
@@ -473,7 +473,7 @@ Test ColxARowChurn30 {
         return total
     }
     // squares(6)=[0,1,4,9,16,25] sum=55; 55*30=1650
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1650); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1650); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +495,7 @@ Test ColxASortedFirst {
         let s = colxaSorted(xs)
         return s[0]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test ColxASortedLast {
@@ -513,7 +513,7 @@ Test ColxASortedLast {
         let s = colxaSorted(xs)
         return s[8]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test ColxASortedSum {
@@ -532,7 +532,7 @@ Test ColxASortedSum {
         return colxSum(s)
     }
     // [1..9] sum=45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test ColxASortedDuplicates {
@@ -548,7 +548,7 @@ Test ColxASortedDuplicates {
         return s[0] + s[5]
     }
     // sorted=[1,3,3,7,7,7] -> s[0]=1, s[5]=7 -> 8
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test ColxASortedDuplicatesSum {
@@ -564,7 +564,7 @@ Test ColxASortedDuplicatesSum {
         return colxSum(s)
     }
     // 1+3+3+7+7+7=28
-    expect { let e: Result<Int, TestFailure> = Result.Ok(28); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(28); return e }
 }
 
 Test ColxASortedTwo {
@@ -576,7 +576,7 @@ Test ColxASortedTwo {
         return s[0] * 1000 + s[1]
     }
     // sorted=[1,100] -> 1*1000+100=1100
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1100); return e }
 }
 
 Test ColxASortedSingle {
@@ -586,7 +586,7 @@ Test ColxASortedSingle {
         let s = colxaSorted(xs)
         return s[0]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test ColxASortedAlreadySorted {
@@ -596,7 +596,7 @@ Test ColxASortedAlreadySorted {
         return s[0] + s[7]
     }
     // [0,1,2,3,4,5,6,7] sorted = same -> s[0]=0, s[7]=7 -> 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test ColxASortedReverseInput {
@@ -612,7 +612,7 @@ Test ColxASortedReverseInput {
         return s[0] + s[9]
     }
     // sorted=[0..9], s[0]=0, s[9]=9 -> 9
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test ColxASortedCount {
@@ -624,7 +624,7 @@ Test ColxASortedCount {
         let s = colxaSorted(xs)
         return s.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +638,7 @@ Test ColxAFilterGtCount {
         return f.count
     }
     // [6,7,8,9] -> 4
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test ColxAFilterGtSum {
@@ -648,7 +648,7 @@ Test ColxAFilterGtSum {
         return colxSum(f)
     }
     // 6+7+8+9=30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test ColxAFilterLtCount {
@@ -658,7 +658,7 @@ Test ColxAFilterLtCount {
         return f.count
     }
     // [0,1,2,3,4] -> 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test ColxAFilterLtSum {
@@ -668,7 +668,7 @@ Test ColxAFilterLtSum {
         return colxSum(f)
     }
     // 0+1+2+3+4=10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxAFilterNonePass {
@@ -677,7 +677,7 @@ Test ColxAFilterNonePass {
         let f = colxaFilterGt(xs, 10)
         return f.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test ColxAFilterAllPass {
@@ -687,7 +687,7 @@ Test ColxAFilterAllPass {
         return f.count
     }
     // all >-1 -> 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test ColxAFilterSquaresGt20 {
@@ -697,7 +697,7 @@ Test ColxAFilterSquaresGt20 {
         return f.count
     }
     // [0,1,4,9,16,25,36,49,64,81] -> >20: [25,36,49,64,81] -> 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test ColxAFilterSquaresGt20Sum {
@@ -707,7 +707,7 @@ Test ColxAFilterSquaresGt20Sum {
         return colxSum(f)
     }
     // 25+36+49+64+81=255
-    expect { let e: Result<Int, TestFailure> = Result.Ok(255); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(255); return e }
 }
 
 Test ColxAFilterFibGt5 {
@@ -717,7 +717,7 @@ Test ColxAFilterFibGt5 {
         return colxSum(f)
     }
     // fib(10)=[0,1,1,2,3,5,8,13,21,34], >5=[8,13,21,34] -> 76
-    expect { let e: Result<Int, TestFailure> = Result.Ok(76); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(76); return e }
 }
 
 Test ColxAFilterCountGt {
@@ -727,7 +727,7 @@ Test ColxAFilterCountGt {
         return f.count
     }
     // [11,12,...,19] -> 9
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -742,7 +742,7 @@ Test ColxAPipelineSortedFilterFirst {
         return s[0]
     }
     // filter>4=[5,6,7,8,9], sorted=[5,6,7,8,9], [0]=5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test ColxAPipelineSortedFilterSum {
@@ -753,7 +753,7 @@ Test ColxAPipelineSortedFilterSum {
         return colxSum(s)
     }
     // filter<5=[0,1,2,3,4], sorted same, sum=10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxAPipelineFilterStat {
@@ -764,7 +764,7 @@ Test ColxAPipelineFilterStat {
         return st.count + st.sum + st.minVal + st.maxVal
     }
     // f=[11..19], count=9, sum=135, min=11, max=19 -> 9+135+11+19=174
-    expect { let e: Result<Int, TestFailure> = Result.Ok(174); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(174); return e }
 }
 
 Test ColxAPipelineDoubleFilter {
@@ -775,7 +775,7 @@ Test ColxAPipelineDoubleFilter {
         return colxSum(hi)
     }
     // >4 and <15: [5,6,7,8,9,10,11,12,13,14], sum=95
-    expect { let e: Result<Int, TestFailure> = Result.Ok(95); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(95); return e }
 }
 
 Test ColxAPipelineSortStat {
@@ -795,7 +795,7 @@ Test ColxAPipelineSortStat {
         return st.sum
     }
     // sorted [1..9], sum=45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test ColxAPipelineReverseAndFilter {
@@ -806,7 +806,7 @@ Test ColxAPipelineReverseAndFilter {
         return colxSum(f)
     }
     // rev=[9,8,...,0], filter>6=[9,8,7], sum=24
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 Test ColxAPipelineSquaresSortFilter {
@@ -817,7 +817,7 @@ Test ColxAPipelineSquaresSortFilter {
         return colxSum(f)
     }
     // squares=[0,1,4,9,16,25,36,49], sorted same, >10=[16,25,36,49] sum=126
-    expect { let e: Result<Int, TestFailure> = Result.Ok(126); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(126); return e }
 }
 
 Test ColxAPipelineChurn20 {
@@ -833,7 +833,7 @@ Test ColxAPipelineChurn20 {
         return total
     }
     // sum([5..9])=35, *20=700
-    expect { let e: Result<Int, TestFailure> = Result.Ok(700); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(700); return e }
 }
 
 Test ColxAPipelineStatChurn15 {
@@ -849,7 +849,7 @@ Test ColxAPipelineStatChurn15 {
         return totalSum
     }
     // maxVal for range(r+2) = r+1, for r=0..14: 1+2+...+15=120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -869,7 +869,7 @@ Test ColxADotSimple {
         return colxaDot(xs, ys)
     }
     // 1*4+2*5+3*6 = 4+10+18 = 32
-    expect { let e: Result<Int, TestFailure> = Result.Ok(32); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(32); return e }
 }
 
 Test ColxADotSelf {
@@ -885,7 +885,7 @@ Test ColxADotSelf {
         return colxaDot(xs, ys)
     }
     // 4+9+16 = 29
-    expect { let e: Result<Int, TestFailure> = Result.Ok(29); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(29); return e }
 }
 
 Test ColxADotIdentity {
@@ -900,7 +900,7 @@ Test ColxADotIdentity {
         return colxaDot(xs, ones)
     }
     // dot with [1,1,1,1,1] = sum = 0+1+2+3+4 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test ColxADotSquares {
@@ -910,7 +910,7 @@ Test ColxADotSquares {
         return colxaDot(xs, ys)
     }
     // sum(i*i for i=0..4) = 0+1+4+9+16 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test ColxADotEmpty {
@@ -919,7 +919,7 @@ Test ColxADotEmpty {
         let ys: [Int] = []
         return colxaDot(xs, ys)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ Test ColxAPtFilteredSumXY {
         return s
     }
     // pts with x>5: x=6,7,8,9; x+y=(6+6)+(7+7)+(8+8)+(9+9)=12+14+16+18=60
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test ColxAGridChurnSum {
@@ -963,7 +963,7 @@ Test ColxAGridChurnSum {
     }
     // r=0: sum=0, r=1: sum=1, r=2: sum=3, ..., r=9: sum=45
     // sums = 0,1,3,6,10,15,21,28,36,45 -> total=165
-    expect { let e: Result<Int, TestFailure> = Result.Ok(165); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(165); return e }
 }
 
 Test ColxABoxStatSum {
@@ -980,7 +980,7 @@ Test ColxABoxStatSum {
     }
     // size = hi-lo = (i+i+2)-i = i+2; sum(i+2 for i=0..7) = (0+2)+(1+2)+...+(7+2) = 28+16 = 44
     // Actually: sum(i+2) = sum(i) + 2*8 = 28 + 16 = 44
-    expect { let e: Result<Int, TestFailure> = Result.Ok(44); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(44); return e }
 }
 
 Test ColxACombinedChecksum {
@@ -993,7 +993,7 @@ Test ColxACombinedChecksum {
         return st.sum + st.count + s[0]
     }
     // >7=[8,9,10,11,12,13,14], count=7, sum=77, sorted[0]=8 -> 77+7+8=92
-    expect { let e: Result<Int, TestFailure> = Result.Ok(92); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(92); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,7 +1010,7 @@ Test ColxATrapSortedOOB {
         let _ = s[3]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapFilteredEmptyOOB {
@@ -1020,7 +1020,7 @@ Test ColxATrapFilteredEmptyOOB {
         let _ = f[0]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapDivByArrayElement {
@@ -1037,7 +1037,7 @@ Test ColxATrapDivByArrayElement {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapStatFromOOB {
@@ -1048,7 +1048,7 @@ Test ColxATrapStatFromOOB {
         let _ = xs[st.count]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapRowEmpty {
@@ -1061,7 +1061,7 @@ Test ColxATrapRowEmpty {
         let _ = xs[n]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapModByZero {
@@ -1071,7 +1071,7 @@ Test ColxATrapModByZero {
         let result = 17 % xs[0]
         return result
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapDivZeroLiteral {
@@ -1079,7 +1079,7 @@ Test ColxATrapDivZeroLiteral {
         let x = 42 / 0
         return x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapWriteOOB {
@@ -1091,7 +1091,7 @@ Test ColxATrapWriteOOB {
         xs[3] = 99
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapDotOOBAccess {
@@ -1105,7 +1105,7 @@ Test ColxATrapDotOOBAccess {
         let result = colxaDot(xs, ys)
         return result
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test ColxATrapRangeOOBByCount {
@@ -1114,5 +1114,5 @@ Test ColxATrapRangeOOBByCount {
         let _ = xs[xs.count]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }

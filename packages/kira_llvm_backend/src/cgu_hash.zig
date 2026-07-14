@@ -73,7 +73,8 @@ const array_dtors = @import("backend_capi_array_dtors.zig");
 /// 2: async task lowering (task_spawn/await/cancel/detach thunks + void-result fix).
 /// 3: executor-integrated tasks (host main emits kira_task_drain_all).
 /// 4: task frames/state machines + KiraBridgeValue stride fix (24, not 16).
-pub const codegen_format_version: u64 = 4;
+/// 5: fresh struct rvalues move through copy_indirect instead of cloning.
+pub const codegen_format_version: u64 = 5;
 
 pub const Digest = [32]u8;
 

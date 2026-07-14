@@ -1,0 +1,352 @@
+// Native append/mutate on runtime arrays with write-back sync — migrated
+// corpus cases from tests/pass/run/. PREFIX: hba / Hba.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// hybrid_append_struct_nested_array_mutation_sync — native appends a struct
+// with nested [Int] and [struct] array fields, then mutates the nested fields
+// and appends to the nested arrays; all writes must sync back to the runtime.
+// Original stdout: 2 / 4 / 3 / 15093399 / 9012 / 10021 / 11032 / 12077.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbaSyncPoint {
+    var x: Int
+    var y: Int
+}
+
+@Runtime
+struct HbaSyncBucket {
+    var label: Int
+    var values: [Int]
+    var points: [HbaSyncPoint]
+    var marker: Int
+}
+
+@Runtime
+function hbaScoreValues(values: borrow [Int]) -> Int {
+    var total = 0
+    var index = 0
+    while index < values.count {
+        total = total + values[index] * (index + 3)
+        index = index + 1
+    }
+    return total
+}
+
+@Runtime
+function hbaScorePoints(points: borrow [HbaSyncPoint]) -> Int {
+    var total = 0
+    var index = 0
+    while index < points.count {
+        let point = points[index]
+        total = total + point.x * 7 + point.y * 11 + index * 13
+        index = index + 1
+    }
+    return total
+}
+
+@Runtime
+function hbaScoreBuckets(buckets: borrow [HbaSyncBucket]) -> Int {
+    var total = 0
+    var index = 0
+    while index < buckets.count {
+        let bucket = buckets[index]
+        total = total + bucket.label * 17 + hbaScoreValues(bucket.values) * 19 + hbaScorePoints(bucket.points) * 23 + bucket.marker * 29 + index * 31
+        index = index + 1
+    }
+    return total
+}
+
+@Native
+function hbaNativeAppendNestedArrays(buckets: borrow mut [HbaSyncBucket], base: Int) {
+    buckets.append(HbaSyncBucket {
+        label: base + 1,
+        values: [base + 11, base + 12, base + 13],
+        points: [
+            HbaSyncPoint { x: base + 21, y: base + 22 },
+            HbaSyncPoint { x: base + 31, y: base + 32 }
+        ],
+        marker: base + 41
+    })
+
+    let index = buckets.count - 1
+    buckets[index].values[1] = buckets[index].values[1] + 1000
+    buckets[index].values.append(base + 99)
+    buckets[index].points[0].x = buckets[index].points[0].x + 2000
+    buckets[index].points[1].y = buckets[index].points[1].y + 3000
+    buckets[index].points.append(HbaSyncPoint { x: base + 77, y: base + 88 })
+    buckets[index].points[2].x = buckets[index].points[2].x + 4000
+    buckets[index].marker = buckets[index].marker + 5000
+    return
+}
+
+@Runtime
+function hbaSyncSetup() -> [HbaSyncBucket] {
+    var buckets: [HbaSyncBucket] = [
+        HbaSyncBucket {
+            label: 5,
+            values: [51, 52],
+            points: [HbaSyncPoint { x: 61, y: 62 }],
+            marker: 71
+        }
+    ]
+    hbaNativeAppendNestedArrays(buckets, 8000)
+    return buckets
+}
+
+Test HbaSyncNestedCounts {
+    test {
+        let buckets = hbaSyncSetup()
+        // positional encoding of the printed counts 2 / 4 / 3
+        return buckets.count * 100 + buckets[1].values.count * 10 + buckets[1].points.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(243); return e }
+}
+
+Test HbaSyncNestedScore {
+    test {
+        let buckets = hbaSyncSetup()
+        return hbaScoreBuckets(buckets)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(15093399); return e }
+}
+
+Test HbaSyncNestedValueMutation {
+    test {
+        let buckets = hbaSyncSetup()
+        return buckets[1].values[1]
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(9012); return e }
+}
+
+Test HbaSyncNestedPointMutations {
+    test {
+        let buckets = hbaSyncSetup()
+        // printed values 10021 (points[0].x) + 11032 (points[1].y) + 12077 (points[2].x)
+        return buckets[1].points[0].x + buckets[1].points[1].y + buckets[1].points[2].x
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(33130); return e }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid_append_struct_then_mutate_nested_field_sync — native appends three
+// elements, mutates nested fields in place, copies elements/nested structs to
+// locals, and bounces one element through @Native borrow/by-value helpers.
+// Original stdout: 2740020 / 4 / 1012220 / 11101 / 12201 / 13302 / 14403.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbaMutInner {
+    var left: Int
+    var right: Int
+}
+
+@Runtime
+struct HbaMutElement {
+    var id: Int
+    var inner: HbaMutInner
+    var tail: Int
+}
+
+@Runtime
+function hbaScoreElements(elements: borrow [HbaMutElement]) -> Int {
+    var total = 0
+    var index = 0
+    while index < elements.count {
+        let element = elements[index]
+        total = total + element.id * 3 + element.inner.left * 5 + element.inner.right * 7 + element.tail * 11 + index * 13
+        index = index + 1
+    }
+    return total
+}
+
+@Native
+function hbaMutHelperScore(element: borrow HbaMutElement) -> Int {
+    return element.id * 17 + element.inner.left * 19 + element.inner.right * 23 + element.tail * 29
+}
+
+@Native
+function hbaMutHelperReturn(element: HbaMutElement) -> HbaMutElement {
+    return element
+}
+
+@Native
+function hbaNativeAppendAndMutate(elements: borrow mut [HbaMutElement], base: Int) -> Int {
+    let start = elements.count
+    elements.append(HbaMutElement {
+        id: base + 101,
+        inner: HbaMutInner { left: base + 201, right: base + 301 },
+        tail: base + 401
+    })
+    elements.append(HbaMutElement {
+        id: base + 102,
+        inner: HbaMutInner { left: base + 202, right: base + 302 },
+        tail: base + 402
+    })
+    elements.append(HbaMutElement {
+        id: base + 103,
+        inner: HbaMutInner { left: base + 203, right: base + 303 },
+        tail: base + 403
+    })
+
+    elements[start].id = elements[start].id + 1000
+    elements[start].inner.left = elements[start].inner.left + 2000
+    elements[start + 1].inner.right = elements[start + 1].inner.right + 3000
+    elements[start + 2].tail = elements[start + 2].tail + 4000
+
+    var local = elements[start]
+    local.id = local.id + 5000
+    local.inner.left = local.inner.left + 6000
+
+    var nested = elements[start + 1].inner
+    nested.right = nested.right + 7000
+
+    let helper = hbaMutHelperScore(elements[start + 2])
+    let returned = hbaMutHelperReturn(elements[start])
+    return helper + returned.id * 31 + returned.inner.left * 37 + returned.inner.right * 41 + returned.tail * 43 + local.id + local.inner.left + nested.right
+}
+
+@Runtime
+function hbaMutSetup() -> [HbaMutElement] {
+    var elements: [HbaMutElement] = [
+        HbaMutElement { id: 11, inner: HbaMutInner { left: 111, right: 1111 }, tail: 11111 }
+    ]
+    let bridged = hbaNativeAppendAndMutate(elements, 10000)
+    return elements
+}
+
+Test HbaMutNativeReturn {
+    test {
+        var elements: [HbaMutElement] = [
+            HbaMutElement { id: 11, inner: HbaMutInner { left: 111, right: 1111 }, tail: 11111 }
+        ]
+        return hbaNativeAppendAndMutate(elements, 10000)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(2740020); return e }
+}
+
+Test HbaMutCount {
+    test {
+        let elements = hbaMutSetup()
+        return elements.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
+}
+
+Test HbaMutScore {
+    test {
+        let elements = hbaMutSetup()
+        return hbaScoreElements(elements)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1012220); return e }
+}
+
+Test HbaMutFieldReads {
+    test {
+        let elements = hbaMutSetup()
+        // printed values 11101 ([1].id) + 12201 ([1].inner.left)
+        //              + 13302 ([2].inner.right) + 14403 ([3].tail)
+        return elements[1].id + elements[1].inner.left + elements[2].inner.right + elements[3].tail
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(51007); return e }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid_runtime_array_append_struct_sync — one native call appends to BOTH a
+// scalar array and a struct array (borrow mut each) and mutates existing
+// slots; two rounds. Original stdout: 4 / 845 / 4 / 79889.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbaBothNested {
+    var x: Int
+    var y: Int
+}
+
+@Runtime
+struct HbaBothItem {
+    var x: Int
+    var nested: HbaBothNested
+}
+
+@Runtime
+function hbaBothScoreValues(values: borrow [Int]) -> Int {
+    var total = 0
+    var index = 0
+    while index < values.count {
+        total = total + values[index] * (index + 1)
+        index = index + 1
+    }
+    return total
+}
+
+@Runtime
+function hbaBothScoreItems(items: borrow [HbaBothItem]) -> Int {
+    var total = 0
+    var index = 0
+    while index < items.count {
+        let item = items[index]
+        total = total + item.x * 3 + item.nested.x * 5 + item.nested.y * 7 + index * 11
+        index = index + 1
+    }
+    return total
+}
+
+@Native
+function hbaNativeAppendBoth(values: borrow mut [Int], items: borrow mut [HbaBothItem], base: Int) {
+    values.append(base + 100)
+    values[0] = values[0] + base
+
+    items.append(HbaBothItem {
+        x: base + 1100,
+        nested: HbaBothNested {
+            x: base + 2100,
+            y: base + 3100
+        }
+    })
+    items[0].x = items[0].x + base
+    return
+}
+
+@Runtime
+function hbaBothSetupValues() -> [Int] {
+    var values: [Int] = [1, 2]
+    var items: [HbaBothItem] = [
+        HbaBothItem { x: 5, nested: HbaBothNested { x: 50, y: 500 } },
+        HbaBothItem { x: 6, nested: HbaBothNested { x: 60, y: 600 } }
+    ]
+    hbaNativeAppendBoth(values, items, 10)
+    hbaNativeAppendBoth(values, items, 20)
+    return values
+}
+
+@Runtime
+function hbaBothSetupItems() -> [HbaBothItem] {
+    var values: [Int] = [1, 2]
+    var items: [HbaBothItem] = [
+        HbaBothItem { x: 5, nested: HbaBothNested { x: 50, y: 500 } },
+        HbaBothItem { x: 6, nested: HbaBothNested { x: 60, y: 600 } }
+    ]
+    hbaNativeAppendBoth(values, items, 10)
+    hbaNativeAppendBoth(values, items, 20)
+    return items
+}
+
+Test HbaBothValuesSync {
+    test {
+        let values = hbaBothSetupValues()
+        // encoding of the printed 4 (count) / 845 (score): count * 10000 + score
+        return values.count * 10000 + hbaBothScoreValues(values)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(40845); return e }
+}
+
+Test HbaBothItemsSync {
+    test {
+        let items = hbaBothSetupItems()
+        // encoding of the printed 4 (count) / 79889 (score): count * 100000 + score
+        return items.count * 100000 + hbaBothScoreItems(items)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(479889); return e }
+}

@@ -6,6 +6,7 @@ const types = @import("types.zig");
 const diag = @import("diagnostics.zig");
 const git = @import("git.zig");
 const registry_fetch = @import("registry_fetch.zig");
+const progress = @import("progress.zig");
 
 pub fn syncProject(
     allocator: std.mem.Allocator,
@@ -14,13 +15,15 @@ pub fn syncProject(
     options: types.SyncOptions,
     out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !types.SyncResult {
+    progress.emit("Locating package manifest", .{});
     const resolved = try resolveProjectPaths(allocator, path);
     defer allocator.free(resolved.root_path);
     defer allocator.free(resolved.manifest_path);
     defer allocator.free(resolved.lockfile_path);
 
+    progress.emit("Loading {s}", .{std.fs.path.basename(resolved.manifest_path)});
     const manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, resolved.manifest_path, allocator, .limited(2 * 1024 * 1024));
-    const project_manifest = manifest.parseProjectManifest(allocator, manifest_text) catch |err| switch (err) {
+    const project_manifest = manifest.loadProjectManifestFromText(allocator, manifest_text, resolved.manifest_path) catch |err| switch (err) {
         error.UnsupportedVersionRange => {
             try diag.append(allocator, out_diagnostics, "KPKG007", "unsupported version range", "Kira package management v1 only supports exact registry versions.", "Use an exact version such as \"0.1.0\".");
             return error.DiagnosticsEmitted;
@@ -28,6 +31,7 @@ pub fn syncProject(
         else => return err,
     };
 
+    progress.emit("Checking kira.lock", .{});
     const existing_lockfile = loadLockfileIfPresent(allocator, resolved.lockfile_path) catch null;
     if (options.locked and existing_lockfile == null) {
         try diag.append(allocator, out_diagnostics, "KPKG011", "lockfile is required", "Locked mode requires an existing kira.lock file for deterministic restoration.", "Run `kira sync` first to create kira.lock.");
@@ -48,6 +52,7 @@ pub fn syncProject(
         .root_manifest = project_manifest,
         .root_path = resolved.root_path,
     };
+    progress.emit("Resolving dependencies for {s}", .{project_manifest.name});
     const graph = try resolver.resolve();
 
     const lockfile = try buildLockfile(allocator, project_manifest, graph);
@@ -62,6 +67,7 @@ pub fn syncProject(
         changed = !std.mem.eql(u8, existing, rendered);
     }
     if (!options.locked and changed) {
+        progress.emit("Writing kira.lock", .{});
         const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, resolved.lockfile_path, .{ .truncate = true });
         defer file.close(std.Options.debug_io);
         try file.writeStreamingAll(std.Options.debug_io, rendered);
@@ -159,9 +165,18 @@ const Resolver = struct {
 
     fn resolveDependency(self: *Resolver, dep_spec: manifest.DependencySpec, parent_root: []const u8) anyerror!void {
         switch (dep_spec.source) {
-            .path => |path_source| try self.resolvePath(dep_spec.name, path_source.path, parent_root),
-            .registry => |registry_source| try self.resolveRegistry(dep_spec.name, registry_source.version),
-            .git => |git_source| try self.resolveGit(dep_spec.name, git_source.url, git_source.rev, git_source.tag),
+            .path => |path_source| {
+                progress.emit("Resolving path dependency {s}", .{dep_spec.name});
+                try self.resolvePath(dep_spec.name, path_source.path, parent_root);
+            },
+            .registry => |registry_source| {
+                progress.emit("Resolving registry dependency {s} {s}", .{ dep_spec.name, registry_source.version });
+                try self.resolveRegistry(dep_spec.name, registry_source.version);
+            },
+            .git => |git_source| {
+                progress.emit("Resolving git dependency {s}", .{dep_spec.name});
+                try self.resolveGit(dep_spec.name, git_source.url, git_source.rev, git_source.tag);
+            },
         }
     }
 
@@ -209,6 +224,7 @@ const Resolver = struct {
             .source = .{ .path = .{ .path = loaded.root_path } },
             .dependencies = loaded.manifest.dependencies,
         });
+        progress.emit("Resolved {s} {s}", .{ loaded.manifest.name, loaded.manifest.version });
 
         for (loaded.manifest.dependencies) |dep_spec| try self.resolveDependency(dep_spec, loaded.root_path);
     }
@@ -229,11 +245,13 @@ const Resolver = struct {
             checksum = locked.checksum;
         } else {
             if (self.options.offline or self.options.locked) return error.RegistryMetadataUnavailableOffline;
+            progress.emit("Fetching registry metadata for {s}", .{name});
             const resolved = try registry_fetch.fetchPackageVersion(self.allocator, registry_url, name, version);
             archive_url = resolved.archive_url;
             checksum = resolved.version.checksum;
         }
 
+        progress.emit("Preparing registry source for {s}", .{name});
         const source_root = try registry_fetch.ensureRegistrySource(self.allocator, archive_url, checksum, self.options.offline);
         const loaded = try loadPackageManifest(self.allocator, source_root);
         if (!std.mem.eql(u8, loaded.manifest.name, name)) return error.InvalidManifest;
@@ -258,11 +276,13 @@ const Resolver = struct {
             } },
             .dependencies = loaded.manifest.dependencies,
         });
+        progress.emit("Resolved {s} {s}", .{ loaded.manifest.name, loaded.manifest.version });
 
         for (loaded.manifest.dependencies) |dep_spec| try self.resolveDependency(dep_spec, source_root);
     }
 
     fn resolveGit(self: *Resolver, name: []const u8, url: []const u8, rev: ?[]const u8, tag: ?[]const u8) anyerror!void {
+        progress.emit("Updating git checkout for {s}", .{name});
         const locked_commit = findLockedGitCommit(self.lockfile, name, url, rev, tag);
         const checkout = try git.resolveGitCheckout(
             self.allocator,
@@ -302,6 +322,7 @@ const Resolver = struct {
             } },
             .dependencies = loaded.manifest.dependencies,
         });
+        progress.emit("Resolved {s} at {s}", .{ loaded.manifest.name, checkout.commit });
 
         for (loaded.manifest.dependencies) |dep_spec| try self.resolveDependency(dep_spec, checkout.source_root);
     }
@@ -371,7 +392,7 @@ fn loadPackageManifest(allocator: std.mem.Allocator, root_path: []const u8) !Loa
     }
     const resolved_manifest_path = manifest_path orelse return error.ProjectManifestNotFound;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, resolved_manifest_path, allocator, .limited(2 * 1024 * 1024));
-    const parsed = try manifest.parseProjectManifest(allocator, text);
+    const parsed = try manifest.loadProjectManifestFromText(allocator, text, resolved_manifest_path);
     const module_source_root = try discoverModuleSourceRoot(allocator, actual_root);
     return .{
         .root_path = actual_root,
@@ -567,7 +588,7 @@ fn pathWithinRoot(path: []const u8, root: []const u8) bool {
 }
 
 fn discoverManifestPath(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
-    const candidates = [_][]const u8{ "kira.toml", "project.toml", "Kira.toml" };
+    const candidates = [_][]const u8{ "package.kira", "kira.toml", "project.toml", "Kira.toml" };
     for (candidates) |name| {
         const path = try std.fs.path.join(allocator, &.{ root_path, name });
         if (fileExists(path)) return path;
@@ -619,7 +640,7 @@ fn isDirectory(path: []const u8) bool {
 
 fn isManifestPath(path: []const u8) bool {
     const base = std.fs.path.basename(path);
-    return std.mem.eql(u8, base, "kira.toml") or std.mem.eql(u8, base, "project.toml") or std.mem.eql(u8, base, "Kira.toml");
+    return std.mem.eql(u8, base, "package.kira") or std.mem.eql(u8, base, "kira.toml") or std.mem.eql(u8, base, "project.toml") or std.mem.eql(u8, base, "Kira.toml");
 }
 
 fn fileExists(path: []const u8) bool {

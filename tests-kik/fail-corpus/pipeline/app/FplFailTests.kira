@@ -1,0 +1,640 @@
+// FplFailTests.kira — pipeline-stage (semantics / mid-IR) expected-diagnostic cases migrated
+// from tests/fail/pipeline/.
+// PREFIX: Fpl.
+//
+// Each FailTest embeds a legacy `main.kira` verbatim in its `source` block and asserts the
+// compiler rejects it with the exact diagnostic code the legacy expect.toml declared. No
+// `import Foundation` here — Result / TestFailure / FailTest are package-wide once main.kira
+// imports Foundation.
+//
+// Manifest (migrated from tests/fail/pipeline/):
+//   - construct_any_binding_reuse                  -> FplConstructAnyBindingReuse                  (KSEM107)
+//   - construct_any_borrowed_owned_arg             -> FplConstructAnyBorrowedOwnedArg              (KIR002)
+//   - construct_any_index_owned_arg                -> FplConstructAnyIndexOwnedArg                 (KIR002)
+//   - consuming_method_borrowed_receiver           -> FplConsumingMethodBorrowedReceiver           (KSEM157)
+//   - derive_copy_enum_noncopyable_payload         -> FplDeriveCopyEnumNoncopyablePayload          (KIR005)
+//   - derive_copy_nested_noncopyable               -> FplDeriveCopyNestedNoncopyable               (KIR005)
+//   - derive_copy_struct_array_field               -> FplDeriveCopyStructArrayField                (KIR005)
+//   - derive_copy_struct_string_field              -> FplDeriveCopyStructStringField               (KIR005)
+//   - mid_ir_array_alias_through_reborrow          -> FplMidIrArrayAliasThroughReborrow            (KIR002)
+//   - mid_ir_array_index_alias_overlap             -> FplMidIrArrayIndexAliasOverlap               (KIR002)
+//   - mid_ir_loop_alias_overwrite                  -> FplMidIrLoopAliasOverwrite                   (KIR002)
+//   - mid_ir_nested_path_overlap                   -> FplMidIrNestedPathOverlap                    (KIR002)
+//   - mid_ir_overwrite_owned_field_with_live_alias -> FplMidIrOverwriteOwnedFieldWithLiveAlias     (KIR002)
+//   - mid_ir_struct_parent_child_overlap           -> FplMidIrStructParentChildOverlap             (KIR002)
+//   - mid_ir_widget_render_alias_overlap           -> FplMidIrWidgetRenderAliasOverlap             (KIR002)
+//   - partial_move_field_reuse                     -> FplPartialMoveFieldReuse                     (KIR002)
+//   - partial_move_struct_field_scope_exit         -> FplPartialMoveStructFieldScopeExit           (KSEM107)
+//   - partial_move_whole_struct_use                -> FplPartialMoveWholeStructUse                 (KIR002)
+// All cases declare backends { vm llvm hybrid } (legacy backends = ["hybrid","vm","llvm"]).
+// Skipped cases are documented in ../SKIPPED.md.
+
+// --- construct_any_binding_reuse (tests/fail/pipeline/construct_any_binding_reuse)
+FailTest FplConstructAnyBindingReuse {
+    backends { vm llvm hybrid }
+    source {
+        construct Node {
+            @Required let label: String
+        }
+
+        Node Leaf {
+            let text: String = ""
+
+            let label: String {
+                text
+            }
+        }
+
+        function size(node: some Node) -> Int {
+            return node.label.count
+        }
+
+        function bad(node: some Node) -> Int {
+            let alias = node
+            return size(node) + size(alias)
+        }
+
+        @Main
+        function main() {
+            print(bad(Leaf(text: "leaf")))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM107")); return e }
+}
+
+// --- construct_any_borrowed_owned_arg (tests/fail/pipeline/construct_any_borrowed_owned_arg)
+FailTest FplConstructAnyBorrowedOwnedArg {
+    backends { vm llvm hybrid }
+    source {
+        construct Node {
+            @Required let label: String
+        }
+
+        Node Leaf {
+            let text: String = ""
+
+            let label: String {
+                text
+            }
+        }
+
+        function bad(node: borrow some Node) -> some Node {
+            return node
+        }
+
+        function take(node: some Node) -> Int {
+            return 1
+        }
+
+        @Main
+        function main() {
+            let leaf: some Node = Leaf(text: "leaf")
+            print(take(bad(leaf)))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- construct_any_index_owned_arg (tests/fail/pipeline/construct_any_index_owned_arg)
+FailTest FplConstructAnyIndexOwnedArg {
+    backends { vm llvm hybrid }
+    source {
+        construct Node {
+            @Required let label: String
+        }
+
+        Node Leaf {
+            let text: String = ""
+
+            let label: String {
+                text
+            }
+        }
+
+        function take(node: some Node) -> Int {
+            return node.label.count
+        }
+
+        function bad(nodes: [some Node]) -> Int {
+            return take(nodes[0])
+        }
+
+        @Main
+        function main() {
+            print(bad([Leaf(text: "a"), Leaf(text: "b")]))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- consuming_method_borrowed_receiver (tests/fail/pipeline/consuming_method_borrowed_receiver)
+FailTest FplConsumingMethodBorrowedReceiver {
+    backends { vm llvm hybrid }
+    source {
+        // A consuming (`@Consuming`) family method frees its receiver; calling it on a
+        // BORROWED receiver whose type carries type-erased storage is rejected: the
+        // borrow does not own the value, and Any contents are move-only (no clone
+        // repair). KSEM157.
+
+        construct Widget {
+            @Required let body: Widget
+
+            @Consuming
+            function render() -> [String] {
+                return body.render()
+            }
+        }
+
+        Widget Leaf(text: String) {
+            function render() -> [String] {
+                return [text]
+            }
+        }
+
+        Widget Wrap() {
+            @Content let content: Widget
+
+            body {
+                content
+            }
+        }
+
+        function bad(w: borrow Wrap) -> Int {
+            let rendered = w.render()
+            return rendered.count
+        }
+
+        @Main
+        function main() {
+            let wrapped = Wrap() {
+                Leaf(text = "hi")
+            }
+            print(bad(wrapped))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM157")); return e }
+}
+
+// --- derive_copy_enum_noncopyable_payload (tests/fail/pipeline/derive_copy_enum_noncopyable_payload)
+FailTest FplDeriveCopyEnumNoncopyablePayload {
+    backends { vm llvm hybrid }
+    source {
+        // `@Derive(Copy)` on an enum whose variant carries a non-copyable payload must be rejected:
+        // the `Text(String)` payload owns heap storage, so `Message` moves rather than copies. KIR005.
+        @Derive(Copy)
+        enum Message {
+            Empty
+            Text(String)
+        }
+
+        @Main
+        function main() {
+            let m: Message = .Empty
+            print(1)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR005")); return e }
+}
+
+// --- derive_copy_nested_noncopyable (tests/fail/pipeline/derive_copy_nested_noncopyable)
+FailTest FplDeriveCopyNestedNoncopyable {
+    backends { vm llvm hybrid }
+    source {
+        // Transitivity: `@Derive(Copy)` must be rejected when a field's type is only NOT copyable
+        // through nesting. `Outer.inner` is an `Inner`, which is itself non-copyable because it owns
+        // a `String`. The structural classifier recurses, so `Outer` fails the assertion with KIR005.
+        struct Inner {
+            let name: String
+        }
+
+        @Derive(Copy)
+        struct Outer {
+            let id: Int
+            let inner: Inner
+        }
+
+        @Main
+        function main() {
+            let outer = Outer { id: 7, inner: Inner { name: "n" } }
+            print(outer.id)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR005")); return e }
+}
+
+// --- derive_copy_struct_array_field (tests/fail/pipeline/derive_copy_struct_array_field)
+FailTest FplDeriveCopyStructArrayField {
+    backends { vm llvm hybrid }
+    source {
+        // `@Derive(Copy)` on a struct with an array field must be rejected: an array owns heap
+        // storage, so `Bag` moves rather than copies. The assertion fails with KIR005.
+        @Derive(Copy)
+        struct Bag {
+            let count: Int
+            let items: [Int]
+        }
+
+        @Main
+        function main() {
+            let bag = Bag { count: 2, items: [1, 2] }
+            print(bag.count)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR005")); return e }
+}
+
+// --- derive_copy_struct_string_field (tests/fail/pipeline/derive_copy_struct_string_field)
+FailTest FplDeriveCopyStructStringField {
+    backends { vm llvm hybrid }
+    source {
+        // `@Derive(Copy)` is an opt-in copyability assertion (the Rust `derive(Copy)` analog):
+        // the compiler must reject it on a type that is not structurally copyable. `String` owns
+        // heap storage, so `Label` moves rather than copies and the assertion fails with KIR005.
+        @Derive(Copy)
+        struct Label {
+            let id: Int
+            let text: String
+        }
+
+        @Main
+        function main() {
+            let label = Label { id: 1, text: "hi" }
+            print(label.id)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR005")); return e }
+}
+
+// --- mid_ir_array_alias_through_reborrow (tests/fail/pipeline/mid_ir_array_alias_through_reborrow)
+FailTest FplMidIrArrayAliasThroughReborrow {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct Buffer { var values: [Cell] }
+
+        function updateBoth(a: borrow mut Cell, b: borrow mut Cell) {
+            a.value = a.value + 1
+            b.value = b.value + 2
+            return
+        }
+
+        function trigger(buffer: borrow mut Buffer) {
+            var alias = buffer
+            updateBoth(buffer.values[0], alias.values[1])
+            return
+        }
+
+        @Main
+        function main() {
+            var buffer = Buffer { values: [Cell { value: 5 }, Cell { value: 6 }, Cell { value: 7 }] }
+            trigger(buffer)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_array_index_alias_overlap (tests/fail/pipeline/mid_ir_array_index_alias_overlap)
+FailTest FplMidIrArrayIndexAliasOverlap {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct CellRow { var cells: [Cell] }
+        struct Grid { var rows: [CellRow] }
+
+        function updateBoth(a: borrow mut Cell, b: borrow mut Cell) {
+            a.value = a.value + 10
+            b.value = b.value + 20
+            return
+        }
+
+        @Main
+        function main() {
+            var grid = Grid { rows: [CellRow { cells: [Cell { value: 1 }, Cell { value: 2 }, Cell { value: 3 }] }] }
+            updateBoth(grid.rows[0].cells[0], grid.rows[0].cells[1])
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_loop_alias_overwrite (tests/fail/pipeline/mid_ir_loop_alias_overwrite)
+FailTest FplMidIrLoopAliasOverwrite {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct Node { var cell: Cell }
+        struct Tree { var nodes: [Node] }
+
+        function trigger(tree: borrow mut Tree) {
+            var index = 0
+            while index < 2 {
+                var alias = tree
+                tree.nodes = [Node { cell: Cell { value: index } }]
+                alias.nodes[0].cell.value = alias.nodes[0].cell.value + 1
+                index = index + 1
+            }
+            return
+        }
+
+        @Main
+        function main() {
+            var tree = Tree { nodes: [Node { cell: Cell { value: 9 } }] }
+            trigger(tree)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_nested_path_overlap (tests/fail/pipeline/mid_ir_nested_path_overlap)
+FailTest FplMidIrNestedPathOverlap {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct Leaf { var payload: [Cell] }
+        struct Branch { var leaves: [Leaf] }
+        struct Root { var branches: [Branch] }
+
+        function rewrite(branch: borrow mut Branch, cell: borrow mut Cell) {
+            branch.leaves[0].payload = [Cell { value: 7 }, Cell { value: 8 }, Cell { value: 9 }]
+            cell.value = cell.value + 1
+            return
+        }
+
+        @Main
+        function main() {
+            var root = Root {
+                branches: [
+                    Branch {
+                        leaves: [
+                            Leaf { payload: [Cell { value: 1 }, Cell { value: 2 }, Cell { value: 3 }] }
+                        ]
+                    }
+                ]
+            }
+            rewrite(root.branches[0], root.branches[0].leaves[0].payload[1])
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_overwrite_owned_field_with_live_alias (tests/fail/pipeline/mid_ir_overwrite_owned_field_with_live_alias)
+FailTest FplMidIrOverwriteOwnedFieldWithLiveAlias {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct Node { var cell: Cell }
+        struct Tree { var nodes: [Node] }
+
+        function overwrite(tree: borrow mut Tree) {
+            var alias = tree
+            tree.nodes = [Node { cell: Cell { value: 40 } }]
+            alias.nodes[0].cell.value = alias.nodes[0].cell.value + 1
+            return
+        }
+
+        @Main
+        function main() {
+            var tree = Tree { nodes: [Node { cell: Cell { value: 1 } }, Node { cell: Cell { value: 2 } }] }
+            overwrite(tree)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_struct_parent_child_overlap (tests/fail/pipeline/mid_ir_struct_parent_child_overlap)
+FailTest FplMidIrStructParentChildOverlap {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+        struct Pair { var left: Cell; var right: Cell }
+        struct Holder { var pair: Pair }
+
+        function touch(pair: borrow mut Pair, leaf: borrow mut Cell) {
+            pair.right.value = pair.right.value + 1
+            leaf.value = leaf.value + 10
+            return
+        }
+
+        @Main
+        function main() {
+            var holder = Holder { pair: Pair { left: Cell { value: 4 }, right: Cell { value: 9 } } }
+            touch(holder.pair, holder.pair.left)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- mid_ir_widget_render_alias_overlap (tests/fail/pipeline/mid_ir_widget_render_alias_overlap)
+FailTest FplMidIrWidgetRenderAliasOverlap {
+    backends { vm llvm hybrid }
+    source {
+        struct Cell { var value: Int }
+
+        construct Widget {
+            @Required let body: Widget
+
+            function render() -> [String] {
+                return body.render()
+            }
+        }
+
+        function updateBoth(a: borrow mut Cell, b: borrow mut Cell) {
+            a.value = a.value + 3
+            b.value = b.value + 4
+            return
+        }
+
+        Widget BadWidget() {
+            function render() -> [String] {
+                var numbers: [Cell] = [Cell { value: 1 }, Cell { value: 2 }, Cell { value: 3 }]
+                updateBoth(numbers[0], numbers[1])
+                return ["bad"]
+            }
+        }
+
+        @Main
+        function main() {
+            let rendered = BadWidget().render()
+            print(rendered[0])
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- partial_move_field_reuse (tests/fail/pipeline/partial_move_field_reuse)
+FailTest FplPartialMoveFieldReuse {
+    backends { vm llvm hybrid }
+    source {
+        // Regression: a partial field move must invalidate the moved field for the rest of
+        // the current control-flow state. `countEffects(move s.effects)` moves the `[Effect]`
+        // field out of the owned `s`, so the second `countEffects(s.effects)` reads a field
+        // that was already moved. Before partial moves were tracked, the `move` on a field was
+        // silently dropped, so this compiled and the moved-then-reused array aliased storage the
+        // callee already consumed -- the latent use-after-free behind the hybrid native enum-copy
+        // crash (`enum native copy could not resolve discriminant`). It must be rejected at check.
+        //
+        // The four-variant, mixed payload/no-payload enum mirrors UI Foundation's `FoundationEffect`
+        // shape so the regression covers the same enum-in-array ownership path.
+        struct Glow {
+            let radius: Float
+            let intensity: Float
+        }
+
+        enum Effect {
+            None
+            Backdrop(Glow)
+            Layer(Glow)
+            Tint(Float)
+        }
+
+        struct Surface {
+            let effects: [Effect]
+            let label: String
+        }
+
+        function countEffects(effects: [Effect]) -> Int {
+            return effects.count
+        }
+
+        function audit(s: Surface) -> Int {
+            let first = countEffects(move s.effects)
+            let second = countEffects(s.effects)
+            return first + second
+        }
+
+        @Main
+        function main() {
+            let surface = Surface {
+                effects: [.Layer(Glow { radius: 1.0, intensity: 2.0 })]
+                label: "panel"
+            }
+            print(audit(move surface))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- partial_move_struct_field_scope_exit (tests/fail/pipeline/partial_move_struct_field_scope_exit)
+FailTest FplPartialMoveStructFieldScopeExit {
+    backends { vm llvm hybrid }
+    source {
+        // A moved-out field whose type is a NAMED STRUCT still blocks scope exit:
+        // struct field reads lower as deep copies whose type-erased (Any) interiors
+        // alias the source (.codex/KIRA_MEMORY_MODEL.md §3), so dropping the base would free
+        // storage the copy still references. Only array / enum / some-any fields
+        // transfer with storage nulling and may stay moved at scope exit.
+
+        construct Node {
+            @Required let tag: Int
+        }
+
+        Node Leaf(value: Int) {
+            let tag: Int {
+                value
+            }
+        }
+
+        function buildNode(tag: Int) -> some Node {
+            return Leaf(value: tag)
+        }
+
+        struct Inner {
+            var node: some Node
+            var count: Int = 0
+        }
+
+        struct Outer {
+            var inner: Inner
+            var total: Int = 0
+        }
+
+        function bad() -> Int {
+            let outer = Outer { inner: Inner { node: buildNode(7) } }
+            let inner = outer.inner
+            return inner.node.tag
+        }
+
+        @Main
+        function main() {
+            print(bad())
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM107")); return e }
+}
+
+// --- partial_move_whole_struct_use (tests/fail/pipeline/partial_move_whole_struct_use)
+FailTest FplPartialMoveWholeStructUse {
+    backends { vm llvm hybrid }
+    source {
+        // Regression: once a field has been moved out of an owned aggregate, using the whole
+        // aggregate is forbidden -- Kira cannot transfer or drop a value that is only partially
+        // live. Here `total(move bag.items)` moves the `items` field, then `takeBag(move bag)`
+        // moves the whole struct. Before partial moves were tracked this compiled and the whole-
+        // struct move re-took ownership of the already-moved `items`, double-freeing it at runtime
+        // (the program printed a value instead of being rejected). It must be rejected at check.
+        struct Bag {
+            let items: [Int]
+            let label: String
+        }
+
+        function total(items: [Int]) -> Int {
+            var sum = 0
+            var index = 0
+            while index < items.count {
+                sum = sum + items[index]
+                index = index + 1
+            }
+            return sum
+        }
+
+        function takeBag(bag: Bag) -> Int {
+            return bag.items.count
+        }
+
+        function describe(bag: Bag) -> Int {
+            let t = total(move bag.items)
+            let u = takeBag(move bag)
+            return t + u
+        }
+
+        @Main
+        function main() {
+            let bag = Bag {
+                items: [1, 2, 3]
+                label: "three"
+            }
+            print(describe(move bag))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KIR002")); return e }
+}
+
+// --- declarative_showcase (tests/fail/pipeline/declarative_showcase)
+// Multi-file case: main.kira does `import UI as Kit` and BOTH main.kira and the
+// imported UI.kira declare `annotation State/Binding/Env` + `construct Widget`,
+// so the duplicate annotation declaration fires ACROSS the import boundary
+// (KSEM060) — inexpressible as a single-file source. Compiled via fixture mode.
+FailTest FplDeclarativeShowcase {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/declarative_showcase")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM060")); return e }
+}

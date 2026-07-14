@@ -25,8 +25,11 @@ at build time on the hybrid runtime — so the `@Native` calls bridge and the
 verdict is backend-independent:
 
 ```sh
-KIRA_PURE_TEST=1 kira test --backend hybrid tests-kik/ffi-harness
+kira test --backend hybrid tests-kik/ffi-harness
 ```
+
+(The pure-Kira driver is the default; `KIRA_LEGACY_TEST=1` opts back into the
+historical Zig runner.)
 
 Every test reduces a bridge exercise to a scalar and asserts it with
 `Result.Ok(...)`; the comparison runs in Kira (no Zig override). See `FINDINGS.md`
@@ -37,7 +40,8 @@ for bridge bugs this harness surfaced.
 - No `import Foundation` outside `main.kira` (flat package; `Test`/`Result`/
   `TestFailure` are package-wide).
 - Every top-level name uses a per-domain prefix so the flat namespace stays clean.
-- `test` returns an Int/Bool/String (the runner compares only scalars); end with
-  a clean trailing `return`.
+- `test` typically returns an Int/Bool/String; struct results are now compared
+  structurally by the driver (see `tests-kik/corpus/driver-structural-eq`), so a
+  struct result is fine too. End with a clean trailing `return`.
 - Trap-style tests (`Result.Error(TestFailure.Runtime(...))`) are not used here:
   they SKIP under the pure-Kira driver until runtime traps are catchable in Kira.

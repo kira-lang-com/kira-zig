@@ -25,8 +25,17 @@ and backend-parity bugs that the smaller per-feature kik suites miss.
 - Every top-level name (function/struct/enum/class/Test) must be globally unique;
   the `*Tests.kira` files use per-domain prefixes (`sct`, `Cfx`, `Colx`, `Stx`,
   `Enx`, `Strx`).
-- The runner compares ONLY scalar values — struct/array/enum equality is NOT
-  structural. Reduce every test to an Int/Bool/String.
+- The driver compares scalars and payload-less enums with `==`, and STRUCT
+  results structurally: a Test returning a struct is compared field-by-field
+  (nested structs recurse, array fields compare count + elementwise, String/
+  scalar/payload-less-enum fields via `!=`). A struct/enum with `@Derive(Equatable)`
+  or a hand-written `eq_<T>` uses that comparator instead (authoritative). Two
+  cases are NOT auto-comparable and are REFUSED at synthesis time with
+  `KTEST001` unless you supply `eq_<T>`: a Test returning a payload-carrying enum
+  directly, and a struct field of a payload-carrying enum (bare `==` on such an
+  enum is tag-only, i.e. silent-wrong). Top-level array/generic results still use
+  `==`. You no longer have to reduce struct results to an Int/Bool/String; see
+  `tests-kik/corpus/driver-structural-eq` for the full matrix.
 - The `test` block must end with a clean trailing `return <scalar>`; returning
   only from inside `match`/`if` arms infers the type as Void (KSEM031). Use a
   `var out` accumulator.

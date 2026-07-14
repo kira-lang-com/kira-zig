@@ -132,6 +132,20 @@ fn findDirectFfiUseInExpr(
         .c_string_to_string => |node| return findDirectFfiUseInExpr(node.value.*, lookup),
         .array_len => |node| return findDirectFfiUseInExpr(node.object.*, lookup),
         .string_len => |node| return findDirectFfiUseInExpr(node.object.*, lookup),
+        .string_from_scalar => |node| return findDirectFfiUseInExpr(node.operand.*, lookup),
+        .string_char_at => |node| {
+            if (findDirectFfiUseInExpr(node.object.*, lookup)) |use| return use;
+            return findDirectFfiUseInExpr(node.index.*, lookup);
+        },
+        .string_substring => |node| {
+            if (findDirectFfiUseInExpr(node.object.*, lookup)) |use| return use;
+            if (findDirectFfiUseInExpr(node.start.*, lookup)) |use| return use;
+            return findDirectFfiUseInExpr(node.end.*, lookup);
+        },
+        .string_index_of => |node| {
+            if (findDirectFfiUseInExpr(node.object.*, lookup)) |use| return use;
+            return findDirectFfiUseInExpr(node.needle.*, lookup);
+        },
         .field => |node| return findDirectFfiUseInExpr(node.object.*, lookup),
         .native_state => |node| return findDirectFfiUseInExpr(node.value.*, lookup),
         .native_user_data => |node| return findDirectFfiUseInExpr(node.state.*, lookup),

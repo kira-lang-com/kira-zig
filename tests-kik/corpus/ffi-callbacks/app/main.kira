@@ -1,0 +1,17 @@
+// KikCorpusFfiCallbacks — migrated NativeLibs callback corpus cases from
+// tests/pass/run/ffi_callback_{native,hybrid,state_parity}: Kira functions
+// passed to C as function pointers and invoked from C, plus Kira state
+// threaded through C as user_data. libcallbacks is built in-package from
+// NativeLibs/callbacks.c and the binding module `callbacks` is autobound.
+// The cases mix @Native and @Runtime code, so run through the hybrid driver:
+//
+//   kira test --backend hybrid tests-kik/corpus/ffi-callbacks
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    print("kik-corpus-ffi-callbacks")
+    return
+}

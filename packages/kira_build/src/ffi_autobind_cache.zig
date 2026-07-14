@@ -4,7 +4,7 @@ const fs_helpers = @import("ffi_autobind_fs.zig");
 
 var key_cache_mutex: std.atomic.Mutex = .unlocked;
 var key_cache: std.StringHashMapUnmanaged([]const u8) = .empty;
-const generator_cache_version = "kira-autobinding-sdk-v1";
+const generator_cache_version = "kira-autobinding-sdk-v2-relocatable";
 
 pub fn bindingsAreCurrent(allocator: std.mem.Allocator, output_path: []const u8, cache_key: []const u8) !bool {
     if (!fs_helpers.fileExists(output_path)) return false;
@@ -34,7 +34,6 @@ pub fn cacheKey(
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(generator_cache_version ++ "\n");
     try hashString(&hasher, "module", autobinding.module_name);
-    try hashPath(allocator, &hasher, "output", autobinding.output_path);
     try hashString(&hasher, "mode", @tagName(autobinding.bindings.mode));
     try hashString(&hasher, "profile", @tagName(autobinding.bindings.profile));
     for (library.headers.defines) |define| try hashString(&hasher, "header_define", define);
@@ -135,7 +134,8 @@ fn metadataProjectRoot(allocator: std.mem.Allocator, path: []const u8) ![]const 
 }
 
 fn hasProjectManifest(path: []const u8) bool {
-    return fileExistsAt(path, "kira.toml") or
+    return fileExistsAt(path, "package.kira") or
+        fileExistsAt(path, "kira.toml") or
         fileExistsAt(path, "project.toml") or
         fileExistsAt(path, "Kira.toml");
 }
@@ -147,38 +147,29 @@ fn fileExistsAt(dir_path: []const u8, file_name: []const u8) bool {
 }
 
 fn pathDigest(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const project_root = try metadataProjectRoot(allocator, path);
+    defer allocator.free(project_root);
     const canonical = try canonicalPathOrOriginal(allocator, path);
     defer allocator.free(canonical);
+    const relative = try std.fs.path.relative(allocator, project_root, null, project_root, canonical);
+    defer allocator.free(relative);
+    const normalized = try allocator.dupe(u8, relative);
+    defer allocator.free(normalized);
+    _ = std.mem.replaceScalar(u8, normalized, '\\', '/');
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(canonical);
+    hasher.update(normalized);
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
     const hex = try hexDigest(allocator, &digest);
     return hex[0 .. hex.len - 1];
 }
 
-fn hashCompilerIdentity(allocator: std.mem.Allocator, hasher: anytype) !void {
-    const exe_path = std.process.executablePathAlloc(std.Options.debug_io, allocator) catch return;
-    defer allocator.free(exe_path);
-    try hashString(hasher, "compiler_path", exe_path);
-    const stat = fs_helpers.statFile(exe_path) catch return;
-    var buffer: [128]u8 = undefined;
-    const text = try std.fmt.bufPrint(&buffer, "size={d};mtime={d}", .{ stat.size, stat.mtime });
-    try hashString(hasher, "compiler_stat", text);
-}
-
 fn hashFileIfPresent(allocator: std.mem.Allocator, hasher: anytype, label: []const u8, path: []const u8) !void {
     const bytes = fs_helpers.readFileAlloc(path, allocator, 64 * 1024 * 1024) catch return;
     defer allocator.free(bytes);
-    try hashPath(allocator, hasher, label, path);
+    try hashString(hasher, label, "present");
     hasher.update(bytes);
     hasher.update("\n");
-}
-
-fn hashPath(allocator: std.mem.Allocator, hasher: anytype, label: []const u8, path: []const u8) !void {
-    const canonical = try canonicalPathOrOriginal(allocator, path);
-    defer allocator.free(canonical);
-    try hashString(hasher, label, canonical);
 }
 
 fn canonicalPathOrOriginal(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -201,4 +192,30 @@ fn hexDigest(allocator: std.mem.Allocator, digest: []const u8) ![]const u8 {
     }
     out[digest.len * 2] = '\n';
     return out;
+}
+
+test "autobind stamp identity survives project relocation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "source", "installed" }) |root| {
+        try tmp.dir.createDirPath(std.testing.io, try std.fs.path.join(allocator, &.{ root, "bindings" }));
+        try tmp.dir.writeFile(std.testing.io, .{
+            .sub_path = try std.fs.path.join(allocator, &.{ root, "kira.toml" }),
+            .data = "[project]\nname = \"foundation\"\n",
+        });
+        try tmp.dir.writeFile(std.testing.io, .{
+            .sub_path = try std.fs.path.join(allocator, &.{ root, "bindings", "fs.kira" }),
+            .data = "// generated\n",
+        });
+    }
+
+    const source = try tmp.dir.realPathFileAlloc(std.testing.io, "source/bindings/fs.kira", allocator);
+    const installed = try tmp.dir.realPathFileAlloc(std.testing.io, "installed/bindings/fs.kira", allocator);
+    const source_digest = try pathDigest(allocator, source);
+    const installed_digest = try pathDigest(allocator, installed);
+    try std.testing.expectEqualStrings(source_digest, installed_digest);
 }

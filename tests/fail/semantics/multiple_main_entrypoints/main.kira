@@ -1,9 +1,0 @@
-@Main
-function first() {
-    return;
-}
-
-@Main
-function second() {
-    return;
-}

@@ -1,0 +1,75 @@
+// Cx2BodyGenericFamilyTests.kira — Construct 2.0 item 7:
+// a `body { ... }` builder-block declaration is family-generic. Before the fix
+// the compiler special-cased the literal family name `Widget`; renaming the
+// family (here `Cx2Panel`) made any package with a `body {}` declaration fail
+// `kira check` with KSEM047. This test declares a body{} builder block on a
+// DELIBERATELY renamed family and proves it now checks and runs on every
+// backend. PREFIX: cx2 / Cx2 (all top-level names).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+construct Cx2Panel {
+    @Required let body: Cx2Panel
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+function cx2JoinChildren(children: borrow [some Cx2Panel]) -> [String] {
+    var labels: [String] = []
+    var childIndex = 0
+    while childIndex < children.count {
+        let rendered = children[childIndex].render()
+        var labelIndex = 0
+        while labelIndex < rendered.count {
+            labels.append(rendered[labelIndex])
+            labelIndex = labelIndex + 1
+        }
+        childIndex = childIndex + 1
+    }
+    return labels
+}
+
+Cx2Panel Cx2Text(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Cx2Panel Cx2VStack(spacing: Float) {
+    @Content let children: [Cx2Panel]
+
+    function render() -> [String] {
+        let ignored = spacing + 0.0
+        return cx2JoinChildren(children)
+    }
+}
+
+Cx2Panel Cx2Screen() {
+    let items: [String] = ["one", "two", "three"]
+
+    body {
+        Cx2VStack(spacing = 8.0) {
+            For(item in items) {
+                Cx2Text(item)
+            }
+        }
+    }
+}
+
+Test Cx2BodyBlockOnRenamedFamily {
+    test {
+        let rendered = Cx2Screen().render()
+        var out = ""
+        var index = 0
+        while index < rendered.count {
+            if index > 0 {
+                out = out + "|"
+            }
+            out = out + rendered[index]
+            index = index + 1
+        }
+        return out
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("one|two|three"); return e }
+}

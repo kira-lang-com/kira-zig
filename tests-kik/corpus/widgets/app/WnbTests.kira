@@ -1,0 +1,51 @@
+// WnbTests.kira — migrated from tests/pass/run/widget_node_bridge.
+// PREFIX: wnb / Wnb (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_node_bridge
+// ---------------------------------------------------------------------------
+// The Widget->Node bridge executes: a computed `let node: T { ... }` member
+// runs as an accessor invoked by bare member access (no parens), and accessor
+// chains compose (`button.body.node`). Original printed "terminal" and
+// "composite". NOTE: the family-level `node` member's `Node` type is left
+// undeclared exactly as in the original case.
+
+struct WnbTextNode {
+    let text: String = ""
+}
+
+construct WnbWidget {
+    @Required let body: WnbWidget
+    let node: Node { body.node }
+}
+
+WnbWidget WnbText {
+    let text: String = ""
+    let node: WnbTextNode {
+        WnbTextNode(text: text)
+    }
+}
+
+WnbWidget WnbButton {
+    let title: String = ""
+    let body: WnbText {
+        WnbText(text: title)
+    }
+}
+
+Test WnbNodeBridgeTerminal {
+    test {
+        let label = WnbText(text: "terminal")
+        return label.node.text
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("terminal"); return e }
+}
+
+Test WnbNodeBridgeComposite {
+    test {
+        let button = WnbButton(title: "composite")
+        return button.body.node.text
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("composite"); return e }
+}

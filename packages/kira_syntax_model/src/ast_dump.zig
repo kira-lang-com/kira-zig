@@ -60,6 +60,10 @@ fn dumpDecl(writer: anytype, decl: ast.Decl, depth: usize) anyerror!void {
             try writer.print("ConstructDecl {s} {s}\n", .{ qualifiedNameText(form_decl.construct_name), form_decl.name });
             for (form_decl.body.members) |member| try dumpBodyMember(writer, member, depth + 1);
         },
+        .fail_test_decl => |fail_test_decl| {
+            try indent(writer, depth);
+            try writer.print("FailTest {s}\n", .{fail_test_decl.name});
+        },
         .extend_decl => |extend_decl| {
             try indent(writer, depth);
             try writer.print("Extend {s}\n", .{qualifiedNameText(extend_decl.construct_name)});
@@ -230,6 +234,11 @@ fn dumpBuilderBlock(writer: anytype, block: ast.BuilderBlock, depth: usize) anye
                 try indent(writer, depth + 1);
                 try writer.writeAll("BuilderSwitch\n");
             },
+            .field_override => |value| {
+                try indent(writer, depth + 1);
+                try writer.print("BuilderFieldOverride {s}\n", .{value.name});
+                try dumpExpr(writer, value.value.*, depth + 2);
+            },
         }
     }
 }
@@ -260,6 +269,10 @@ fn dumpExpr(writer: anytype, expr: ast.Expr, depth: usize) anyerror!void {
         .identifier => |value| {
             try indent(writer, depth);
             try writer.print("Identifier {s}\n", .{qualifiedNameText(value.name)});
+        },
+        .implicit_member => |value| {
+            try indent(writer, depth);
+            try writer.print("ImplicitMember .{s}\n", .{value.name});
         },
         .array => |value| {
             try indent(writer, depth);

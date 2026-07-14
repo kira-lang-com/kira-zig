@@ -117,27 +117,27 @@ function stxPointSum(p: borrow StxPoint) -> Int {
 
 Test StxConstX {
     test { let p = StxPoint { x: 3, y: 7 }; return p.x }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxConstY {
     test { let p = StxPoint { x: 3, y: 7 }; return p.y }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StxFieldAdd {
     test { let p = StxPoint { x: 5, y: 8 }; return p.x + p.y }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 Test StxFieldMul {
     test { let p = StxPoint { x: 4, y: 6 }; return p.x * p.y }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 Test StxFieldSub {
     test { let p = StxPoint { x: 10, y: 3 }; return p.x - p.y }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StxMutateX {
@@ -146,7 +146,7 @@ Test StxMutateX {
         p.x = 99
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(99); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(99); return e }
 }
 
 Test StxMutateY {
@@ -155,7 +155,7 @@ Test StxMutateY {
         p.y = 77
         return p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 Test StxRectOriginX {
@@ -167,7 +167,7 @@ Test StxRectOriginX {
         }
         return r.origin.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxRectOriginY {
@@ -179,7 +179,7 @@ Test StxRectOriginY {
         }
         return r.origin.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StxRectSizeY {
@@ -191,7 +191,7 @@ Test StxRectSizeY {
         }
         return r.size.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test StxRectLabel {
@@ -203,7 +203,7 @@ Test StxRectLabel {
         }
         return r.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxCubeLoX {
@@ -215,7 +215,7 @@ Test StxCubeLoX {
         }
         return c.lo.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StxCubeHiY {
@@ -227,7 +227,7 @@ Test StxCubeHiY {
         }
         return c.hi.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StxCubeDepth {
@@ -239,12 +239,12 @@ Test StxCubeDepth {
         }
         return c.depth
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StxZeroStruct {
     test { let p = StxPoint { x: 0, y: 0 }; return p.sum() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,38 +253,38 @@ Test StxZeroStruct {
 
 Test StxMethodSum {
     test { let p = StxPoint { x: 3, y: 7 }; return p.sum() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxMethodProduct {
     test { let p = StxPoint { x: 4, y: 6 }; return p.product() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 Test StxMethodMax {
     test { let p = StxPoint { x: 3, y: 7 }; return p.max() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StxMethodMin {
     test { let p = StxPoint { x: 3, y: 7 }; return p.min() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxMethodScaleX {
     test { let p = StxPoint { x: 3, y: 7 }; let q = p.scale(2); return q.x }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StxMethodScaleY {
     test { let p = StxPoint { x: 3, y: 7 }; let q = p.scale(3); return q.y }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(21); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(21); return e }
 }
 
 Test StxMethodScaleSum {
     // p={3,7}, scale(2) → {6,14}, sum=20
     test { let p = StxPoint { x: 3, y: 7 }; let q = p.scale(2); return q.sum() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StxMethodScaleChain {
@@ -295,7 +295,7 @@ Test StxMethodScaleChain {
         let q2 = q1.scale(4)
         return q2.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 Test StxRectArea {
@@ -308,7 +308,7 @@ Test StxRectArea {
         }
         return r.area()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StxRectPerimeter {
@@ -321,7 +321,7 @@ Test StxRectPerimeter {
         }
         return r.perimeter()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(26); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(26); return e }
 }
 
 Test StxRectLabelPlusArea {
@@ -334,7 +334,7 @@ Test StxRectLabelPlusArea {
         }
         return r.labelPlusArea()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(25); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(25); return e }
 }
 
 Test StxCubeVolume {
@@ -347,7 +347,7 @@ Test StxCubeVolume {
         }
         return c.volume()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test StxCubeSpan {
@@ -360,7 +360,7 @@ Test StxCubeSpan {
         }
         return c.span()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test StxMethodLoop {
@@ -375,7 +375,7 @@ Test StxMethodLoop {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StxMethodArith {
@@ -384,24 +384,24 @@ Test StxMethodArith {
         let p = StxPoint { x: 5, y: 3 }
         return p.sum() * p.max() - p.min()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(37); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(37); return e }
 }
 
 Test StxPointSumHelper {
     test { let p = StxPoint { x: 4, y: 6 }; return stxPointSum(p) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxMethodMaxMin {
     // p={7,4}, max=7, min=4, diff=3
     test { let p = StxPoint { x: 7, y: 4 }; return p.max() - p.min() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxScaleMaxMin {
     // p={3,2}, scale(5)={15,10}, max=15, min=10, diff=5
     test { let p = StxPoint { x: 3, y: 2 }; let q = p.scale(5); return q.max() - q.min() }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StxAreaPerimeterSum {
@@ -414,7 +414,7 @@ Test StxAreaPerimeterSum {
         }
         return r.area() + r.perimeter()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(26); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(26); return e }
 }
 
 Test StxCubeVolumeSpan {
@@ -427,7 +427,7 @@ Test StxCubeVolumeSpan {
         }
         return c.volume() + c.span()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StxScaleLoopAcc {
@@ -444,7 +444,7 @@ Test StxScaleLoopAcc {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(110); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(110); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ Test StxBorrowBumpX {
         stxBumpX(p)
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StxBorrowBumpBoth {
@@ -467,7 +467,7 @@ Test StxBorrowBumpBoth {
         stxBumpBoth(p)
         return p.x + p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxBorrowBumpLoop {
@@ -481,7 +481,7 @@ Test StxBorrowBumpLoop {
         }
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxBorrowBumpYSum {
@@ -495,7 +495,7 @@ Test StxBorrowBumpYSum {
         }
         return p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test StxBorrowAddN {
@@ -505,7 +505,7 @@ Test StxBorrowAddN {
         stxAddN(p, 7)
         return p.x + p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(17); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(17); return e }
 }
 
 Test StxBorrowAddNLoop {
@@ -519,7 +519,7 @@ Test StxBorrowAddNLoop {
         }
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StxBorrowRectLabel {
@@ -533,7 +533,7 @@ Test StxBorrowRectLabel {
         stxBumpRect(r)
         return r.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StxBorrowRectOriginX {
@@ -547,7 +547,7 @@ Test StxBorrowRectOriginX {
         stxBumpRect(r)
         return r.origin.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test StxBorrowRectSizeY {
@@ -561,7 +561,7 @@ Test StxBorrowRectSizeY {
         stxBumpRect(r)
         return r.size.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxBorrowRectLoop {
@@ -579,7 +579,7 @@ Test StxBorrowRectLoop {
         }
         return r.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxBorrowRectLoopSizeY {
@@ -597,7 +597,7 @@ Test StxBorrowRectLoopSizeY {
         }
         return r.size.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(33); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(33); return e }
 }
 
 Test StxBorrowCubeDepth {
@@ -611,7 +611,7 @@ Test StxBorrowCubeDepth {
         stxBumpCube(c)
         return c.depth
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StxBorrowCubeLoX {
@@ -625,7 +625,7 @@ Test StxBorrowCubeLoX {
         stxBumpCube(c)
         return c.lo.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StxBorrowCubeLoop {
@@ -643,7 +643,7 @@ Test StxBorrowCubeLoop {
         }
         return c.depth
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StxBorrowBumpBothLoop25 {
@@ -657,7 +657,7 @@ Test StxBorrowBumpBothLoop25 {
         }
         return p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(25); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(25); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +672,7 @@ Test StxCopyXIndep {
         q.x = 99
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StxCopyYIndep {
@@ -682,7 +682,7 @@ Test StxCopyYIndep {
         q.y = 77
         return p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxCopyBothUnchanged {
@@ -694,7 +694,7 @@ Test StxCopyBothUnchanged {
         q.y = 1
         return p.x + p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test StxCopyNestedOriginX {
@@ -708,7 +708,7 @@ Test StxCopyNestedOriginX {
         r2.origin.x = 999
         return r.origin.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxCopyNestedSizeY {
@@ -722,7 +722,7 @@ Test StxCopyNestedSizeY {
         r2.size.y = 888
         return r.size.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StxCopyMutateCopy {
@@ -733,7 +733,7 @@ Test StxCopyMutateCopy {
         q.x = 100
         return q.x + p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(105); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(105); return e }
 }
 
 Test StxCopyBorrowMutNoEffect {
@@ -744,7 +744,7 @@ Test StxCopyBorrowMutNoEffect {
         stxBumpX(q)
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxCopyLoopIndependence {
@@ -761,7 +761,7 @@ Test StxCopyLoopIndependence {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxCopyScaleOriginalUnchanged {
@@ -771,7 +771,7 @@ Test StxCopyScaleOriginalUnchanged {
         let q = p.scale(10)
         return p.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxCopyCubeDepth {
@@ -785,7 +785,7 @@ Test StxCopyCubeDepth {
         c2.depth = 999
         return c.depth
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +801,7 @@ Test StxArrRead1X {
         pts.append(StxPoint { x: 5, y: 6 })
         return pts[1].x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxArrRead2Y {
@@ -813,7 +813,7 @@ Test StxArrRead2Y {
         pts.append(StxPoint { x: 5, y: 6 })
         return pts[2].y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StxArrSumX {
@@ -831,7 +831,7 @@ Test StxArrSumX {
         }
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test StxArrForInSumY {
@@ -847,7 +847,7 @@ Test StxArrForInSumY {
         }
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test StxArrWriteX {
@@ -857,7 +857,7 @@ Test StxArrWriteX {
         pts[0].x = 77
         return pts[0].x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 Test StxArrWriteY {
@@ -867,7 +867,7 @@ Test StxArrWriteY {
         pts[0].y = 88
         return pts[0].y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(88); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(88); return e }
 }
 
 Test StxArrDeepWriteRectOriginX {
@@ -881,7 +881,7 @@ Test StxArrDeepWriteRectOriginX {
         rects[0].origin.x = 77
         return rects[0].origin.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 Test StxArrDeepWriteRectSizeY {
@@ -900,7 +900,7 @@ Test StxArrDeepWriteRectSizeY {
         rects[1].size.y = 44
         return rects[1].size.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(44); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(44); return e }
 }
 
 Test StxArrMixedWrites {
@@ -917,7 +917,7 @@ Test StxArrMixedWrites {
         pts[3].y = 40
         return pts[0].x + pts[1].y + pts[2].x + pts[3].y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StxArrLoop100 {
@@ -937,7 +937,7 @@ Test StxArrLoop100 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10000); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10000); return e }
 }
 
 Test StxArrCount {
@@ -951,7 +951,7 @@ Test StxArrCount {
         }
         return pts.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StxArrForInMethodSum {
@@ -969,7 +969,7 @@ Test StxArrForInMethodSum {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StxArrAfterDeepWrite {
@@ -988,7 +988,7 @@ Test StxArrAfterDeepWrite {
         }
         return s
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(54); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(54); return e }
 }
 
 Test StxArrTrapEmpty {
@@ -996,7 +996,7 @@ Test StxArrTrapEmpty {
         var pts: [StxPoint] = []
         return pts[0].x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxArrTrapOOB {
@@ -1005,7 +1005,7 @@ Test StxArrTrapOOB {
         pts.append(StxPoint { x: 1, y: 2 })
         return pts[99].x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,7 +1018,7 @@ Test StxBagTotal5 {
         var b = stxMakeBag(5)
         return b.total()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StxBagTotal0 {
@@ -1027,7 +1027,7 @@ Test StxBagTotal0 {
         var b = stxMakeBag(0)
         return b.total()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StxBagCount10 {
@@ -1035,7 +1035,7 @@ Test StxBagCount10 {
         var b = stxMakeBag(10)
         return b.count()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StxBagItems2 {
@@ -1044,7 +1044,7 @@ Test StxBagItems2 {
         var b = stxMakeBag(5)
         return b.items[2]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StxBagTag {
@@ -1052,7 +1052,7 @@ Test StxBagTag {
         var b = stxMakeBag(5)
         return b.tag
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StxBagTotal1 {
@@ -1061,7 +1061,7 @@ Test StxBagTotal1 {
         var b = stxMakeBag(1)
         return b.total()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StxBagTotal3 {
@@ -1070,7 +1070,7 @@ Test StxBagTotal3 {
         var b = stxMakeBag(3)
         return b.total()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test StxBagLoopTotal {
@@ -1085,7 +1085,7 @@ Test StxBagLoopTotal {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(50); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(50); return e }
 }
 
 Test StxBagItems0 {
@@ -1094,7 +1094,7 @@ Test StxBagItems0 {
         var b = stxMakeBag(3)
         return b.items[0]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StxBagItems1 {
@@ -1103,7 +1103,7 @@ Test StxBagItems1 {
         var b = stxMakeBag(3)
         return b.items[1]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,17 +1116,17 @@ Test StxTrapDivZeroField {
         let p = StxPoint { x: 5, y: 0 }
         return p.x / p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapModZero {
     test { return 7 % 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapDivZeroConst {
     test { return 1 / 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapArrLargeIndex {
@@ -1136,7 +1136,7 @@ Test StxTrapArrLargeIndex {
         pts.append(StxPoint { x: 3, y: 4 })
         return pts[99].x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapDeepWriteOOB {
@@ -1149,7 +1149,7 @@ Test StxTrapDeepWriteOOB {
         })
         return rects[5].label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapBagOOB {
@@ -1157,7 +1157,7 @@ Test StxTrapBagOOB {
         var b = stxMakeBag(3)
         return b.items[99]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StxTrapModZeroField {
@@ -1165,5 +1165,5 @@ Test StxTrapModZeroField {
         let p = StxPoint { x: 5, y: 0 }
         return p.x % p.y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }

@@ -1,0 +1,129 @@
+// GpxTests.kira
+// Migrated from tests/pass/run/large_graphics_shaped_pipeline_access_regression.
+// All top-level names use prefix gpx / Gpx. No `import Foundation` here —
+// main.kira imports it for the whole package.
+// Regression: deep member/index chains through a Kira Graphics-shaped pipeline
+// descriptor (struct -> struct -> array -> struct -> field) must read the
+// correct element on every backend.
+
+// ---------------------------------------------------------------------------
+// large_graphics_shaped_pipeline_access_regression
+// ---------------------------------------------------------------------------
+
+struct GpxBlendDescriptor {
+    var enabled: Bool
+    var preset: Int
+}
+
+struct GpxColorTargetDescriptor {
+    var format: Int
+    var blend: GpxBlendDescriptor
+}
+
+struct GpxVertexAttributeDescriptor {
+    var semantic: Int
+    var format: Int
+    var offset: Int
+}
+
+struct GpxVertexLayoutDescriptor {
+    var stride: Int
+    var attributes: [GpxVertexAttributeDescriptor]
+}
+
+struct GpxRenderPipelineDescriptor {
+    var vertexLayout: GpxVertexLayoutDescriptor
+    var colorTargets: [GpxColorTargetDescriptor]
+}
+
+struct GpxPipeline {
+    var descriptor: GpxRenderPipelineDescriptor
+    var shaderId: Int
+}
+
+function gpxMakePipeline() -> GpxPipeline {
+    return GpxPipeline {
+        descriptor: GpxRenderPipelineDescriptor {
+            vertexLayout: GpxVertexLayoutDescriptor {
+                stride: 24,
+                attributes: [
+                    GpxVertexAttributeDescriptor { semantic: 0, format: 31, offset: 0 },
+                    GpxVertexAttributeDescriptor { semantic: 1, format: 31, offset: 12 },
+                    GpxVertexAttributeDescriptor { semantic: 2, format: 43, offset: 20 }
+                ]
+            },
+            colorTargets: [
+                GpxColorTargetDescriptor { format: 80, blend: GpxBlendDescriptor { enabled: true, preset: 2 } },
+                GpxColorTargetDescriptor { format: 81, blend: GpxBlendDescriptor { enabled: false, preset: 0 } }
+            ]
+        },
+        shaderId: 700
+    }
+}
+
+function gpxPipelineChecksum(pipeline: borrow GpxPipeline) -> Int {
+    var checksum = pipeline.shaderId + pipeline.descriptor.vertexLayout.stride
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[0].format * 3
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[0].offset * 5
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[1].format * 7
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[1].offset * 11
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[2].format * 13
+    checksum = checksum + pipeline.descriptor.vertexLayout.attributes[2].offset * 17
+    checksum = checksum + pipeline.descriptor.colorTargets[0].blend.preset * 19
+    if pipeline.descriptor.colorTargets[0].blend.enabled {
+        checksum = checksum + 23
+    }
+    checksum = checksum + pipeline.descriptor.colorTargets[1].format
+    return checksum
+}
+
+// The original @Main body; `which` selects which printed value to return.
+function gpxScenario(which: Int) -> Int {
+    let pipeline = gpxMakePipeline()
+    if which == 0 {
+        return pipeline.descriptor.vertexLayout.attributes[0].format
+    }
+    if which == 1 {
+        return pipeline.descriptor.vertexLayout.attributes[0].offset
+    }
+    if which == 2 {
+        return pipeline.descriptor.vertexLayout.attributes[1].format
+    }
+    if which == 3 {
+        return pipeline.descriptor.vertexLayout.attributes[1].offset
+    }
+    if which == 4 {
+        return pipeline.descriptor.colorTargets[0].blend.preset
+    }
+    return gpxPipelineChecksum(pipeline)
+}
+
+Test GpxAttr0Format {
+    test { return gpxScenario(0) }
+    expect { let e: Result<Int, TestFailure> = .Ok(31); return e }
+}
+
+Test GpxAttr0Offset {
+    test { return gpxScenario(1) }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test GpxAttr1Format {
+    test { return gpxScenario(2) }
+    expect { let e: Result<Int, TestFailure> = .Ok(31); return e }
+}
+
+Test GpxAttr1Offset {
+    test { return gpxScenario(3) }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
+}
+
+Test GpxBlendPreset {
+    test { return gpxScenario(4) }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
+}
+
+Test GpxPipelineChecksum {
+    test { return gpxScenario(5) }
+    expect { let e: Result<Int, TestFailure> = .Ok(2207); return e }
+}

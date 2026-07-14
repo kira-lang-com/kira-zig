@@ -1,0 +1,57 @@
+// FprFailTests.kira — parser-stage expected-diagnostic cases migrated from tests/fail/parser/.
+// PREFIX: Fpr.
+//
+// Each FailTest embeds a legacy `main.kira` verbatim in its `source` block and asserts the
+// parser rejects it with the exact diagnostic code the legacy expect.toml declared. No
+// `import Foundation` here — Result / TestFailure / FailTest are package-wide once main.kira
+// imports Foundation.
+//
+// Manifest (migrated from tests/fail/parser/):
+//   - expr_nesting_too_deep        -> FprExprNestingTooDeep        (KPAR014, vm hybrid)
+//   - malformed_construct_section  -> FprMalformedConstructSection (KPAR001, vm hybrid)
+//   - trailing_callback_missing_in -> FprTrailingCallbackMissingIn (KPAR001, vm hybrid)
+
+// --- expr_nesting_too_deep (tests/fail/parser/expr_nesting_too_deep)
+FailTest FprExprNestingTooDeep {
+    backends { vm hybrid }
+    source {
+        @Main
+        function main() {
+            let x = ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KPAR014")); return e }
+}
+
+// --- malformed_construct_section (tests/fail/parser/malformed_construct_section)
+FailTest FprMalformedConstructSection {
+    backends { vm hybrid }
+    source {
+        construct Widget {
+            annotations {
+                @State
+            }
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KPAR001")); return e }
+}
+
+// --- trailing_callback_missing_in (tests/fail/parser/trailing_callback_missing_in)
+FailTest FprTrailingCallbackMissingIn {
+    backends { vm hybrid }
+    source {
+        function resize(handler: (Int, Int) -> Void) {
+            return
+        }
+
+        @Main
+        function main() {
+            resize { width, height
+                print(width)
+            }
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KPAR001")); return e }
+}

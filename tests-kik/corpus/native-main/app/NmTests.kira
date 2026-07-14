@@ -1,0 +1,16 @@
+// Exercises @Native code on the same backends the @Native @Main runs on
+// (hybrid + llvm). Running under `kira test` proves @Native functions compile
+// and execute on both native-capable backends; vm is excluded by the manifest
+// matrix (the pass-differential).
+
+@Native
+function nmNativeDouble(value: Int): Int {
+    return value * 2
+}
+
+Test NmNativeDouble {
+    test {
+        return nmNativeDouble(21)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}

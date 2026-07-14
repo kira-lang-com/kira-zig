@@ -1,0 +1,231 @@
+// FuxTests.kira
+// Migrated from tests/pass/run/large_future_ui_nested_data_stress.
+// All top-level names use prefix fux / Fux. No `import Foundation` here —
+// main.kira imports it for the whole package.
+// Deeply nested theme/layout/glyph structs (structs-in-structs, arrays of
+// structs, struct fields copied out of array elements) reduced to Int scalars.
+
+// ---------------------------------------------------------------------------
+// large_future_ui_nested_data_stress
+// ---------------------------------------------------------------------------
+
+struct FuxThemeColors {
+    var background: Int
+    var foreground: Int
+    var accent: Int
+}
+
+struct FuxEdgeInsets {
+    var left: Int
+    var top: Int
+    var right: Int
+    var bottom: Int
+}
+
+struct FuxBorderStyle {
+    var width: Int
+    var color: Int
+}
+
+struct FuxShadowStyle {
+    var blur: Int
+    var offsetX: Int
+    var offsetY: Int
+}
+
+struct FuxTextStyle {
+    var size: Int
+    var weight: Int
+    var color: Int
+}
+
+struct FuxWidgetStyle {
+    var padding: FuxEdgeInsets
+    var border: FuxBorderStyle
+    var shadow: FuxShadowStyle
+    var text: FuxTextStyle
+}
+
+struct FuxTheme {
+    var colors: FuxThemeColors
+    var primary: FuxWidgetStyle
+    var secondary: FuxWidgetStyle
+}
+
+struct FuxLayoutConstraints {
+    var minWidth: Int
+    var maxWidth: Int
+    var minHeight: Int
+    var maxHeight: Int
+}
+
+struct FuxGlyphInfo {
+    var codepoint: Int
+    var advance: Int
+    var x: Int
+    var y: Int
+}
+
+struct FuxGlyphRun {
+    var glyphs: [FuxGlyphInfo]
+    var style: FuxTextStyle
+}
+
+struct FuxLayoutNode {
+    var id: Int
+    var constraints: FuxLayoutConstraints
+    var style: FuxWidgetStyle
+    var glyphRun: FuxGlyphRun
+}
+
+struct FuxLayoutResult {
+    var width: Int
+    var height: Int
+    var baseline: Int
+}
+
+function fuxEdgeSum(edge: borrow FuxEdgeInsets) -> Int {
+    return edge.left + edge.top + edge.right + edge.bottom
+}
+
+function fuxStyleScore(style: borrow FuxWidgetStyle) -> Int {
+    return fuxEdgeSum(style.padding) * 3 + style.border.width * 5 + style.border.color + style.shadow.blur * 7 + style.text.size * 11 + style.text.weight
+}
+
+function fuxGlyphScore(glyph: borrow FuxGlyphInfo) -> Int {
+    return glyph.codepoint * 3 + glyph.advance * 5 + glyph.x * 7 + glyph.y * 11
+}
+
+function fuxMeasureNode(node: borrow FuxLayoutNode) -> FuxLayoutResult {
+    var glyphWidth = 0
+    var i = 0
+    while i < 3 {
+        let glyph = node.glyphRun.glyphs[i]
+        glyphWidth = glyphWidth + glyph.advance
+        i = i + 1
+    }
+    let padding = fuxEdgeSum(node.style.padding)
+    return FuxLayoutResult {
+        width: node.constraints.minWidth + glyphWidth + padding,
+        height: node.constraints.minHeight + node.style.text.size + node.style.border.width,
+        baseline: node.style.text.size + node.style.padding.top
+    }
+}
+
+function fuxMakeStyle(base: Int) -> FuxWidgetStyle {
+    return FuxWidgetStyle {
+        padding: FuxEdgeInsets { left: base, top: base + 1, right: base + 2, bottom: base + 3 },
+        border: FuxBorderStyle { width: base + 1, color: base * 10 },
+        shadow: FuxShadowStyle { blur: base + 2, offsetX: base + 3, offsetY: base + 4 },
+        text: FuxTextStyle { size: base + 12, weight: base + 400, color: base * 20 }
+    }
+}
+
+function fuxMakeRun(base: Int, style: borrow FuxTextStyle) -> FuxGlyphRun {
+    return FuxGlyphRun {
+        glyphs: [
+            FuxGlyphInfo { codepoint: base, advance: 8, x: 0, y: 0 },
+            FuxGlyphInfo { codepoint: base + 1, advance: 9, x: 8, y: 0 },
+            FuxGlyphInfo { codepoint: base + 2, advance: 10, x: 17, y: 0 }
+        ],
+        style: style
+    }
+}
+
+function fuxMakeNode(id: Int, style: borrow FuxWidgetStyle, base: Int) -> FuxLayoutNode {
+    return FuxLayoutNode {
+        id: id,
+        constraints: FuxLayoutConstraints { minWidth: base * 10, maxWidth: base * 20, minHeight: base * 5, maxHeight: base * 10 },
+        style: style,
+        glyphRun: fuxMakeRun(base + 60, style.text)
+    }
+}
+
+function fuxThemeScore(theme: borrow FuxTheme) -> Int {
+    return theme.colors.background + theme.colors.foreground + theme.colors.accent + fuxStyleScore(theme.primary) + fuxStyleScore(theme.secondary)
+}
+
+// The original @Main body; `which` selects which printed value to return.
+function fuxScenario(which: Int) -> Int {
+    let theme = FuxTheme {
+        colors: FuxThemeColors { background: 1, foreground: 2, accent: 3 },
+        primary: fuxMakeStyle(4),
+        secondary: fuxMakeStyle(8)
+    }
+    let nodes = [
+        fuxMakeNode(10, theme.primary, 11),
+        fuxMakeNode(20, theme.secondary, 13),
+        fuxMakeNode(30, theme.primary, 17)
+    ]
+    let index = 1
+    let node = nodes[index]
+    var copiedStyle = node.style
+    copiedStyle.padding.left = copiedStyle.padding.left + 50
+    let copiedGlyph = nodes[2].glyphRun.glyphs[1]
+    let result = fuxMeasureNode(node)
+    var checksum = fuxThemeScore(theme)
+    var i = 0
+    while i < 3 {
+        checksum = checksum + nodes[i].id + fuxStyleScore(nodes[i].style)
+        checksum = checksum + fuxGlyphScore(nodes[i].glyphRun.glyphs[i])
+        i = i + 1
+    }
+    checksum = checksum + fuxStyleScore(copiedStyle) + fuxGlyphScore(copiedGlyph)
+    checksum = checksum + result.width + result.height + result.baseline
+
+    if which == 0 {
+        return nodes[0].style.padding.left
+    }
+    if which == 1 {
+        return copiedStyle.padding.left
+    }
+    if which == 2 {
+        return nodes[1].glyphRun.glyphs[2].advance
+    }
+    if which == 3 {
+        return result.width
+    }
+    if which == 4 {
+        return result.height
+    }
+    if which == 5 {
+        return result.baseline
+    }
+    return checksum
+}
+
+Test FuxNodePaddingLeft {
+    test { return fuxScenario(0) }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
+}
+
+Test FuxCopiedStylePaddingLeft {
+    // Mutating the copied style must not write back into the node.
+    test { return fuxScenario(1) }
+    expect { let e: Result<Int, TestFailure> = .Ok(58); return e }
+}
+
+Test FuxGlyphAdvance {
+    test { return fuxScenario(2) }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
+}
+
+Test FuxResultWidth {
+    test { return fuxScenario(3) }
+    expect { let e: Result<Int, TestFailure> = .Ok(195); return e }
+}
+
+Test FuxResultHeight {
+    test { return fuxScenario(4) }
+    expect { let e: Result<Int, TestFailure> = .Ok(94); return e }
+}
+
+Test FuxResultBaseline {
+    test { return fuxScenario(5) }
+    expect { let e: Result<Int, TestFailure> = .Ok(29); return e }
+}
+
+Test FuxChecksum {
+    test { return fuxScenario(6) }
+    expect { let e: Result<Int, TestFailure> = .Ok(6921); return e }
+}

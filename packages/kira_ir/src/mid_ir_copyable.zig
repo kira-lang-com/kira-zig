@@ -3,15 +3,23 @@
 //! use can be a shallow (bitwise) copy with no aliased heap and therefore no
 //! double-free — mirroring Rust's `#[derive(Copy)]` eligibility. This lives apart
 //! from `mid_ir_check.zig` so the control-flow traversal and diagnostics core stays
-//! focused; the functions operate on `*const Checker` and are re-exposed there as
-//! `Checker.isCopyableType`.
+//! focused; the functions operate on a `*const Classifier` context and are re-exposed on
+//! `Checker` as `Checker.isCopyableType`.
 const std = @import("std");
 const model = @import("kira_semantics_model");
 const place_algebra = @import("mid_ir_place.zig");
-const check = @import("mid_ir_check.zig");
+const mid = @import("mid_ir.zig");
 
-const Checker = check.Checker;
 const isTriviallyCopyableType = place_algebra.isTriviallyCopyableType;
+
+/// The minimal context the structural `Copy` classifier needs: the lowered program (for
+/// resolving named struct/enum definitions) and the program-scoped memo. Decoupled from the
+/// per-function `Checker` so the whole-program `@Derive(Copy)` assertion pass
+/// (`mid_ir_derive_copy.zig`) can reuse the exact same classification without a function.
+pub const Classifier = struct {
+    program: mid.Program,
+    type_class: *TypeClass,
+};
 
 // Bound on how deep the structural copy check recurses through nested aggregates.
 // Value types cannot contain themselves by value (that would be infinitely sized),
@@ -70,15 +78,15 @@ pub const TypeClass = struct {
 /// is. A type that owns heap (string, array) or hides ownership behind an opaque
 /// payload (callback, native state) is never copyable and must move, which is what
 /// keeps the latent enum-copy use-after-free impossible.
-pub fn isCopyableType(self: *const Checker, ty: model.ResolvedType) bool {
+pub fn isCopyableType(self: *const Classifier, ty: model.ResolvedType) bool {
     return isCopyableTypeDepth(self, ty, 0);
 }
 
-pub fn containsConstructAny(self: *const Checker, ty: model.ResolvedType) bool {
+pub fn containsConstructAny(self: *const Classifier, ty: model.ResolvedType) bool {
     return containsConstructAnyDepth(self, ty, 0);
 }
 
-fn isCopyableTypeDepth(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn isCopyableTypeDepth(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     if (isTriviallyCopyableType(ty)) return true;
     if (depth >= max_copyable_depth) return false;
     return switch (ty.kind) {
@@ -111,7 +119,7 @@ fn isCopyableTypeDepth(self: *const Checker, ty: model.ResolvedType, depth: u32)
     };
 }
 
-fn isCopyableEnumType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn isCopyableEnumType(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     const name = ty.name orelse return false;
     for (self.program.source_program.enums) |enum_decl| {
         if (!std.mem.eql(u8, enum_decl.name, name)) continue;
@@ -125,7 +133,7 @@ fn isCopyableEnumType(self: *const Checker, ty: model.ResolvedType, depth: u32) 
     return false;
 }
 
-fn isCopyableStructType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn isCopyableStructType(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     const name = ty.name orelse return false;
     for (self.program.source_program.types) |type_decl| {
         if (type_decl.kind != .struct_decl) continue;
@@ -138,7 +146,7 @@ fn isCopyableStructType(self: *const Checker, ty: model.ResolvedType, depth: u32
     return false;
 }
 
-fn containsConstructAnyDepth(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn containsConstructAnyDepth(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     if (depth >= max_copyable_depth) return false;
     return switch (ty.kind) {
         .construct_any => true,
@@ -174,7 +182,7 @@ fn containsConstructAnyDepth(self: *const Checker, ty: model.ResolvedType, depth
     };
 }
 
-fn containsConstructAnyEnumType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn containsConstructAnyEnumType(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     const name = ty.name orelse return false;
     for (self.program.source_program.enums) |enum_decl| {
         if (!std.mem.eql(u8, enum_decl.name, name)) continue;
@@ -188,7 +196,7 @@ fn containsConstructAnyEnumType(self: *const Checker, ty: model.ResolvedType, de
     return false;
 }
 
-fn containsConstructAnyStructType(self: *const Checker, ty: model.ResolvedType, depth: u32) bool {
+fn containsConstructAnyStructType(self: *const Classifier, ty: model.ResolvedType, depth: u32) bool {
     const name = ty.name orelse return false;
     for (self.program.source_program.types) |type_decl| {
         if (!std.mem.eql(u8, type_decl.name, name)) continue;

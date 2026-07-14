@@ -63,7 +63,7 @@ pub fn writeNativeFieldValue(vm: anytype, module: *const bytecode.Module, field_
             var raw_ptr = value.raw_ptr;
             if (field_ty.name) |name| {
                 if (std.mem.indexOf(u8, name, "->") != null and raw_ptr != 0 and vm.heap.getClosure(raw_ptr) != null) {
-                    raw_ptr = try vm.exportRuntimeClosureToNative(module, raw_ptr);
+                    raw_ptr = try vm.exportRuntimeClosureToNative(module, raw_ptr, null);
                 }
             }
             (@as(*usize, @ptrFromInt(address))).* = raw_ptr;

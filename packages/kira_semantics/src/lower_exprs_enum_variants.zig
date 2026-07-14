@@ -23,7 +23,9 @@ pub fn lowerEnumVariantExprExpected(
     scope: *model.Scope,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) anyerror!?*model.Expr {
-    if (expected_type.kind != .enum_instance or expected_type.name == null) return null;
+    if (expected_type.name == null) return null;
+    if (expected_type.kind != .enum_instance and expected_type.kind != .named) return null;
+    if (resolveEnumDecl(ctx, expected_type.name.?) == null and resolveEnumDecl(ctx, qualifiedLeaf(expected_type.name.?)) == null) return null;
     return lowerEnumVariantExpr(ctx, expr, expected_type, imports, scope, function_headers);
 }
 
@@ -41,8 +43,18 @@ pub fn lowerEnumVariantExpr(
         payload_expr: ?*syntax.ast.Expr,
         span: source_pkg.Span,
     };
+    const MemberTarget = struct {
+        enum_name: []const u8,
+        variant_name: []const u8,
+    };
 
     const enum_target: EnumTarget = switch (expr.*) {
+        .implicit_member => |node| .{
+            .enum_name = expected_type.name orelse return null,
+            .variant_name = node.name,
+            .payload_expr = null,
+            .span = node.span,
+        },
         .member => |node| .{
             .enum_name = expected_type.name orelse try flattenMemberExprPath(ctx.allocator, node.object),
             .variant_name = node.member,
@@ -50,11 +62,22 @@ pub fn lowerEnumVariantExpr(
             .span = node.span,
         },
         .call => |node| blk: {
-            if (node.callee.* != .member or node.trailing_builder != null or node.trailing_callback != null) return null;
+            if ((node.callee.* != .member and node.callee.* != .implicit_member) or node.trailing_builder != null or node.trailing_callback != null) return null;
             if (node.args.len > 1) return null;
+            const target: MemberTarget = switch (node.callee.*) {
+                .implicit_member => |member| .{
+                    .enum_name = expected_type.name orelse return null,
+                    .variant_name = member.name,
+                },
+                .member => |member| .{
+                    .enum_name = expected_type.name orelse try flattenMemberExprPath(ctx.allocator, member.object),
+                    .variant_name = member.member,
+                },
+                else => unreachable,
+            };
             break :blk .{
-                .enum_name = expected_type.name orelse try flattenMemberExprPath(ctx.allocator, node.callee.member.object),
-                .variant_name = node.callee.member.member,
+                .enum_name = target.enum_name,
+                .variant_name = target.variant_name,
                 .payload_expr = if (node.args.len == 1) node.args[0].value else null,
                 .span = node.span,
             };

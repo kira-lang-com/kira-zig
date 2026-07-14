@@ -1,0 +1,59 @@
+// WidgetFamily.kira — shared `construct Widget` family for the content-block
+// expression cases in SyxTests.kira. DELIBERATELY UNPREFIXED: the compiler
+// special-cases the literal family name `Widget` for `body { ... }`
+// builder-block declarations and `[some Widget]` content. Concrete widgets and
+// helpers below are prefixed `Syx`.
+
+construct Widget {
+    @Required let body: Widget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Widget SyxText(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget SyxVStack(spacing: Float) {
+    @Content let children: [Widget]
+
+    function render() -> [String] {
+        let ignored = spacing + 0.0
+        return syxJoin(children)
+    }
+}
+
+// Flatten a `[some Widget]` list into a single label list. Takes a `borrow` so
+// callers keep ownership of the content-block value they pass in.
+function syxJoin(children: borrow [some Widget]) -> [String] {
+    var labels: [String] = []
+    var i = 0
+    while i < children.count {
+        let rendered = children[i].render()
+        var j = 0
+        while j < rendered.count {
+            labels.append(rendered[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return labels
+}
+
+// Join a label list with "|" for a single measurable String result.
+function syxPipe(labels: borrow [String]) -> String {
+    var out = ""
+    var i = 0
+    while i < labels.count {
+        if i > 0 {
+            out = out + "|"
+        }
+        out = out + labels[i]
+        i = i + 1
+    }
+    return out
+}

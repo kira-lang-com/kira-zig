@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const type_impl = @import("lower_from_hir_types.zig");
 
@@ -85,7 +86,7 @@ fn resolvedTypeFromStorageText(text: []const u8) ?model.ResolvedType {
     return .{ .kind = .named, .name = text };
 }
 
-pub fn lowerIfStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.IfStatement) !bool {
+pub fn lowerIfStatement(lowerer: anytype, instructions: *InstructionBuf, node: model.hir.IfStatement) !bool {
     const condition_reg = try lowerer.lowerExpr(instructions, node.condition);
     const then_label = lowerer.freshLabel();
     const else_label = lowerer.freshLabel();
@@ -120,7 +121,7 @@ pub fn lowerIfStatement(lowerer: anytype, instructions: *std.array_list.Managed(
     return false;
 }
 
-pub fn lowerSwitchStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.SwitchStatement) !bool {
+pub fn lowerSwitchStatement(lowerer: anytype, instructions: *InstructionBuf, node: model.hir.SwitchStatement) !bool {
     const subject_reg = try lowerer.lowerExpr(instructions, node.subject);
     const subject_ty = try type_impl.lowerExecutableCompareOperandType(lowerer.program, model.hir.exprType(node.subject.*), .equal);
 
@@ -172,7 +173,7 @@ pub fn lowerSwitchStatement(lowerer: anytype, instructions: *std.array_list.Mana
     return node.default_body != null and all_cases_terminated and default_terminated;
 }
 
-pub fn lowerMatchStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.MatchStatement) !bool {
+pub fn lowerMatchStatement(lowerer: anytype, instructions: *InstructionBuf, node: model.hir.MatchStatement) !bool {
     const subject_reg = try lowerer.lowerExpr(instructions, node.subject);
     var need_end_label = false;
     const end_label = lowerer.freshLabel();
@@ -212,7 +213,7 @@ pub fn lowerMatchStatement(lowerer: anytype, instructions: *std.array_list.Manag
 
 fn lowerMatchPattern(
     lowerer: anytype,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     value_reg: u32,
     pattern: model.MatchPattern,
     fail_label: u32,
@@ -257,7 +258,7 @@ fn lowerMatchPattern(
     }
 }
 
-pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.ForStatement) !bool {
+pub fn lowerForStatement(lowerer: anytype, instructions: *InstructionBuf, node: model.hir.ForStatement) !bool {
     if (node.range_end) |range_end| {
         return lowerRangeForStatement(lowerer, instructions, node, range_end);
     }
@@ -356,7 +357,7 @@ pub fn lowerForStatement(lowerer: anytype, instructions: *std.array_list.Managed
 /// VM and LLVM.
 fn lowerRangeForStatement(
     lowerer: anytype,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     node: model.hir.ForStatement,
     range_end: *model.Expr,
 ) !bool {
@@ -408,7 +409,7 @@ fn lowerRangeForStatement(
     return true;
 }
 
-pub fn lowerWhileStatement(lowerer: anytype, instructions: *std.array_list.Managed(ir.Instruction), node: model.hir.WhileStatement) !bool {
+pub fn lowerWhileStatement(lowerer: anytype, instructions: *InstructionBuf, node: model.hir.WhileStatement) !bool {
     const loop_label = lowerer.freshLabel();
     const body_label = lowerer.freshLabel();
     const end_label = lowerer.freshLabel();

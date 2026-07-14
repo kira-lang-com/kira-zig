@@ -1,0 +1,5 @@
+@Main
+function main() {
+    print("kik-fail-construct2")
+    return
+}

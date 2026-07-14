@@ -1,0 +1,64 @@
+// WcdTests.kira — migrated from tests/pass/run/widget_children_dispatch.
+// PREFIX: wcd / Wcd (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_children_dispatch
+// ---------------------------------------------------------------------------
+// A heterogeneous `[some Widget]` array dispatches the computed `node`
+// accessor per element inside a for-in loop. Original printed each
+// `node.label` (stdout "one\nspacer\ntwo") — reduced here to a "|"-joined
+// String.
+
+construct WcdNode {
+    @Required let label: String
+}
+
+WcdNode WcdTextNode {
+    let text: String = ""
+
+    let label: String {
+        text
+    }
+}
+
+WcdNode WcdSpacerNode {
+    let label: String {
+        "spacer"
+    }
+}
+
+construct WcdWidget {
+    @Required let body: WcdWidget
+    let node: WcdNode { body.node }
+}
+
+WcdWidget WcdText {
+    let text: String = ""
+
+    let node: WcdNode {
+        WcdTextNode(text: text)
+    }
+}
+
+WcdWidget WcdSpacer {
+    let node: WcdNode {
+        WcdSpacerNode()
+    }
+}
+
+Test WcdChildrenDispatchLabels {
+    test {
+        let children: [some WcdWidget] = [WcdText(text: "one"), WcdSpacer(), WcdText(text: "two")]
+        var out = ""
+        for child in children {
+            let node: some WcdNode = child.node
+            if out != "" {
+                out = out + "|"
+            }
+            out = out + node.label
+        }
+        return out
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("one|spacer|two"); return e }
+}

@@ -7,6 +7,7 @@ const place_algebra = @import("mid_ir_place.zig");
 const state_mod = @import("mid_ir_state.zig");
 const consume = @import("mid_ir_consume.zig");
 const copyable = @import("mid_ir_copyable.zig");
+const derive_copy = @import("mid_ir_derive_copy.zig");
 
 // Place/value algebra and dataflow-state types live in sibling modules; alias them
 // here so the checker body can reference them unqualified.
@@ -39,6 +40,13 @@ pub fn checkProgram(
 ) !?mid.CheckedProgram {
     var type_class = copyable.TypeClass.init(allocator);
     defer type_class.deinit();
+
+    // Enforce the opt-in `@Derive(Copy)` copyability assertion before per-function checking.
+    // It is a per-type contract (a type either qualifies for `Copy` or it does not), so it is
+    // verified once over the program rather than per function.
+    const derive_copy_failed = try derive_copy.checkDeriveCopy(program, &type_class, out_diagnostics, allocator);
+    if (derive_copy_failed) return null;
+
     for (program.functions) |function_decl| {
         if (function_decl.is_extern) continue;
         var checker = Checker.init(allocator, program, function_decl, out_diagnostics, &type_class);
@@ -90,10 +98,17 @@ pub const Checker = struct {
     pub const ensureNoConflictingAccess = consume.ensureNoConflictingAccess;
     pub const ensureAccessesCompatible = consume.ensureAccessesCompatible;
 
-    // Rust-style `Copy` classification lives in `mid_ir_copyable.zig`; re-expose it
-    // so call sites read as `self.isCopyableType(...)`.
-    pub const isCopyableType = copyable.isCopyableType;
-    pub const containsConstructAny = copyable.containsConstructAny;
+    // Rust-style `Copy` classification lives in `mid_ir_copyable.zig`; wrap it so call
+    // sites read as `self.isCopyableType(...)`. The classifier only needs the program and
+    // the shared memo, so a lightweight `Classifier` view is built per call.
+    pub fn isCopyableType(self: *const Checker, ty: model.ResolvedType) bool {
+        var classifier = copyable.Classifier{ .program = self.program, .type_class = self.type_class };
+        return copyable.isCopyableType(&classifier, ty);
+    }
+    pub fn containsConstructAny(self: *const Checker, ty: model.ResolvedType) bool {
+        var classifier = copyable.Classifier{ .program = self.program, .type_class = self.type_class };
+        return copyable.containsConstructAny(&classifier, ty);
+    }
 
     allocator: std.mem.Allocator,
     program: mid.Program,

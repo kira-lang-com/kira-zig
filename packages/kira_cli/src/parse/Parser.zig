@@ -9,7 +9,6 @@ const Parsed = @import("../command/ParsedCommand.zig");
 const ParsedCommand = Parsed.ParsedCommand;
 const Duration = @import("../command/Duration.zig");
 const values = @import("ValueParsing.zig");
-const zig_cli_adapter = @import("ZigCliAdapter.zig");
 
 pub const ParseFailure = struct {
     diagnostic: diagnostics.Diagnostic,
@@ -22,7 +21,6 @@ pub const ParseResult = union(enum) {
 };
 
 pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !ParseResult {
-    _ = zig_cli_adapter.dependencyAvailable();
     if (args.len < 2) return .{ .command = .{ .help = .{} } };
 
     const raw_command = args[1];
@@ -53,6 +51,7 @@ fn parseCommandByKind(allocator: std.mem.Allocator, kind: Kind, args: []const []
         .build => .{ .build = try parseProjectCommand(allocator, args) },
         .ffi => .{ .ffi = try parseFfiCommand(allocator, args) },
         .run => .{ .run = try parseRun(allocator, args) },
+        .debug => .{ .debug = try parseDebug(allocator, args) },
         .live => .{ .live = try parseLive(allocator, args) },
         .export_cmd => .{ .export_cmd = try parseExport(allocator, args) },
         .new => .{ .new = try parseNew(allocator, args) },
@@ -62,6 +61,7 @@ fn parseCommandByKind(allocator: std.mem.Allocator, kind: Kind, args: []const []
         .remove => .{ .remove = try parseRemove(allocator, args) },
         .update => .{ .update = try parseOptionalInput(allocator, args, .update) },
         .package => .{ .package = try parsePackage(allocator, args) },
+        .migrate_manifest => .{ .migrate_manifest = try parseMigrateManifest(allocator, args) },
         .shader => .{ .shader = try parseShader(allocator, args) },
         .tokens => .{ .tokens = try parseOptionalInput(allocator, args, .tokens) },
         .ast => .{ .ast = try parseOptionalInput(allocator, args, .ast) },
@@ -177,7 +177,6 @@ fn parseFfiCommand(allocator: std.mem.Allocator, args: []const []const u8) !Pars
     if (!std.mem.eql(u8, args[0], "autobind")) return failInvalid("ffi", args[0], "the autobind subcommand");
 
     var parsed = Parsed.FfiOptions{};
-    var input_path: ?[]const u8 = null;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -202,12 +201,13 @@ fn parseFfiCommand(allocator: std.mem.Allocator, args: []const []const u8) !Pars
             parsed.timings = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--quiet")) {
+            parsed.quiet = true;
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported flag");
-        if (input_path != null) return failInvalid("target", arg, "a single target path");
-        input_path = arg;
+        return failInvalid("ffi autobind", arg, "no target; run the command from the project directory");
     }
-
-    parsed.input_path = input_path orelse ".";
     return parsed;
 }
 
@@ -264,6 +264,40 @@ fn parseRun(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.RunO
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported run flag");
+        if (input_path != null) return failInvalid("target", arg, "a single target path");
+        input_path = arg;
+    }
+    parsed.input_path = input_path orelse ".";
+    return parsed;
+}
+
+fn parseDebug(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.DebugOptions {
+    _ = allocator;
+    var parsed = Parsed.DebugOptions{};
+    var input_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--backend")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--backend", "vm, llvm, or hybrid");
+            parsed.backend = values.parseBackend(args[index]) orelse {
+                last_value_for_error = args[index];
+                return error.InvalidBackend;
+            };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--dap")) {
+            parsed.dap = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--port")) {
+            index += 1;
+            if (index >= args.len) return failMissing("--port", "a TCP port");
+            parsed.port = std.fmt.parseInt(u16, args[index], 10) catch return failInvalid("--port", args[index], "a TCP port from 1 to 65535");
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return failInvalid(arg, "", "a supported debug flag");
         if (input_path != null) return failInvalid("target", arg, "a single target path");
         input_path = arg;
     }
@@ -538,6 +572,12 @@ fn parseRemove(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.S
     _ = allocator;
     if (args.len != 1) return failInvalid("remove", "", "one package name");
     return .{ .package_name = args[0] };
+}
+
+fn parseMigrateManifest(allocator: std.mem.Allocator, args: []const []const u8) !Parsed.MigrateManifestOptions {
+    _ = allocator;
+    if (args.len != 1) return failInvalid("migrate-manifest", "", "one path to a package directory or kira.toml");
+    return .{ .input_path = args[0] };
 }
 
 fn parseOptionalInput(allocator: std.mem.Allocator, args: []const []const u8, kind: Kind) !Parsed.UpdateOptions {

@@ -692,11 +692,11 @@ test "parses project manifest assets" {
         \\[package]
         \\name = "TriangleApp"
         \\version = "0.1.0"
-        \\assets = ["generated/Shaders", "fonts"]
+        \\assets = [".kira-build/shaders", "fonts"]
     );
 
     try std.testing.expectEqual(@as(usize, 2), manifest.assets.len);
-    try std.testing.expectEqualStrings("generated/Shaders", manifest.assets[0]);
+    try std.testing.expectEqualStrings(".kira-build/shaders", manifest.assets[0]);
     try std.testing.expectEqualStrings("fonts", manifest.assets[1]);
 }
 
@@ -709,13 +709,13 @@ test "parses multiline assets array" {
         \\name = "TriangleApp"
         \\version = "0.1.0"
         \\assets = [
-        \\  "generated/Shaders",
+        \\  ".kira-build/shaders",
         \\  "fonts",
         \\]
     );
 
     try std.testing.expectEqual(@as(usize, 2), manifest.assets.len);
-    try std.testing.expectEqualStrings("generated/Shaders", manifest.assets[0]);
+    try std.testing.expectEqualStrings(".kira-build/shaders", manifest.assets[0]);
     try std.testing.expectEqualStrings("fonts", manifest.assets[1]);
 }
 
@@ -728,7 +728,7 @@ test "assets round trip through the writer" {
         \\[package]
         \\name = "TriangleApp"
         \\version = "0.1.0"
-        \\assets = ["generated/Shaders"]
+        \\assets = [".kira-build/shaders"]
     );
 
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -737,7 +737,7 @@ test "assets round trip through the writer" {
 
     const reparsed = try parseProjectManifest(allocator, output.written());
     try std.testing.expectEqual(@as(usize, 1), reparsed.assets.len);
-    try std.testing.expectEqualStrings("generated/Shaders", reparsed.assets[0]);
+    try std.testing.expectEqualStrings(".kira-build/shaders", reparsed.assets[0]);
 }
 
 test "parses multiline root package array" {

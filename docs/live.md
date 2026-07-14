@@ -23,8 +23,8 @@ kira live <runner> <target?>
 The supervisor polls every file-system input of the bundle build, for the main
 target and each dependency package: all files under `app/` (Kira sources,
 `.ksl` shaders, assets), all native-library sources under `NativeLibs/`, and
-each package's `kira.toml`. Editor/OS noise (dotfiles, `*~`, `*.swp`, `*.tmp`)
-and build outputs (`generated/`, `exports/`, `zig-out/`, dot-directories like
+each package's manifest (`package.kira` or legacy `kira.toml`). Editor/OS noise (dotfiles, `*~`, `*.swp`, `*.tmp`)
+and build outputs (`.kira-build/`, `exports/`, `zig-out/`, dot-directories like
 `.kira-build/`) are ignored so rebuilds cannot re-trigger themselves. Any real
 change rebuilds the bundles and enters the reload flow below — the tier is
 chosen by what actually changed.

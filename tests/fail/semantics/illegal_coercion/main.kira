@@ -1,6 +1,0 @@
-@Main
-function entry() {
-    let value: String = 12;
-    print(value);
-    return;
-}

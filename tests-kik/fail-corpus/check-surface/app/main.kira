@@ -1,0 +1,7 @@
+import Foundation
+
+@Main
+function main() {
+    print("kik-check-surface")
+    return
+}

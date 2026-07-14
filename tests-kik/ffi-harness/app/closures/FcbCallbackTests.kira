@@ -43,7 +43,7 @@ Test FcbIdentity {
         let cb: (Int) -> Int = { x in return x }
         return fcbInvoke(move cb, 42)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test FcbConstant {
@@ -51,7 +51,7 @@ Test FcbConstant {
         let cb: (Int) -> Int = { x in return 77 }
         return fcbInvoke(move cb, 0)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 Test FcbDouble {
@@ -59,7 +59,7 @@ Test FcbDouble {
         let cb: (Int) -> Int = { x in return x * 2 }
         return fcbInvoke(move cb, 6)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test FcbAddFive {
@@ -67,7 +67,7 @@ Test FcbAddFive {
         let cb: (Int) -> Int = { x in return x + 5 }
         return fcbInvoke(move cb, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test FcbNegate {
@@ -75,7 +75,7 @@ Test FcbNegate {
         let cb: (Int) -> Int = { x in return 0 - x }
         return fcbInvoke(move cb, 9)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 9); return e }
 }
 
 Test FcbSquare {
@@ -83,7 +83,7 @@ Test FcbSquare {
         let cb: (Int) -> Int = { x in return x * x }
         return fcbInvoke(move cb, 7)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(49); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(49); return e }
 }
 
 Test FcbLinear {
@@ -91,7 +91,7 @@ Test FcbLinear {
         let cb: (Int) -> Int = { x in return x * 3 + 6 }
         return fcbInvoke(move cb, 4)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 Test FcbSubFromConstant {
@@ -99,7 +99,7 @@ Test FcbSubFromConstant {
         let cb: (Int) -> Int = { x in return 10 - x }
         return fcbInvoke(move cb, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // ── Group B: fcbInvoke — closure capturing scalar lets ────────────────────────
@@ -111,7 +111,7 @@ Test FcbCaptureAdd {
         let cb: (Int) -> Int = { x in return x + bonus }
         return fcbInvoke(move cb, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 // ── Group C: fcbInvoke — closure calls @Native inside (crash sandwich) ────────
@@ -123,7 +123,7 @@ Test FcbSandwichAddScaled {
         let cb: (Int) -> Int = { x in return fsbAddScaled(x, 1, 3) }
         return fcbInvoke(move cb, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 Test FcbSandwichStructWidth {
@@ -134,7 +134,7 @@ Test FcbSandwichStructWidth {
         }
         return fcbInvoke(move cb, 0)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(320); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(320); return e }
 }
 
 Test FcbSandwichStructHeight {
@@ -145,7 +145,7 @@ Test FcbSandwichStructHeight {
         }
         return fcbInvoke(move cb, 0)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(240); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(240); return e }
 }
 
 Test FcbSandwichStructSum {
@@ -156,7 +156,7 @@ Test FcbSandwichStructSum {
         }
         return fcbInvoke(move cb, 40)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(600); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(600); return e }
 }
 
 Test FcbSandwichNested {
@@ -166,7 +166,7 @@ Test FcbSandwichNested {
         }
         return fcbInvoke(move cb, 2)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ── Group D: @Runtime loop body — bridge churn for leaks/UAF ─────────────────
@@ -184,7 +184,7 @@ Test FcbLoopAddOne100 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test FcbLoopAddOne500 {
@@ -198,7 +198,7 @@ Test FcbLoopAddOne500 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(500); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(500); return e }
 }
 
 Test FcbLoopDouble5 {
@@ -212,7 +212,7 @@ Test FcbLoopDouble5 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(32); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(32); return e }
 }
 
 Test FcbLoopDouble8 {
@@ -226,7 +226,7 @@ Test FcbLoopDouble8 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(256); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(256); return e }
 }
 
 Test FcbLoopSandwichDouble5 {
@@ -240,7 +240,7 @@ Test FcbLoopSandwichDouble5 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(96); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(96); return e }
 }
 
 Test FcbLoopSandwichStruct3 {
@@ -257,7 +257,7 @@ Test FcbLoopSandwichStruct3 {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(720); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(720); return e }
 }
 
 // ── Group E: fcbInvokeTwo — two distinct owned closures, each called once ─────
@@ -268,7 +268,7 @@ Test FcbTwoArithmetic {
         let f2: (Int) -> Int = { x in return x * 2 }
         return fcbInvokeTwo(move f1, move f2, 9, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test FcbTwoSandwiches {
@@ -277,7 +277,7 @@ Test FcbTwoSandwiches {
         let f2: (Int) -> Int = { x in return fsbAddScaled(x, 0, 3) }
         return fcbInvokeTwo(move f1, move f2, 3, 2)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test FcbTwoMixed {
@@ -289,7 +289,7 @@ Test FcbTwoMixed {
         }
         return fcbInvokeTwo(move f1, move f2, 9, 0)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(330); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(330); return e }
 }
 
 Test FcbTwoNegAndPos {
@@ -298,7 +298,7 @@ Test FcbTwoNegAndPos {
         let f2: (Int) -> Int = { x in return 0 - x * 2 }
         return fcbInvokeTwo(move f1, move f2, 5, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // ── Group F: fcbInvokeThree — three distinct owned closures, each called once ─
@@ -310,7 +310,7 @@ Test FcbThreeIdentities {
         let f3: (Int) -> Int = { x in return x }
         return fcbInvokeThree(move f1, move f2, move f3, 1, 2, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test FcbThreeDoubles {
@@ -320,7 +320,7 @@ Test FcbThreeDoubles {
         let f3: (Int) -> Int = { x in return x * 2 }
         return fcbInvokeThree(move f1, move f2, move f3, 1, 2, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test FcbThreeMixedArith {
@@ -330,7 +330,7 @@ Test FcbThreeMixedArith {
         let f3: (Int) -> Int = { x in return x * x }
         return fcbInvokeThree(move f1, move f2, move f3, 4, 3, 2)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test FcbThreeSandwiches {
@@ -340,7 +340,7 @@ Test FcbThreeSandwiches {
         let f3: (Int) -> Int = { x in return fsbAddScaled(x, 0, 2) }
         return fcbInvokeThree(move f1, move f2, move f3, 1, 2, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ── Group G: sequential multi-call in test body ───────────────────────────────
@@ -353,7 +353,7 @@ Test FcbSequentialTwoRaw {
         let r2 = fcbInvoke(move cb2, 5)
         return r1 + r2
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(16); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(16); return e }
 }
 
 Test FcbSequentialSandwich {
@@ -367,7 +367,7 @@ Test FcbSequentialSandwich {
         let r2 = fcbInvoke(move cb2, 0)
         return r1 + r2
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(326); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(326); return e }
 }
 
 Test FcbSequentialThree {
@@ -380,7 +380,7 @@ Test FcbSequentialThree {
         let r3 = fcbInvoke(move cb3, 3)
         return r1 + r2 + r3
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(66); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(66); return e }
 }
 
 // ── Group H: additional no-capture patterns ───────────────────────────────────
@@ -391,7 +391,7 @@ Test FcbPolynomial {
         let cb: (Int) -> Int = { x in return x * x + x + 1 }
         return fcbInvoke(move cb, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 Test FcbHighFreqLoop {
@@ -406,7 +406,7 @@ Test FcbHighFreqLoop {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1000); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1000); return e }
 }
 
 Test FcbLoopGeometric {
@@ -421,7 +421,7 @@ Test FcbLoopGeometric {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1023); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1023); return e }
 }
 
 Test FcbSandwichDoubleWidth {
@@ -433,7 +433,7 @@ Test FcbSandwichDoubleWidth {
         }
         return fcbInvoke(move cb, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(645); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(645); return e }
 }
 
 Test FcbSandwichProductArgs {
@@ -442,7 +442,7 @@ Test FcbSandwichProductArgs {
         let cb: (Int) -> Int = { x in return fsbAddScaled(x, x, 1) }
         return fcbInvoke(move cb, 7)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(14); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(14); return e }
 }
 
 Test FcbTwoSquareAndTriple {
@@ -452,7 +452,7 @@ Test FcbTwoSquareAndTriple {
         let f2: (Int) -> Int = { x in return x * 3 }
         return fcbInvokeTwo(move f1, move f2, 4, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(31); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(31); return e }
 }
 
 Test FcbThreeDistinctArith {
@@ -463,7 +463,7 @@ Test FcbThreeDistinctArith {
         let f3: (Int) -> Int = { x in return x * x }
         return fcbInvokeThree(move f1, move f2, move f3, 1, 4, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(48); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(48); return e }
 }
 
 Test FcbSeqFourSteps {
@@ -479,7 +479,7 @@ Test FcbSeqFourSteps {
         let r4 = fcbInvoke(move cb4, 5)
         return r1 + r2 + r3 + r4
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(41); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(41); return e }
 }
 
 Test FcbSandwichComposed {
@@ -488,7 +488,7 @@ Test FcbSandwichComposed {
         let cb: (Int) -> Int = { x in return fsbAddScaled(x * 2, 0, 3) }
         return fcbInvoke(move cb, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 // ── Group K: captured-scalar closures across the bridge (FF1 regression) ─────
@@ -499,7 +499,7 @@ Test FcbCaptureMul {
         let cb: (Int) -> Int = { x in return x * m }
         return fcbInvoke(move cb, 4)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test FcbCaptureTwoScalars {
@@ -509,7 +509,7 @@ Test FcbCaptureTwoScalars {
         let cb: (Int) -> Int = { x in return x + p + q }
         return fcbInvoke(move cb, 1)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(16); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(16); return e }
 }
 
 Test FcbCaptureNeg {
@@ -518,7 +518,7 @@ Test FcbCaptureNeg {
         let cb: (Int) -> Int = { x in return (0 - x) + n }
         return fcbInvoke(move cb, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test FcbCaptureOffset {
@@ -527,7 +527,7 @@ Test FcbCaptureOffset {
         let cb: (Int) -> Int = { x in return x + off }
         return fcbInvoke(move cb, 1)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(101); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(101); return e }
 }
 
 Test FcbCaptureComposite {
@@ -537,7 +537,7 @@ Test FcbCaptureComposite {
         let cb: (Int) -> Int = { x in return x * a + b }
         return fcbInvoke(move cb, 5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 Test FcbCaptureSandwich {
@@ -547,7 +547,7 @@ Test FcbCaptureSandwich {
         return fcbInvoke(move cb, 5)
     }
     // fsbAddScaled(5, 0, 2) = (5 + 0) * 2 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test FcbCaptureStructSandwich {
@@ -560,7 +560,7 @@ Test FcbCaptureStructSandwich {
         return fcbInvoke(move cb, 0)
     }
     // 320 + 0 + 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(325); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(325); return e }
 }
 
 Test FcbLoopCapture50 {
@@ -576,7 +576,7 @@ Test FcbLoopCapture50 {
         // sum of (i + 1) for i in 0..49 = sum(1..50) = 1275
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1275); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1275); return e }
 }
 
 Test FcbLoopCaptureSandwich5 {
@@ -592,7 +592,7 @@ Test FcbLoopCaptureSandwich5 {
         // fsbAddScaled(i, 0, 2) = 2i; sum(2i, i in 0..4) = 20
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test FcbTwoDistinctCaptures {
@@ -604,7 +604,7 @@ Test FcbTwoDistinctCaptures {
         // (1 + 10) + (2 + 100) = 113 ; FF1 would give (1+10)+(2+10) = 23
         return fcbInvokeTwo(move cbA, move cbB, 1, 2)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(113); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(113); return e }
 }
 
 Test FcbThreeCaptures {
@@ -618,7 +618,7 @@ Test FcbThreeCaptures {
         // (1+10) + (2+100) + (3+1000) = 1116
         return fcbInvokeThree(move cbA, move cbB, move cbC, 1, 2, 3)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1116); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1116); return e }
 }
 
 Test FcbSequentialCaptures {
@@ -632,5 +632,5 @@ Test FcbSequentialCaptures {
         // 11 + 101 = 112 ; FF1 (stale-pointer reuse) would give 11 + 11 = 22
         return r1 + r2
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(112); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(112); return e }
 }

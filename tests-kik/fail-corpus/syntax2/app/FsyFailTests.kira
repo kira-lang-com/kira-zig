@@ -1,0 +1,87 @@
+// FsyFailTests.kira — Construct 2.0 syntax negative cases.
+// PREFIX: Fsy. Each FailTest inlines a self-contained source and asserts the
+// expected compile diagnostic code.
+//
+// Manifest (FailTest name -> expected Compile code):
+//   FsyContentBlockNoAnchor          KSEM160   content block with no anchoring type
+//   FsyClosureStillClosure           KSEM084   `{ x in ... }` stays a closure (not a content block)
+//   FsyNamedArrayIntoFieldAliases    KSEM118   named array into an array field still aliases
+
+// --- content-block without a type anchor ------------------------------------
+// A content block whose element type cannot be inferred from an annotation or a
+// receiving field/argument is rejected. Item types are NOT an anchor source.
+FailTest FsyContentBlockNoAnchor {
+    backends { hybrid vm llvm }
+    source {
+construct Widget {
+    @Required let body: Widget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Widget FsyText(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+@Main
+function main() {
+    let header = {
+        FsyText("a")
+    }
+    print(header.count)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM160")); return e }
+}
+
+// --- closure-vs-content-block disambiguation --------------------------------
+// `{ x in x }` matches closure-param grammar, so it stays a closure literal —
+// NOT a content block. A standalone closure with no expected function type is
+// rejected with KSEM084, proving the closure interpretation still wins.
+FailTest FsyClosureStillClosure {
+    backends { hybrid vm llvm }
+    source {
+@Main
+function main() {
+    let c = { x in x }
+    print(0)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM084")); return e }
+}
+
+// --- named array into an array field still aliases (KSEM118) -----------------
+// The `=` binder does not change ownership: initializing an array-typed field
+// from an existing named array value (not a fresh literal) still aliases the
+// backing store and is rejected, exactly as with the `:` binder.
+FailTest FsyNamedArrayIntoFieldAliases {
+    backends { hybrid vm llvm }
+    source {
+struct Item {
+    let v: Int
+}
+
+struct Bag {
+    var items: [Item]
+}
+
+function rebuild(bag: Bag) -> Bag {
+    return Bag { items = bag.items }
+}
+
+@Main
+function main() {
+    let bag = Bag { items = [Item { v = 1 }] }
+    let next = rebuild(bag)
+    print(next.items.count)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM118")); return e }
+}

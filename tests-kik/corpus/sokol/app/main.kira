@@ -1,0 +1,19 @@
+// KikCorpusSokol — migrated sokol_gfx dummy-backend corpus cases from
+// tests/pass/run/ffi_sokol_{native,hybrid}: autobound bindings against the
+// real third_party/sokol/sokol_gfx.h compiled with SOKOL_DUMMY_BACKEND
+// (headless — no window/GPU). libsokol_gfx is built in-package from the
+// NativeLibs [build] recipe and the binding module `sokol_gfx` is autobound
+// into app/sokol_gfx.kira (checked in — the test path resolves imports
+// before bindings regenerate). The cases are @Native FFI, so run through
+// the hybrid driver:
+//
+//   kira test --backend hybrid tests-kik/corpus/sokol
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    print("kik-corpus-sokol")
+    return
+}

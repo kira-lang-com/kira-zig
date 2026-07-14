@@ -1,0 +1,5 @@
+Package hybrid_struct_array_move_leak {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+}

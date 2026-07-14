@@ -4,7 +4,7 @@ const package_support = @import("package_support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     const parsed = try parseArgs(args);
-    var location = try package_support.loadManifestLocation(allocator, null);
+    var location = try package_support.loadManifestLocation(allocator, null, stderr);
 
     const dep_spec: manifest.DependencySpec = if (parsed.git_url) |git_url| .{
         .name = try allocator.dupe(u8, parsed.package_name),

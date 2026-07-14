@@ -28,6 +28,7 @@
 //!     directly, never taken as a value).
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 
 /// Rewrite every eligible yielding async body in `program` and flag its
 /// spawn sites (`suspendable` + `frame_slots`).
@@ -155,6 +156,10 @@ fn registerWrite(inst: ir.Instruction) ?u32 {
         .c_string_to_string => |v| v.dst,
         .array_len => |v| v.dst,
         .string_len => |v| v.dst,
+        .string_from_scalar => |v| v.dst,
+        .string_char_at => |v| v.dst,
+        .string_substring => |v| v.dst,
+        .string_index_of => |v| v.dst,
         .array_get => |v| v.dst,
         .enum_tag => |v| v.dst,
         .enum_payload => |v| v.dst,
@@ -204,6 +209,20 @@ fn forEachRead(inst: ir.Instruction, ctx: anytype) void {
         .c_string_to_string => |v| ctx.on(v.src),
         .array_len => |v| ctx.on(v.array),
         .string_len => |v| ctx.on(v.string),
+        .string_from_scalar => |v| ctx.on(v.src),
+        .string_char_at => |v| {
+            ctx.on(v.string);
+            ctx.on(v.index);
+        },
+        .string_substring => |v| {
+            ctx.on(v.string);
+            ctx.on(v.start);
+            ctx.on(v.end);
+        },
+        .string_index_of => |v| {
+            ctx.on(v.string);
+            ctx.on(v.needle);
+        },
         .array_get => |v| {
             ctx.on(v.array);
             ctx.on(v.index);
@@ -272,7 +291,10 @@ fn transformFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !
     const int_ty: ir.ValueType = .{ .kind = .integer, .name = "I64" };
     const result_ty: ir.ValueType = if (function_decl.return_type.kind == .void) int_ty else function_decl.return_type;
 
-    var out = std.array_list.Managed(ir.Instruction).init(allocator);
+    var out = InstructionBuf.init(allocator, &InstructionBuf.null_span);
+    // Async lowering drops per-instruction spans for now; free the unused
+    // locations buffer (toOwnedInstructions consumes only the instruction list).
+    defer out.deinit();
 
     // Prologue: load the frame pointer (the only real local) and dispatch on
     // the resume state. Entry-block defs dominate every resume label.
@@ -403,7 +425,7 @@ fn transformFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !
     }
 
     var transformed = function_decl;
-    transformed.instructions = try out.toOwnedSlice();
+    transformed.instructions = try out.toOwnedInstructions();
     transformed.register_count = next_register;
     transformed.param_ownership = &.{.owned};
     transformed.param_types = try allocator.dupe(ir.ValueType, &.{.{ .kind = .raw_ptr, .name = "TaskFrame" }});

@@ -11,7 +11,7 @@
 //   kira_clone_<T>(i64) -> i64      — struct_alloc a fresh shell, bitcopy, then
 //                                     clone_contents.
 // Each field edge is paired: a kind is deep-destroyed iff its store establishes
-// ownership (KIRA_MEMORY_MODEL.md §7). Native/hybrid gating flows in through the
+// ownership (.codex/KIRA_MEMORY_MODEL.md §7). Native/hybrid gating flows in through the
 // Destructors flags (release_strings/deep_closures).
 const std = @import("std");
 const ir = @import("kira_ir");

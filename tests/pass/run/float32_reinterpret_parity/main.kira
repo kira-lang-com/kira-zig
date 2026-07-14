@@ -1,8 +1,0 @@
-@Main
-function main() {
-    // floatToBits on a 32-bit F32 must match the VM (which stores floats as f64):
-    // the LLVM backend widens the F32 to f64 before the bit reinterpret. Regression
-    // for an invalid float->i64 bitcast on the native path.
-    print(floatToBits(F32(1.0)))
-    return
-}

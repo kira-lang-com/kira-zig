@@ -3,6 +3,16 @@ const instruction = @import("instruction.zig");
 const ownership_mode = @import("ownership_mode.zig");
 const runtime_abi = @import("kira_runtime_abi");
 
+/// Compact per-instruction source location carried in the optional debug
+/// section. `file_id` indexes `Module.source_files`; `start`/`end` are byte
+/// offsets into that source. A `{0,0}` span means "no known location" (matches
+/// the low-IR convention for synthesized instructions).
+pub const SourceLoc = struct {
+    file_id: u32,
+    start: u32,
+    end: u32,
+};
+
 pub const Module = struct {
     constructs: []Construct = &.{},
     construct_implementations: []ConstructImplementation = &.{},
@@ -10,6 +20,10 @@ pub const Module = struct {
     enums: []EnumTypeDecl = &.{},
     functions: []Function,
     entry_function_id: ?u32,
+    /// Dedup source-file string table referenced by `SourceLoc.file_id`. Empty
+    /// for modules built without debug info; readers default it to empty when
+    /// the trailing debug section is absent or the container predates KBCD.
+    source_files: []const []const u8 = &.{},
 
     pub fn writeToFile(self: Module, path: []const u8) !void {
         const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = true });
@@ -63,6 +77,14 @@ pub const Function = struct {
     local_count: u32,
     local_types: []instruction.TypeRef = &.{},
     instructions: []instruction.Instruction,
+    /// Optional compact PC->source line table, index-aligned with
+    /// `instructions` when populated. Empty for functions built without debug
+    /// info (or synthesized functions with no source spans).
+    debug_locations: []const SourceLoc = &.{},
+    /// Optional positional local-slot names (index i names local slot i). May
+    /// be empty when names are not reachable at the layer that produced the
+    /// module.
+    local_names: []const []const u8 = &.{},
 };
 
 pub const Construct = struct {

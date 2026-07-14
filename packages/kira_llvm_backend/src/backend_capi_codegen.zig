@@ -23,6 +23,8 @@ const print = @import("backend_capi_print.zig");
 const value_repr = @import("backend_capi_value_repr.zig");
 const drop = @import("backend_capi_drop.zig");
 const aggregate = @import("backend_capi_aggregate.zig");
+const enum_codegen = @import("backend_capi_enum.zig");
+const copy = @import("backend_capi_copy.zig");
 const native_state = @import("backend_capi_native_state.zig");
 const closures = @import("backend_capi_closures.zig");
 const ffi = @import("backend_capi_ffi.zig");
@@ -30,6 +32,8 @@ const calls = @import("backend_capi_calls.zig");
 const returns = @import("backend_capi_returns.zig");
 const tasks = @import("backend_capi_tasks.zig");
 const wasm_native_cb = @import("backend_capi_wasm_native_cb.zig");
+const debug_dwarf = @import("debug_dwarf.zig");
+const debug_glue = @import("backend_capi_debug.zig");
 
 pub const FunctionCodegen = struct {
     allocator: std.mem.Allocator,
@@ -46,6 +50,16 @@ pub const FunctionCodegen = struct {
     functions: *const std.AutoHashMapUnmanaged(u32, llvm.c.LLVMValueRef),
     function_decl: ir.Function,
     function_value: llvm.c.LLVMValueRef,
+
+    // DWARF context (best-effort; `dwarf` null when disabled/unsupported). The
+    // per-function subprogram scope/file/path plus `di_current_line` (last real
+    // line, carried forward so every instruction gets a valid in-scope `!dbg`)
+    // are managed by backend_capi_debug.zig. See there for the verifier rationale.
+    dwarf: ?*debug_dwarf.DwarfBuilder = null,
+    di_scope: ?llvm.c.LLVMMetadataRef = null,
+    di_file: ?llvm.c.LLVMMetadataRef = null,
+    di_source_path: ?[]const u8 = null,
+    di_current_line: c_uint = 0,
 
     registers: []llvm.c.LLVMValueRef = &.{},
     register_types: []ir.ValueType = &.{},
@@ -95,17 +109,13 @@ pub const FunctionCodegen = struct {
     // ownership transfers and the source local's cleanup slot is escaped) rather than
     // as a value copy.
     reg_move_local: []?u32 = &.{},
+    // register -> fresh alloc_struct shell. A copy_indirect consumes this rvalue
+    // by moving its contents into the destination local; cloning would be both
+    // wasteful and illegal for structs containing move-only construct_any.
+    reg_fresh_struct: []bool = &.{},
 
-    // Build a scratch `alloca` in the function entry block regardless of where the
-    // builder is currently positioned. LLVM only reclaims (and SROA/mem2reg only
-    // promotes) allocas placed in the entry block; an alloca emitted at an arbitrary
-    // insertion point inside a loop body becomes a *dynamic* stack allocation whose
-    // space is not released until the function returns — so a per-iteration scratch
-    // slot (array op / runtime-call / FFI bridge buffer) grows the stack every
-    // iteration and overflows it. These scratch slots are written and consumed
-    // immediately, so hoisting the alloca to the entry block (allocated once, reused
-    // each iteration) is both correct and the standard LLVM idiom. The store/use of
-    // the slot stays at the caller's current position.
+    // Hoist reusable scratch allocas into the entry block; loop-local allocas grow
+    // the stack on every iteration and are not reclaimed until function return.
     pub fn entryAlloca(self: *FunctionCodegen, ty: llvm.c.LLVMTypeRef, name: [:0]const u8) llvm.c.LLVMValueRef {
         const api = self.api;
         const restore = api.LLVMGetInsertBlock(self.builder);
@@ -126,6 +136,10 @@ pub const FunctionCodegen = struct {
         const entry_block = api.LLVMAppendBasicBlockInContext(self.types.context, self.function_value, "entry");
         api.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
+        // Attach the DWARF subprogram + seed the `!dbg` location before any IR is
+        // built (drop.setup, allocas, param stores) so the builder always has one.
+        debug_glue.attach(self);
+
         // Register types must be inferred BEFORE drop.setup: the pre-scan needs them
         // to recognize string concatenation (`.add` with a string dst) as an owned
         // string-buffer producer.
@@ -140,6 +154,9 @@ pub const FunctionCodegen = struct {
         self.reg_move_local = try self.allocator.alloc(?u32, self.function_decl.register_count);
         defer self.allocator.free(self.reg_move_local);
         @memset(self.reg_move_local, null);
+        self.reg_fresh_struct = try self.allocator.alloc(bool, self.function_decl.register_count);
+        defer self.allocator.free(self.reg_fresh_struct);
+        @memset(self.reg_fresh_struct, false);
         self.locals = try self.allocator.alloc(llvm.c.LLVMValueRef, self.function_decl.local_count);
         defer self.allocator.free(self.locals);
         @memset(self.locals, null);
@@ -173,6 +190,9 @@ pub const FunctionCodegen = struct {
         // Seed owned-aggregate param cleanup slots now that the params are bound.
         drop.seedOwnedParams(self);
 
+        // dbg.declare for each entry-block local alloca (named by frame slot).
+        debug_glue.declareLocals(self, entry_block);
+
         // Pre-create a basic block for every label target.
         for (self.function_decl.instructions) |instruction| {
             if (instruction == .label) {
@@ -182,9 +202,11 @@ pub const FunctionCodegen = struct {
         }
 
         self.terminated = false;
-        for (self.function_decl.instructions) |instruction| {
+        for (self.function_decl.instructions, 0..) |instruction, index| {
             // Skip dead instructions that follow a terminator until the next label.
             if (self.terminated and instruction != .label) continue;
+            // Tag every value this instruction lowers to with its `!dbg` location.
+            debug_glue.applyLocation(self, index);
             try self.lowerInstruction(instruction);
         }
 
@@ -390,6 +412,7 @@ pub const FunctionCodegen = struct {
                 const ptr = api.LLVMBuildCall2(b, self.runtime_decls.struct_alloc.ty, self.runtime_decls.struct_alloc.fn_value, &args, args.len, "struct.alloc");
                 _ = api.LLVMBuildStore(b, api.LLVMConstNull(struct_ty), ptr);
                 self.registers[v.dst] = api.LLVMBuildPtrToInt(b, ptr, self.types.i64, "struct.ptr");
+                if (v.dst < self.reg_fresh_struct.len) self.reg_fresh_struct[v.dst] = true;
                 drop.onAlloc(self, v.dst);
             },
             .field_ptr => |v| {
@@ -429,42 +452,7 @@ pub const FunctionCodegen = struct {
                 }
             },
             .store_indirect => |v| try aggregate.lowerStoreIndirect(self, v),
-            .copy_indirect => |v| {
-                const struct_ty = self.struct_types.get(v.type_name) orelse return error.UnsupportedExecutableFeature;
-                const src = api.LLVMBuildIntToPtr(b, self.registers[v.src_ptr], self.types.ptr_ty, "copy.src");
-                const dst = api.LLVMBuildIntToPtr(b, self.registers[v.dst_ptr], self.types.ptr_ty, "copy.dst");
-                const move_local = if (v.src_ptr < self.reg_move_local.len) self.reg_move_local[v.src_ptr] else null;
-                // Release any prior occupant of the destination's stack shell before the
-                // shallow store discards its array pointers (loop-body reassignment).
-                if (self.drop_enabled) drop.releasePriorCopyDest(self, v.dst_ptr, v.type_name);
-                const value = api.LLVMBuildLoad2(b, struct_ty, src, "copy.val");
-                _ = api.LLVMBuildStore(b, value, dst);
-                // Deep-clone the destination's contents so it owns storage independent of
-                // the source — affine value semantics (`var b = a` is a copy, not an
-                // alias). This is the DEFAULT for pure-Kira value structs, matching the
-                // text backend's copy_indirect; FFI/native structs keep the shallow,
-                // device-validated copy. With drop on we additionally clone any tracked
-                // type and reclaim the clone by tracking dst as struct_contents (aliasing
-                // would double-free, since src and dst are separate drop slots).
-                const clone_default = blk: {
-                    const td = utils.findTypeDecl(self.request.program.programPtr(), v.type_name) orelse break :blk false;
-                    break :blk td.ffi == null;
-                };
-                if (move_local == null and (self.drop_enabled or clone_default)) {
-                    if (self.dtors.map.get(v.type_name)) |h| {
-                        var cc = [_]llvm.c.LLVMValueRef{dst};
-                        _ = api.LLVMBuildCall2(b, h.clone_contents.ty, h.clone_contents.fn_value, &cc, cc.len, "");
-                    }
-                }
-                if (self.drop_enabled) drop.onCopyDest(self, v.dst_ptr, dst, v.type_name);
-                if (move_local) |local| {
-                    // The contents moved into dst; a heap-shell source (owned
-                    // param / call result) leaves an empty shell nothing owns —
-                    // free it (shell only) before the slot is nulled.
-                    drop.onMoveLocalHeapShell(self, local, src);
-                    drop.onMoveLocal(self, local);
-                }
-            },
+            .copy_indirect => |v| try copy.lower(self, v),
             .c_string_to_string => |v| {
                 self.registers[v.dst] = try calls.lowerCStringToString(self, v);
                 // The coercion malloc'd an independent copy; dst's string_buf slot
@@ -494,8 +482,19 @@ pub const FunctionCodegen = struct {
             .const_closure => |v| try closures.lowerConstClosure(self, v),
             .call_value => |v| try closures.lowerCallValue(self, v),
             .string_len => |v| self.registers[v.dst] = api.LLVMBuildExtractValue(b, self.registers[v.string], 1, "string.len"),
+            .string_from_scalar => |v| {
+                self.registers[v.dst] = try calls.lowerStringFromScalar(self, v);
+                // Fresh malloc'd buffer; the dst's string_buf slot owns it.
+                drop.trackStringRegister(self, v.dst);
+            },
+            .string_char_at => |v| self.registers[v.dst] = calls.lowerStringCharAt(self, v),
+            .string_substring => |v| {
+                self.registers[v.dst] = calls.lowerStringSubstring(self, v);
+                drop.trackStringRegister(self, v.dst);
+            },
+            .string_index_of => |v| self.registers[v.dst] = calls.lowerStringIndexOf(self, v),
             .alloc_enum => |v| {
-                try aggregate.lowerAllocEnum(self, v);
+                try enum_codegen.lowerAllocEnum(self, v);
                 drop.onAlloc(self, v.dst);
             },
             .enum_tag => |v| {
@@ -505,7 +504,7 @@ pub const FunctionCodegen = struct {
                 self.registers[v.dst] = api.LLVMBuildLoad2(b, self.types.i64, slot, "enum.tag");
             },
             .enum_payload => |v| {
-                self.registers[v.dst] = try aggregate.lowerEnumPayload(self, v);
+                self.registers[v.dst] = try enum_codegen.lowerEnumPayload(self, v);
                 // A string payload read clones — the enum's heap box keeps its
                 // buffer, the reader owns an independent copy.
                 if (v.payload_ty.kind == .string) self.cloneStringOnRead(v.dst);

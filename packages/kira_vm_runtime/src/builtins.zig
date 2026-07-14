@@ -2,7 +2,9 @@ const std = @import("std");
 const bytecode = @import("kira_bytecode");
 const runtime_abi = @import("kira_runtime_abi");
 
-pub fn printValue(writer: anytype, module: *const bytecode.Module, value: runtime_abi.Value, ty: bytecode.TypeRef) !void {
+// noinline: float formatting instantiates multi-KiB `std.fmt` buffers; keep
+// them out of the interpreter dispatch frame (S6 recursion-depth budget).
+pub noinline fn printValue(writer: anytype, module: *const bytecode.Module, value: runtime_abi.Value, ty: bytecode.TypeRef) !void {
     runtime_abi.emitExecutionTrace("VM", "PRINT", "type={s}", .{traceTypeName(ty)});
     try formatValue(writer, module, value, ty);
     try writer.writeByte('\n');

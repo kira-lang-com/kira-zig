@@ -1,0 +1,122 @@
+// WcmTests.kira — migrated from tests/pass/run/widget_chained_modifier_dispatch.
+// PREFIX: wcm / Wcm (all top-level names use this prefix, except the shared
+// `Widget` family from WidgetFamily.kira: the compiler requires the literal
+// family name `Widget` for `body {}` builder-block declarations).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_chained_modifier_dispatch
+// ---------------------------------------------------------------------------
+// Regression: a virtual call (`call_virtual`) must transfer ownership of moved
+// receiver/argument registers into the call, exactly like a direct `.call`. A
+// chain of three or more extend modifiers (`.wcmPad(..).wcmBg(..).wcmCorner(..)`)
+// lowers the first call as a direct `.call` and the rest as `call_virtual`;
+// each modifier captures `self` into its `{ self }` content channel. Before
+// the fix the frame epilogue double-freed the moved receiver and the next
+// dispatch failed with "virtual method could not be resolved". Original
+// printed the rendered tree (stdout "corner\nbg\nfill\npad\nhi") — reduced
+// here to a "|"-joined String.
+
+Widget WcmLeaf(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget WcmPad(length: Float) {
+    @Content let content: Widget
+
+    function render() -> [String] {
+        var out: [String] = ["pad"]
+        let inner = content.render()
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+Widget WcmBg(fill: Widget) {
+    @Content let content: Widget
+
+    function render() -> [String] {
+        var out: [String] = ["bg"]
+        let painted = fill.render()
+        var paintedIndex = 0
+        while paintedIndex < painted.count {
+            out.append(painted[paintedIndex])
+            paintedIndex = paintedIndex + 1
+        }
+        let inner = content.render()
+        var innerIndex = 0
+        while innerIndex < inner.count {
+            out.append(inner[innerIndex])
+            innerIndex = innerIndex + 1
+        }
+        return out
+    }
+}
+
+Widget WcmCorner(radius: Float) {
+    @Content let content: Widget
+
+    function render() -> [String] {
+        let ignored = radius + 0.0
+        var out: [String] = ["corner"]
+        let inner = content.render()
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+extend Widget {
+    function wcmPad(length: Float) -> Widget {
+        return WcmPad(length: length) {
+            self
+        }
+    }
+
+    function wcmBg(fill: Widget) -> Widget {
+        return WcmBg(fill: fill) {
+            self
+        }
+    }
+
+    function wcmCorner(radius: Float) -> Widget {
+        return WcmCorner(radius: radius) {
+            self
+        }
+    }
+}
+
+Widget WcmScreen() {
+    body {
+        WcmLeaf(text = "hi")
+            .wcmPad(8.0)
+            .wcmBg(WcmLeaf(text = "fill"))
+            .wcmCorner(16.0)
+    }
+}
+
+Test WcmChainedModifierDispatch {
+    test {
+        let rendered = WcmScreen().render()
+        var out = ""
+        var index = 0
+        while index < rendered.count {
+            if index > 0 {
+                out = out + "|"
+            }
+            out = out + rendered[index]
+            index = index + 1
+        }
+        return out
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("corner|bg|fill|pad|hi"); return e }
+}

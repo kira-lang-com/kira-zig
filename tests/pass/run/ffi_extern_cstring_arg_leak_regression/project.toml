@@ -1,7 +1,0 @@
-[project]
-name = "ffi_extern_cstring_arg_leak_regression"
-version = "0.1.0"
-
-[defaults]
-execution_mode = "hybrid"
-build_target = "host"

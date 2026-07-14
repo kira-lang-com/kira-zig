@@ -199,6 +199,8 @@ pub const TypeHeader = struct {
     parent_views: []const ParentView = &.{},
     ffi: ?model.NamedTypeInfo = null,
     is_printable: bool = false,
+    // Propagated from the AST `@Derive(Copy)` marker into the HIR type declaration.
+    derive_copy: bool = false,
     span: source_pkg.Span,
 };
 
@@ -274,145 +276,14 @@ fn putBuiltinAnnotation(
     });
 }
 
-pub fn qualifiedNameText(allocator: std.mem.Allocator, name: syntax.ast.QualifiedName) ![]const u8 {
-    var builder = std.array_list.Managed(u8).init(allocator);
-    for (name.segments, 0..) |segment, index| {
-        if (index != 0) try builder.append('.');
-        try builder.appendSlice(segment.text);
-    }
-    return builder.toOwnedSlice();
-}
-
-pub fn qualifiedNameLeaf(allocator: std.mem.Allocator, name: syntax.ast.QualifiedName) ![]const u8 {
-    return allocator.dupe(u8, name.segments[name.segments.len - 1].text);
-}
-
-/// Maps a primitive numeric type name used as a cast call target — `Int(x)`,
-/// `Float(x)`, and every width-specific form (`U64(x)`, `I32(x)`, `F32(x)`, …) —
-/// to its resolved target type, or null when `name` is not a numeric cast.
-///
-/// Width is carried in `.name`; the runtime representation of every integer
-/// (and of every float) is identical, so a same-kind cast lowers to the
-/// existing int↔float `convert` instruction as an identity copy — no new
-/// opcode or backend support is required. This is the single source of truth
-/// for which names are numeric casts, so the full set stays consistent with the
-/// width types `typeFromSyntax` accepts below.
-pub fn numericCastTargetType(name: []const u8) ?model.ResolvedType {
-    if (std.mem.eql(u8, name, "Int")) return .{ .kind = .integer };
-    if (std.mem.eql(u8, name, "Float")) return .{ .kind = .float };
-    const integer_names = [_][]const u8{ "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64" };
-    for (integer_names) |integer_name| {
-        if (std.mem.eql(u8, name, integer_name)) return .{ .kind = .integer, .name = name };
-    }
-    if (std.mem.eql(u8, name, "F32") or std.mem.eql(u8, name, "F64")) {
-        return .{ .kind = .float, .name = name };
-    }
-    return null;
-}
-
-pub fn typeFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
-    return switch (ty) {
-        .array => |info| .{ .kind = .array, .name = try typeTextFromSyntax(ctx, info.element_type.*) },
-        .function => |info| .{ .kind = .callback, .name = try functionTypeTextFromSyntax(ctx, info) },
-        .ownership => |info| try typeFromSyntax(ctx, info.target.*),
-        .any => |info| switch (info.target.*) {
-            .named => |name| .{
-                .kind = .construct_any,
-                .name = try typeTextFromSyntax(ctx, .{ .any = info }),
-                .construct_constraint = .{ .construct_name = try ctx.allocator.dupe(u8, name.segments[name.segments.len - 1].text) },
-            },
-            else => .{ .kind = .construct_any, .name = try typeTextFromSyntax(ctx, .{ .any = info }) },
-        },
-        .named => |name| blk: {
-            const leaf = name.segments[name.segments.len - 1].text;
-            if (try resolveTypeAlias(ctx, leaf)) |alias_type| break :blk alias_type;
-            if (std.mem.eql(u8, leaf, "Int")) break :blk .{ .kind = .integer };
-            if (std.mem.eql(u8, leaf, "Float")) break :blk .{ .kind = .float };
-            if (std.mem.eql(u8, leaf, "Bool")) break :blk .{ .kind = .boolean };
-            if (std.mem.eql(u8, leaf, "String")) break :blk .{ .kind = .string };
-            if (std.mem.eql(u8, leaf, "Void")) break :blk .{ .kind = .void };
-            if (std.mem.eql(u8, leaf, "I8") or
-                std.mem.eql(u8, leaf, "U8") or
-                std.mem.eql(u8, leaf, "I16") or
-                std.mem.eql(u8, leaf, "U16") or
-                std.mem.eql(u8, leaf, "I32") or
-                std.mem.eql(u8, leaf, "U32") or
-                std.mem.eql(u8, leaf, "I64") or
-                std.mem.eql(u8, leaf, "U64"))
-            {
-                break :blk .{ .kind = .integer, .name = leaf };
-            }
-            if (std.mem.eql(u8, leaf, "F32") or std.mem.eql(u8, leaf, "F64")) {
-                break :blk .{ .kind = .float, .name = leaf };
-            }
-            if (std.mem.eql(u8, leaf, "CBool")) break :blk .{ .kind = .boolean, .name = leaf };
-            if (std.mem.eql(u8, leaf, "CString")) break :blk .{ .kind = .c_string, .name = leaf };
-            if (std.mem.eql(u8, leaf, "RawPtr")) break :blk .{ .kind = .raw_ptr, .name = leaf };
-            if (ctx.enum_headers) |headers| {
-                if (headers.get(leaf)) |enum_decl| {
-                    if (enum_decl.type_params.len == 0) break :blk .{ .kind = .enum_instance, .name = leaf };
-                }
-            }
-            if (ctx.construct_headers) |headers| {
-                if (headers.get(leaf) != null) {
-                    break :blk .{
-                        .kind = .construct_any,
-                        .name = try std.fmt.allocPrint(ctx.allocator, "any {s}", .{leaf}),
-                        .construct_constraint = .{ .construct_name = try ctx.allocator.dupe(u8, leaf) },
-                    };
-                }
-            }
-            break :blk .{ .kind = .named, .name = leaf };
-        },
-        .generic => |info| .{
-            .kind = .enum_instance,
-            .name = try genericTypeTextFromSyntax(ctx, info),
-        },
-    };
-}
-
-pub fn typeTextFromSyntax(ctx: *const Context, ty: syntax.ast.TypeExpr) anyerror![]const u8 {
-    return switch (ty) {
-        .array => |info| std.fmt.allocPrint(ctx.allocator, "[{s}]", .{try typeTextFromSyntax(ctx, info.element_type.*)}),
-        .function => |info| functionTypeTextFromSyntax(ctx, info),
-        .ownership => |info| switch (info.mode) {
-            .borrow_read => std.fmt.allocPrint(ctx.allocator, "borrow {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-            .borrow_mut => std.fmt.allocPrint(ctx.allocator, "borrow mut {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-            .move => std.fmt.allocPrint(ctx.allocator, "move {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-            .copy => std.fmt.allocPrint(ctx.allocator, "copy {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-            .owned => typeTextFromSyntax(ctx, info.target.*),
-        },
-        // Keyword-independent by design: `some Target` and `any Target` are the same existential
-        // `construct_any` today, and this text feeds resolved type NAMES used for coercion/dispatch
-        // matching. The surface keyword is surfaced only in display paths (ast_dump, diagnostics).
-        .any => |info| std.fmt.allocPrint(ctx.allocator, "any {s}", .{try typeTextFromSyntax(ctx, info.target.*)}),
-        .named => |name| blk: {
-            const leaf = name.segments[name.segments.len - 1].text;
-            if (try resolveTypeAlias(ctx, leaf)) |alias_type| break :blk typeTextFromResolved(ctx.allocator, alias_type);
-            break :blk ctx.allocator.dupe(u8, leaf);
-        },
-        .generic => |info| genericTypeTextFromSyntax(ctx, info),
-    };
-}
-
-pub fn typeTextFromResolved(allocator: std.mem.Allocator, ty: model.ResolvedType) ![]const u8 {
-    return switch (ty.kind) {
-        .void => allocator.dupe(u8, "Void"),
-        .integer => allocator.dupe(u8, ty.name orelse "Int"),
-        .float => allocator.dupe(u8, ty.name orelse "Float"),
-        .boolean => allocator.dupe(u8, ty.name orelse "Bool"),
-        .string => allocator.dupe(u8, "String"),
-        .c_string => allocator.dupe(u8, ty.name orelse "CString"),
-        .raw_ptr => allocator.dupe(u8, ty.name orelse "RawPtr"),
-        .construct_any => if (ty.name) |name| allocator.dupe(u8, name) else std.fmt.allocPrint(allocator, "any {s}", .{(ty.construct_constraint orelse return allocator.dupe(u8, "any Unknown")).construct_name}),
-        .native_state => std.fmt.allocPrint(allocator, "NativeState<{s}>", .{ty.name orelse "Unknown"}),
-        .native_state_view => std.fmt.allocPrint(allocator, "NativeStateView<{s}>", .{ty.name orelse "Unknown"}),
-        .callback, .ffi_struct, .named, .enum_instance => allocator.dupe(u8, ty.name orelse "Unknown"),
-        .array => std.fmt.allocPrint(allocator, "[{s}]", .{ty.name orelse ""}),
-        .unknown => allocator.dupe(u8, "Unknown"),
-    };
-}
-
+const type_text = @import("lower_shared_type_text.zig");
+pub const qualifiedNameText = type_text.qualifiedNameText;
+pub const qualifiedNameLeaf = type_text.qualifiedNameLeaf;
+pub const numericCastTargetType = type_text.numericCastTargetType;
+pub const typeFromSyntax = type_text.typeFromSyntax;
+pub const typeTextFromSyntax = type_text.typeTextFromSyntax;
+pub const typeTextFromResolved = type_text.typeTextFromResolved;
+pub const resolvedTypeFromText = type_text.resolvedTypeFromText;
 pub fn canAssign(target: model.ResolvedType, actual: model.ResolvedType) bool {
     if (target.eql(actual)) return true;
     if (target.kind == .array or actual.kind == .array) return false;
@@ -592,7 +463,7 @@ fn isResolvedNonConstructSymbol(ctx: *const Context, name: []const u8) bool {
     return false;
 }
 
-fn resolveTypeAlias(ctx: *const Context, name: []const u8) !?model.ResolvedType {
+pub fn resolveTypeAlias(ctx: *const Context, name: []const u8) !?model.ResolvedType {
     const alias_headers = ctx.type_alias_headers orelse {
         if (ctx.imported_globals.findAlias(name)) |alias_decl| return alias_decl.target;
         return null;
@@ -651,395 +522,26 @@ fn emitAnyRequiresConstruct(ctx: *Context, span: source_pkg.Span, label: []const
     });
 }
 
-pub fn namedTypeInfo(ctx: *const Context, ty: model.ResolvedType) ?model.NamedTypeInfo {
-    if (ty.kind != .named or ty.name == null) return null;
-    if (ctx.type_headers) |headers| {
-        if (headers.get(ty.name.?)) |header| return header.ffi;
-    }
-    if (ctx.imported_globals.findType(ty.name.?)) |type_decl| return type_decl.ffi;
-    return null;
-}
-
-pub fn namedTypeHeader(ctx: *const Context, ty: model.ResolvedType) ?TypeHeader {
-    if (ty.kind != .named or ty.name == null) return null;
-    if (ctx.type_headers) |headers| {
-        if (headers.get(ty.name.?)) |header| return header;
-    }
-    return null;
-}
-
-pub fn namedTypeKind(ctx: *const Context, ty: model.ResolvedType) ?model.TypeKind {
-    if (ty.kind != .named or ty.name == null) return null;
-    if (ctx.type_headers) |headers| {
-        if (headers.get(ty.name.?)) |header| return header.kind;
-    }
-    if (ctx.imported_globals.findType(ty.name.?)) |type_decl| return type_decl.kind;
-    return null;
-}
-
-pub fn isClassType(ctx: *const Context, ty: model.ResolvedType) bool {
-    return namedTypeKind(ctx, ty) == .class;
-}
-
-pub fn hasKnownSubclass(ctx: *const Context, type_name: []const u8) bool {
-    if (ctx.type_headers) |headers| {
-        var iterator = headers.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.value_ptr.kind != .class) continue;
-            if (std.mem.eql(u8, entry.key_ptr.*, type_name)) continue;
-            for (entry.value_ptr.parent_views) |parent_view| {
-                if (std.mem.eql(u8, parent_view.type_name, type_name)) return true;
-            }
-        }
-    }
-    for (ctx.imported_globals.types) |type_decl| {
-        if (type_decl.kind != .class) continue;
-        if (std.mem.eql(u8, type_decl.name, type_name)) continue;
-        if (classNameMatchesOrInherits(ctx, type_decl.name, type_name)) return true;
-    }
-    return false;
-}
-
-pub fn isAssignableClassValue(ctx: *const Context, target: model.ResolvedType, actual: model.ResolvedType) bool {
-    if (target.kind != .named or actual.kind != .named) return false;
-    if (!isClassType(ctx, target) or !isClassType(ctx, actual)) return false;
-    const target_name = target.name orelse return false;
-    const actual_name = actual.name orelse return false;
-    return classNameMatchesOrInherits(ctx, actual_name, target_name);
-}
-
-// The least common `any Family` of two construct-backed declaration values (or of an `any Family`
-// and a declaration), so a heterogeneous widget array literal (`[Text(...), Spacer()]`) unifies to
-// `[any Widget]`. Returns null when the values share no construct family.
-pub fn commonConstructAnyType(
-    allocator: std.mem.Allocator,
-    ctx: *const Context,
-    lhs: model.ResolvedType,
-    rhs: model.ResolvedType,
-) ?model.ResolvedType {
-    const lhs_families = familyList(allocator, ctx, lhs) orelse return null;
-    const rhs_families = familyList(allocator, ctx, rhs) orelse return null;
-    for (lhs_families) |candidate| {
-        for (rhs_families) |other| {
-            if (std.mem.eql(u8, candidate, other)) return constructAnyType(allocator, candidate) catch null;
-        }
-    }
-    return null;
-}
-
-// The construct families a value satisfies: a concrete declaration's recorded families, or the
-// single constraint of an `any Family` value.
-fn familyList(allocator: std.mem.Allocator, ctx: *const Context, ty: model.ResolvedType) ?[]const []const u8 {
-    if (ty.kind == .construct_any) {
-        const constraint = (ty.construct_constraint orelse return null).construct_name;
-        const single = allocator.alloc([]const u8, 1) catch return null;
-        single[0] = constraint;
-        return single;
-    }
-    const name = ty.name orelse return null;
-    const families = ctx.form_families orelse return null;
-    return families.get(name);
-}
-
-fn constructAnyType(allocator: std.mem.Allocator, family: []const u8) !model.ResolvedType {
-    return .{
-        .kind = .construct_any,
-        .name = try std.fmt.allocPrint(allocator, "any {s}", .{family}),
-        .construct_constraint = .{ .construct_name = family },
-    };
-}
-
-pub fn commonClassType(
-    ctx: *const Context,
-    lhs: model.ResolvedType,
-    rhs: model.ResolvedType,
-) ?model.ResolvedType {
-    if (lhs.kind != .named or rhs.kind != .named) return null;
-    if (!isClassType(ctx, lhs) or !isClassType(ctx, rhs)) return null;
-    const lhs_name = lhs.name orelse return null;
-    const rhs_name = rhs.name orelse return null;
-
-    if (classNameMatchesOrInherits(ctx, rhs_name, lhs_name)) return lhs;
-    if (classNameMatchesOrInherits(ctx, lhs_name, rhs_name)) return rhs;
-
-    if (ctx.type_headers) |headers| {
-        if (headers.get(lhs_name)) |header| {
-            for (header.parent_views) |parent_view| {
-                if (classNameMatchesOrInherits(ctx, rhs_name, parent_view.type_name)) {
-                    return .{ .kind = .named, .name = parent_view.type_name };
-                }
-            }
-        }
-    }
-
-    var current = ctx.imported_globals.findType(lhs_name);
-    while (current) |type_decl| {
-        for (type_decl.parents) |parent_name| {
-            if (classNameMatchesOrInherits(ctx, rhs_name, parent_name)) {
-                return .{ .kind = .named, .name = parent_name };
-            }
-        }
-        if (type_decl.parents.len == 0) break;
-        current = ctx.imported_globals.findType(type_decl.parents[0]);
-    }
-
-    return null;
-}
-
-
-fn classNameMatchesOrInherits(ctx: *const Context, actual_name: []const u8, target_name: []const u8) bool {
-    if (std.mem.eql(u8, actual_name, target_name)) return true;
-    if (ctx.type_headers) |headers| {
-        if (headers.get(actual_name)) |header| {
-            if (header.kind != .class) return false;
-            for (header.parent_views) |parent_view| {
-                if (std.mem.eql(u8, parent_view.type_name, target_name)) return true;
-            }
-            return false;
-        }
-    }
-    if (ctx.imported_globals.findType(actual_name)) |type_decl| {
-        if (type_decl.kind != .class) return false;
-        for (type_decl.parents) |parent_name| {
-            if (std.mem.eql(u8, parent_name, target_name)) return true;
-            if (classNameMatchesOrInherits(ctx, parent_name, target_name)) return true;
-        }
-    }
-    return false;
-}
-
-pub fn namedTypeFields(ctx: *const Context, ty: model.ResolvedType) []const model.Field {
-    if (namedTypeHeader(ctx, ty)) |header| return header.fields;
-    return &.{};
-}
-
-pub fn isPointerLike(ctx: *const Context, ty: model.ResolvedType) bool {
-    return switch (ty.kind) {
-        .raw_ptr, .c_string => true,
-        .named => if (namedTypeInfo(ctx, ty)) |info|
-            switch (info) {
-                .pointer, .callback => true,
-                .alias => |value| isPointerLike(ctx, value.target),
-                .ffi_struct, .array => false,
-            }
-        else
-            false,
-        else => false,
-    };
-}
-
-pub fn callbackInfo(ctx: *const Context, ty: model.ResolvedType) ?model.CallbackInfo {
-    if (ty.kind != .named) return null;
-    return if (namedTypeInfo(ctx, ty)) |info|
-        switch (info) {
-            .callback => |value| value,
-            .alias => |value| callbackInfo(ctx, value.target),
-            else => null,
-        }
-    else
-        null;
-}
-
-pub fn resolvedTypeFromText(text: []const u8) !model.ResolvedType {
-    if (std.mem.startsWith(u8, text, "any ")) {
-        return .{
-            .kind = .construct_any,
-            .name = text,
-            .construct_constraint = .{ .construct_name = text[4..] },
-        };
-    }
-    if (text.len >= 4 and text[0] == '(' and std.mem.indexOf(u8, text, "->") != null) {
-        return .{ .kind = .callback, .name = text };
-    }
-    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
-        return .{ .kind = .array, .name = text[1 .. text.len - 1] };
-    }
-    if (std.mem.eql(u8, text, "Void")) return .{ .kind = .void };
-    if (std.mem.eql(u8, text, "Int")) return .{ .kind = .integer };
-    if (std.mem.eql(u8, text, "Float")) return .{ .kind = .float };
-    if (std.mem.eql(u8, text, "Bool")) return .{ .kind = .boolean };
-    if (std.mem.eql(u8, text, "String")) return .{ .kind = .string };
-    if (std.mem.eql(u8, text, "CString")) return .{ .kind = .c_string, .name = text };
-    if (std.mem.eql(u8, text, "RawPtr")) return .{ .kind = .raw_ptr, .name = text };
-    if (std.mem.eql(u8, text, "I8") or
-        std.mem.eql(u8, text, "U8") or
-        std.mem.eql(u8, text, "I16") or
-        std.mem.eql(u8, text, "U16") or
-        std.mem.eql(u8, text, "I32") or
-        std.mem.eql(u8, text, "U32") or
-        std.mem.eql(u8, text, "I64") or
-        std.mem.eql(u8, text, "U64"))
-    {
-        return .{ .kind = .integer, .name = text };
-    }
-    if (std.mem.eql(u8, text, "F32") or std.mem.eql(u8, text, "F64")) return .{ .kind = .float, .name = text };
-    if (std.mem.eql(u8, text, "CBool")) return .{ .kind = .boolean, .name = text };
-    return .{ .kind = .named, .name = text };
-}
-
-fn functionTypeTextFromSyntax(ctx: *const Context, info: syntax.ast.FunctionTypeExpr) anyerror![]const u8 {
-    var params = std.array_list.Managed(model.ResolvedType).init(ctx.allocator);
-    var param_ownership = std.array_list.Managed(model.OwnershipMode).init(ctx.allocator);
-    for (info.params) |param| {
-        try params.append(try typeFromSyntax(ctx, stripOwnershipType(param.*)));
-        try param_ownership.append(ownershipModeFromSyntax(param));
-    }
-    return function_types.signatureText(
-        ctx.allocator,
-        params.items,
-        param_ownership.items,
-        try typeFromSyntax(ctx, stripOwnershipType(info.result.*)),
-    );
-}
-
-fn genericTypeTextFromSyntax(ctx: *const Context, info: syntax.ast.GenericTypeExpr) ![]const u8 {
-    const base_name = info.base.segments[info.base.segments.len - 1].text;
-    var text = std.array_list.Managed(u8).init(ctx.allocator);
-    try text.appendSlice(base_name);
-    for (info.args) |arg| {
-        try text.appendSlice("__");
-        const arg_text = try typeTextFromSyntax(ctx, arg.*);
-        for (arg_text) |byte| {
-            if (std.ascii.isAlphanumeric(byte)) {
-                try text.append(byte);
-            } else {
-                try text.append('_');
-            }
-        }
-    }
-    return text.toOwnedSlice();
-}
-
-pub fn emitAmbiguousInference(
-    allocator: std.mem.Allocator,
-    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
-    span: source_pkg.Span,
-) !void {
-    try diagnostics.appendOwned(allocator, out_diagnostics, .{
-        .severity = .@"error",
-        .code = "KSEM029",
-        .title = "type inference is ambiguous",
-        .message = "Kira cannot infer a type here because no explicit type or value was provided.",
-        .labels = &.{
-            diagnostics.primaryLabel(span, "type is ambiguous here"),
-        },
-        .help = "Add an explicit type annotation.",
-    });
-}
-
-pub fn registerTopLevelName(
-    allocator: std.mem.Allocator,
-    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
-    map: *std.StringHashMapUnmanaged(source_pkg.Span),
-    name: []const u8,
-    span: source_pkg.Span,
-) !void {
-    if (map.get(name)) |previous_span| {
-        try diagnostics.appendOwned(allocator, out_diagnostics, .{
-            .severity = .@"error",
-            .code = "KSEM003",
-            .title = "duplicate top-level name",
-            .message = try std.fmt.allocPrint(allocator, "Kira found more than one top-level declaration named '{s}'.", .{name}),
-            .labels = &.{
-                diagnostics.primaryLabel(span, "duplicate declaration"),
-                diagnostics.secondaryLabel(previous_span, "first declaration was here"),
-            },
-            .help = "Rename one of the declarations so the symbol is unambiguous.",
-        });
-        return error.DiagnosticsEmitted;
-    }
-    try map.put(allocator, name, span);
-}
-
-pub fn containsAnnotationRule(rules: []const model.AnnotationRule, name: []const u8) bool {
-    for (rules) |rule| if (std.mem.eql(u8, rule.name, name)) return true;
-    return false;
-}
-
-pub fn containsString(values: [][]const u8, name: []const u8) bool {
-    for (values) |value| if (std.mem.eql(u8, value, name)) return true;
-    return false;
-}
-
-pub fn isImportedRoot(ctx: *const Context, name: []const u8, imports: []const model.Import) bool {
-    for (imports) |import_decl| {
-        if (!importVisibleToContext(ctx, import_decl)) continue;
-        if (import_decl.alias) |alias| {
-            if (std.mem.eql(u8, alias, name)) return true;
-        }
-        if (std.mem.eql(u8, import_decl.module_name, name)) return true;
-    }
-    return false;
-}
-
-pub fn importedQualifiedName(ctx: *const Context, imports: []const model.Import, name: []const u8) ?[]const u8 {
-    const root_end = std.mem.indexOfScalar(u8, name, '.') orelse return null;
-    const root = name[0..root_end];
-    const member = name[root_end + 1 ..];
-    for (imports) |import_decl| {
-        if (!importVisibleToContext(ctx, import_decl)) continue;
-        if (import_decl.alias) |alias| {
-            if (std.mem.eql(u8, alias, root)) {
-                return std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ import_decl.module_name, member }) catch null;
-            }
-        }
-        if (std.mem.eql(u8, import_decl.module_name, root)) {
-            return std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ import_decl.module_name, member }) catch null;
-        }
-    }
-    return null;
-}
-
-fn importVisibleToContext(ctx: *const Context, import_decl: model.Import) bool {
-    if (import_decl.source_path.len != 0) {
-        if (ctx.current_source_path == null) return false;
-        if (!std.mem.eql(u8, import_decl.source_path, ctx.current_source_path.?)) return false;
-    }
-    if (import_decl.package_name) |package_name| {
-        if (ctx.current_package == null) return false;
-        return std.mem.eql(u8, package_name, ctx.current_package.?);
-    }
-    return ctx.current_package == null;
-}
-
-pub fn resolveAnnotationHeader(ctx: *Context, name: syntax.ast.QualifiedName) !AnnotationHeader {
-    const full_name = try qualifiedNameText(ctx.allocator, name);
-    const leaf = name.segments[name.segments.len - 1].text;
-    if (ctx.annotation_headers) |headers| {
-        if (headers.get(full_name)) |header| return header;
-        if (headers.get(leaf)) |header| return header;
-    }
-    if (ctx.imported_globals.findAnnotation(full_name)) |annotation_decl| {
-        return .{
-            .decl = .{
-                .name = annotation_decl.name,
-                .parameters = @constCast(annotation_decl.parameters),
-                .module_path = annotation_decl.module_path,
-                .span = annotation_decl.span,
-            },
-        };
-    }
-    if (ctx.imported_globals.findAnnotation(leaf)) |annotation_decl| {
-        return .{
-            .decl = .{
-                .name = annotation_decl.name,
-                .parameters = @constCast(annotation_decl.parameters),
-                .module_path = annotation_decl.module_path,
-                .span = annotation_decl.span,
-            },
-        };
-    }
-
-    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-        .severity = .@"error",
-        .code = "KSEM063",
-        .title = "unknown annotation",
-        .message = try std.fmt.allocPrint(ctx.allocator, "unknown annotation @{s}", .{full_name}),
-        .labels = &.{diagnostics.primaryLabel(name.span, "annotation has not been declared")},
-        .help = "Declare the annotation with `annotation Name { }` or import the module that declares it.",
-    });
-    return error.DiagnosticsEmitted;
-}
+const type_relations = @import("lower_shared_type_relations.zig");
+pub const namedTypeInfo = type_relations.namedTypeInfo;
+pub const namedTypeHeader = type_relations.namedTypeHeader;
+pub const namedTypeKind = type_relations.namedTypeKind;
+pub const isClassType = type_relations.isClassType;
+pub const hasKnownSubclass = type_relations.hasKnownSubclass;
+pub const isAssignableClassValue = type_relations.isAssignableClassValue;
+pub const commonConstructAnyType = type_relations.commonConstructAnyType;
+pub const commonClassType = type_relations.commonClassType;
+pub const namedTypeFields = type_relations.namedTypeFields;
+pub const isPointerLike = type_relations.isPointerLike;
+pub const callbackInfo = type_relations.callbackInfo;
+const symbol_helpers = @import("lower_shared_symbols.zig");
+pub const emitAmbiguousInference = symbol_helpers.emitAmbiguousInference;
+pub const registerTopLevelName = symbol_helpers.registerTopLevelName;
+pub const containsAnnotationRule = symbol_helpers.containsAnnotationRule;
+pub const containsString = symbol_helpers.containsString;
+pub const isImportedRoot = symbol_helpers.isImportedRoot;
+pub const importedQualifiedName = symbol_helpers.importedQualifiedName;
+pub const resolveAnnotationHeader = symbol_helpers.resolveAnnotationHeader;
 
 const annotation_impl = @import("lower_shared_annotations.zig");
 pub const lowerAnnotation = annotation_impl.lowerAnnotation;

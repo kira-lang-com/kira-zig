@@ -4,7 +4,25 @@ Kira package management v1 is official-registry-first, lockfile-backed, and sour
 
 ## Manifest
 
-Use `kira.toml` for new projects. Legacy `project.toml` is still discovered for compatibility.
+Use `package.kira` for new projects — a manifest authored in Kira itself (see
+[package-manifest.md](package-manifest.md) for the full schema). Legacy
+`kira.toml` and `project.toml` are still discovered for compatibility, and
+`package.kira` takes precedence when both are present. Migrate an existing
+package with `kira migrate-manifest <project-dir|kira.toml>`.
+
+```kira
+Package DemoApp {
+    let version = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+    let dependencies = [
+        Dependency { name: "FrostUI", version: "0.1.0" },
+        Dependency { name: "LocalDemo", path: "../LocalDemo" }
+    ]
+}
+```
+
+The equivalent legacy `kira.toml` form is still supported:
 
 ```toml
 [package]
@@ -30,8 +48,8 @@ GameKit = { git = "https://github.com/Sunlight-Horizon/GameKit.git", rev = "a1b2
 - `kira add --git <url> --rev <commit> <Package>` adds a pinned git dependency
 - `kira remove <Package>` removes a dependency and refreshes the lockfile
 - `kira update` refreshes registry dependency versions in the manifest, then re-syncs
-- `kira new --lib <Name> <destination>` scaffolds a library package with `kira.toml`, `module_root`, and `app/<lowercased-name>.kira`
-- `kira package pack` writes a validated source-only `.tar` archive into `generated/`
+- `kira new --lib <Name> <destination>` scaffolds a library package with `package.kira`, `moduleRoot`, and `app/<lowercased-name>.kira`
+- `kira package pack` writes a validated source-only `.tar` archive into `.kira-build/package/`
 - `kira package inspect <archive-or-project-dir>` prints package metadata and contents
 
 ## Creating A Library
@@ -39,14 +57,14 @@ GameKit = { git = "https://github.com/Sunlight-Horizon/GameKit.git", rev = "a1b2
 Use the CLI:
 
 ```bash
-kira new --lib GraphicsKit generated/GraphicsKit
+kira new --lib GraphicsKit .codex/tmp/GraphicsKit
 ```
 
 That scaffold creates:
 
-- `kira.toml`
-- `kind = "library"`
-- `module_root = "GraphicsKit"`
+- `package.kira`
+- `kind = PackageKind.Library`
+- `moduleRoot = "GraphicsKit"`
 - `app/graphicskit.kira` as the root module file
 
 Imports from consumers then look like:

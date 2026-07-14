@@ -36,6 +36,73 @@ pub fn lowerCStringToString(fc: *FunctionCodegen, v: ir.CStringToString) !llvm.c
     return s;
 }
 
+// `String(x)` — call the matching runtime formatter, which writes a fresh
+// malloc'd {ptr,len} into the caller slot. The buffer is owned by the dst
+// register's string_buf cleanup slot (drop.trackStringRegister at the call site).
+pub fn lowerStringFromScalar(fc: *FunctionCodegen, v: ir.StringFromScalar) !llvm.c.LLVMValueRef {
+    const api = fc.api;
+    const b = fc.builder;
+    const slot = fc.entryAlloca(fc.types.string_ty, "strfrom.slot");
+    switch (v.source) {
+        .integer => {
+            var args = [_]llvm.c.LLVMValueRef{ fc.registers[v.src], slot };
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.string_from_i64.ty, fc.runtime_decls.string_from_i64.fn_value, &args, args.len, "");
+        },
+        .float => {
+            // Formatting always runs at f64 (matches the VM, which stores every
+            // float as f64); an f32-width register is widened first.
+            const f = value_repr.floatOperand(fc, fc.registers[v.src]);
+            var args = [_]llvm.c.LLVMValueRef{ f, slot };
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.string_from_f64.ty, fc.runtime_decls.string_from_f64.fn_value, &args, args.len, "");
+        },
+        .boolean => {
+            // Bool registers are i1; widen to the i64 call ABI.
+            var boolval = fc.registers[v.src];
+            if (api.LLVMTypeOf(boolval) != fc.types.i64) boolval = api.LLVMBuildZExt(b, boolval, fc.types.i64, "strfrom.bool");
+            var args = [_]llvm.c.LLVMValueRef{ boolval, slot };
+            _ = api.LLVMBuildCall2(b, fc.runtime_decls.string_from_bool.ty, fc.runtime_decls.string_from_bool.fn_value, &args, args.len, "");
+        },
+    }
+    return api.LLVMBuildLoad2(b, fc.types.string_ty, slot, "strfrom.val");
+}
+
+// `s.charAt(i)` -> Int code unit (byte). Out-of-range aborts in the runtime
+// helper, mirroring the VM's trap.
+pub fn lowerStringCharAt(fc: *FunctionCodegen, v: ir.StringCharAt) llvm.c.LLVMValueRef {
+    const api = fc.api;
+    const b = fc.builder;
+    const ptr = api.LLVMBuildExtractValue(b, fc.registers[v.string], 0, "charat.p");
+    const len = api.LLVMBuildExtractValue(b, fc.registers[v.string], 1, "charat.l");
+    var args = [_]llvm.c.LLVMValueRef{ ptr, len, fc.registers[v.index] };
+    return api.LLVMBuildCall2(b, fc.runtime_decls.string_char_at.ty, fc.runtime_decls.string_char_at.fn_value, &args, args.len, "charat.byte");
+}
+
+// `s.substring(start, end)` -> fresh owned String (half-open byte range). An
+// invalid range aborts in the runtime helper, mirroring the VM's trap.
+pub fn lowerStringSubstring(fc: *FunctionCodegen, v: ir.StringSubstring) llvm.c.LLVMValueRef {
+    const api = fc.api;
+    const b = fc.builder;
+    const ptr = api.LLVMBuildExtractValue(b, fc.registers[v.string], 0, "substr.p");
+    const len = api.LLVMBuildExtractValue(b, fc.registers[v.string], 1, "substr.l");
+    const slot = fc.entryAlloca(fc.types.string_ty, "substr.slot");
+    var args = [_]llvm.c.LLVMValueRef{ ptr, len, fc.registers[v.start], fc.registers[v.end], slot };
+    _ = api.LLVMBuildCall2(b, fc.runtime_decls.string_substring.ty, fc.runtime_decls.string_substring.fn_value, &args, args.len, "");
+    return api.LLVMBuildLoad2(b, fc.types.string_ty, slot, "substr.val");
+}
+
+// `s.indexOf(needle)` -> Int offset of the first match, or -1 when absent (0 for
+// an empty needle).
+pub fn lowerStringIndexOf(fc: *FunctionCodegen, v: ir.StringIndexOf) llvm.c.LLVMValueRef {
+    const api = fc.api;
+    const b = fc.builder;
+    const hptr = api.LLVMBuildExtractValue(b, fc.registers[v.string], 0, "iof.hp");
+    const hlen = api.LLVMBuildExtractValue(b, fc.registers[v.string], 1, "iof.hl");
+    const nptr = api.LLVMBuildExtractValue(b, fc.registers[v.needle], 0, "iof.np");
+    const nlen = api.LLVMBuildExtractValue(b, fc.registers[v.needle], 1, "iof.nl");
+    var args = [_]llvm.c.LLVMValueRef{ hptr, hlen, nptr, nlen };
+    return api.LLVMBuildCall2(b, fc.runtime_decls.string_index_of.ty, fc.runtime_decls.string_index_of.fn_value, &args, args.len, "iof.idx");
+}
+
 pub fn lowerCallVirtual(fc: *FunctionCodegen, v: ir.VirtualCall) !void {
     if (utils.findTypeDecl(fc.request.program.programPtr(), v.static_type_name)) |type_decl| {
         return lowerStaticVirtualCall(fc, v, type_decl);
@@ -117,7 +184,7 @@ fn lowerConstructFamilyVirtualCall(fc: *FunctionCodegen, v: ir.VirtualCall) !voi
         // stored, destroying the live result before the caller uses it (the
         // widget-dispatch use-after-free). A construct-family virtual-call
         // result is treated as single-owner: its .struct_ptr slot runs the
-        // runtime-typed destroy at scope exit (KIRA_MEMORY_MODEL.md §3). Enum
+        // runtime-typed destroy at scope exit (.codex/KIRA_MEMORY_MODEL.md §3). Enum
         // results are recorded by lowerCall (native) / lowerRuntimeCall
         // (hybrid) themselves — the same exactly-once rule, so no enum case
         // here.

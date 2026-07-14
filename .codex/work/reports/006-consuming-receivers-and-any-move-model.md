@@ -4,7 +4,7 @@
 
 This work completed the native move-only ownership model for type-erased
 (`some`/`any`) values — the "checker-enforced move-only Any" roadmap item in
-`KIRA_MEMORY_MODEL.md` §9. It destroyed every corpus-visible native memory
+`.codex/KIRA_MEMORY_MODEL.md` §9. It destroyed every corpus-visible native memory
 leak, then unblocked the `project-matter` editor build (previously rejected by
 the move-only-Any checker) by implementing consuming receivers plus the
 Any-move flows the editor exercises.
@@ -128,7 +128,7 @@ leaked). Scrolling a viewport rebuilds the whole tree just to change an offset.
 Candidate directions, in rough leverage order: a scroll-offset-only fast path
 (apply scroll as a transform/clip without rebuilding), arena-allocating the
 per-frame tree (bump alloc, free the whole frame in O(1) — the "arena trees"
-idea in `KIRA_MEMORY_MODEL.md` §9), or caching the rebuild when only the scroll
+idea in `.codex/KIRA_MEMORY_MODEL.md` §9), or caching the rebuild when only the scroll
 offset changed. Measure first with `KIRA_METAL_BENCH=1` (idle re-present) vs
 `KIRA_METAL_BENCH=1 KIRA_METAL_RESIZE_BENCH=1` (rebuild path) to confirm the
 rebuild is the bottleneck before committing to a rearchitecture.

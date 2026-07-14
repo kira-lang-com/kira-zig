@@ -9,6 +9,7 @@ pub const LlvmType = @import("types.zig").LlvmType;
 pub const LlvmTarget = @import("target.zig").LlvmTarget;
 pub const toolchainLayout = @import("kira_llvm_toolchain_layout");
 pub const unimplemented = @import("stubs.zig").unimplemented;
+pub const setProgressCallback = @import("progress.zig").setCallback;
 
 pub const cgu_cache = @import("cgu_cache.zig");
 pub const cgu_build = @import("cgu_build.zig");
@@ -19,4 +20,5 @@ test {
     // bare `pub const _ = @import(...)` re-exports.
     _ = @import("cgu_hash.zig");
     _ = @import("cgu_cache.zig");
+    _ = @import("debug_dwarf.zig");
 }

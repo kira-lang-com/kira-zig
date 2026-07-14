@@ -3,6 +3,32 @@ const ir_pkg = @import("kira_ir");
 const runtime_abi = @import("kira_runtime_abi");
 const bytecode = @import("bytecode.zig");
 const instruction = @import("instruction.zig");
+const source = @import("kira_source");
+
+/// Intern a source path into the module-level dedup file table, returning its
+/// `file_id`. A `null` path (synthesized span, or a program lowered without a
+/// source path) collapses to a single shared "<unknown>" entry so every
+/// no-location instruction shares one file id.
+fn internSourcePath(
+    source_files: *std.array_list.Managed([]const u8),
+    path_ids: *std.StringHashMap(u32),
+    null_file_id: *?u32,
+    path: ?[]const u8,
+) !u32 {
+    if (path) |p| {
+        const gop = try path_ids.getOrPut(p);
+        if (gop.found_existing) return gop.value_ptr.*;
+        const id: u32 = @intCast(source_files.items.len);
+        try source_files.append(p);
+        gop.value_ptr.* = id;
+        return id;
+    }
+    if (null_file_id.*) |id| return id;
+    const id: u32 = @intCast(source_files.items.len);
+    try source_files.append("<unknown>");
+    null_file_id.* = id;
+    return id;
+}
 
 pub const CompileMode = enum {
     vm,
@@ -81,6 +107,14 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
     var functions = std.array_list.Managed(bytecode.Function).init(allocator);
     var entry_function_id: ?u32 = null;
 
+    // Module-level dedup source-file table shared by every function's line
+    // table. `null` source paths (synthesized spans, or programs lowered
+    // without a source path) collapse to a single shared "<unknown>" entry.
+    var source_files = std.array_list.Managed([]const u8).init(allocator);
+    var path_ids = std.StringHashMap(u32).init(allocator);
+    defer path_ids.deinit();
+    var null_file_id: ?u32 = null;
+
     for (program.functions, 0..) |function_decl, index| {
         const resolved_execution = resolveExecution(function_decl.execution, mode);
         // Foreign FFI declarations carry no Kira body. In VM mode the
@@ -98,7 +132,15 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
         if (resolved_execution == .native and mode == .hybrid_runtime) continue;
 
         var instructions = std.array_list.Managed(instruction.Instruction).init(allocator);
-        for (function_decl.instructions) |inst| {
+        // Best-effort PC->source line table. The lowering below is not strictly
+        // 1:1 (a `.call` fans out to one bytecode op, `.scope_enter/_exit` emit
+        // none), so we map every emitted bytecode instruction to the source span
+        // of the low-IR instruction it came from, using the emit count delta per
+        // ir instruction. Only populated when the function carries locations.
+        const has_locations = function_decl.locations.len > 0;
+        var debug_locs = std.array_list.Managed(bytecode.SourceLoc).init(allocator);
+        for (function_decl.instructions, 0..) |inst, ir_index| {
+            const emit_before = instructions.items.len;
             switch (inst) {
                 .const_int => |value| try instructions.append(.{ .const_int = .{ .dst = value.dst, .value = value.value } }),
                 .const_float => |value| try instructions.append(.{ .const_float = .{ .dst = value.dst, .value = value.value } }),
@@ -195,6 +237,18 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 .c_string_to_string => |value| try instructions.append(.{ .c_string_to_string = .{ .dst = value.dst, .src = value.src } }),
                 .array_len => |value| try instructions.append(.{ .array_len = .{ .dst = value.dst, .array = value.array } }),
                 .string_len => |value| try instructions.append(.{ .string_len = .{ .dst = value.dst, .string = value.string } }),
+                .string_from_scalar => |value| try instructions.append(.{ .string_from_scalar = .{
+                    .dst = value.dst,
+                    .src = value.src,
+                    .source = switch (value.source) {
+                        .integer => .integer,
+                        .float => .float,
+                        .boolean => .boolean,
+                    },
+                } }),
+                .string_char_at => |value| try instructions.append(.{ .string_char_at = .{ .dst = value.dst, .string = value.string, .index = value.index } }),
+                .string_substring => |value| try instructions.append(.{ .string_substring = .{ .dst = value.dst, .string = value.string, .start = value.start, .end = value.end } }),
+                .string_index_of => |value| try instructions.append(.{ .string_index_of = .{ .dst = value.dst, .string = value.string, .needle = value.needle } }),
                 .array_get => |value| try instructions.append(.{ .array_get = .{
                     .dst = value.dst,
                     .array = value.array,
@@ -332,6 +386,24 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
                 // reclaims via its own native-layout destructors, so emit nothing.
                 .scope_enter, .scope_exit => {},
             }
+
+            if (has_locations) {
+                // The span of the low-IR instruction we just lowered; missing or
+                // out-of-range entries collapse to a {0,0} no-location sentinel.
+                const span: source.Span = if (ir_index < function_decl.locations.len)
+                    function_decl.locations[ir_index]
+                else
+                    .{ .start = 0, .end = 0 };
+                const file_id = try internSourcePath(&source_files, &path_ids, &null_file_id, span.source_path);
+                const loc: bytecode.SourceLoc = .{
+                    .file_id = file_id,
+                    .start = @as(u32, @intCast(span.start)),
+                    .end = @as(u32, @intCast(span.end)),
+                };
+                // Stamp every bytecode instruction emitted for this ir instruction
+                // with its location, preserving index alignment across fan-out.
+                for (emit_before..instructions.items.len) |_| try debug_locs.append(loc);
+            }
         }
 
         try functions.append(.{
@@ -347,6 +419,10 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
             .local_count = function_decl.local_count,
             .local_types = try lowerLocalTypes(allocator, function_decl.local_types),
             .instructions = try instructions.toOwnedSlice(),
+            .debug_locations = try debug_locs.toOwnedSlice(),
+            // Source-level local names threaded HIR->IR->bytecode for the
+            // debugger's variables view (index-aligned to local slots).
+            .local_names = try lowerLocalNames(allocator, function_decl.local_names),
         });
 
         if (index == program.entry_index and resolved_execution == .runtime) {
@@ -361,6 +437,7 @@ pub fn compileProgram(allocator: std.mem.Allocator, verified: ir_pkg.VerifiedPro
         .enums = try enums.toOwnedSlice(),
         .functions = try functions.toOwnedSlice(),
         .entry_function_id = entry_function_id,
+        .source_files = try source_files.toOwnedSlice(),
     };
 }
 
@@ -393,6 +470,12 @@ fn externStub(allocator: std.mem.Allocator, function_decl: ir_pkg.Function) !byt
 fn lowerLocalTypes(allocator: std.mem.Allocator, local_types: []const ir_pkg.ValueType) ![]instruction.TypeRef {
     const lowered = try allocator.alloc(instruction.TypeRef, local_types.len);
     for (local_types, 0..) |local_ty, index| lowered[index] = lowerTypeRef(local_ty);
+    return lowered;
+}
+
+fn lowerLocalNames(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
+    const lowered = try allocator.alloc([]const u8, names.len);
+    for (names, 0..) |name, index| lowered[index] = try allocator.dupe(u8, name);
     return lowered;
 }
 

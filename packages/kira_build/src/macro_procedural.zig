@@ -35,7 +35,11 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
     if (annotations.len == 0 and triggered.len == 0 and summons.len == 0) {
         return .{ .decl = decl, .generated = &.{} };
     }
-    if (exp.proc_macros.count() == 0 and summons.len == 0) {
+    // `@Derive(Copy)` is a builtin copyability assertion, not a user macro, so it must be
+    // handled even when no procedural macros are registered (otherwise the guard below would
+    // return the declaration with the `@Derive(Copy)` annotation unstripped).
+    const wants_copy = deriveCopyRequested(annotations);
+    if (exp.proc_macros.count() == 0 and summons.len == 0 and !wants_copy) {
         return .{ .decl = decl, .generated = &.{} };
     }
 
@@ -44,6 +48,7 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
     var kept = std.array_list.Managed(ast.Annotation).init(exp.allocator);
     var generated = std.array_list.Managed(ast.Decl).init(exp.allocator);
     var stripped_any = false;
+    var derive_copy = false;
     var replaced_by: ?[]const u8 = null;
 
     for (annotations) |annotation| {
@@ -51,6 +56,13 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
         if (std.mem.eql(u8, name, "Derive")) {
             for (annotation.args) |arg| {
                 const derive_name = identifierArg(arg.value) orelse continue;
+                // `Copy` is a builtin derive: it records the opt-in copyability assertion
+                // (verified downstream by the structural classifier) rather than invoking a
+                // user macro, so it is recognized BEFORE the user-macro lookup / KMAC011.
+                if (std.mem.eql(u8, derive_name, "Copy")) {
+                    derive_copy = true;
+                    continue;
+                }
                 const macro = exp.proc_macros.get(derive_name);
                 if (macro != null and macro.?.kind == .proc_derive) {
                     if (!try checkAppliesTo(exp, macro.?, target_kind, annotation.span)) continue;
@@ -102,12 +114,46 @@ pub fn applyDeclMacros(exp: *Expander, decl: ast.Decl) !DeclMacroResult {
         }
     }
 
-    if (!stripped_any and replaced_by == null) return .{ .decl = decl, .generated = try generated.toOwnedSlice() };
+    const stripped_decl = if (!stripped_any and replaced_by == null)
+        decl
+    else
+        setDeclAnnotations(decl, try kept.toOwnedSlice());
+    const final_decl = if (derive_copy) setDeriveCopyFlag(stripped_decl) else stripped_decl;
     return .{
-        .decl = setDeclAnnotations(decl, try kept.toOwnedSlice()),
+        .decl = final_decl,
         .generated = try generated.toOwnedSlice(),
         .replaced = replaced_by != null,
     };
+}
+
+/// Whether the declaration carries `@Derive(Copy)` (the builtin copyability assertion).
+fn deriveCopyRequested(annotations: []const ast.Annotation) bool {
+    for (annotations) |annotation| {
+        if (!std.mem.eql(u8, annotationName(annotation), "Derive")) continue;
+        for (annotation.args) |arg| {
+            const derive_name = identifierArg(arg.value) orelse continue;
+            if (std.mem.eql(u8, derive_name, "Copy")) return true;
+        }
+    }
+    return false;
+}
+
+/// Record the `@Derive(Copy)` marker on the declaration so it survives annotation stripping
+/// into the semantics model, where the structural classifier enforces the assertion.
+fn setDeriveCopyFlag(decl: ast.Decl) ast.Decl {
+    switch (decl) {
+        .type_decl => |d| {
+            var nd = d;
+            nd.derive_copy = true;
+            return .{ .type_decl = nd };
+        },
+        .enum_decl => |d| {
+            var nd = d;
+            nd.derive_copy = true;
+            return .{ .enum_decl = nd };
+        },
+        else => return decl,
+    }
 }
 
 /// Record `macro` as the declaration's replacer if it is replace-mode. At most one replace-mode

@@ -283,7 +283,7 @@ fn parseUnitValue(value: []const u8, units: []const Unit) ?u64 {
 }
 
 fn runInstrumented(allocator: std.mem.Allocator, parsed: ParsedRunArgs, stderr: anytype) !instruments.Report {
-    const input = try support.resolveCommandInput(allocator, parsed.target);
+    const input = try support.resolveCommandInputWithDiagnostics(allocator, parsed.target, stderr);
     const backend = toExecutionTarget(parsed.backend);
 
     if (input.project_root) |project_root| {

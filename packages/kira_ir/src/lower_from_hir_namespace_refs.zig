@@ -1,5 +1,6 @@
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const parent = @import("lower_from_hir.zig");
 
@@ -10,7 +11,7 @@ const functionIdByName = parent.functionIdByName;
 
 pub fn lowerNamespaceRefExpr(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     path: []const u8,
 ) !?u32 {
     const split = splitQualifiedPath(path) orelse return null;
@@ -42,7 +43,7 @@ fn splitQualifiedPath(path: []const u8) ?QualifiedPath {
 
 fn lowerNamespaceEnumRef(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     namespace_path: []const u8,
     member_name: []const u8,
 ) !?u32 {
@@ -66,7 +67,7 @@ fn lowerNamespaceEnumRef(
 
 fn lowerNamespaceTypeFieldRef(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     namespace_path: []const u8,
     member_name: []const u8,
 ) !?u32 {
@@ -81,7 +82,7 @@ fn lowerNamespaceTypeFieldRef(
 
 fn lowerNamespaceAccessorRef(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     path: []const u8,
 ) !?u32 {
     const function_id = functionIdByName(lowerer.program, path) orelse return null;

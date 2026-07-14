@@ -228,7 +228,7 @@ Test StrxClsBaseScore {
         return a.score()
     }
     // 10 * 1 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsBaseTier {
@@ -236,7 +236,7 @@ Test StrxClsBaseTier {
         let a = StrxCBase()
         return a.tier()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsSilverScore {
@@ -245,7 +245,7 @@ Test StrxClsSilverScore {
         return s.score()
     }
     // 10 * 3 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClsSilverTier {
@@ -253,7 +253,7 @@ Test StrxClsSilverTier {
         let s = StrxCSilver()
         return s.tier()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxClsSilverBonus {
@@ -262,7 +262,7 @@ Test StrxClsSilverBonus {
         return s.bonus()
     }
     // StrxCBase.score() = 10*3=30; + points=10 -> 40
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 Test StrxClsGoldScore {
@@ -271,7 +271,7 @@ Test StrxClsGoldScore {
         return g.score()
     }
     // 10 * 7 = 70
-    expect { let e: Result<Int, TestFailure> = Result.Ok(70); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(70); return e }
 }
 
 Test StrxClsGoldTier {
@@ -279,7 +279,7 @@ Test StrxClsGoldTier {
         let g = StrxCGold()
         return g.tier()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxClsGoldBonus {
@@ -288,7 +288,7 @@ Test StrxClsGoldBonus {
         return g.bonus()
     }
     // inherited from Silver: StrxCBase.score()=10*7=70; + 10 = 80
-    expect { let e: Result<Int, TestFailure> = Result.Ok(80); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(80); return e }
 }
 
 Test StrxClsGoldMutPoints {
@@ -302,7 +302,7 @@ Test StrxClsGoldMutPoints {
         return g.points
     }
     // 10 + 70 = 80... wait 10 + 10*7 = 80
-    expect { let e: Result<Int, TestFailure> = Result.Ok(80); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(80); return e }
 }
 
 Test StrxClsGoldMutScore {
@@ -316,7 +316,7 @@ Test StrxClsGoldMutScore {
         return g.score()
     }
     // points = 80; score = 80*7 = 560
-    expect { let e: Result<Int, TestFailure> = Result.Ok(560); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(560); return e }
 }
 
 Test StrxClsBaseRankField {
@@ -324,7 +324,7 @@ Test StrxClsBaseRankField {
         let a = StrxCBase()
         return a.rank
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsSilverRankField {
@@ -332,7 +332,7 @@ Test StrxClsSilverRankField {
         let s = StrxCSilver()
         return s.rank
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxClsGoldRankField {
@@ -340,7 +340,7 @@ Test StrxClsGoldRankField {
         let g = StrxCGold()
         return g.rank
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxClsTierSum {
@@ -351,7 +351,7 @@ Test StrxClsTierSum {
         return a.tier() + s.tier() + g.tier()
     }
     // 1 + 2 + 3 = 6
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StrxClsScoreSum {
@@ -362,7 +362,7 @@ Test StrxClsScoreSum {
         return a.score() + s.score() + g.score()
     }
     // 10 + 30 + 70 = 110
-    expect { let e: Result<Int, TestFailure> = Result.Ok(110); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(110); return e }
 }
 
 Test StrxClsSilverMutBonus {
@@ -372,7 +372,7 @@ Test StrxClsSilverMutBonus {
         return s.bonus()
     }
     // StrxCBase.score() = 20*3=60; + 20 = 80
-    expect { let e: Result<Int, TestFailure> = Result.Ok(80); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(80); return e }
 }
 
 Test StrxClsH1Loop {
@@ -387,7 +387,7 @@ Test StrxClsH1Loop {
         return acc
     }
     // (10+1) + (30+2) + (70+3) = 11+32+73 = 116
-    expect { let e: Result<Int, TestFailure> = Result.Ok(116); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(116); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +400,7 @@ Test StrxClsMixVSum {
         return m.vSum()
     }
     // 10 + 20 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClsMixWSum {
@@ -409,7 +409,7 @@ Test StrxClsMixWSum {
         return m.wSum()
     }
     // 5 + 8 = 13
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 Test StrxClsMixCSum5 {
@@ -418,7 +418,7 @@ Test StrxClsMixCSum5 {
         return m.cSum(5)
     }
     // (5+10) + (5+20) = 40
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 Test StrxClsMixCSum0 {
@@ -427,7 +427,7 @@ Test StrxClsMixCSum0 {
         return m.cSum(0)
     }
     // (0+10) + (0+20) = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClsMixCLoop {
@@ -442,7 +442,7 @@ Test StrxClsMixCLoop {
         return sum
     }
     // n=0: 30; n=1: 32; n=2: 34; n=3: 36; n=4: 38 -> 170
-    expect { let e: Result<Int, TestFailure> = Result.Ok(170); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(170); return e }
 }
 
 Test StrxClsMixWLoopMul {
@@ -457,7 +457,7 @@ Test StrxClsMixWLoopMul {
         return acc
     }
     // 0*13 + 1*13 + 2*13 + 3*13 = 0+13+26+39 = 78
-    expect { let e: Result<Int, TestFailure> = Result.Ok(78); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(78); return e }
 }
 
 Test StrxClsMixAllFields {
@@ -466,7 +466,7 @@ Test StrxClsMixAllFields {
         return m.vSum() + m.wSum()
     }
     // 30 + 13 = 43
-    expect { let e: Result<Int, TestFailure> = Result.Ok(43); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(43); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ Test StrxClsTriSides {
         let t = StrxCTriangle()
         return t.sides
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxClsRectSides {
@@ -486,7 +486,7 @@ Test StrxClsRectSides {
         let r = StrxCRect()
         return r.sides
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxClsTriArea {
@@ -496,7 +496,7 @@ Test StrxClsTriArea {
         return t.area(2)
     }
     // 5 * 2 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsRectArea {
@@ -507,7 +507,7 @@ Test StrxClsRectArea {
         return r.area(2)
     }
     // 3 * 4 * 2 = 24
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 Test StrxClsTriBaseFee {
@@ -516,7 +516,7 @@ Test StrxClsTriBaseFee {
         return t.baseFee()
     }
     // inherited, not overridden -> 1
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsRectBaseFee {
@@ -524,7 +524,7 @@ Test StrxClsRectBaseFee {
         let r = StrxCRect()
         return r.baseFee()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsArrTriLoop {
@@ -546,7 +546,7 @@ Test StrxClsArrTriLoop {
         return total
     }
     // area(2): 1*2+2*2+3*2+4*2+5*2 = 2+4+6+8+10 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClsArrTriSides {
@@ -566,7 +566,7 @@ Test StrxClsArrTriSides {
         return total
     }
     // 5 * 3 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClsArrTriAcc {
@@ -588,7 +588,7 @@ Test StrxClsArrTriAcc {
         return total
     }
     // area: 30; sides: 5*3=15; baseFee: 5*1=5 -> 50
-    expect { let e: Result<Int, TestFailure> = Result.Ok(50); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(50); return e }
 }
 
 Test StrxClsArrRectLoop {
@@ -611,7 +611,7 @@ Test StrxClsArrRectLoop {
         return total
     }
     // width*2*1: 1*2+2*2+3*2+4*2 = 2+4+6+8 = 20
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StrxClsArrRectSides {
@@ -631,7 +631,7 @@ Test StrxClsArrRectSides {
         return total
     }
     // 3 * 4 = 12
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +644,7 @@ Test StrxClsVehicleCost5 {
         return v.cost(5)
     }
     // 5 + 5 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsCarCost5 {
@@ -653,7 +653,7 @@ Test StrxClsCarCost5 {
         return c.cost(5)
     }
     // 10 + 5*2 = 20
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StrxClsTruckCost5 {
@@ -662,7 +662,7 @@ Test StrxClsTruckCost5 {
         return t.cost(5)
     }
     // StrxCCar.cost(5) = 15+10 = 25; +3 = 28
-    expect { let e: Result<Int, TestFailure> = Result.Ok(28); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(28); return e }
 }
 
 Test StrxClsVehicleLoop {
@@ -677,7 +677,7 @@ Test StrxClsVehicleLoop {
         return acc
     }
     // sum(5+km for km=0..4) = 5+6+7+8+9 = 35
-    expect { let e: Result<Int, TestFailure> = Result.Ok(35); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(35); return e }
 }
 
 Test StrxClsCarLoop {
@@ -692,7 +692,7 @@ Test StrxClsCarLoop {
         return acc
     }
     // sum(10+km*2 for km=0..4) = 10+12+14+16+18 = 70
-    expect { let e: Result<Int, TestFailure> = Result.Ok(70); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(70); return e }
 }
 
 Test StrxClsTruckLoop {
@@ -707,7 +707,7 @@ Test StrxClsTruckLoop {
         return acc
     }
     // StrxCCar.cost(km)=15+km*2 then +3; sum(18+km*2 for km=0..4) = 18+20+22+24+26 = 110
-    expect { let e: Result<Int, TestFailure> = Result.Ok(110); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(110); return e }
 }
 
 Test StrxClsVehicleBase {
@@ -715,7 +715,7 @@ Test StrxClsVehicleBase {
         let v = StrxCVehicle()
         return v.base
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxClsCarBase {
@@ -723,7 +723,7 @@ Test StrxClsCarBase {
         let c = StrxCCar()
         return c.base
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsTruckBase {
@@ -731,7 +731,7 @@ Test StrxClsTruckBase {
         let t = StrxCTruck()
         return t.base
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClsVehicleCost10 {
@@ -740,7 +740,7 @@ Test StrxClsVehicleCost10 {
         return v.cost(10)
     }
     // 5+10 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClsCarCost10 {
@@ -749,7 +749,7 @@ Test StrxClsCarCost10 {
         return c.cost(10)
     }
     // 10+10*2 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClsTruckCost10 {
@@ -758,7 +758,7 @@ Test StrxClsTruckCost10 {
         return t.cost(10)
     }
     // StrxCCar.cost(10)=15+20=35; +3=38
-    expect { let e: Result<Int, TestFailure> = Result.Ok(38); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(38); return e }
 }
 
 Test StrxClsBaseFieldSum {
@@ -769,7 +769,7 @@ Test StrxClsBaseFieldSum {
         return v.base + c.base + t.base
     }
     // 5 + 10 + 15 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,7 +782,7 @@ Test StrxClsCounterInc {
         let _ = c.increment()
         return c.getCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsCounterLoop {
@@ -795,7 +795,7 @@ Test StrxClsCounterLoop {
         }
         return c.getCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsCounterReset {
@@ -809,7 +809,7 @@ Test StrxClsCounterReset {
         let _ = c.reset()
         return c.getCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxClsSmartInc {
@@ -818,7 +818,7 @@ Test StrxClsSmartInc {
         let _ = sc.incrementBy(7)
         return sc.getCount()
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxClsSmartStep {
@@ -828,7 +828,7 @@ Test StrxClsSmartStep {
         return sc.getCount()
     }
     // step=2, count=0+2=2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxClsSmartLoop5 {
@@ -842,7 +842,7 @@ Test StrxClsSmartLoop5 {
         return sc.getCount()
     }
     // 5 * 2 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsSmartCustomStep {
@@ -857,7 +857,7 @@ Test StrxClsSmartCustomStep {
         return sc.getCount()
     }
     // 3 * 5 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClsSmartMixedOps {
@@ -870,7 +870,7 @@ Test StrxClsSmartMixedOps {
         return sc.getCount()
     }
     // 1+1+2+3 = 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxClsCounterMultiple {
@@ -888,7 +888,7 @@ Test StrxClsCounterMultiple {
         return total
     }
     // 5 * 3 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClsCounterResetLoop {
@@ -905,7 +905,7 @@ Test StrxClsCounterResetLoop {
         return c.getCount()
     }
     // reset then +1+1 = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -919,7 +919,7 @@ Test StrxClsNodeDesc {
         return n.describe()
     }
     // 5 + 1 = 6
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StrxClsLeafDesc {
@@ -929,7 +929,7 @@ Test StrxClsLeafDesc {
         return l.describe()
     }
     // 5 * 10 = 50
-    expect { let e: Result<Int, TestFailure> = Result.Ok(50); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(50); return e }
 }
 
 Test StrxClsDeepLeafDesc {
@@ -939,7 +939,7 @@ Test StrxClsDeepLeafDesc {
         return d.describe()
     }
     // StrxCLeaf.describe() = 5*100=500; + label=100 -> 600
-    expect { let e: Result<Int, TestFailure> = Result.Ok(600); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(600); return e }
 }
 
 Test StrxClsLeafArr {
@@ -961,7 +961,7 @@ Test StrxClsLeafArr {
         return total
     }
     // value=0..3: 0*10+1*10+2*10+3*10 = 0+10+20+30 = 60
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test StrxClsLabelNode {
@@ -969,7 +969,7 @@ Test StrxClsLabelNode {
         let n = StrxCNode()
         return n.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxClsLabelLeaf {
@@ -977,7 +977,7 @@ Test StrxClsLabelLeaf {
         let l = StrxCLeaf()
         return l.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClsLabelDeep {
@@ -985,7 +985,7 @@ Test StrxClsLabelDeep {
         let d = StrxCDeepLeaf()
         return d.label
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StrxClsDeepArr {
@@ -1007,7 +1007,7 @@ Test StrxClsDeepArr {
         return total
     }
     // value=1: 1*100+100=200; value=2: 2*100+100=300; value=3: 3*100+100=400 -> 900
-    expect { let e: Result<Int, TestFailure> = Result.Ok(900); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(900); return e }
 }
 
 Test StrxClsLabelSum {
@@ -1018,7 +1018,7 @@ Test StrxClsLabelSum {
         return n.label + l.label + d.label
     }
     // 1 + 10 + 100 = 111
-    expect { let e: Result<Int, TestFailure> = Result.Ok(111); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(111); return e }
 }
 
 Test StrxClsLeafMutDesc {
@@ -1028,7 +1028,7 @@ Test StrxClsLeafMutDesc {
         return l.describe()
     }
     // 7 * 10 = 70
-    expect { let e: Result<Int, TestFailure> = Result.Ok(70); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(70); return e }
 }
 
 Test StrxClsDeepMutDesc {
@@ -1038,7 +1038,7 @@ Test StrxClsDeepMutDesc {
         return d.describe()
     }
     // StrxCLeaf.describe()=3*100=300; +100=400
-    expect { let e: Result<Int, TestFailure> = Result.Ok(400); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(400); return e }
 }
 
 Test StrxClsNodeDescLoop {
@@ -1054,7 +1054,7 @@ Test StrxClsNodeDescLoop {
         return total
     }
     // (0+1)+(1+1)+(2+1)+(3+1)+(4+1) = 1+2+3+4+5 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1069,7 @@ Test StrxClsTrapArrOob {
         let _ = tris[99].sides
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClsTrapDivZero {
@@ -1078,7 +1078,7 @@ Test StrxClsTrapDivZero {
         let b = 0
         return a / b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClsTrapModZero {
@@ -1087,7 +1087,7 @@ Test StrxClsTrapModZero {
         let b = 0
         return a % b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClsTrapLeafArrOob {
@@ -1101,5 +1101,5 @@ Test StrxClsTrapLeafArrOob {
         let _ = leaves[10].label
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }

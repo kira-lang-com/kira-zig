@@ -6,6 +6,7 @@ const NativeLibrary = if (builtin.os.tag == .windows) WindowsNativeLibrary else 
 pub const c = @cImport({
     @cInclude("llvm-c/Analysis.h");
     @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/DebugInfo.h");
     @cInclude("llvm-c/Error.h");
     @cInclude("llvm-c/Target.h");
     @cInclude("llvm-c/TargetMachine.h");
@@ -143,6 +144,60 @@ pub const Api = struct {
     LLVMInitializeAsmPrinter: *const fn () callconv(.c) void,
     LLVMInitializeAsmParser: ?*const fn () callconv(.c) void,
 
+    // --- Debug-info (DWARF) surface ---------------------------------------
+    // These are OPTIONAL: an older or trimmed LLVM-C runtime may not export the
+    // full DIBuilder surface (LLVM 22's records-based dbg.declare in particular).
+    // Each is loaded with `loadOptional` (null on absence, no hard failure) so a
+    // missing symbol degrades debug-info emission with a diagnostic instead of
+    // aborting the whole native build. `debug_dwarf.zig` checks `hasDebugInfo()`
+    // and the individual dbg.declare capability before using them.
+    LLVMCreateDIBuilder: ?*const @TypeOf(c.LLVMCreateDIBuilder),
+    LLVMDisposeDIBuilder: ?*const @TypeOf(c.LLVMDisposeDIBuilder),
+    LLVMDIBuilderFinalize: ?*const @TypeOf(c.LLVMDIBuilderFinalize),
+    LLVMDIBuilderCreateCompileUnit: ?*const @TypeOf(c.LLVMDIBuilderCreateCompileUnit),
+    LLVMDIBuilderCreateFile: ?*const @TypeOf(c.LLVMDIBuilderCreateFile),
+    LLVMDIBuilderCreateFunction: ?*const @TypeOf(c.LLVMDIBuilderCreateFunction),
+    LLVMDIBuilderCreateSubroutineType: ?*const @TypeOf(c.LLVMDIBuilderCreateSubroutineType),
+    LLVMSetSubprogram: ?*const @TypeOf(c.LLVMSetSubprogram),
+    LLVMDIBuilderCreateDebugLocation: ?*const @TypeOf(c.LLVMDIBuilderCreateDebugLocation),
+    LLVMSetCurrentDebugLocation2: ?*const @TypeOf(c.LLVMSetCurrentDebugLocation2),
+    LLVMDIBuilderCreateBasicType: ?*const @TypeOf(c.LLVMDIBuilderCreateBasicType),
+    LLVMDIBuilderCreateAutoVariable: ?*const @TypeOf(c.LLVMDIBuilderCreateAutoVariable),
+    LLVMDIBuilderCreateExpression: ?*const @TypeOf(c.LLVMDIBuilderCreateExpression),
+    LLVMMetadataAsValue: ?*const @TypeOf(c.LLVMMetadataAsValue),
+    LLVMValueAsMetadata: ?*const @TypeOf(c.LLVMValueAsMetadata),
+    LLVMAddModuleFlag: ?*const @TypeOf(c.LLVMAddModuleFlag),
+    LLVMSetIsNewDbgInfoFormat: ?*const @TypeOf(c.LLVMSetIsNewDbgInfoFormat),
+    // dbg.declare in LLVM 22 is a debug RECORD (the intrinsic form was removed);
+    // the C entrypoint is LLVMDIBuilderInsertDeclareRecordAtEnd.
+    LLVMDIBuilderInsertDeclareRecordAtEnd: ?*const @TypeOf(c.LLVMDIBuilderInsertDeclareRecordAtEnd),
+
+    /// True when the core DWARF-emission surface (compile unit, file, function,
+    /// subroutine type, debug locations, module flags) is available. dbg.declare
+    /// is checked separately via `hasDbgDeclare`.
+    pub fn hasDebugInfo(self: *const Api) bool {
+        return self.LLVMCreateDIBuilder != null and
+            self.LLVMDIBuilderFinalize != null and
+            self.LLVMDIBuilderCreateCompileUnit != null and
+            self.LLVMDIBuilderCreateFile != null and
+            self.LLVMDIBuilderCreateFunction != null and
+            self.LLVMDIBuilderCreateSubroutineType != null and
+            self.LLVMSetSubprogram != null and
+            self.LLVMDIBuilderCreateDebugLocation != null and
+            self.LLVMSetCurrentDebugLocation2 != null and
+            self.LLVMDIBuilderCreateBasicType != null and
+            self.LLVMValueAsMetadata != null and
+            self.LLVMAddModuleFlag != null;
+    }
+
+    /// True when local-variable `dbg.declare` records can be emitted (records API
+    /// plus the auto-variable/expression constructors they need).
+    pub fn hasDbgDeclare(self: *const Api) bool {
+        return self.LLVMDIBuilderInsertDeclareRecordAtEnd != null and
+            self.LLVMDIBuilderCreateAutoVariable != null and
+            self.LLVMDIBuilderCreateExpression != null;
+    }
+
     pub fn open(tc: toolchain.Toolchain) !Api {
         var lib = try openNativeLibrary(tc.llvm_c_library_path);
         errdefer lib.close();
@@ -276,6 +331,26 @@ pub const Api = struct {
                 try load(&lib, *const fn () callconv(.c) void, name)
             else
                 null,
+
+            // Optional DWARF surface — null (with a diagnostic) if absent.
+            .LLVMCreateDIBuilder = loadOptional(&lib, *const @TypeOf(c.LLVMCreateDIBuilder), "LLVMCreateDIBuilder"),
+            .LLVMDisposeDIBuilder = loadOptional(&lib, *const @TypeOf(c.LLVMDisposeDIBuilder), "LLVMDisposeDIBuilder"),
+            .LLVMDIBuilderFinalize = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderFinalize), "LLVMDIBuilderFinalize"),
+            .LLVMDIBuilderCreateCompileUnit = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateCompileUnit), "LLVMDIBuilderCreateCompileUnit"),
+            .LLVMDIBuilderCreateFile = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateFile), "LLVMDIBuilderCreateFile"),
+            .LLVMDIBuilderCreateFunction = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateFunction), "LLVMDIBuilderCreateFunction"),
+            .LLVMDIBuilderCreateSubroutineType = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateSubroutineType), "LLVMDIBuilderCreateSubroutineType"),
+            .LLVMSetSubprogram = loadOptional(&lib, *const @TypeOf(c.LLVMSetSubprogram), "LLVMSetSubprogram"),
+            .LLVMDIBuilderCreateDebugLocation = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateDebugLocation), "LLVMDIBuilderCreateDebugLocation"),
+            .LLVMSetCurrentDebugLocation2 = loadOptional(&lib, *const @TypeOf(c.LLVMSetCurrentDebugLocation2), "LLVMSetCurrentDebugLocation2"),
+            .LLVMDIBuilderCreateBasicType = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateBasicType), "LLVMDIBuilderCreateBasicType"),
+            .LLVMDIBuilderCreateAutoVariable = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateAutoVariable), "LLVMDIBuilderCreateAutoVariable"),
+            .LLVMDIBuilderCreateExpression = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderCreateExpression), "LLVMDIBuilderCreateExpression"),
+            .LLVMMetadataAsValue = loadOptional(&lib, *const @TypeOf(c.LLVMMetadataAsValue), "LLVMMetadataAsValue"),
+            .LLVMValueAsMetadata = loadOptional(&lib, *const @TypeOf(c.LLVMValueAsMetadata), "LLVMValueAsMetadata"),
+            .LLVMAddModuleFlag = loadOptional(&lib, *const @TypeOf(c.LLVMAddModuleFlag), "LLVMAddModuleFlag"),
+            .LLVMSetIsNewDbgInfoFormat = loadOptional(&lib, *const @TypeOf(c.LLVMSetIsNewDbgInfoFormat), "LLVMSetIsNewDbgInfoFormat"),
+            .LLVMDIBuilderInsertDeclareRecordAtEnd = loadOptional(&lib, *const @TypeOf(c.LLVMDIBuilderInsertDeclareRecordAtEnd), "LLVMDIBuilderInsertDeclareRecordAtEnd"),
         };
     }
 
@@ -293,6 +368,17 @@ fn load(lib: anytype, comptime T: type, name: [:0]const u8) !T {
     return lib.lookup(T, name) orelse {
         std.debug.print("missing LLVM C symbol '{s}'\n", .{name});
         return error.MissingLlvmSymbol;
+    };
+}
+
+/// Look up an OPTIONAL symbol. Returns null (with a one-line diagnostic) instead
+/// of failing so a missing debug-info entrypoint degrades that feature rather
+/// than aborting the whole backend. `T` is the non-optional pointer type; the
+/// caller stores the result in an optional field.
+fn loadOptional(lib: anytype, comptime T: type, name: [:0]const u8) ?T {
+    return lib.lookup(T, name) orelse {
+        std.debug.print("kira llvm backend: optional DWARF symbol '{s}' not found; debug info degraded for this feature\n", .{name});
+        return null;
     };
 }
 

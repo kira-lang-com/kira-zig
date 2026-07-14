@@ -1,4 +1,5 @@
 const runtime_abi = @import("kira_runtime_abi");
+const source = @import("kira_source");
 
 pub const ValueType = struct {
     kind: Kind,
@@ -139,7 +140,18 @@ pub const Function = struct {
     register_count: u32,
     local_count: u32,
     local_types: []const ValueType,
+    /// Source-level names per local slot (index = local id), for the debugger's
+    /// variables view. Empty for functions lowered without name info; entries may
+    /// be "" for hidden/synthesized slots. Threaded HIR->IR->bytecode alongside
+    /// `locations`.
+    local_names: []const []const u8 = &.{},
     instructions: []Instruction,
+    /// Source span per instruction, index-aligned with `instructions` when
+    /// populated by the lowerer (see `instruction_buf.zig`). May be empty for
+    /// synthesized functions (async rewrites, generated callbacks); consumers
+    /// must treat `idx >= locations.len` and `{0,0}` spans as "no location".
+    /// This is the debugger's source line-table source of truth in low IR.
+    locations: []const source.Span = &.{},
 };
 
 pub const Instruction = union(enum) {
@@ -175,6 +187,10 @@ pub const Instruction = union(enum) {
     c_string_to_string: CStringToString,
     array_len: ArrayLen,
     string_len: StringLen,
+    string_from_scalar: StringFromScalar,
+    string_char_at: StringCharAt,
+    string_substring: StringSubstring,
+    string_index_of: StringIndexOf,
     array_get: ArrayGet,
     array_set: ArraySet,
     array_append: ArrayAppend,
@@ -529,6 +545,37 @@ pub const ArrayLen = struct {
 pub const StringLen = struct {
     dst: u32,
     string: u32,
+};
+
+// Scalar -> String conversion (`String(x)`). `source` selects the byte format.
+pub const StringFromScalarSource = enum { integer, float, boolean };
+pub const StringFromScalar = struct {
+    dst: u32,
+    src: u32,
+    source: StringFromScalarSource,
+};
+
+// `s.charAt(i)` -> Int code unit. Out-of-bounds traps (VM) / mirrors array
+// indexing per backend.
+pub const StringCharAt = struct {
+    dst: u32,
+    string: u32,
+    index: u32,
+};
+
+// `s.substring(start, end)` -> fresh owned String (half-open range).
+pub const StringSubstring = struct {
+    dst: u32,
+    string: u32,
+    start: u32,
+    end: u32,
+};
+
+// `s.indexOf(needle)` -> Int offset, or -1 when absent.
+pub const StringIndexOf = struct {
+    dst: u32,
+    string: u32,
+    needle: u32,
 };
 
 pub const ArrayGet = struct {

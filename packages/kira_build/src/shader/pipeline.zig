@@ -460,7 +460,7 @@ test "shader pipeline builds textured quad and emits reflection" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try buildFile(arena.allocator(), "tests/shaders/pass/graphics/textured_quad/main.ksl");
+    const result = try buildFile(arena.allocator(), "tests-kik/shaders/pass/graphics/textured_quad/main.ksl");
     try std.testing.expect(result.program != null);
     try std.testing.expectEqual(@as(usize, 1), result.artifacts.len);
     try std.testing.expect(result.artifacts[0].vertex_glsl != null);
@@ -474,11 +474,11 @@ test "shader pipeline matches textured quad golden outputs" {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const result = try buildFile(allocator, "tests/shaders/pass/graphics/textured_quad/main.ksl");
+    const result = try buildFile(allocator, "tests-kik/shaders/pass/graphics/textured_quad/main.ksl");
     try std.testing.expect(result.artifacts.len == 1);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/textured_quad/expected.vert.glsl", result.artifacts[0].vertex_glsl.?);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/textured_quad/expected.frag.glsl", result.artifacts[0].fragment_glsl.?);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/textured_quad/expected.reflection.json", result.artifacts[0].reflection_json);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/textured_quad/expected.vert.glsl", result.artifacts[0].vertex_glsl.?);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/textured_quad/expected.frag.glsl", result.artifacts[0].fragment_glsl.?);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/textured_quad/expected.reflection.json", result.artifacts[0].reflection_json);
 }
 
 test "shader pipeline matches basic triangle golden outputs" {
@@ -486,18 +486,18 @@ test "shader pipeline matches basic triangle golden outputs" {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const result = try buildFile(allocator, "tests/shaders/pass/graphics/basic_triangle/main.ksl");
+    const result = try buildFile(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl");
     try std.testing.expect(result.artifacts.len == 1);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/basic_triangle/expected.vert.glsl", result.artifacts[0].vertex_glsl.?);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/basic_triangle/expected.frag.glsl", result.artifacts[0].fragment_glsl.?);
-    try expectFileText(allocator, "tests/shaders/pass/graphics/basic_triangle/expected.reflection.json", result.artifacts[0].reflection_json);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/expected.vert.glsl", result.artifacts[0].vertex_glsl.?);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/expected.frag.glsl", result.artifacts[0].fragment_glsl.?);
+    try expectFileText(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/expected.reflection.json", result.artifacts[0].reflection_json);
 }
 
 test "shader pipeline emits WGSL graphics artifacts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/graphics/basic_triangle/main.ksl", .wgsl);
+    const result = try buildFileForTarget(arena.allocator(), "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", .wgsl);
     try std.testing.expect(result.artifacts.len == 1);
     try std.testing.expect(result.artifacts[0].vertex_wgsl != null);
     try std.testing.expect(result.artifacts[0].fragment_wgsl != null);
@@ -512,7 +512,7 @@ test "shader pipeline emits HLSL MSL and SPIR-V graphics artifacts" {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const hlsl = try buildFileForTarget(allocator, "tests/shaders/pass/graphics/basic_triangle/main.ksl", .hlsl);
+    const hlsl = try buildFileForTarget(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", .hlsl);
     try std.testing.expect(hlsl.artifacts.len == 1);
     try std.testing.expect(hlsl.artifacts[0].vertex_hlsl != null);
     try std.testing.expect(hlsl.artifacts[0].fragment_hlsl != null);
@@ -520,7 +520,7 @@ test "shader pipeline emits HLSL MSL and SPIR-V graphics artifacts" {
     try std.testing.expect(std.mem.indexOf(u8, hlsl.artifacts[0].fragment_hlsl.?, "SV_Target") != null);
     try std.testing.expect(std.mem.indexOf(u8, hlsl.artifacts[0].reflection_json, "\"backend\": \"hlsl\"") != null);
 
-    const msl = try buildFileForTarget(allocator, "tests/shaders/pass/graphics/basic_triangle/main.ksl", .msl);
+    const msl = try buildFileForTarget(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", .msl);
     try std.testing.expect(msl.artifacts.len == 1);
     try std.testing.expect(msl.artifacts[0].vertex_msl != null);
     try std.testing.expect(msl.artifacts[0].fragment_msl != null);
@@ -528,7 +528,7 @@ test "shader pipeline emits HLSL MSL and SPIR-V graphics artifacts" {
     try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].fragment_msl.?, "[[color(0)]]") != null);
     try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].reflection_json, "\"backend\": \"msl\"") != null);
 
-    const spirv = try buildFileForTarget(allocator, "tests/shaders/pass/graphics/basic_triangle/main.ksl", .spirv);
+    const spirv = try buildFileForTarget(allocator, "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", .spirv);
     try std.testing.expect(spirv.artifacts.len == 1);
     try std.testing.expect(spirv.artifacts[0].vertex_spirv != null);
     try std.testing.expect(spirv.artifacts[0].fragment_spirv != null);
@@ -551,7 +551,7 @@ test "shader parser rejects malformed resource declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseFile(arena.allocator(), "tests/shaders/fail/parser/malformed_resource/main.ksl");
+    const result = try parseFile(arena.allocator(), "tests-kik/shaders/fail/parser/malformed_resource/main.ksl");
     try std.testing.expect(result.module == null);
     try expectDiagnosticCode(result.diagnostics, "KSLP010");
 }
@@ -560,7 +560,7 @@ test "shader parser reports unresolved imports" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseFile(arena.allocator(), "tests/shaders/fail/parser/missing_import/main.ksl");
+    const result = try parseFile(arena.allocator(), "tests-kik/shaders/fail/parser/missing_import/main.ksl");
     try std.testing.expect(result.module == null);
     try expectDiagnosticCode(result.diagnostics, "KSL062");
 }
@@ -569,7 +569,7 @@ test "shader semantics rejects ambiguous integer literals" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try checkFile(arena.allocator(), "tests/shaders/fail/semantics/ambiguous_literal/main.ksl");
+    const result = try checkFile(arena.allocator(), "tests-kik/shaders/fail/semantics/ambiguous_literal/main.ksl");
     try std.testing.expect(result.program == null);
     try expectDiagnosticCode(result.diagnostics, "KSL021");
 }
@@ -578,7 +578,7 @@ test "shader semantics rejects stage io mismatches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try checkFile(arena.allocator(), "tests/shaders/fail/semantics/mismatched_stage_io/main.ksl");
+    const result = try checkFile(arena.allocator(), "tests-kik/shaders/fail/semantics/mismatched_stage_io/main.ksl");
     try std.testing.expect(result.program == null);
     try expectDiagnosticCode(result.diagnostics, "KSL041");
 }
@@ -587,7 +587,7 @@ test "shader semantics rejects illegal builtins" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try checkFile(arena.allocator(), "tests/shaders/fail/semantics/illegal_builtin/main.ksl");
+    const result = try checkFile(arena.allocator(), "tests-kik/shaders/fail/semantics/illegal_builtin/main.ksl");
     try std.testing.expect(result.program == null);
     try expectDiagnosticCode(result.diagnostics, "KSL051");
 }
@@ -596,7 +596,7 @@ test "shader semantics rejects uniform writes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try checkFile(arena.allocator(), "tests/shaders/fail/semantics/uniform_write/main.ksl");
+    const result = try checkFile(arena.allocator(), "tests-kik/shaders/fail/semantics/uniform_write/main.ksl");
     try std.testing.expect(result.program == null);
     try expectDiagnosticCode(result.diagnostics, "KSL071");
 }
@@ -642,7 +642,7 @@ test "shader lowering emits a compute kernel across backends" {
     defer arena.deinit();
 
     // MSL: a real `kernel` with the storage buffer bound.
-    const msl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .msl);
+    const msl = try buildFileForTarget(arena.allocator(), "tests-kik/shaders/pass/compute/compute_only/main.ksl", .msl);
     try std.testing.expect(msl.artifacts.len == 1);
     try std.testing.expect(msl.artifacts[0].compute_msl != null);
     try std.testing.expect(std.mem.indexOf(u8, msl.artifacts[0].compute_msl.?, "kernel void") != null);
@@ -654,7 +654,7 @@ test "shader lowering emits a compute kernel across backends" {
     // synthesize the input struct from compute builtins and pass it to entry —
     // an undeclared buffer or an argument-less entry() call is invalid GLSL that
     // would fake-pass (Core Law #2). Guards against the placeholder regressing.
-    const glsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .glsl_330);
+    const glsl = try buildFileForTarget(arena.allocator(), "tests-kik/shaders/pass/compute/compute_only/main.ksl", .glsl_330);
     try std.testing.expect(glsl.artifacts.len == 1);
     const glsl_src = glsl.artifacts[0].compute_glsl.?;
     try std.testing.expect(std.mem.indexOf(u8, glsl_src, "buffer particles_Buffer") != null);
@@ -666,7 +666,7 @@ test "shader lowering emits a compute kernel across backends" {
 
     // HLSL: compute (non-atomic) still lowers; the atomicAdd intrinsic is
     // rejected separately (see the KSL072 test below).
-    const hlsl = try buildFileForTarget(arena.allocator(), "tests/shaders/pass/compute/compute_only/main.ksl", .hlsl);
+    const hlsl = try buildFileForTarget(arena.allocator(), "tests-kik/shaders/pass/compute/compute_only/main.ksl", .hlsl);
     try std.testing.expect(hlsl.artifacts.len == 1);
     try std.testing.expect(hlsl.artifacts[0].compute_hlsl != null);
 }

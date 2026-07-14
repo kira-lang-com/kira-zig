@@ -73,24 +73,24 @@ function genResultValue(r: borrow Result<Int, GenErr>) -> Int {
 
 function genDivInt(a: Int, b: Int) -> Result<Int, GenErr> {
     if b == 0 {
-        return Result.Error(GenErr.DivByZero)
+        return .Error(.DivByZero)
     }
     if a < 0 {
-        return Result.Error(GenErr.Negative)
+        return .Error(.Negative)
     }
-    return Result.Ok(a / b)
+    return .Ok(a / b)
 }
 
 // --- Result with T = struct ---------------------------------------------
 
 function genMakePoint(x: Int, y: Int) -> Result<GenPoint, GenErr> {
     if x < 0 || y < 0 {
-        return Result.Error(GenErr.Negative)
+        return .Error(.Negative)
     }
     if x > 1000 {
-        return Result.Error(GenErr.Overflow)
+        return .Error(.Overflow)
     }
-    return Result.Ok(GenPoint { x: x, y: y })
+    return .Ok(GenPoint { x: x, y: y })
 }
 
 function genPointNorm(x: Int, y: Int) -> Int {
@@ -105,10 +105,10 @@ function genPointNorm(x: Int, y: Int) -> Int {
 
 function genColorFor(i: Int) -> Result<GenColor, GenErr> {
     switch i % 4 {
-        case 0 { return Result.Ok(GenColor.Red) }
-        case 1 { return Result.Ok(GenColor.Green) }
-        case 2 { return Result.Ok(GenColor.Blue) }
-        default { return Result.Error(GenErr.BadColor) }
+        case 0 { return .Ok(.Red) }
+        case 1 { return .Ok(.Green) }
+        case 2 { return .Ok(.Blue) }
+        default { return .Error(.BadColor) }
     }
 }
 
@@ -124,10 +124,10 @@ function genColorScore(i: Int) -> Int {
 
 function genRange(n: Int) -> Result<[Int], GenErr> {
     if n <= 0 {
-        return Result.Error(GenErr.Empty)
+        return .Error(.Empty)
     }
     if n > 500 {
-        return Result.Error(GenErr.Overflow)
+        return .Error(.Overflow)
     }
     var xs: [Int] = []
     var i = 0
@@ -135,7 +135,7 @@ function genRange(n: Int) -> Result<[Int], GenErr> {
         xs.append(i * 2)
         i = i + 1
     }
-    return Result.Ok(move xs)
+    return .Ok(move xs)
 }
 
 function genSumRange(n: Int) -> Int {
@@ -181,7 +181,7 @@ function genChainDiv(a: Int, b: Int, c: Int) -> Int {
 function genStep(r: Result<Int, GenErr>, k: Int) -> Result<Int, GenErr> {
     match r {
         Ok(x) -> { return genDivInt(x + k, k) }
-        Error(e) -> { return Result.Error(e) }
+        Error(e) -> { return .Error(e) }
     }
 }
 

@@ -109,7 +109,7 @@ Test ArxAppendLoopNoStackGrowth {
         }
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1799970000); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1799970000); return e }
 }
 
 // From array_append_parity: [4, 5] built via append, order preserved.
@@ -120,7 +120,7 @@ Test ArxAppendParity {
         values.append(5)
         return values[0] * 10 + values[1]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 // From array_call_parity: array threaded through function calls/returns.
@@ -129,7 +129,7 @@ Test ArxCallParity {
         let values: [Int] = arxMakeValues()
         return values[0] * 100 + values[1] * 10 + values[2]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(456); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(456); return e }
 }
 
 // From array_local_parity: plain array literal local.
@@ -138,7 +138,7 @@ Test ArxLocalParity {
         let values = [1, 2, 3]
         return values[0] * 100 + values[1] * 10 + values[2]
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(123); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(123); return e }
 }
 
 // From array_element_borrow_mut_writeback_parity: mutation through
@@ -151,7 +151,7 @@ Test ArxElementBorrowMutWritebackParity {
         arxBump(arr[0])
         return arr[0].v
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // From array_element_deep_field_store_parity: store through a place nested
@@ -163,7 +163,7 @@ Test ArxElementDeepFieldStoreParity {
         arr[0].inner.x = 77
         return arr[0].inner.x
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(77); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(77); return e }
 }
 
 // From array_element_mixed_projection_parity: 3-deep field chain rooted at
@@ -183,7 +183,7 @@ Test ArxElementMixedProjectionParity {
         return out
     }
     // deep=333, xs[2]=555, xs[0]=7 -> 333*1e6 + 555*1e3 + 7 = 333555007
-    expect { let e: Result<Int, TestFailure> = Result.Ok(333555007); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(333555007); return e }
 }
 
 // From array_element_nested_append_parity: `arr[i].xs.append(v)` must grow
@@ -198,7 +198,7 @@ Test ArxElementNestedAppendParity {
         return out
     }
     // count=2, xs[0]=42, xs[1]=43 -> 2*10000 + 42*100 + 43 = 24243
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24243); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24243); return e }
 }
 
 // From conditional_array_return_parity: an array literal of heap structs
@@ -211,5 +211,5 @@ Test ArxConditionalArrayReturnParity {
         return out
     }
     // 1*100 + 0*10 + 1 = 101
-    expect { let e: Result<Int, TestFailure> = Result.Ok(101); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(101); return e }
 }

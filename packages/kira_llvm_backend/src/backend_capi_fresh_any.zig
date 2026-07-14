@@ -1,6 +1,6 @@
 // Fresh-Any return analysis for the LLVM C-API backend's drop driver.
 //
-// KIRA_MEMORY_MODEL.md §3: plain-call construct_any (type-erased / Any)
+// .codex/KIRA_MEMORY_MODEL.md §3: plain-call construct_any (type-erased / Any)
 // results are not tracked by default, because a callee may return a BORROWED
 // alias (a field read, a parameter) and `ret` never deep-clones Any values —
 // tracking an alias would have the caller free storage the real owner still

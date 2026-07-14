@@ -1,11 +1,27 @@
 //! GitHub operations for devflow, via the `gh` CLI. Every query uses `--jq` so
 //! the extraction happens in gh and this module stays free of JSON parsing.
-//! Guards baked in here: PRs open against an explicit base with an empty body
-//! (CodeRabbit authors the description), and merges are squash-with-merge-subject: one flat entry per PR reading "Merge pull request #N from owner/branch".
+//! Guards baked in here: PRs open against an explicit base with complete-branch
+//! metadata, and merges are squash-with-merge-subject: one flat entry per PR
+//! reading "Merge pull request #N from owner/branch".
 
 const std = @import("std");
 const proc = @import("proc.zig");
 const Context = @import("context.zig").Context;
+
+pub const CheckStatus = struct {
+    lines: []u8,
+    total: u32,
+    pending: u32,
+    failing: u32,
+
+    pub fn deinit(self: CheckStatus, allocator: std.mem.Allocator) void {
+        allocator.free(self.lines);
+    }
+
+    pub fn green(self: CheckStatus) bool {
+        return self.total != 0 and self.pending == 0 and self.failing == 0;
+    }
+};
 
 /// Number of an open PR for `head` against the fork, or null if none.
 pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
@@ -17,7 +33,7 @@ pub fn prNumberForBranch(ctx: Context, head: []const u8) !?u32 {
 /// Used to keep PR opens idempotent across retry/resume.
 pub fn prNumberOn(ctx: Context, slug: []const u8, head: []const u8) !?u32 {
     const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "list", "-R", slug, "--head", head,
+        "gh",     "pr",     "list", "-R",                   slug, "--head", head,
         "--json", "number", "--jq", ".[0].number // empty",
     });
     defer ctx.allocator.free(out);
@@ -27,25 +43,37 @@ pub fn prNumberOn(ctx: Context, slug: []const u8, head: []const u8) !?u32 {
 
 /// Open a PR on the fork: base = `base`, head = `head`, empty body.
 /// Returns the new PR number.
-pub fn openForkPr(ctx: Context, base: []const u8, head: []const u8, title: []const u8) !u32 {
+pub fn openForkPr(ctx: Context, base: []const u8, head: []const u8, title: []const u8, body: []const u8) !u32 {
     const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "create", "-R", ctx.fork_slug,
-        "--base", base, "--head", head, "--title", title, "--body", "",
+        "gh",     "pr",     "create", "-R", ctx.fork_slug,
+        "--base", base,     "--head", head, "--title",
+        title,    "--body", body,
     });
     defer ctx.allocator.free(url);
     return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
 }
 
 /// Open a PR from the fork's default branch to upstream's default branch.
-pub fn openUpstreamPr(ctx: Context, head_slug: []const u8, base: []const u8, head: []const u8, title: []const u8) !u32 {
+pub fn openUpstreamPr(ctx: Context, head_slug: []const u8, base: []const u8, head: []const u8, title: []const u8, body: []const u8) !u32 {
     const head_ref = try std.fmt.allocPrint(ctx.allocator, "{s}:{s}", .{ ownerOf(head_slug), head });
     defer ctx.allocator.free(head_ref);
     const url = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "create", "-R", ctx.upstream_slug,
-        "--base", base, "--head", head_ref, "--title", title, "--body", "",
+        "gh",     "pr",     "create", "-R",     ctx.upstream_slug,
+        "--base", base,     "--head", head_ref, "--title",
+        title,    "--body", body,
     });
     defer ctx.allocator.free(url);
     return numberFromPrUrl(url) orelse error.PrUrlUnparseable;
+}
+
+/// Refresh an existing PR from the same complete-branch metadata used to open
+/// it. Retries therefore correct stale or session-scoped descriptions.
+pub fn updatePr(ctx: Context, slug: []const u8, number: u32, title: []const u8, body: []const u8) !void {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "edit", num_str, "-R", slug, "--title", title, "--body", body,
+    });
 }
 
 pub fn comment(ctx: Context, slug: []const u8, number: u32, body: []const u8) !void {
@@ -64,11 +92,171 @@ pub fn reviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
     return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh", "pr", "view", num_str, "-R", slug, "--json", "reviews",
+        "gh",   "pr",                                               "view", num_str, "-R", slug, "--json", "reviews",
         "--jq", "[.reviews[].author.login] | unique | join(\",\")",
     });
 }
 
+/// Comma-joined reviewers whose submitted review is attached to the PR's
+/// current head commit. A review of an older pushed head cannot satisfy the
+/// landing gate after new fixes have been added.
+pub fn headReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",   "pr",                                                                                                        "view", num_str, "-R", slug, "--json", "headRefOid,reviews",
+        "--jq", ".headRefOid as $head | [.reviews[] | select(.commit.oid == $head) | .author.login] | unique | join(\",\")",
+    });
+}
+
+pub fn prHeadOid(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "pr", "view", num_str, "-R", slug, "--json", "headRefOid", "--jq", ".headRefOid",
+    });
+}
+
+/// Current-head check state. `gh pr checks` deliberately exits non-zero while
+/// checks are pending or failing, so those documented states are parsed rather
+/// than mistaken for an invocation failure.
+pub fn prCheckStatus(ctx: Context, slug: []const u8, number: u32) !CheckStatus {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",     "pr",                            "checks", num_str,                                                         "-R", slug,
+        "--json", "bucket,name,state,description", "--jq",   ".[] | [.bucket, .name, .state, (.description // \"\")] | @tsv",
+    });
+    defer result.deinit(ctx.allocator);
+
+    const accepted = switch (result.term) {
+        .exited => |code| code == 0 or code == 1 or code == 8,
+        else => false,
+    };
+    if (!accepted) return error.CheckQueryFailed;
+
+    const lines = try ctx.allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
+    errdefer ctx.allocator.free(lines);
+    const counts = countChecks(lines);
+    return .{ .lines = lines, .total = counts.total, .pending = counts.pending, .failing = counts.failing };
+}
+
+const CheckCounts = struct { total: u32 = 0, pending: u32 = 0, failing: u32 = 0 };
+
+fn countChecks(lines: []const u8) CheckCounts {
+    var counts: CheckCounts = .{};
+    var rows = std.mem.splitScalar(u8, lines, '\n');
+    while (rows.next()) |row| {
+        if (row.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, row, '\t') orelse continue;
+        const bucket = row[0..tab];
+        counts.total += 1;
+        if (std.ascii.eqlIgnoreCase(bucket, "pending")) counts.pending += 1;
+        if (std.ascii.eqlIgnoreCase(bucket, "fail") or
+            std.ascii.eqlIgnoreCase(bucket, "cancel") or
+            std.ascii.eqlIgnoreCase(bucket, "cancelled")) counts.failing += 1;
+    }
+    return counts;
+}
+
+/// Exact-head inline findings from bot reviews. Without `include_codex`, this
+/// reports CodeRabbit; with it, both required bot reviewers are included.
+pub fn headReviewFindings(ctx: Context, slug: []const u8, number: u32, include_codex: bool) ![]u8 {
+    const head = try prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const filter = if (include_codex)
+        "((.user.login | ascii_downcase | contains(\"coderabbit\")) or (.user.login | ascii_downcase | contains(\"codex\")))"
+    else
+        "(.user.login | ascii_downcase | contains(\"coderabbit\"))";
+    const jq = try std.fmt.allocPrint(
+        ctx.allocator,
+        ".[] | select(.original_commit_id == \"{s}\") | select({s}) | \"[\\(.user.login)] \\(.path):\\(.line // .original_line // 0)\\n\\(.body)\\n\\(.html_url)\"",
+        .{ head, filter },
+    );
+    defer ctx.allocator.free(jq);
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/pulls/{d}/comments", .{ slug, number });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "api", "--paginate", endpoint, "--jq", jq });
+}
+
+pub fn failedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                    slug,   "--commit",                                               head,
+        "--limit", "20",  "--json", "databaseId,conclusion", "--jq", ".[] | select(.conclusion == \"failure\") | .databaseId",
+    });
+}
+
+pub fn failedRunLog(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "run", "view", run_id, "-R", slug, "--log-failed",
+    });
+}
+
+pub fn failedJobIdsForRun(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/runs/{s}/jobs", .{ slug, run_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api", "--paginate", endpoint, "--jq", ".jobs[] | select(.conclusion == \"failure\") | .id",
+    });
+}
+
+pub fn failedJobLog(ctx: Context, slug: []const u8, run_id: []const u8, job_id: []const u8) ![]u8 {
+    _ = run_id;
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/jobs/{s}/logs", .{ slug, job_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api", endpoint,
+    });
+}
+
+pub fn completedRunIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                          slug,   "--commit",                                                                                  head,
+        "--limit", "20",  "--json", "databaseId,status,createdAt", "--jq", "[.[] | select(.status == \"completed\")] | sort_by(.createdAt) | reverse | .[].databaseId",
+    });
+}
+
+pub fn runIdsForHead(ctx: Context, slug: []const u8, head: []const u8) ![]u8 {
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",      "run", "list",   "-R",                   slug,   "--commit",                                       head,
+        "--limit", "20",  "--json", "databaseId,createdAt", "--jq", "sort_by(.createdAt) | reverse | .[].databaseId",
+    });
+}
+
+pub fn workflowRunnerDetails(ctx: Context, slug: []const u8, run_id: []const u8) ![]u8 {
+    const endpoint = try std.fmt.allocPrint(ctx.allocator, "repos/{s}/actions/runs/{s}/jobs", .{ slug, run_id });
+    defer ctx.allocator.free(endpoint);
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",                                                                                                                                 "api", "--paginate", endpoint, "--jq",
+        ".jobs[] | [.name, (.status // \"\"), (.runner_name // \"\"), (.runner_group_name // \"\"), ((.labels // []) | join(\",\"))] | @tsv",
+    });
+}
+
+pub fn rerunWorkflow(ctx: Context, slug: []const u8, run_id: []const u8) !void {
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "gh", "run", "rerun", run_id, "-R", slug });
+}
+
+/// CodeRabbit may decline oversized PRs through a successful head check rather
+/// than a submitted review. That is still a completed response (with an honest
+/// skipped reason), so it must not leave `wait-reviews` hanging forever.
+pub fn codeRabbitCheckResponded(ctx: Context, slug: []const u8, number: u32) !bool {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    // `gh pr checks` exits 1/8 while other checks are failing/pending; those
+    // documented states still carry the JSON payload, so treat them as "no
+    // CodeRabbit response yet" rather than an invocation failure.
+    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",     "pr",         "checks", num_str,                                                                                                  "-R", slug,
+        "--json", "name,state", "--jq",   "[.[] | select((.name | ascii_downcase | contains(\"coderabbit\")) and .state == \"SUCCESS\")] | length",
+    });
+    defer result.deinit(ctx.allocator);
+    const accepted = switch (result.term) {
+        .exited => |code| code == 0 or code == 1 or code == 8,
+        else => false,
+    };
+    if (!accepted) return error.CheckQueryFailed;
+    return (std.fmt.parseInt(u32, std.mem.trim(u8, result.stdout, " \r\n"), 10) catch 0) > 0;
+}
 
 /// Count of unresolved review threads across ALL pages (0 = all findings
 /// resolved). Pages through `reviewThreads` so a PR with >100 threads cannot
@@ -98,7 +286,7 @@ pub fn unresolvedThreadCount(ctx: Context, slug: []const u8, number: u32) !u32 {
 
         // Emit: "<unresolved-on-page>\t<hasNextPage>\t<endCursor>".
         const out = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-            "gh", "api", "graphql", "-f", query_arg,
+            "gh",   "api", "graphql", "-f", query_arg,
             "--jq",
             ".data.repository.pullRequest.reviewThreads | " ++
                 "\"\\([.nodes[]|select(.isResolved==false)]|length)\\t\\(.pageInfo.hasNextPage)\\t\\(.pageInfo.endCursor // \"\")\"",
@@ -147,11 +335,11 @@ pub fn landAsPullRequest(ctx: Context, slug: []const u8, number: u32) !void {
 
     // head owner + branch + PR title, tab-separated.
     const info = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh",                                                          "pr",
-        "view",                                                        num_str,
-        "-R",                                                          slug,
-        "--json",                                                      "headRefName,headRepositoryOwner,title",
-        "--jq",                                                        "(.headRepositoryOwner.login // \"\") + \"\\t\" + .headRefName + \"\\t\" + .title",
+        "gh",     "pr",
+        "view",   num_str,
+        "-R",     slug,
+        "--json", "headRefName,headRepositoryOwner,title",
+        "--jq",   "(.headRepositoryOwner.login // \"\") + \"\\t\" + .headRefName + \"\\t\" + .title",
     });
     defer ctx.allocator.free(info);
 
@@ -164,9 +352,9 @@ pub fn landAsPullRequest(ctx: Context, slug: []const u8, number: u32) !void {
     defer ctx.allocator.free(subject);
 
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
-        "gh",        "pr",   "merge",   num_str,
-        "-R",        slug,   "--squash", "--subject",
-        subject,     "--body", title,
+        "gh",    "pr",     "merge",    num_str,
+        "-R",    slug,     "--squash", "--subject",
+        subject, "--body", title,
     });
 }
 
@@ -193,4 +381,16 @@ test "numberFromPrUrl" {
 test "owner/repo split" {
     try std.testing.expectEqualStrings("iPriam", ownerOf("iPriam/kira"));
     try std.testing.expectEqualStrings("kira", repoOf("iPriam/kira"));
+}
+
+test "countChecks classifies current check buckets" {
+    const counts = countChecks(
+        "pass\tlinux\tSUCCESS\t\n" ++
+            "pending\tmacos\tIN_PROGRESS\t\n" ++
+            "fail\twindows\tFAILURE\tbroken\n" ++
+            "skipping\tCodeRabbit\tSUCCESS\toversized",
+    );
+    try std.testing.expectEqual(@as(u32, 4), counts.total);
+    try std.testing.expectEqual(@as(u32, 1), counts.pending);
+    try std.testing.expectEqual(@as(u32, 1), counts.failing);
 }

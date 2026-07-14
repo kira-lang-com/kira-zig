@@ -1,0 +1,20 @@
+Package KikCorpusFfiCallbacks {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "callbacks",
+            linkMode: .Static,
+            headers: Headers { entrypoint: "NativeLibs/callbacks.h", includeDirs: ["NativeLibs"] },
+            sources: ["NativeLibs/callbacks.c"],
+            autobind: Autobind {
+                module: "callbacks",
+                headers: ["NativeLibs/callbacks.h"],
+                functions: ["kira_invoke_callback"],
+                callbacks: ["kira_i64_callback"]
+            }
+        }
+    ]
+    let tests = Tests { backends: [.Hybrid], phase: .Both }
+}
