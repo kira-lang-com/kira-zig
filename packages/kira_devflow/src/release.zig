@@ -8,13 +8,14 @@
 //! tag `v2026.07.2` counts as `1.7.2` when computing the next July-2026
 //! patch. The version is stored in two files that must agree with the tag
 //! (`build.zig` bakes it into every binary and the toolchain snapshot name;
-//! `release.yml` uses it for the released toolchain directory), and the
-//! release notes come from the version's `.codex/CHANGELOG.md` section
-//! (`writing-github-releases` skill).
+//! `release.yml` uses it for the released toolchain directory). Release
+//! notes are never checked into git: they are drafted in an untracked file
+//! (`writing-github-releases` skill) and published straight onto the GitHub
+//! release by the `release` verb.
 //!
-//!   next-version   compute and print the next version
-//!   release-prep   rewrite stored versions + require the changelog section
-//!   release        gate agreement, then signed tag on main pushed upstream
+//!   next-version            compute and print the next version
+//!   release-prep            rewrite the stored version strings
+//!   release --notes <file>  gate agreement, signed tag, GitHub release
 
 const std = @import("std");
 const proc = @import("proc.zig");
@@ -25,7 +26,6 @@ const Context = @import("context.zig").Context;
 const version_epoch_year: i64 = 2025;
 const build_zig_prefix = "const kirac_version = \"";
 const release_yml_prefix = "  VERSION: \"";
-const changelog_path = ".codex/CHANGELOG.md";
 
 /// `next-version`: print the version `release-prep` would store.
 pub fn nextVersion(ctx: Context) !void {
@@ -34,25 +34,26 @@ pub fn nextVersion(ctx: Context) !void {
     out.print("{s}\n", .{version});
 }
 
-/// `release-prep`: compute the next version, require its non-empty changelog
-/// section, and rewrite both stored version strings. The bump then lands
-/// through the normal branch -> PR -> land flow like any other change.
+/// `release-prep`: compute the next version and rewrite both stored version
+/// strings. The bump then lands through the normal branch -> PR -> land flow
+/// like any other change.
 pub fn releasePrep(ctx: Context) !void {
     const version = try computeNextVersion(ctx);
     defer ctx.allocator.free(version);
 
-    try requireChangelogSection(ctx, version);
     try rewriteQuotedValue(ctx, "build.zig", build_zig_prefix, version);
     try rewriteQuotedValue(ctx, ".github/workflows/release.yml", release_yml_prefix, version);
 
     out.print("devflow: staged version {s} in build.zig and release.yml\n", .{version});
-    out.line("devflow: land the bump through the normal PR flow, then run `devflow release`");
+    out.line("devflow: land the bump, draft release notes in an untracked file, then run `devflow release --notes <file>`");
 }
 
-/// `release`: verify every stored version agrees on a tag-ready main, then
-/// create the signed `v<version>` tag and push it to upstream, which
-/// triggers the release workflow.
-pub fn release(ctx: Context) !void {
+/// `release --notes <file>`: verify every stored version agrees on a
+/// tag-ready main and the notes draft is non-empty, then create the signed
+/// `v<version>` tag, push it to upstream, and publish the GitHub release
+/// with those notes. The tag push triggers the asset-build workflow, which
+/// uploads into the already-created release without touching its notes.
+pub fn release(ctx: Context, notes_path: []const u8) !void {
     if (!ctx.hasUpstream()) {
         out.line("devflow: release requires an `upstream` remote");
         return error.NoUpstreamRemote;
@@ -80,7 +81,7 @@ pub fn release(ctx: Context) !void {
         out.print("devflow: version mismatch: build.zig has {s}, release.yml has {s}; run `devflow release-prep` and land it\n", .{ version, workflow_version });
         return error.VersionMismatch;
     }
-    try requireChangelogSection(ctx, version);
+    try requireNotesDraft(ctx, notes_path);
 
     const tag = try std.fmt.allocPrint(ctx.allocator, "v{s}", .{version});
     defer ctx.allocator.free(tag);
@@ -90,9 +91,27 @@ pub fn release(ctx: Context) !void {
     defer ctx.allocator.free(message);
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "tag", "-s", tag, "-m", message });
     try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "push", "upstream", tag });
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "release", "create", tag, "-R", ctx.upstream_slug, "--verify-tag", "--title", message, "--notes-file", notes_path,
+    });
 
-    out.print("devflow: pushed signed tag {s}; release workflow is running\n", .{tag});
-    out.print("devflow: watch it at https://github.com/{s}/actions/workflows/release.yml\n", .{ctx.upstream_slug});
+    out.print("devflow: pushed signed tag {s} and published the GitHub release\n", .{tag});
+    out.print("devflow: asset build is running at https://github.com/{s}/actions/workflows/release.yml\n", .{ctx.upstream_slug});
+}
+
+/// Release notes live only in the GitHub release, drafted in an untracked
+/// file — never checked into git. An empty draft would publish an empty
+/// release page, so it is rejected here.
+fn requireNotesDraft(ctx: Context, notes_path: []const u8) !void {
+    const text = std.Io.Dir.cwd().readFileAlloc(ctx.io, notes_path, ctx.allocator, .limited(4 * 1024 * 1024)) catch {
+        out.print("devflow: could not read release notes draft at {s}\n", .{notes_path});
+        return error.MissingReleaseNotes;
+    };
+    defer ctx.allocator.free(text);
+    if (std.mem.indexOfNone(u8, text, " \t\r\n") == null) {
+        out.print("devflow: release notes draft {s} is empty; write it first (writing-github-releases skill)\n", .{notes_path});
+        return error.MissingReleaseNotes;
+    }
 }
 
 /// Next version from the real clock and the union of new-scheme and legacy
@@ -154,35 +173,6 @@ fn civilFromTimestamp(timestamp: i64) CivilDate {
     const month: u8 = @intCast(if (mp < 10) mp + 3 else mp - 9);
     const year = yoe + era * 400 + @intFromBool(month <= 2);
     return .{ .year = year, .month = month };
-}
-
-/// The changelog must already carry a non-empty `## [<version>]` section —
-/// the release body is generated from it, and the workflow's bare fallback
-/// line is a bug, not a post (`writing-github-releases` skill).
-fn requireChangelogSection(ctx: Context, version: []const u8) !void {
-    const text = try readRepoFile(ctx, changelog_path);
-    defer ctx.allocator.free(text);
-    const heading = try std.fmt.allocPrint(ctx.allocator, "## [{s}]", .{version});
-    defer ctx.allocator.free(heading);
-    if (!changelogSectionNonEmpty(text, heading)) {
-        out.print("devflow: {s} has no non-empty \"{s}\" section; write it first (writing-github-releases skill)\n", .{ changelog_path, heading });
-        return error.MissingChangelogSection;
-    }
-}
-
-/// True when `heading` starts a line and body text follows before the next
-/// `## [` heading (or EOF).
-fn changelogSectionNonEmpty(text: []const u8, heading: []const u8) bool {
-    const start = blk: {
-        if (std.mem.startsWith(u8, text, heading)) break :blk heading.len;
-        const nl_heading_at = std.mem.indexOf(u8, text, heading) orelse return false;
-        if (text[nl_heading_at - 1] != '\n') return false;
-        break :blk nl_heading_at + heading.len;
-    };
-    const rest_of_line = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse return false;
-    const body_end = std.mem.indexOfPos(u8, text, rest_of_line, "\n## [") orelse text.len;
-    const body = text[rest_of_line..body_end];
-    return std.mem.indexOfNone(u8, body, " \t\r\n") != null;
 }
 
 fn requireHeadsAligned(ctx: Context) !void {
@@ -315,10 +305,3 @@ test "extractQuotedValue reads one site and rejects ambiguity" {
     try std.testing.expect(extractQuotedValue("nothing", build_zig_prefix) == null);
 }
 
-test "changelogSectionNonEmpty requires body text before the next heading" {
-    const filled = "# Changelog\n\n## [1.7.3] - 2026-07-14\n\n- Something shipped.\n\n## [2026.07.2] - 2026-07-07\n";
-    try std.testing.expect(changelogSectionNonEmpty(filled, "## [1.7.3]"));
-    const empty = "# Changelog\n\n## [1.7.3] - 2026-07-14\n\n## [2026.07.2] - 2026-07-07\n";
-    try std.testing.expect(!changelogSectionNonEmpty(empty, "## [1.7.3]"));
-    try std.testing.expect(!changelogSectionNonEmpty(filled, "## [1.7.4]"));
-}
