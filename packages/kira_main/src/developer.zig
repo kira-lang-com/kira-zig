@@ -52,7 +52,10 @@ pub const DeveloperFacade = struct {
 
     pub fn check(self: *DeveloperFacade, path: []const u8, backend: api.KiraDeveloperBackend) !bool {
         self.reset();
-        build.setNativePreparationMode(.resolve_only);
+        // Checking must materialize declared autobind modules before the program
+        // graph is built, but it must not compile native artifacts. The binding
+        // generator has its own content cache, so a current module is a no-op.
+        build.setNativePreparationMode(.bindings_only);
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();
@@ -82,7 +85,9 @@ pub const DeveloperFacade = struct {
 
     pub fn buildPackage(self: *DeveloperFacade, path: []const u8, backend: api.KiraDeveloperBackend) !bool {
         self.reset();
-        build.setNativePreparationMode(.artifacts_only);
+        // A build needs both cached native artifacts and declared autobind
+        // modules. Each preparation step is freshness checked independently.
+        build.setNativePreparationMode(.full);
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();
@@ -133,7 +138,10 @@ pub const DeveloperFacade = struct {
             try self.setReport("error[KCLI020]: unsupported test backend\n  kira test executes Test functions through the build-time VM; wasm is not supported.\n");
             return false;
         }
-        build.setNativePreparationMode(.artifacts_only);
+        // Tests may import generated modules and execute native leaves. Ensure
+        // both, relying on their caches instead of requiring a separate
+        // `kira ffi autobind` invocation or rebuilding current libraries.
+        build.setNativePreparationMode(.full);
         defer build.setNativePreparationMode(.full);
 
         const allocator = self.arena.allocator();

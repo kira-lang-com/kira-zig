@@ -34,6 +34,7 @@ fn timingPrint(comptime fmt: []const u8, args: anytype) void {
 
 pub const NativePreparationMode = enum {
     full,
+    bindings_only,
     artifacts_only,
     resolve_only,
 };
@@ -57,7 +58,10 @@ var native_preparation_mode: NativePreparationMode = .full;
 
 pub fn setNativePreparationMode(mode: NativePreparationMode) void {
     native_preparation_mode = mode;
-    autobind.setBindingMode(if (mode == .full) .ensure else .skip);
+    autobind.setBindingMode(switch (mode) {
+        .full, .bindings_only => .ensure,
+        .artifacts_only, .resolve_only => .skip,
+    });
 }
 
 pub fn prepareNativeLibraries(
@@ -381,6 +385,12 @@ fn applyPreparationPolicy(allocator: std.mem.Allocator, library: *native.Resolve
     if (library.unavailable != null) return;
     switch (native_preparation_mode) {
         .resolve_only => {},
+        .bindings_only => {
+            progress.progressPrint("Generating bindings for native library {s}", .{library.name});
+            const autobind_start = nowTimestamp();
+            try autobind.ensureGeneratedBindings(allocator, library.*);
+            timingPrint("[kira:timing] native.ensureGeneratedBindings library={s} ns={d}\n", .{ library.name, elapsedNs(autobind_start) });
+        },
         .artifacts_only => {
             progress.progressPrint("Building native library {s}", .{library.name});
             const artifact_start = nowTimestamp();
