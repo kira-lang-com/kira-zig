@@ -32,7 +32,12 @@ pub const Parser = struct {
     const block_impl = @import("parser_blocks.zig");
     const param_impl = @import("parser_params.zig");
     const type_expr_impl = @import("parser_types_exprs.zig");
+    const expr_postfix_impl = @import("parser_expr_postfix.zig");
     const macro_impl = @import("parser_macros.zig");
+    const failtest_impl = @import("parser_failtest.zig");
+
+    pub const parseFailTestDecl = failtest_impl.parseFailTestDecl;
+    pub const looksLikeFailTest = failtest_impl.looksLikeFailTest;
 
     pub const parseTopLevelDecl = decl_impl.parseTopLevelDecl;
     pub const parseAnnotationDecl = decl_impl.parseAnnotationDecl;
@@ -108,8 +113,8 @@ pub const Parser = struct {
     pub const parseTerm = type_expr_impl.parseTerm;
     pub const parseFactor = type_expr_impl.parseFactor;
     pub const parseUnary = type_expr_impl.parseUnary;
-    pub const parsePostfix = type_expr_impl.parsePostfix;
-    pub const parsePrimary = type_expr_impl.parsePrimary;
+    pub const parsePostfix = expr_postfix_impl.parsePostfix;
+    pub const parsePrimary = expr_postfix_impl.parsePrimary;
 
     pub fn parseProgram(self: *Parser) !syntax.ast.Program {
         var imports = std.array_list.Managed(syntax.ast.ImportDecl).init(self.allocator);
@@ -392,6 +397,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .string => |node| node.span,
         .bool => |node| node.span,
         .identifier => |node| node.span,
+        .implicit_member => |node| node.span,
         .array => |node| node.span,
         .builder_array => |node| node.span,
         .callback => |node| node.span,

@@ -179,6 +179,10 @@ pub const Value = union(enum) {
     c_string_to_string: UnaryWrapperValue,
     array_len: UnaryWrapperValue,
     string_len: UnaryWrapperValue,
+    string_from_scalar: UnaryWrapperValue,
+    string_char_at: StringCharAtValue,
+    string_substring: StringSubstringValue,
+    string_index_of: StringIndexOfValue,
     opaque_member: OpaqueMemberValue,
     opaque_index: OpaqueIndexValue,
     // Async task spine (deferred execution): spawn captures a direct call's
@@ -358,6 +362,31 @@ pub const ConditionalValue = struct {
 
 pub const UnaryWrapperValue = struct {
     inner: *Value,
+    ty: model.ResolvedType,
+    temp_id: u32,
+    span: source_pkg.Span,
+};
+
+pub const StringCharAtValue = struct {
+    string: *Value,
+    index: *Value,
+    ty: model.ResolvedType,
+    temp_id: u32,
+    span: source_pkg.Span,
+};
+
+pub const StringSubstringValue = struct {
+    string: *Value,
+    start: *Value,
+    end: *Value,
+    ty: model.ResolvedType,
+    temp_id: u32,
+    span: source_pkg.Span,
+};
+
+pub const StringIndexOfValue = struct {
+    string: *Value,
+    needle: *Value,
     ty: model.ResolvedType,
     temp_id: u32,
     span: source_pkg.Span,

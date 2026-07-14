@@ -57,7 +57,7 @@ Test OwyConstructAnyTreeChurnParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(180); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(180); return e }
 }
 
 // ---- ownership_enum_argument_into_field_parity ----
@@ -89,13 +89,13 @@ Test OwyEnumArgumentIntoFieldParity {
         var frame = 0
         var total = 0
         while frame < 4 {
-            let view = owyMakeView1(OwyMode1.Fixed(frame + 2), OwyMode1.Hug, frame)
+            let view = owyMakeView1(.Fixed(frame + 2), .Hug, frame)
             total = total + owySpan1(view.width) + owySpan1(view.height) + view.n
             frame = frame + 1
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 // ---- ownership_enum_string_payload_free_parity ----
@@ -133,11 +133,11 @@ Test OwyEnumStringPayloadFreeParity {
     test {
         var hits = 0
         var i = 0
-        var envelope = OwyEnvelope3 { label: "env-" + "x", message: OwyMessage3.Empty }
+        var envelope = OwyEnvelope3 { label: "env-" + "x", message: .Empty }
         while i < 20 {
-            envelope.message = OwyMessage3.Note("payload-" + "text")
-            envelope.message = OwyMessage3.Count(i)
-            envelope.message = OwyMessage3.Note("second-" + "note")
+            envelope.message = .Note("payload-" + "text")
+            envelope.message = .Count(i)
+            envelope.message = .Note("second-" + "note")
             let copy = envelope
             let picked = owyPickMessage3(copy)
             if owyDescribe3(picked) == "note:second-note" {
@@ -147,7 +147,7 @@ Test OwyEnumStringPayloadFreeParity {
         }
         return hits
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 // ---- ownership_enum_struct_field_parity ----
@@ -163,7 +163,7 @@ struct OwyBox4 {
 }
 
 function owyMake4(x: Int) -> OwyBox4 {
-    return OwyBox4 { kind: OwyKind4.Tagged(x), n: x }
+    return OwyBox4 { kind: .Tagged(x), n: x }
 }
 
 function owyClassify4(b: borrow OwyBox4) -> Int {
@@ -189,7 +189,7 @@ Test OwyEnumStructFieldParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ---- ownership_explicit_move_ok ----
@@ -207,7 +207,7 @@ Test OwyExplicitMoveOk {
         var mesh = OwyMesh5 { id: 7 }
         return owyConsume5(move mesh)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // ---- ownership_free_state_moveout_return_parity ----
@@ -282,7 +282,7 @@ Test OwyFreeStateMoveoutReturnParity {
         let combined = tree.nodes[0] * 100000 + tree.nodes[1] * 1000 + tree.generation * 100 + sum * 10 + tree.nodes.count
         return okFlag * combined
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1113202); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1113202); return e }
 }
 
 // ---- ownership_let_field_alias_if_partial_move ----
@@ -304,7 +304,7 @@ Test OwyLetFieldAliasIfPartialMove {
         let bag = OwyBag7 { items: [1, 2, 3] }
         return owyLeak7(true, move bag)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---- ownership_let_field_alias_partial_move ----
@@ -323,7 +323,7 @@ Test OwyLetFieldAliasPartialMove {
         let bag = OwyBag8 { items: [1, 2, 3] }
         return owyLeak8(move bag)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---- ownership_let_field_alias_switch_partial_move ----
@@ -349,7 +349,7 @@ Test OwyLetFieldAliasSwitchPartialMove {
         let bag = OwyBag9 { items: [1, 2, 3] }
         return owyLeak9(0, move bag)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---- ownership_let_field_alias_while_partial_move ----
@@ -371,7 +371,7 @@ Test OwyLetFieldAliasWhilePartialMove {
         let bag = OwyBag10 { items: [1, 2, 3] }
         return owyLeak10(true, move bag)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ---- ownership_multi_closure_copy_capture ----
@@ -395,7 +395,7 @@ Test OwyMultiClosureCopyCapture {
         let combined = owyCallTwice11(move adder, move multiplier)
         return combined * 10 + direct
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5404); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5404); return e }
 }
 
 // ---- ownership_partial_move_scope_exit_parity ----
@@ -421,7 +421,7 @@ function owyBuildNode12(tag: Int) -> some OwyPmNode12 {
 
 struct OwyHolder12 {
     var ids: [Int] = []
-    var status: OwyStatus12 = OwyStatus12.Ready("ok")
+    var status: OwyStatus12 = .Ready("ok")
     var node: some OwyPmNode12
     var kept: [Int] = []
 }
@@ -452,14 +452,14 @@ Test OwyPartialMoveScopeExitParity {
             var holder = OwyHolder12 { node: owyBuildNode12(round) }
             holder.ids.append(round)
             holder.ids.append(round + 1)
-            holder.status = OwyStatus12.Blocked("waiting")
+            holder.status = .Blocked("waiting")
             holder.kept.append(round)
             total = total + owyConsume12(move holder)
             round = round + 1
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(135); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(135); return e }
 }
 
 // ---- ownership_recursive_closure_tree_parity ----
@@ -527,7 +527,7 @@ Test OwyRecursiveClosureTreeParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20670); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20670); return e }
 }
 
 // ---- ownership_string_deep_value_parity ----
@@ -624,7 +624,7 @@ Test OwyStringDeepValueParity {
             okCount = okCount + 1
         }
 
-        let m = OwyMessage14.Note("payload-" + "text")
+        let m: OwyMessage14 = .Note("payload-" + "text")
         if owyUnwrap14(move m) == "payload-text" {
             okCount = okCount + 1
         }
@@ -648,7 +648,7 @@ Test OwyStringDeepValueParity {
 
         return okCount
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 // ---- ownership_struct_param_move_into_array_parity ----
@@ -688,7 +688,7 @@ Test OwyStructParamMoveIntoArrayParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 // ---- ownership_temporary_move_ok ----
@@ -709,7 +709,7 @@ Test OwyTemporaryMoveOk {
     test {
         return owyConsume16(owyMakeMesh16())
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(11); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
 }
 
 // ---- ownership_trivial_value_no_move ----
@@ -724,7 +724,7 @@ Test OwyTrivialValueNoMove {
         let y = owyAdd17(x, x)
         return y
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 // ---- partial_move_disjoint_fields ----
@@ -758,7 +758,7 @@ Test OwyPartialMoveDisjointFields {
         }
         return owyConsume18(move pair)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(36); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(36); return e }
 }
 
 // ---- mid_ir_disjoint_struct_field_borrows ----
@@ -778,7 +778,7 @@ Test OwyMidIrDisjointStructFieldBorrows {
         owyUpdateBoth19(pair.left, pair.right)
         return pair.left.value * 100 + pair.right.value
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1122); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1122); return e }
 }
 
 // ---- consuming_nested_field_receiver_parity ----
@@ -826,7 +826,7 @@ Test OwyConsumingNestedFieldReceiverParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 // ---- consuming_nested_indexed_receiver_parity ----
@@ -883,5 +883,5 @@ Test OwyConsumingNestedIndexedReceiverParity {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }

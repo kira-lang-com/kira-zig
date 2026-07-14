@@ -18,21 +18,21 @@ enum Direction {
 
 function rotate(value: borrow Direction) -> Direction {
     match value {
-        Left -> { return Direction.Up }
-        Up -> { return Direction.Right }
-        Right -> { return Direction.Down }
-        Down -> { return Direction.Left }
+        Left -> { return .Up }
+        Up -> { return .Right }
+        Right -> { return .Down }
+        Down -> { return .Left }
     }
 }
 
 function directionScore(value: borrow Direction) -> Int {
-    if value == Direction.Up {
+    if value == .Up {
         return 1
     }
-    if value == Direction.Right {
+    if value == .Right {
         return 2
     }
-    if value == Direction.Down {
+    if value == .Down {
         return 3
     }
     return 0
@@ -40,12 +40,12 @@ function directionScore(value: borrow Direction) -> Int {
 
 Test EnumCalculation {
     test {
-        let value = Direction.Left
+        let value: Direction = .Left
         return rotate(value)
     }
 
     expect {
-        let expected: Result<Direction, TestFailure> = Result.Ok(Direction.Up)
+        let expected: Result<Direction, TestFailure> = .Ok(.Up)
         return expected
     }
 }
@@ -56,7 +56,7 @@ Test IntegerCalculation {
     }
 
     expect {
-        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        let expected: Result<Int, TestFailure> = .Ok(42)
         return expected
     }
 }
@@ -67,7 +67,7 @@ Test ProductCalculation {
     }
 
     expect {
-        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        let expected: Result<Int, TestFailure> = .Ok(42)
         return expected
     }
 }
@@ -78,7 +78,7 @@ Test ComptimeFunctionResult {
     }
 
     expect {
-        let expected: Result<Int, TestFailure> = Result.Ok(42)
+        let expected: Result<Int, TestFailure> = .Ok(42)
         return expected
     }
 }

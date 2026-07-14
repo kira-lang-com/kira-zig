@@ -1,0 +1,198 @@
+// Closures and callbacks across @Native <-> @Runtime — migrated corpus cases
+// from tests/pass/run/. PREFIX: hbc / Hbc.
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// hybrid_runtime_native_callback_export — a runtime context passes a
+// reference to a native-bodied function as a callback into a native sink. In
+// hybrid mode the callback body is stripped from the VM bytecode module, so
+// the runtime->native closure export must recover the (zero) capture metadata
+// from the hybrid manifest. Regression guard for the hybrid "runtime closure
+// function could not be resolved" SIGABRT. Original stdout: 42.
+// ---------------------------------------------------------------------------
+
+@Native
+function hbcDouble(x: Int) -> Int {
+    return x * 2
+}
+
+@Native
+function hbcApplyCallback(callback: (Int) -> Int, value: Int) -> Int {
+    return callback(value)
+}
+
+Test HbcNativeCallbackExport {
+    test {
+        let f: (Int) -> Int = hbcDouble
+        return hbcApplyCallback(move f, 21)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid_runtime_native_closure_capture_export — a native-bodied CAPTURING
+// closure round-trips native -> runtime -> native: makeAdder (native) returns
+// a closure capturing `base`; the runtime hands it back to the native sink.
+// The export must recover capture types from the hybrid manifest. Regression
+// guard for the capturing variant of the SIGABRT above. Original stdout: 15.
+// ---------------------------------------------------------------------------
+
+@Native
+function hbcMakeAdder(base: Int) -> (Int) -> Int {
+    return { x in
+        return x + base
+    }
+}
+
+@Native
+function hbcApplyAdder(callback: (Int) -> Int, value: Int) -> Int {
+    return callback(value)
+}
+
+Test HbcNativeClosureCaptureExport {
+    test {
+        let f: (Int) -> Int = hbcMakeAdder(10)
+        return hbcApplyAdder(move f, 5)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid_runtime_native_closure_callback_capture — a runtime closure
+// capturing a local, taking and returning a @Runtime struct BY VALUE, invoked
+// from a @Native sink. Original stdout: 8.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbcCapCounter {
+    var count: Int
+}
+
+@Native
+function hbcInvokeCapCallback(callback: (HbcCapCounter) -> HbcCapCounter, counter: HbcCapCounter) -> Int {
+    let next = callback(move counter)
+    return next.count
+}
+
+Test HbcClosureCallbackCapture {
+    test {
+        let bonus: Int = 5
+        let counter = HbcCapCounter { count: 3 }
+        let callback: (HbcCapCounter) -> HbcCapCounter = { value in
+            var next = value
+            next.count = next.count + bonus
+            return next
+        }
+        return hbcInvokeCapCallback(move callback, move counter)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_runtime_struct_callback_bridge — a @Runtime function reference
+// passed as a struct-valued callback into a @Native sink, from a native
+// context (the original @Main was @Native). Original stdout: 8.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbcRtCounter {
+    var count: Int
+}
+
+@Runtime
+function hbcBump(counter: HbcRtCounter) -> HbcRtCounter {
+    var next = counter
+    next.count = next.count + 5
+    return next
+}
+
+@Native
+function hbcInvokeStructCallback(callback: (HbcRtCounter) -> HbcRtCounter, counter: HbcRtCounter) -> Int {
+    let next = callback(move counter)
+    return next.count
+}
+
+// The original @Main was @Native; keep the invocation in native code.
+@Native
+function hbcStructCallbackRun() -> Int {
+    let counter = HbcRtCounter { count: 3 }
+    return hbcInvokeStructCallback(hbcBump, move counter)
+}
+
+Test HbcStructCallbackBridge {
+    test { return hbcStructCallbackRun() }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_callback_capture_local_remap — a native-context closure capturing a
+// local (rootId), handed to a @Native sink, which re-enters another @Native
+// function from inside the closure (capture slot remap regression). The
+// original handler printed 3 / 5 / 9 and returned Void; the printed values
+// are encoded positionally instead (3 * 10000 + 5 * 100 + 9 = 30509).
+// ---------------------------------------------------------------------------
+
+class HbcFrame {
+    let value: Int
+}
+
+@Native
+function hbcRegister(handler: (HbcFrame) -> Int) -> Int {
+    return handler(HbcFrame(2))
+}
+
+@Native
+function hbcBuild(root: Int) -> Int {
+    let frame = HbcFrame(5)
+    // originally printed frame.value (5) then root + 4 (9)
+    return frame.value * 100 + (root + 4)
+}
+
+// The original @Main was @Native; keep closure creation in native code.
+@Native
+function hbcRemapRun() -> Int {
+    let rootId = 5
+    return hbcRegister { frame in
+        let returned = HbcFrame(frame.value + 1)
+        return returned.value * 10000 + hbcBuild(rootId)
+    }
+}
+
+Test HbcCallbackCaptureLocalRemap {
+    test { return hbcRemapRun() }
+    expect { let e: Result<Int, TestFailure> = .Ok(30509); return e }
+}
+
+// ---------------------------------------------------------------------------
+// runtime_native_struct_value_return_callback — native -> VM closure ->
+// native struct-by-value return: routes through kira_hybrid_host_call_runtime
+// exactly like sokol's drawRect -> onFrame closure -> rootViewportSize(), the
+// production "crash sandwich", without a window. Original stdout: 560.
+// ---------------------------------------------------------------------------
+
+@Native
+struct HbcSize {
+    var width: Int
+    var height: Int
+}
+
+@Native
+function hbcRootSize() -> HbcSize {
+    return HbcSize { width: 320, height: 240 }
+}
+
+@Native
+function hbcInvokeSeedCallback(callback: (Int) -> Int, seed: Int) -> Int {
+    return callback(seed)
+}
+
+Test HbcStructValueReturnCallback {
+    test {
+        let callback: (Int) -> Int = { seed in
+            let s = hbcRootSize()
+            return s.width + s.height + seed
+        }
+        return hbcInvokeSeedCallback(move callback, 0)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(560); return e }
+}

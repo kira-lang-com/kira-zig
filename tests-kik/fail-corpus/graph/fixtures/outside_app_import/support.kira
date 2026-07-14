@@ -1,0 +1,8 @@
+// Deliberately OUTSIDE the app/ module root: `import support` in app/main.kira
+// cannot reach this file, so the import is unresolved (KSEM032). This on-disk
+// layout — a module physically outside the package's module graph — is the
+// entire point of the case and is why it needs a fixture DIRECTORY, not an
+// inline single-file FailTest source.
+function hello() {
+    return
+}

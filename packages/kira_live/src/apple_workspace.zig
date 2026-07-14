@@ -61,8 +61,7 @@ const ArchResult = struct {
 };
 
 fn appExecutionIsNative(allocator: std.mem.Allocator, base_target: live.ResolvedLiveTarget) bool {
-    const text = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, base_target.validation_manifest_path, allocator, .limited(2 * 1024 * 1024)) catch return false;
-    const parsed = manifest.parseProjectManifest(allocator, text) catch return false;
+    const parsed = @import("manifest_loader.zig").load(allocator, base_target.validation_manifest_path) catch return false;
     return std.mem.eql(u8, parsed.execution_mode, "llvm") or std.mem.eql(u8, parsed.execution_mode, "llvm_native");
 }
 

@@ -1,0 +1,37 @@
+// MfxTests.kira — pure-Kira Test cases that exercise a package.kira-loaded
+// package end to end, including the manifest `Tests { backends, phase }` matrix.
+// The package.kira declares backends [Vm, Llvm] and phase Both, so `kira test`
+// with no --backend runs every case once per backend (check + run).
+// PREFIX: mfx / Mfx.
+
+function mfxDouble(n: Int) -> Int {
+    return n + n
+}
+
+function mfxSumRange(n: Int) -> Int {
+    var total = 0
+    for i in 0..n {
+        total = total + i
+    }
+    return total
+}
+
+Test MfxDoubleThree {
+    test { return mfxDouble(3) }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
+}
+
+Test MfxSumToFive {
+    test { return mfxSumRange(5) }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
+}
+
+Test MfxConcat {
+    test { return "kik" + "-manifest" }
+    expect { let e: Result<String, TestFailure> = .Ok("kik-manifest"); return e }
+}
+
+Test MfxBool {
+    test { return 2 + 2 == 4 }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}

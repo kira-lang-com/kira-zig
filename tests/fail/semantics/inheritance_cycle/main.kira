@@ -1,7 +1,0 @@
-class Left extends Right {}
-class Right extends Left {}
-
-@Main
-function entry() {
-    return
-}

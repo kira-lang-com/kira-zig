@@ -1,0 +1,1053 @@
+// FsaFailTests.kira — migrated legacy expected-diagnostic corpus (semantics slice A).
+//
+// Each FailTest wraps a legacy tests/fail/semantics/<case>/main.kira source verbatim
+// and asserts the compile-failure diagnostic code recorded in that case's expect.toml.
+//
+// Manifest (legacy case -> FailTest name -> diagnostic code):
+//   ambiguous_inference                              -> FsaAmbiguousInference                            (KSEM029)
+//   ambiguous_inherited_field_lookup                 -> FsaAmbiguousInheritedFieldLookup                 (KSEM057)
+//   ambiguous_inherited_method_lookup                -> FsaAmbiguousInheritedMethodLookup                (KSEM056)
+//   annotation_parameter_type_mismatch               -> FsaAnnotationParameterTypeMismatch               (KSEM071)
+//   any_requires_construct_class                     -> FsaAnyRequiresConstructClass                     (KSEM097)
+//   any_requires_construct_primitive                 -> FsaAnyRequiresConstructPrimitive                 (KSEM097)
+//   attempt_incompatible_failures                    -> FsaAttemptIncompatibleFailures                   (KSEM137)
+//   attempt_missing_handler                          -> FsaAttemptMissingHandler                         (KSEM135)
+//   attempt_unknown_handler                          -> FsaAttemptUnknownHandler                         (KSEM136)
+//   break_outside_loop                               -> FsaBreakOutsideLoop                              (KSEM075)
+//   conflicting_execution                            -> FsaConflictingExecution                          (KSEM005)
+//   construct_array_field_alias                      -> FsaConstructArrayFieldAlias                      (KSEM118)
+//   construct_channel_accepts                        -> FsaConstructChannelAccepts                       (KSEM130)
+//   construct_channel_count                          -> FsaConstructChannelCount                         (KSEM129)
+//   construct_channel_duplicate                      -> FsaConstructChannelDuplicate                     (KSEM138)
+//   construct_channel_unknown                        -> FsaConstructChannelUnknown                       (KSEM127)
+//   construct_content_sealed                         -> FsaConstructContentSealed                        (KSEM128)
+//   construct_form_cycle                             -> FsaConstructFormCycle                            (KSEM119)
+//   construct_inheritance_cycle                      -> FsaConstructInheritanceCycle                     (KSEM119)
+//   construct_projection_unknown                     -> FsaConstructProjectionUnknown                    (KSEM131)
+//   construct_property_duplicate                     -> FsaConstructPropertyDuplicate                    (KSEM126)
+//   construct_property_missing_required              -> FsaConstructPropertyMissingRequired              (KSEM123)
+//   construct_property_type_mismatch                 -> FsaConstructPropertyTypeMismatch                 (KSEM125)
+//   construct_property_unknown                       -> FsaConstructPropertyUnknown                      (KSEM124)
+//   construct_refine_widen                           -> FsaConstructRefineWiden                          (KSEM132)
+//   construct_required_missing                       -> FsaConstructRequiredMissing                      (KSEM120)
+//   construct_required_signature                     -> FsaConstructRequiredSignature                    (KSEM121)
+//   construct_unknown_parent                         -> FsaConstructUnknownParent                        (KSEM118)
+//   content_string_not_widget                        -> FsaContentStringNotWidget                        (KSEM098)
+//   continue_outside_loop                            -> FsaContinueOutsideLoop                           (KSEM076)
+//   direct_ffi_requires_native                       -> FsaDirectFfiRequiresNative                       (KSEM093)
+//   duplicate_main_annotation                        -> FsaDuplicateMainAnnotation                       (KSEM004)
+//   duplicate_parent_type                            -> FsaDuplicateParentType                           (KSEM051)
+//   duplicate_struct_literal_field                   -> FsaDuplicateStructLiteralField                   (KSEM080)
+//   enum_incomplete_match                            -> FsaEnumIncompleteMatch                           (KSEM100)
+//   expr_chain_too_deep                              -> FsaExprChainTooDeep                              (KSEM155)
+//   extra_annotation_parameter                       -> FsaExtraAnnotationParameter                      (KSEM064)
+//   ffi_struct_typed_declaration_stays_uninitialized -> FsaFfiStructTypedDeclarationStaysUninitialized   (KSEM086)
+//   field_access_requires_structured_type            -> FsaFieldAccessRequiresStructuredType             (KSEM047)
+//   illegal_coercion                                 -> FsaIllegalCoercion                               (KSEM031)
+//
+// Count: 40 FailTest declarations.
+
+// --- ambiguous_inference (tests/fail/semantics/ambiguous_inference)
+FailTest FsaAmbiguousInference {
+    backends { vm hybrid }
+    source {
+@Main
+function entry() {
+    let value;
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM029")); return e }
+}
+
+// --- ambiguous_inherited_field_lookup (tests/fail/semantics/ambiguous_inherited_field_lookup)
+FailTest FsaAmbiguousInheritedFieldLookup {
+    backends { vm hybrid }
+    source {
+struct Left {
+    let value: I64 = 1
+}
+
+struct Right {
+    let value: I64 = 2
+}
+
+class Child extends Left, Right {
+    function read(): I64 {
+        return value
+    }
+}
+
+@Main
+function entry() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM057")); return e }
+}
+
+// --- ambiguous_inherited_method_lookup (tests/fail/semantics/ambiguous_inherited_method_lookup)
+FailTest FsaAmbiguousInheritedMethodLookup {
+    backends { vm hybrid }
+    source {
+class Left {
+    function ping(): I64 {
+        return 1
+    }
+}
+
+class Right {
+    function ping(): I64 {
+        return 2
+    }
+}
+
+class Child extends Left, Right {
+    function read(): I64 {
+        return ping()
+    }
+}
+
+@Main
+function entry() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM056")); return e }
+}
+
+// --- annotation_parameter_type_mismatch (tests/fail/semantics/annotation_parameter_type_mismatch)
+FailTest FsaAnnotationParameterTypeMismatch {
+    backends { vm hybrid }
+    source {
+annotation Attribute {
+    parameters {
+        index: Int
+    }
+}
+
+construct Widget {
+    annotations {
+        @Attribute;
+    }
+}
+
+Widget Button() {
+    @Attribute("zero")
+    let position: Float = 0.0;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM071")); return e }
+}
+
+// --- any_requires_construct_class (tests/fail/semantics/any_requires_construct_class)
+FailTest FsaAnyRequiresConstructClass {
+    backends { vm hybrid }
+    source {
+class Plain {
+}
+
+function acceptPlain(value: any Plain) {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM097")); return e }
+}
+
+// --- any_requires_construct_primitive (tests/fail/semantics/any_requires_construct_primitive)
+FailTest FsaAnyRequiresConstructPrimitive {
+    backends { vm hybrid }
+    source {
+function acceptInt(value: any Int) {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM097")); return e }
+}
+
+// --- attempt_incompatible_failures (tests/fail/semantics/attempt_incompatible_failures)
+FailTest FsaAttemptIncompatibleFailures {
+    backends { vm hybrid }
+    source {
+// All `try` expressions in one `attempt` must share a single failure enum. Here the two
+// `try` expressions produce different failure types (`AppError` and `NetError`).
+
+enum AppError {
+    NotFound: String = "nf"
+}
+
+enum NetError {
+    Timeout: String = "to"
+}
+
+enum AppOutcome {
+    Ok: Int
+    Error: AppError
+}
+
+enum NetOutcome {
+    Ok: Int
+    Error: NetError
+}
+
+function loadApp() -> AppOutcome {
+    return .Ok(1)
+}
+
+function loadNet() -> NetOutcome {
+    return .Ok(2)
+}
+
+@Main
+function main() {
+    attempt {
+        let a = try loadApp()
+        let b = try loadNet()
+        print(a)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM137")); return e }
+}
+
+// --- attempt_missing_handler (tests/fail/semantics/attempt_missing_handler)
+FailTest FsaAttemptMissingHandler {
+    backends { vm hybrid }
+    source {
+// Every reachable failure variant must be handled. `AppError` has `NotFound` and `Denied`,
+// but the `attempt` only handles `NotFound`.
+
+enum AppError {
+    NotFound: String = "nf"
+    Denied: String = "denied"
+}
+
+enum Outcome {
+    Ok: Int
+    Error: AppError
+}
+
+function load() -> Outcome {
+    return .Error(.Denied("no"))
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try load()
+        print(value)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM135")); return e }
+}
+
+// --- attempt_unknown_handler (tests/fail/semantics/attempt_unknown_handler)
+FailTest FsaAttemptUnknownHandler {
+    backends { vm hybrid }
+    source {
+// A handle case must name a variant of the failure enum. `Bogus` is not a variant of
+// `AppError`.
+
+enum AppError {
+    NotFound: String = "nf"
+    Denied: String = "denied"
+}
+
+enum Outcome {
+    Ok: Int
+    Error: AppError
+}
+
+function load() -> Outcome {
+    return .Ok(1)
+}
+
+@Main
+function main() {
+    attempt {
+        let value = try load()
+        print(value)
+    } handle {
+        NotFound {
+            print("nf")
+        }
+        Denied {
+            print("denied")
+        }
+        Bogus {
+            print("bogus")
+        }
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM136")); return e }
+}
+
+// --- break_outside_loop (tests/fail/semantics/break_outside_loop)
+FailTest FsaBreakOutsideLoop {
+    backends { vm hybrid }
+    source {
+@Main
+function entry() {
+    break
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM075")); return e }
+}
+
+// --- conflicting_execution (tests/fail/semantics/conflicting_execution)
+FailTest FsaConflictingExecution {
+    backends { vm hybrid }
+    source {
+@Main
+@Native
+@Runtime
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM005")); return e }
+}
+
+// --- construct_array_field_alias (tests/fail/semantics/construct_array_field_alias)
+FailTest FsaConstructArrayFieldAlias {
+    backends { vm llvm hybrid }
+    source {
+// An array-typed struct field initialized from an existing array value (here the
+// `bag.items` field of an owned parameter) would share the source's backing store.
+// Kira has no deep copy for arrays and the backend cannot transfer ownership of an
+// array *field*, so the new struct's `items` would dangle once `bag` is dropped at
+// function exit — the latent use-after-free behind the widget-lowering crash
+// `enum native copy could not resolve discriminant`. This must be rejected at `check`.
+struct Item {
+    let v: Int
+}
+
+struct Bag {
+    var items: [Item]
+}
+
+function rebuild(bag: Bag) -> Bag {
+    return Bag { items: bag.items }
+}
+
+@Main
+function main() {
+    let bag = Bag { items: [Item { v: 1 }] }
+    let next = rebuild(bag)
+    print(next.items.count)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM118")); return e }
+}
+
+// --- Construct 2.0 item 4: slot-by-type fields are never filled via parens (KSEM162)
+FailTest FsaConstructSlotViaParens {
+    backends { vm llvm hybrid }
+    source {
+// A construct-form field typed `[some X]` (or `some X`) is a caller-provided child slot: it is
+// filled by the trailing content block, never by a constructor parenthesized argument. Passing
+// the slot by name in parens is rejected at `check` (KSEM162).
+construct SlotWidget {
+    @Required let body: SlotWidget
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+SlotWidget SlotLeaf(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+SlotWidget SlotRow() {
+    let children: [some SlotWidget]
+
+    function render() -> [String] {
+        return children[0].render()
+    }
+}
+
+@Main
+function main() {
+    let row = SlotRow(children = [SlotLeaf(text: "a")])
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM162")); return e }
+}
+
+// --- construct_channel_accepts (tests/fail/semantics/construct_channel_accepts)
+FailTest FsaConstructChannelAccepts {
+    backends { vm hybrid }
+    source {
+// The `body` channel accepts `Title` elements. A raw string literal is never an element, so
+// placing one in the channel is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+WebElement Page {
+    body {
+        "not an element"
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_channel_count (tests/fail/semantics/construct_channel_count)
+FailTest FsaConstructChannelCount {
+    backends { vm hybrid }
+    source {
+// The `body` channel requires at least one element (`count 1..`). A declaration that leaves
+// it empty violates the count rule.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+WebElement Page {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_channel_duplicate (tests/fail/semantics/construct_channel_duplicate)
+FailTest FsaConstructChannelDuplicate {
+    backends { vm hybrid }
+    source {
+// A construct's `content { ... }` block may declare each channel at most once. `body` is
+// declared twice here, which is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+        body {
+            accepts Title
+            count 1..
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_channel_unknown (tests/fail/semantics/construct_channel_unknown)
+FailTest FsaConstructChannelUnknown {
+    backends { vm hybrid }
+    source {
+// A declaration may only fill content channels declared by its construct. `footer` is not a
+// channel of `WebElement`, so filling it is rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+WebElement Page {
+    body {
+        Title("ok")
+    }
+    footer {
+        Title("nope")
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_content_sealed (tests/fail/semantics/construct_content_sealed)
+FailTest FsaConstructContentSealed {
+    backends { vm hybrid }
+    source {
+// `content sealed` closes a construct's content surface. A descendant that adds content is
+// rejected.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+construct Sealed extends WebElement {
+    content sealed
+}
+
+construct Child extends Sealed {
+    content {
+        extra {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_form_cycle (tests/fail/semantics/construct_form_cycle)
+FailTest FsaConstructFormCycle {
+    backends { vm hybrid }
+    source {
+// Declaration inheritance must be acyclic. `Alpha` is declared as a child of `Beta` and
+// `Beta` as a child of `Alpha`, forming a cycle.
+
+construct Shape {
+}
+
+Beta Alpha {
+}
+
+Alpha Beta {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM119")); return e }
+}
+
+// --- construct_inheritance_cycle (tests/fail/semantics/construct_inheritance_cycle)
+FailTest FsaConstructInheritanceCycle {
+    backends { vm hybrid }
+    source {
+// Construct inheritance must form a directed acyclic graph. `A extends B` and
+// `B extends A` close a cycle, which the compiler rejects.
+
+construct A extends B {
+}
+
+construct B extends A {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM119")); return e }
+}
+
+// --- construct_projection_unknown (tests/fail/semantics/construct_projection_unknown)
+FailTest FsaConstructProjectionUnknown {
+    backends { vm hybrid }
+    source {
+// A projection must target a real channel of an ancestor construct. `WebElement` has no
+// channel named `footer`.
+
+construct WebElement {
+    content {
+        body {
+            accepts Title
+            count 0..
+        }
+    }
+}
+
+construct Route extends WebElement {
+    content project {
+        view as WebElement.footer
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_property_duplicate (tests/fail/semantics/construct_property_duplicate)
+FailTest FsaConstructPropertyDuplicate {
+    backends { vm hybrid }
+    source {
+// A construct's property schema may declare each property at most once. `path` is declared
+// twice here, which is rejected.
+
+construct Route {
+    properties {
+        required path: String
+        path: String
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM164")); return e }
+}
+
+// --- construct_property_missing_required (tests/fail/semantics/construct_property_missing_required)
+FailTest FsaConstructPropertyMissingRequired {
+    backends { vm hybrid }
+    source {
+// `path` is a required property of `Route`, so a `Route` declaration that omits it from
+// its `properties { ... }` section is rejected.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM164")); return e }
+}
+
+// --- construct_property_type_mismatch (tests/fail/semantics/construct_property_type_mismatch)
+FailTest FsaConstructPropertyTypeMismatch {
+    backends { vm hybrid }
+    source {
+// The value supplied for a property must match the property's declared type. `path` is a
+// `String`, so assigning an integer is a type mismatch.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+        path: 42
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM164")); return e }
+}
+
+// --- construct_property_unknown (tests/fail/semantics/construct_property_unknown)
+FailTest FsaConstructPropertyUnknown {
+    backends { vm hybrid }
+    source {
+// A declaration may only assign properties declared in its construct's schema. `subtitle`
+// is not part of `Route`, so the assignment is rejected.
+
+construct Route {
+    properties {
+        required path: String
+    }
+}
+
+Route Home {
+    properties {
+        path: "/"
+        subtitle: "Welcome"
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM164")); return e }
+}
+
+// --- construct_refine_widen (tests/fail/semantics/construct_refine_widen)
+FailTest FsaConstructRefineWiden {
+    backends { vm hybrid }
+    source {
+// `content refine` may only tighten an inherited channel. The inherited `head` channel is
+// `count 0..1`; refining it to `0..5` widens the range and is rejected.
+
+construct WebElement {
+    content {
+        head {
+            accepts Title
+            count 0..1
+        }
+    }
+}
+
+construct Article extends WebElement {
+    content refine {
+        head {
+            accepts Title
+            count 0..5
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM165")); return e }
+}
+
+// --- construct_required_missing (tests/fail/semantics/construct_required_missing)
+FailTest FsaConstructRequiredMissing {
+    backends { vm hybrid }
+    source {
+// The first concrete declaration of `Drawable` must implement the required `draw()` function.
+// `Ghost` is declared directly under `Drawable` and does not implement it.
+
+construct Drawable {
+    requires {
+        function draw()
+    }
+}
+
+Drawable Ghost {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM120")); return e }
+}
+
+// --- construct_required_signature (tests/fail/semantics/construct_required_signature)
+FailTest FsaConstructRequiredSignature {
+    backends { vm hybrid }
+    source {
+// An implementation of a required function must match the required signature. `Widget`
+// requires `render() -> Int`, but `Panel` implements `render() -> Bool`.
+
+construct Widget {
+    requires {
+        function render() -> Int
+    }
+}
+
+Widget Panel {
+    function render() -> Bool {
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM121")); return e }
+}
+
+// --- construct_unknown_parent (tests/fail/semantics/construct_unknown_parent)
+FailTest FsaConstructUnknownParent {
+    backends { vm hybrid }
+    source {
+// A construct may only `extends` a construct that is declared locally or imported.
+// `WebElement` is never declared, so the parent cannot be resolved.
+
+construct Route extends WebElement {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM118")); return e }
+}
+
+// --- content_string_not_widget (tests/fail/semantics/content_string_not_widget)
+FailTest FsaContentStringNotWidget {
+    backends { vm hybrid }
+    source {
+// A construct that declares a typed `content: Content<Widget>;` section accepts
+// only widget-producing expressions in its declarations' content blocks. A raw
+// String literal is not a widget and must be rejected with a precise diagnostic.
+
+construct Widget {
+    content: Content<Widget>;
+}
+
+Widget InvalidCard {
+    content {
+        "Card"
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM098")); return e }
+}
+
+// --- continue_outside_loop (tests/fail/semantics/continue_outside_loop)
+FailTest FsaContinueOutsideLoop {
+    backends { vm hybrid }
+    source {
+@Main
+function entry() {
+    continue
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM076")); return e }
+}
+
+// --- direct_ffi_requires_native (tests/fail/semantics/direct_ffi_requires_native)
+FailTest FsaDirectFfiRequiresNative {
+    backends { llvm hybrid }
+    source {
+@FFI.Extern { library: testlib; symbol: ffi_value; abi: c; }
+function ffi_value(): I64;
+
+@Main
+function entry() {
+    ffi_value()
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM093")); return e }
+}
+
+// --- duplicate_main_annotation (tests/fail/semantics/duplicate_main_annotation)
+FailTest FsaDuplicateMainAnnotation {
+    backends { vm hybrid }
+    source {
+@Main
+@Main
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM004")); return e }
+}
+
+// --- duplicate_parent_type (tests/fail/semantics/duplicate_parent_type)
+FailTest FsaDuplicateParentType {
+    backends { vm hybrid }
+    source {
+struct Base {}
+class Child extends Base, Base {}
+
+@Main
+function entry() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM051")); return e }
+}
+
+// --- duplicate_struct_literal_field (tests/fail/semantics/duplicate_struct_literal_field)
+FailTest FsaDuplicateStructLiteralField {
+    backends { vm hybrid }
+    source {
+struct Point {
+    let x: Int = 0
+    let y: Int = 0
+}
+
+@Main
+function entry() {
+    let point = Point { x: 1 y: 2 x: 3 }
+    print(point.x)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM080")); return e }
+}
+
+// --- enum_incomplete_match (tests/fail/semantics/enum_incomplete_match)
+FailTest FsaEnumIncompleteMatch {
+    backends { vm llvm hybrid }
+    source {
+enum ParseError {
+    InvalidFormat: String = "bad"
+    UnexpectedEnd
+}
+
+@Main
+function main() {
+    let value: ParseError = .UnexpectedEnd
+    match value {
+        InvalidFormat(text) -> print(text);
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM100")); return e }
+}
+
+// --- expr_chain_too_deep (tests/fail/semantics/expr_chain_too_deep)
+FailTest FsaExprChainTooDeep {
+    backends { vm hybrid }
+    source {
+// Regression (FE2): a long FLAT operator chain (parsed iteratively, so it
+// escapes the parser's nesting guard FE1/KPAR014) builds an AST whose left
+// spine is ~700 deep. The recursive semantic walkers (enum registration and
+// type lowering) descended it and overflowed the native stack (SIGABRT, no
+// diagnostic). They now bound their recursion depth and emit a clean located
+// KSEM155 instead.
+@Main
+function main() {
+    let x = 0 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
+    print(x)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM155")); return e }
+}
+
+// --- extra_annotation_parameter (tests/fail/semantics/extra_annotation_parameter)
+FailTest FsaExtraAnnotationParameter {
+    backends { vm hybrid }
+    source {
+annotation State {
+}
+
+construct Widget {
+    annotations {
+        @State;
+    }
+}
+
+Widget Button() {
+    @State(1)
+    let isPressed: Bool = false;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM064")); return e }
+}
+
+// --- ffi_struct_typed_declaration_stays_uninitialized (tests/fail/semantics/ffi_struct_typed_declaration_stays_uninitialized)
+FailTest FsaFfiStructTypedDeclarationStaysUninitialized {
+    backends { vm hybrid }
+    source {
+@FFI.Struct { layout: c; }
+struct Example {
+    var a: U8
+}
+
+@Main
+function entry() {
+    var value: Example
+    print(value.a)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM086")); return e }
+}
+
+// --- field_access_requires_structured_type (tests/fail/semantics/field_access_requires_structured_type)
+FailTest FsaFieldAccessRequiresStructuredType {
+    backends { vm hybrid }
+    source {
+@Main
+function entry() {
+    let value = 1
+    print(value.x)
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM047")); return e }
+}
+
+// --- illegal_coercion (tests/fail/semantics/illegal_coercion)
+FailTest FsaIllegalCoercion {
+    backends { vm hybrid }
+    source {
+@Main
+function entry() {
+    let value: String = 12;
+    print(value);
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM031")); return e }
+}

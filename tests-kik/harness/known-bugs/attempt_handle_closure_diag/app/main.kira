@@ -22,9 +22,9 @@ enum E { A B }
 
 function risky(b: Int) -> Result<Int, E> {
     if b == 0 {
-        return Result.Error(E.A)
+        return .Error(.A)
     }
-    return Result.Ok(10 / b)
+    return .Ok(10 / b)
 }
 
 function viaAttempt(b: Int) -> Int {

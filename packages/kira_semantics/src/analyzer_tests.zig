@@ -431,7 +431,9 @@ test "enforces declaration typing and initialization rules" {
     }
 }
 
-test "validates construct-driven requirements" {
+test "rejects removed content-channel schema surface" {
+    // Construct 2.0 (item 6): a construct that declares a named content channel
+    // (`content { name { count 1.. } }`) is rejected — the channel surface is removed.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -447,7 +449,7 @@ test "validates construct-driven requirements" {
     );
 
     try std.testing.expectError(error.DiagnosticsEmitted, result);
-    try std.testing.expectEqualStrings("content count violation", diags.items[0].title);
+    try std.testing.expectEqualStrings("content channels are removed", diags.items[0].title);
 }
 
 test "allows struct methods and constant members" {

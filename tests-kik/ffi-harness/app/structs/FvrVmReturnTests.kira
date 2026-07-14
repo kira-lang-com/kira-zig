@@ -69,7 +69,7 @@ Test FvrNativeReturnsRuntimeStructLoop {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(210); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(210); return e }
 }
 
 Test FvrNativeReturnsRuntimeClassLoop {
@@ -83,7 +83,7 @@ Test FvrNativeReturnsRuntimeClassLoop {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(230); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(230); return e }
 }
 
 Test FvrNativeReturnsRuntimeArrayLoop {
@@ -97,7 +97,7 @@ Test FvrNativeReturnsRuntimeArrayLoop {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(630); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(630); return e }
 }
 
 Test FvrNativeEmbedsRuntimeStructFieldLoop {
@@ -111,5 +111,5 @@ Test FvrNativeEmbedsRuntimeStructFieldLoop {
         }
         return total
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(600); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(600); return e }
 }

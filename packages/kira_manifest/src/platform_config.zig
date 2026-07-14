@@ -99,7 +99,8 @@ pub const ExecutionBackend = enum {
         if (std.mem.eql(u8, value, "vm")) return .vm;
         if (std.mem.eql(u8, value, "llvm") or std.mem.eql(u8, value, "llvm_native")) return .llvm;
         if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
-        if (std.mem.eql(u8, value, "wasm_runtime") or std.mem.eql(u8, value, "wasm-runtime")) return .wasm_runtime;
+        if (std.mem.eql(u8, value, "wasm_runtime") or std.mem.eql(u8, value, "wasm-runtime") or
+            std.mem.eql(u8, value, "wasm") or std.mem.eql(u8, value, "wasm32-emscripten")) return .wasm_runtime;
         if (std.mem.eql(u8, value, "wasm_aot") or std.mem.eql(u8, value, "wasm-aot")) return .wasm_aot;
         return null;
     }
@@ -419,6 +420,7 @@ test "web surface requirements distinguish DOM and WebGPU canvas rendering" {
 
 test "execution backend policy uses typed internal values" {
     try std.testing.expectEqual(ExecutionBackend.wasm_runtime, ExecutionBackend.parse("wasm_runtime").?);
+    try std.testing.expectEqual(ExecutionBackend.wasm_runtime, ExecutionBackend.parse("wasm32-emscripten").?);
     try std.testing.expectEqual(ExecutionBackend.wasm_aot, ExecutionBackend.parse("wasm-aot").?);
     try std.testing.expectEqual(HybridSelectionMode.native_except_runtime, HybridSelectionMode.parse("native_except_runtime").?);
     try std.testing.expectEqualStrings("app-manifest", BackendSelectionSource.app_manifest.label());

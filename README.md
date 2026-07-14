@@ -45,6 +45,8 @@ kira --help
 
 `zig build install` installs the PATH-facing launcher into `zig-out/bin/` by default and installs the active toolchain under `~/.kira/toolchains/<channel>/<version>/`. `zig build install-kirac` is also available for the same managed toolchain plus launcher flow.
 
+The default `zig build` also refreshes Foundation's generated FFI bindings inside the installed managed dev toolchain, while preserving compiled native-library artifacts, so Foundation never requires a separate `kira ffi autobind` command after rebuilding the compiler.
+
 GitHub release archives now ship the `kira` launcher separately from the managed toolchain payload. On first run, the release launcher downloads the matching `kira-toolchain-<platform>` archive into `~/.kira/toolchains/release/<version>/` and activates it automatically. LLVM remains a separate `kira fetch-llvm` step for native and hybrid workflows.
 
 On Windows, run the launcher directly or add it to the current PowerShell session:
@@ -131,17 +133,17 @@ kira shader build examples/shaders/textured_quad.ksl
 kira shader build
 ```
 
-With no explicit file, `kira shader build` discovers top-level PascalCase shader entry files under `Shaders/` in the current project and writes outputs to `generated/Shaders/`. See [docs/ksl.md](docs/ksl.md).
+With no explicit file, `kira shader build` discovers top-level PascalCase shader entry files under `Shaders/` in the current project and writes outputs to `.kira-build/shaders/`. See [docs/ksl.md](docs/ksl.md).
 
 ## Packages and toolchains
 
-New projects use `kira.toml`; legacy `project.toml` is still discovered for existing examples. The package manager is source-only and lockfile-backed, with registry, path, and pinned git dependencies.
+New projects use `package.kira` (a manifest authored in Kira itself); legacy `kira.toml` and `project.toml` are still discovered for existing packages, and `package.kira` takes precedence when both are present. See [docs/package-manifest.md](docs/package-manifest.md). The package manager is source-only and lockfile-backed, with registry, path, and pinned git dependencies.
 
 Common commands:
 
 ```bash
-kira new DemoApp generated/DemoApp
-kira new --lib GraphicsKit generated/GraphicsKit
+kira new DemoApp .codex/tmp/DemoApp
+kira new --lib GraphicsKit .codex/tmp/GraphicsKit
 kira sync
 kira add FrostUI
 kira add --git https://github.com/Sunlight-Horizon/GameKit.git --rev <commit> GameKit
@@ -170,7 +172,7 @@ zig build run -- run examples/hello
 zig build test
 ```
 
-Run `zig fmt` on changed Zig files before finishing code changes. Do not hand-edit generated output under `generated/`, `.zig-cache/`, `zig-out/`, or `.kira/`.
+Run `zig fmt` on changed Zig files before finishing code changes. Do not hand-edit build output under `.kira-build/`, `.zig-cache/`, `zig-out/`, or `.kira/`.
 
 ## License
 

@@ -1,0 +1,70 @@
+// support.kira — sibling module imported by ImxTests.kira as `import support as Support`.
+// Merges the support.kira files of the legacy tests/pass/run import cases; every
+// top-level name carries a per-case prefix (ima/imb/imc/imd) so the names stay
+// globally unique inside this flat package.
+
+// ---------------------------------------------------------------------------
+// imports (support was an empty stub module; the import itself is the test)
+// ---------------------------------------------------------------------------
+
+function imxStub() {
+    return
+}
+
+// ---------------------------------------------------------------------------
+// imported_instance_method_parity
+// ---------------------------------------------------------------------------
+
+class ImaApplication {
+    let value: I64 = 7
+
+    function run(): I64 {
+        return self.value
+    }
+}
+
+// ---------------------------------------------------------------------------
+// imported_library_class_metadata_parity
+// ---------------------------------------------------------------------------
+
+class ImbNode {
+    let value: I64 = 5
+
+    function render(): I64 {
+        return self.value
+    }
+}
+
+class ImbLabel extends ImbNode {
+    override let value: I64 = 11
+}
+
+struct ImbNodeConfig {
+    let node: ImbNode
+}
+
+function imbMakeConfig(): ImbNodeConfig {
+    return ImbNodeConfig {
+        node: ImbLabel()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// imported_namespace_parity
+// ---------------------------------------------------------------------------
+
+function imcValue(): I64 {
+    return 41 + 1
+}
+
+// ---------------------------------------------------------------------------
+// inheritance_imported_parent_parity
+// ---------------------------------------------------------------------------
+
+class ImdImportedBase {
+    let base: I64 = 30
+
+    function baseValue(): I64 {
+        return base
+    }
+}

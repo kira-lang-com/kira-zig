@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("kira_diagnostics");
 const manifest = @import("kira_manifest");
 const Project = @import("project.zig").Project;
 const ResolvedProject = @import("project.zig").ResolvedProject;
@@ -6,6 +7,9 @@ const ResolvedPackageRoot = @import("project.zig").ResolvedPackageRoot;
 const ResolvedTarget = @import("project.zig").ResolvedTarget;
 const TargetKind = @import("project.zig").TargetKind;
 
+/// The declaration manifest. It takes precedence over `kira.toml` when both are
+/// present in a package directory (it is first in `manifest_file_names`).
+pub const declaration_manifest_file_name = "package.kira";
 pub const preferred_manifest_file_name = "kira.toml";
 pub const legacy_manifest_file_name = "project.toml";
 pub const repo_manifest_file_name = "Kira.toml";
@@ -13,13 +17,38 @@ pub const manifest_file_name = preferred_manifest_file_name;
 pub const entrypoint_rel_path = "app/main.kira";
 
 pub const manifest_file_names = [_][]const u8{
+    declaration_manifest_file_name,
     preferred_manifest_file_name,
     legacy_manifest_file_name,
     repo_manifest_file_name,
 };
 
+/// True when the manifest at `path` is a `package.kira` declaration manifest.
+pub fn isDeclarationManifest(path: []const u8) bool {
+    return std.mem.eql(u8, std.fs.path.basename(path), declaration_manifest_file_name);
+}
+
 pub fn loadProjectFromFile(allocator: std.mem.Allocator, path: []const u8) !Project {
+    return loadProjectFromFileWithDiagnostics(allocator, path, null);
+}
+
+fn loadProjectFromFileWithDiagnostics(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    manifest_diagnostics: ?*std.array_list.Managed(diagnostics.Diagnostic),
+) !Project {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(1024 * 1024));
+    if (isDeclarationManifest(path)) {
+        const result = try manifest.loadProjectManifestFromDeclaration(allocator, text, path);
+        if (!result.ok()) {
+            if (manifest_diagnostics) |out| {
+                try out.appendSlice(result.diagnostics);
+                return error.DiagnosticsEmitted;
+            }
+            return error.InvalidManifest;
+        }
+        return .{ .manifest = result.manifest };
+    }
     return .{
         .manifest = try manifest.parseProjectManifest(allocator, text),
     };
@@ -41,6 +70,14 @@ pub fn loadProjectFromPath(allocator: std.mem.Allocator, path: []const u8) !Reso
 }
 
 pub fn loadPackageRootFromPath(allocator: std.mem.Allocator, path: []const u8) !ResolvedPackageRoot {
+    return loadPackageRootFromPathWithDiagnostics(allocator, path, null);
+}
+
+fn loadPackageRootFromPathWithDiagnostics(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    manifest_diagnostics: ?*std.array_list.Managed(diagnostics.Diagnostic),
+) !ResolvedPackageRoot {
     const root_path = try resolveRootPath(allocator, path);
     const manifest_path = try discoverManifestPath(allocator, root_path) orelse return error.ProjectManifestNotFound;
     const entrypoint_path = try std.fs.path.join(allocator, &.{ root_path, "app", "main.kira" });
@@ -51,18 +88,27 @@ pub fn loadPackageRootFromPath(allocator: std.mem.Allocator, path: []const u8) !
         .manifest_path = manifest_path,
         .entrypoint_path = if (fileExists(entrypoint_path)) entrypoint_path else null,
         .module_source_root = module_source_root,
-        .project = try loadProjectFromFile(allocator, manifest_path),
+        .project = try loadProjectFromFileWithDiagnostics(allocator, manifest_path, manifest_diagnostics),
     };
 }
 
 pub fn resolveTargetFromPath(allocator: std.mem.Allocator, path: []const u8) !ResolvedTarget {
+    return resolveTargetFromPathWithDiagnostics(allocator, path, null);
+}
+
+pub fn resolveTargetFromPathWithDiagnostics(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    manifest_diagnostics: ?*std.array_list.Managed(diagnostics.Diagnostic),
+) !ResolvedTarget {
     const base = std.fs.path.basename(path);
-    if (std.mem.eql(u8, base, preferred_manifest_file_name) or
+    if (std.mem.eql(u8, base, declaration_manifest_file_name) or
+        std.mem.eql(u8, base, preferred_manifest_file_name) or
         std.mem.eql(u8, base, legacy_manifest_file_name) or
         std.mem.eql(u8, base, repo_manifest_file_name) or
         directoryExists(path))
     {
-        const resolved = try loadPackageRootFromPath(allocator, path);
+        const resolved = try loadPackageRootFromPathWithDiagnostics(allocator, path, manifest_diagnostics);
         const target_kind: TargetKind = switch (resolved.project.manifest.kind) {
             .library => .library,
             .app => if (isExampleRoot(resolved.root_path)) .example else .executable,

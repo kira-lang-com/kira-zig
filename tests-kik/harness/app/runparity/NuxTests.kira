@@ -75,7 +75,7 @@ Test NuxIntArithSum {
         return out
     }
     // 5 + 16 + 4 + 2 + (-5) = 22
-    expect { let e: Result<Int, TestFailure> = Result.Ok(22); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(22); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ Test NuxFloatBasicChecksum {
         if base == 8.5 { ok = ok + 1 }
         return ok
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ Test NuxFloatBasicChecksum {
 
 Test NuxFloat32ReinterpretBits {
     test { return Int(floatToBits(F32(1.0))) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4607182418800017408); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4607182418800017408); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ Test NuxModTruncationSum {
         return out
     }
     // -2 + 2 + -2 + 2 + -17 = -17
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 17); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 17); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ Test NuxNegLiteralIntSum {
         return out
     }
     // 0 + -1 + -3 + -42 = -46
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 46); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 46); return e }
 }
 
 Test NuxNegLiteralFloat {
@@ -151,7 +151,7 @@ Test NuxNegLiteralFloat {
         let scale: F64 = -1.5
         return scale == -1.5 ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,37 +160,37 @@ Test NuxNegLiteralFloat {
 
 Test NuxCastFloatOfInt {
     test { return Float(7) == 7.0 ? 1 : 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test NuxCastIntTruncPos {
     test { return Int(2.9) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test NuxCastIntTruncNeg {
     test { return Int(0.0 - 2.9) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 2); return e }
 }
 
 Test NuxCastFloatDiv {
     test { return Float(10) / 4.0 == 2.5 ? 1 : 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test NuxCastIntHalfRound {
     test { return Int(2.5) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test NuxCastIntOfFloat {
     test { return Int(Float(5)) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test NuxCastFloatOfIntTrunc {
     test { return Float(Int(3.99)) == 3.0 ? 1 : 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test NuxCastLoopSum {
@@ -203,7 +203,7 @@ Test NuxCastLoopSum {
         }
         return sum
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test NuxCastSaturateMax {
@@ -211,7 +211,7 @@ Test NuxCastSaturateMax {
         let big = 1000000000000000000000000000000.0
         return Int(big)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9223372036854775807); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9223372036854775807); return e }
 }
 
 Test NuxCastSaturateMin {
@@ -219,7 +219,7 @@ Test NuxCastSaturateMin {
         let big = 1000000000000000000000000000000.0
         return Int(0.0 - big)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 9223372036854775807 - 1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 9223372036854775807 - 1); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ Test NuxShiftMaskingSum {
         return out
     }
     // 3 + 6 + 1024 + 3 = 1036
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1036); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1036); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,22 +252,22 @@ Test NuxShiftMaskingSum {
 Test NuxShortCircuitAndSkip {
     // rhs must NOT be evaluated -> nuxTrapBool would trap if called.
     test { return false && nuxTrapBool() }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(false); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
 }
 
 Test NuxShortCircuitOrSkip {
     test { return true || nuxTrapBool() }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 Test NuxShortCircuitAndRun {
     test { return true && nuxTrueBool() }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 Test NuxShortCircuitOrRun {
     test { return false || nuxTrueBool() }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +276,12 @@ Test NuxShortCircuitOrRun {
 
 Test NuxNotFalse {
     test { return !false }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 Test NuxNotTrue {
     test { return !true }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(false); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
 }
 
 Test NuxNotBranch {
@@ -294,7 +294,7 @@ Test NuxNotBranch {
         }
         return out
     }
-    expect { let e: Result<Bool, TestFailure> = Result.Ok(true); return e }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ Test NuxCondExprInt {
         let left = true ? 7 : 9
         return left
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test NuxCondExprString {
@@ -314,7 +314,7 @@ Test NuxCondExprString {
         let right = false ? "bad" : "ok"
         return right
     }
-    expect { let e: Result<String, TestFailure> = Result.Ok("ok"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("ok"); return e }
 }
 
 Test NuxCondExprFloatMixed {
@@ -322,7 +322,7 @@ Test NuxCondExprFloatMixed {
         let mixed = false ? 1 : 2.5
         return mixed == 2.5 ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +336,7 @@ Test NuxMathVecSum {
         let sum = nuxVecAdd(move left, move right)
         return (sum.x == 5.0 && sum.y == 7.0 && sum.z == 9.0) ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test NuxMathIdentityTranslate {
@@ -347,7 +347,7 @@ Test NuxMathIdentityTranslate {
         let v = NuxVec3 { x: 1.0, y: 2.0, z: 3.0 }
         return (v.x == 1.0 && v.y == 2.0 && v.z == 3.0) ? 1 : 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +376,7 @@ Test NuxControlFlowScore {
 
         return score
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,10 +385,10 @@ Test NuxControlFlowScore {
 
 Test NuxCastCallReachInt {
     test { return Int(nuxMeasure()) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test NuxCastCallReachFloat {
     test { return Float(nuxCount()) == 7.0 ? 1 : 0 }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }

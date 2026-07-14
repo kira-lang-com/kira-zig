@@ -6,6 +6,8 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const ir = @import("ir.zig");
+const source = @import("kira_source");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const parent = @import("lower_from_hir.zig");
 const type_impl = @import("lower_from_hir_types.zig");
@@ -274,7 +276,7 @@ fn lowerFunction(
     // On an unsupported-feature failure anywhere below, record the construct the
     // lowerer was on so KIR001 can point at it. Innermost frame wins.
     errdefer |err| parent.recordUnsupported(state.unsupported, lowerer.current_span, lowerer.current_construct, err);
-    var instructions = std.array_list.Managed(ir.Instruction).init(allocator);
+    var instructions = InstructionBuf.init(allocator, &lowerer.current_span);
     for (function_decl.locals) |local| {
         if (!local.is_param or !lowerer.isBoxedLocal(local.id)) continue;
         const value_reg = lowerer.freshRegister();
@@ -283,7 +285,7 @@ fn lowerFunction(
     }
     const terminated = try lowerer.lowerStatements(&instructions, function_decl.body);
 
-    if (!terminated and (instructions.items.len == 0 or instructions.items[instructions.items.len - 1] != .ret)) {
+    if (!terminated and (instructions.list.items.len == 0 or instructions.list.items[instructions.list.items.len - 1] != .ret)) {
         try instructions.append(.{ .ret = .{ .src = null } });
     }
 
@@ -301,8 +303,26 @@ fn lowerFunction(
         .register_count = lowerer.next_register,
         .local_count = lowerer.next_local,
         .local_types = try lowerAllLocalTypesBoxed(allocator, program, function_decl.locals, lowerer.hidden_local_types.items, boxed_locals),
-        .instructions = try instructions.toOwnedSlice(),
+        .local_names = try lowerLocalNames(allocator, function_decl.locals, lowerer.next_local),
+        .instructions = try instructions.toOwnedInstructions(),
+        .locations = try instructions.toOwnedLocations(),
     };
+}
+
+/// Build the per-slot source-name table for the debugger, index-aligned to local
+/// slots (0..local_count). Source locals are placed at their own `id`; hidden and
+/// synthesized slots stay "" so the variables view skips them.
+fn lowerLocalNames(
+    allocator: std.mem.Allocator,
+    locals: anytype,
+    local_count: u32,
+) ![]const []const u8 {
+    const names = try allocator.alloc([]const u8, local_count);
+    for (names) |*n| n.* = "";
+    for (locals) |local| {
+        if (local.id < local_count) names[local.id] = local.name;
+    }
+    return names;
 }
 
 fn lowerAllLocalTypes(
@@ -379,7 +399,15 @@ fn cloneFunction(allocator: std.mem.Allocator, function_decl: ir.Function) !ir.F
         .local_count = function_decl.local_count,
         .local_types = try cloneValueTypeSlice(allocator, function_decl.local_types),
         .instructions = try cloneInstructionSlice(allocator, function_decl.instructions),
+        .locations = try cloneSpanSlice(allocator, function_decl.locations),
     };
+}
+
+fn cloneSpanSlice(allocator: std.mem.Allocator, items: []const source.Span) ![]const source.Span {
+    if (items.len == 0) return &.{};
+    const cloned = try allocator.alloc(source.Span, items.len);
+    @memcpy(cloned, items);
+    return cloned;
 }
 
 fn cloneValueTypeSlice(allocator: std.mem.Allocator, items: []const ir.ValueType) ![]const ir.ValueType {

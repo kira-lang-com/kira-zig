@@ -1,6 +1,0 @@
-@Main
-function entry() {
-    var value: Float = 0
-    return
-}
-

@@ -26,7 +26,9 @@ pub fn fileExists(path: []const u8) bool {
 }
 
 pub fn findManifestInDirectory(allocator: std.mem.Allocator, directory: []const u8) !?[]const u8 {
-    const names = [_][]const u8{ "kira.toml", "project.toml" };
+    // `package.kira` takes precedence over the legacy TOML manifests, mirroring
+    // kira_project's discovery order.
+    const names = [_][]const u8{ "package.kira", "kira.toml", "project.toml" };
     for (names) |name| {
         const candidate = try std.fs.path.join(allocator, &.{ directory, name });
         if (fileExists(candidate)) return candidate;

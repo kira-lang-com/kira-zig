@@ -79,9 +79,9 @@ function strxLblLen(l: borrow StrxLbl) -> Int {
 // Period of 3: Named("hello")(5), Empty(0), Named("ok")(2) → sum = 7
 function strxLblFor(i: Int) -> StrxLbl {
     let m = i % 3
-    if m == 0 { return StrxLbl.Named("hello") }
-    if m == 1 { return StrxLbl.Empty }
-    return StrxLbl.Named("ok")
+    if m == 0 { return .Named("hello") }
+    if m == 1 { return .Empty }
+    return .Named("ok")
 }
 
 // ---------------------------------------------------------------------------
@@ -90,37 +90,37 @@ function strxLblFor(i: Int) -> StrxLbl {
 
 Test StrxLitA {
     test { return "a".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxLitHello {
     test { return "hello".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxLitEmpty {
     test { return "".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxLitTen {
     test { return "abcdefghij".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxLitKira {
     test { return "kira".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxLitSpace {
     test { return "hello world".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(11); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
 }
 
 Test StrxLitTwelve {
     test { return "123456789012".count }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -129,12 +129,12 @@ Test StrxLitTwelve {
 
 Test StrxBorLitXyz {
     test { return strxBorLen("xyz") }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxBorLitEmpty {
     test { return strxBorLen("") }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxBorVar {
@@ -142,7 +142,7 @@ Test StrxBorVar {
         let s = "reuse"
         return strxBorLen(s)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxBorVarTwice {
@@ -153,12 +153,12 @@ Test StrxBorVarTwice {
         return out
     }
     // 2 + 2 = 4
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxBorSix {
     test { return strxBorLen("abcdef") }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 Test StrxBorMixed {
@@ -168,7 +168,7 @@ Test StrxBorMixed {
         return out
     }
     // 2 + 3 = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ Test StrxBorMixed {
 
 Test StrxMvLit {
     test { return strxMvLen(move "consume") }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxMvVar {
@@ -185,7 +185,7 @@ Test StrxMvVar {
         let s = "transfer"
         return strxMvLen(move s)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ Test StrxPkApple {
         return s.count
     }
     // "apple" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxPkGo {
@@ -207,7 +207,7 @@ Test StrxPkGo {
         return s.count
     }
     // "go" = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxPkThreeStr {
@@ -216,7 +216,7 @@ Test StrxPkThreeStr {
         return s.count
     }
     // "three" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxPkBy {
@@ -225,7 +225,7 @@ Test StrxPkBy {
         return s.count
     }
     // "by" = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxPkX {
@@ -234,7 +234,7 @@ Test StrxPkX {
         return s.count
     }
     // "x" = 1
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test StrxPkWrap {
@@ -243,7 +243,7 @@ Test StrxPkWrap {
         return s.count
     }
     // 5 % 5 = 0 -> "apple" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxPkBorBound {
@@ -252,7 +252,7 @@ Test StrxPkBorBound {
         return strxBorLen(s)
     }
     // "three" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxPkLoop20 {
@@ -267,7 +267,7 @@ Test StrxPkLoop20 {
         return total
     }
     // 4 periods of 15 = 60
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test StrxPkLoop40 {
@@ -282,13 +282,13 @@ Test StrxPkLoop40 {
         return total
     }
     // 8 periods of 15 = 120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 // Return a String from the test block directly
 Test StrxRetHello {
     test { return "hello" }
-    expect { let e: Result<String, TestFailure> = Result.Ok("hello"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("hello"); return e }
 }
 
 Test StrxRetPk0 {
@@ -296,7 +296,7 @@ Test StrxRetPk0 {
         let s = strxPk(0)
         return s
     }
-    expect { let e: Result<String, TestFailure> = Result.Ok("apple"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("apple"); return e }
 }
 
 Test StrxRetPk3 {
@@ -304,7 +304,7 @@ Test StrxRetPk3 {
         let s = strxPk(3)
         return s
     }
-    expect { let e: Result<String, TestFailure> = Result.Ok("by"); return e }
+    expect { let e: Result<String, TestFailure> = .Ok("by"); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ Test StrxBoxNameLen {
         return b.name.count
     }
     // "test" = 4
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxBoxMethod {
@@ -326,7 +326,7 @@ Test StrxBoxMethod {
         return b.nameLen()
     }
     // "hello" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxBoxCoded {
@@ -335,7 +335,7 @@ Test StrxBoxCoded {
         return b.coded()
     }
     // 99 + 1 = 100
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StrxBoxBorFn {
@@ -344,7 +344,7 @@ Test StrxBoxBorFn {
         return strxBoxBor(b)
     }
     // 3 + 7 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxBoxMutCode {
@@ -358,7 +358,7 @@ Test StrxBoxMutCode {
         return b.code
     }
     // 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxBoxNamePersist {
@@ -368,7 +368,7 @@ Test StrxBoxNamePersist {
         return b.name.count
     }
     // "hello" = 5 (name not changed)
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxBoxCopyIndep {
@@ -379,7 +379,7 @@ Test StrxBoxCopyIndep {
         return b.code
     }
     // original unchanged = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxBoxLoopBuild {
@@ -395,7 +395,7 @@ Test StrxBoxLoopBuild {
         return total
     }
     // 1 period: 5+2+5+2+1 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxBoxLoopAcc {
@@ -411,7 +411,7 @@ Test StrxBoxLoopAcc {
         return acc
     }
     // i=0..7: nameLen=5,2,5,2,1,5,2,5 sum=27; code=0+1+2+3+4+5+6+7=28; total=55
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +429,7 @@ Test StrxBoxArrCount {
         }
         return boxes.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(8); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(8); return e }
 }
 
 Test StrxBoxArrSum {
@@ -450,7 +450,7 @@ Test StrxBoxArrSum {
         return total
     }
     // 2 periods of 15 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxBoxArrIdx3 {
@@ -465,7 +465,7 @@ Test StrxBoxArrIdx3 {
         return boxes[3].name.count
     }
     // i=3 -> strxPk(3) = "by" = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxBoxArrIdxCode {
@@ -480,7 +480,7 @@ Test StrxBoxArrIdxCode {
         return boxes[4].code
     }
     // i=4 -> code = 40
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -497,7 +497,7 @@ Test StrxOutLen1 {
         return strxOutLen(o)
     }
     // 5 + 2 + 10 = 17
-    expect { let e: Result<Int, TestFailure> = Result.Ok(17); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(17); return e }
 }
 
 Test StrxOutLen2 {
@@ -510,7 +510,7 @@ Test StrxOutLen2 {
         return strxOutLen(o)
     }
     // 0 + 3 + 0 = 3
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxOutDirect {
@@ -523,7 +523,7 @@ Test StrxOutDirect {
         return o.inner.word.count
     }
     // "abcd" = 4
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxOutTagCount {
@@ -536,7 +536,7 @@ Test StrxOutTagCount {
         return o.tag.count
     }
     // "kira" = 4
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test StrxOutTwoFields {
@@ -549,7 +549,7 @@ Test StrxOutTwoFields {
         return o.inner.word.count + o.tag.count
     }
     // 5 + 2 = 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxInnerWordLen {
@@ -558,7 +558,7 @@ Test StrxInnerWordLen {
         return inn.word.count
     }
     // 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -567,26 +567,26 @@ Test StrxInnerWordLen {
 
 Test StrxLblNamed {
     test {
-        let l = StrxLbl.Named("hello")
+        let l: StrxLbl = .Named("hello")
         return strxLblLen(l)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxLblEmpty {
     test {
-        let l = StrxLbl.Empty
+        let l: StrxLbl = .Empty
         return strxLblLen(l)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxLblNamedZero {
     test {
-        let l = StrxLbl.Named("")
+        let l: StrxLbl = .Named("")
         return strxLblLen(l)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxLblFor0 {
@@ -595,7 +595,7 @@ Test StrxLblFor0 {
         return strxLblLen(l)
     }
     // Named("hello") = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxLblFor1 {
@@ -604,7 +604,7 @@ Test StrxLblFor1 {
         return strxLblLen(l)
     }
     // Empty = 0
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxLblFor2 {
@@ -613,7 +613,7 @@ Test StrxLblFor2 {
         return strxLblLen(l)
     }
     // Named("ok") = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxLblFor3 {
@@ -622,7 +622,7 @@ Test StrxLblFor3 {
         return strxLblLen(l)
     }
     // 3 % 3 = 0 -> Named("hello") = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxLblLoopSum {
@@ -637,7 +637,7 @@ Test StrxLblLoopSum {
         return total
     }
     // 10 periods of (5+0+2) = 70
-    expect { let e: Result<Int, TestFailure> = Result.Ok(70); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(70); return e }
 }
 
 Test StrxLblArrBuild {
@@ -657,7 +657,7 @@ Test StrxLblArrBuild {
         return total
     }
     // 5 periods of 7 = 35
-    expect { let e: Result<Int, TestFailure> = Result.Ok(35); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(35); return e }
 }
 
 Test StrxLblArrCount {
@@ -670,7 +670,7 @@ Test StrxLblArrCount {
         }
         return lbls.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +683,7 @@ Test StrxArrLitIdx0 {
         return arr[0].count
     }
     // "one" = 3
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxArrLitIdx2 {
@@ -692,7 +692,7 @@ Test StrxArrLitIdx2 {
         return arr[2].count
     }
     // "three" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxArrLitForIn {
@@ -705,7 +705,7 @@ Test StrxArrLitForIn {
         return total
     }
     // 3+3+4+0 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxArrLitCount {
@@ -713,7 +713,7 @@ Test StrxArrLitCount {
         let arr = ["a", "b", "c"]
         return arr.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxArrBuildCount {
@@ -727,7 +727,7 @@ Test StrxArrBuildCount {
         }
         return arr.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxArrBuildSum {
@@ -748,7 +748,7 @@ Test StrxArrBuildSum {
         return total
     }
     // 3 periods of 15 = 45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test StrxArrBuildIdx {
@@ -763,7 +763,7 @@ Test StrxArrBuildIdx {
         return arr[2].count
     }
     // strxPk(2) = "three" = 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxArrBuildMvLen {
@@ -788,7 +788,7 @@ Test StrxArrBuildMvLen {
         return buildTotal + indexTotal
     }
     // 4 periods of 15 = 60 each -> 120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +812,7 @@ Test StrxSelByMod {
         return total
     }
     // 5*3 + 5*3 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxCountUnderThree {
@@ -830,7 +830,7 @@ Test StrxCountUnderThree {
     }
     // per period of 5: "go"(2)<3 yes, "by"(2)<3 yes, "x"(1)<3 yes -> 3 per period
     // 4 periods -> 12
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -843,7 +843,7 @@ Test StrxTrapArrOob {
         let s = arr[5]
         return s.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxTrapBoxArrOob {
@@ -853,17 +853,17 @@ Test StrxTrapBoxArrOob {
         let _ = boxes[5].code
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxTrapLblArrOob {
     test {
         var lbls: [StrxLbl] = []
-        lbls.append(StrxLbl.Empty)
+        lbls.append(.Empty)
         let _ = strxLblLen(lbls[3])
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxTrapDivZero {
@@ -872,7 +872,7 @@ Test StrxTrapDivZero {
         let b = 0
         return a / b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxTrapModZero {
@@ -881,7 +881,7 @@ Test StrxTrapModZero {
         let b = 0
         return a % b
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxTrapStrArrEmpty {
@@ -890,5 +890,5 @@ Test StrxTrapStrArrEmpty {
         let s = arr[0]
         return s.count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }

@@ -28,7 +28,7 @@ pub const FfiOptions = struct {
     offline: bool = false,
     locked: bool = false,
     timings: bool = false,
-    input_path: []const u8 = ".",
+    quiet: bool = false,
 };
 
 pub const RunOptions = struct {
@@ -40,6 +40,16 @@ pub const RunOptions = struct {
     trace_execution: bool = false,
     timings: bool = false,
     quit_after: ?Duration = null,
+    input_path: []const u8 = ".",
+};
+
+pub const DebugOptions = struct {
+    backend: ?build_def.ExecutionTarget = null,
+    // Run the Debug Adapter Protocol server (editor-facing) instead of the
+    // interactive terminal REPL. `--port` selects a TCP transport; without it,
+    // the DAP server speaks over stdio.
+    dap: bool = false,
+    port: ?u16 = null,
     input_path: []const u8 = ".",
 };
 
@@ -130,6 +140,10 @@ pub const UpdateOptions = struct {
     input_path: ?[]const u8 = null,
 };
 
+pub const MigrateManifestOptions = struct {
+    input_path: []const u8,
+};
+
 pub const PackageMode = enum { pack, inspect };
 pub const PackageOptions = struct {
     mode: PackageMode,
@@ -173,6 +187,7 @@ pub const LiveRunnerOptions = struct {
 
 pub const ParsedCommand = union(CommandKind) {
     run: RunOptions,
+    debug: DebugOptions,
     fetch_llvm: FetchLlvmOptions,
     tokens: UpdateOptions,
     ast: UpdateOptions,
@@ -191,6 +206,7 @@ pub const ParsedCommand = union(CommandKind) {
     remove: SinglePackageOptions,
     update: UpdateOptions,
     package: PackageOptions,
+    migrate_manifest: MigrateManifestOptions,
     live: LiveOptions,
     export_cmd: ExportOptions,
     help: HelpOptions,

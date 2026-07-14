@@ -1,7 +1,0 @@
-version = 1
-
-[root]
-name = "foundation_fs_argparser_leak_regression"
-version = "0.1.0"
-kind = "app"
-kira = "0.1.0"

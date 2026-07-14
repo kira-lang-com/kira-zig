@@ -15,6 +15,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     const previous_timings = build.timingsEnabled();
     build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
     defer build.setTimingsEnabled(previous_timings);
+    try support.syncCommandDependencies(allocator, parsed.input_path, parsed.offline, parsed.locked, stderr);
     const path = try allocator.dupeZ(u8, parsed.input_path);
     defer allocator.free(path);
     const developer = kira_main.kira_developer_create() orelse return error.OutOfMemory;
@@ -25,6 +26,8 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         try stdout.writeAll(report);
         return;
     }
+    build.emitProgress("[kira:control] suspend");
+    try stderr.writeAll("Failed to build\n");
     if (report.len != 0) try stderr.writeAll(report) else try stderr.writeAll(std.mem.span(kira_main.kira_developer_last_error(developer) orelse ""));
     return error.CommandFailed;
 }

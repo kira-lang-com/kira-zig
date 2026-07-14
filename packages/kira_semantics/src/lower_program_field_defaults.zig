@@ -36,10 +36,8 @@ pub fn lowerFieldDefaultExprExpected(
     expected_type: model.ResolvedType,
     function_headers: ?*const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !*model.Expr {
-    if (expected_type.kind == .enum_instance) {
-        if (try lowerFieldDefaultEnumVariantExpr(ctx, expr, expected_type, function_headers)) |enum_expr| {
-            return enum_expr;
-        }
+    if (try lowerFieldDefaultEnumVariantExpr(ctx, expr, expected_type, function_headers)) |enum_expr| {
+        return enum_expr;
     }
 
     const lowered = try ctx.allocator.create(model.Expr);
@@ -211,6 +209,11 @@ fn lowerFieldDefaultEnumVariantExpr(
         span: source_pkg.Span,
     };
     const target: VariantTarget = switch (expr.*) {
+        .implicit_member => |node| .{
+            .name = node.name,
+            .payload = null,
+            .span = node.span,
+        },
         .identifier => |node| blk: {
             if (node.name.segments.len < 2 or !std.mem.eql(u8, node.name.segments[0].text, enum_name)) return null;
             break :blk .{
@@ -226,6 +229,7 @@ fn lowerFieldDefaultEnumVariantExpr(
         },
         .call => |node| blk: {
             const variant_name = switch (node.callee.*) {
+                .implicit_member => |member| member.name,
                 .member => |member| member.member,
                 .identifier => |callee| name_blk: {
                     if (callee.name.segments.len < 2 or !std.mem.eql(u8, callee.name.segments[0].text, enum_name)) return null;
@@ -290,6 +294,15 @@ fn findEnumDeclForDefault(ctx: *shared.Context, enum_name: []const u8) ?model.En
     if (ctx.enum_headers) |enum_headers| {
         if (enum_headers.get(enum_name)) |enum_decl| return enum_decl;
     }
+    const leaf = qualifiedLeafText(enum_name);
+    if (!std.mem.eql(u8, leaf, enum_name)) {
+        if (ctx.concrete_enums) |concrete_enums| {
+            if (concrete_enums.get(leaf)) |enum_decl| return enum_decl;
+        }
+        if (ctx.enum_headers) |enum_headers| {
+            if (enum_headers.get(leaf)) |enum_decl| return enum_decl;
+        }
+    }
     return null;
 }
 
@@ -319,6 +332,7 @@ fn defaultExprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .string => |node| node.span,
         .bool => |node| node.span,
         .identifier => |node| node.span,
+        .implicit_member => |node| node.span,
         .array => |node| node.span,
         .builder_array => |node| node.span,
         .callback => |node| node.span,

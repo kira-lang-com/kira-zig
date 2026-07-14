@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("kira_diagnostics");
 const syntax = @import("kira_syntax_model");
 const model = @import("kira_semantics_model");
 const shared = @import("lower_shared.zig");
@@ -97,6 +98,21 @@ pub fn lowerBuilderBlock(
                     .span = value.span,
                 } });
                 break :blk;
+            },
+            .field_override => |value| {
+                // A `let field = value` override is only meaningful in a construction's trailing
+                // block, where `buildContentArgs` consumes it into a labeled field argument before
+                // this builder-lowering runs. Reaching here means the block is not a construction
+                // override block (e.g. a function-call trailing builder or a builder-array literal).
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM163",
+                    .title = "override outside a construction",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "A `let {s} = ...` override is only valid inside a construction's trailing `{{ ... }}` block.", .{value.name}),
+                    .labels = &.{diagnostics.primaryLabel(value.span, "field override is not inside a construction block")},
+                    .help = "Set the field with a constructor argument or place this override in a `Name(...) { let field = value }` construction block.",
+                });
+                return error.DiagnosticsEmitted;
             },
         }
     }

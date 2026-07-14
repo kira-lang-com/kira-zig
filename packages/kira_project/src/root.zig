@@ -9,6 +9,7 @@ pub const loadProjectFromFile = @import("package_discovery.zig").loadProjectFrom
 pub const loadProjectFromPath = @import("package_discovery.zig").loadProjectFromPath;
 pub const loadPackageRootFromPath = @import("package_discovery.zig").loadPackageRootFromPath;
 pub const resolveTargetFromPath = @import("package_discovery.zig").resolveTargetFromPath;
+pub const resolveTargetFromPathWithDiagnostics = @import("package_discovery.zig").resolveTargetFromPathWithDiagnostics;
 pub const manifest_file_name = @import("package_discovery.zig").manifest_file_name;
 pub const preferred_manifest_file_name = @import("package_discovery.zig").preferred_manifest_file_name;
 pub const legacy_manifest_file_name = @import("package_discovery.zig").legacy_manifest_file_name;

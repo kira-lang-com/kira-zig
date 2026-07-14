@@ -1,0 +1,316 @@
+// Struct bridging across @Native <-> @Runtime — migrated corpus cases from
+// tests/pass/run/. PREFIX: hbs / Hbs (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure available.
+
+// ---------------------------------------------------------------------------
+// hybrid_nested_struct_array_bridge — nested struct + [Int] borrowed into a
+// @Native mutator; the native copy-and-mutate must NOT write back through the
+// borrow. Original stdout: 5 / 11 / 5.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbsChild {
+    var value: Int
+}
+
+@Runtime
+struct HbsParent {
+    var child: HbsChild
+}
+
+@Native
+function hbsMutateAndSum(parent: borrow HbsParent, values: borrow [Int]) -> Int {
+    var next = parent
+    next.child.value = next.child.value + values[0]
+    return next.child.value + values[1] + values[2]
+}
+
+Test HbsNestedStructArrayBridge {
+    test {
+        var parent = HbsParent { child: HbsChild { value: 5 } }
+        let before = parent.child.value
+        let bridged = hbsMutateAndSum(parent, [1, 2, 3])
+        let after = parent.child.value
+        // positional encoding of the printed 5 / 11 / 5
+        return before * 10000 + bridged * 100 + after
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(51105); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_runtime_bool_bridge — @Native main context: a @Runtime borrow-mut
+// mutator flips a Bool field, then a @Native reader observes it.
+// Original stdout: true.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbsFlagBox {
+    var value: Bool
+}
+
+@Runtime
+function hbsSetFlag(box: borrow mut HbsFlagBox) {
+    box.value = true
+    return
+}
+
+@Native
+function hbsReadFlag(box: borrow HbsFlagBox) -> Bool {
+    return box.value
+}
+
+// The original @Main was @Native; keep the whole exercise in native code.
+@Native
+function hbsBoolBridgeRun() -> Bool {
+    var box = HbsFlagBox { value: false }
+    hbsSetFlag(box)
+    return hbsReadFlag(box)
+}
+
+Test HbsNativeRuntimeBoolBridge {
+    test { return hbsBoolBridgeRun() }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_runtime_struct_bridge — @Native main context: @Runtime factory
+// returns a struct, native code mutates and reads it via a @Native helper.
+// Original stdout: 5 / 12 / 17.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbsRtCounter {
+    var count: Int
+}
+
+@Runtime
+function hbsMakeCounter(start: Int) -> HbsRtCounter {
+    var counter = HbsRtCounter { count: start }
+    counter.count = counter.count + 2
+    return counter
+}
+
+@Native
+function hbsReadAndBump(counter: borrow HbsRtCounter) -> Int {
+    var next = counter
+    next.count = next.count + 5
+    return next.count
+}
+
+// The original @Main was @Native; keep the whole exercise in native code.
+@Native
+function hbsCounterBridgeRun() -> Int {
+    var counter = hbsMakeCounter(3)
+    let a = counter.count
+    counter.count = counter.count + 7
+    let b = counter.count
+    let c = hbsReadAndBump(counter)
+    // positional encoding of the printed 5 / 12 / 17
+    return a * 10000 + b * 100 + c
+}
+
+Test HbsNativeRuntimeStructBridge {
+    test { return hbsCounterBridgeRun() }
+    expect { let e: Result<Int, TestFailure> = .Ok(51217); return e }
+}
+
+// ---------------------------------------------------------------------------
+// runtime_native_struct_bridge — @Runtime main context: a @Native struct is
+// built and mutated runtime-side, then borrowed into a @Native reader.
+// Original stdout: 4 / 6 / 7.
+// ---------------------------------------------------------------------------
+
+@Native
+struct HbsNatCounter {
+    var count: Int
+}
+
+@Native
+function hbsReadNatCounter(counter: borrow HbsNatCounter) -> Int {
+    return counter.count + 1
+}
+
+Test HbsRuntimeNativeStructBridge {
+    test {
+        var counter = HbsNatCounter { count: 4 }
+        let a = counter.count
+        counter.count = counter.count + 2
+        let b = counter.count
+        let c = hbsReadNatCounter(counter)
+        // positional encoding of the printed 4 / 6 / 7
+        return a * 100 + b * 10 + c
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(467); return e }
+}
+
+// ---------------------------------------------------------------------------
+// runtime_native_struct_value_return — @Native function returning a struct BY
+// VALUE into the runtime (kira_struct_alloc payload; the VM must free it via
+// the matching kira_struct_free scheme, not a raw libc free).
+// Original stdout: 320 / 240.
+// ---------------------------------------------------------------------------
+
+@Native
+struct HbsSize {
+    var width: Int
+    var height: Int
+}
+
+@Native
+function hbsRootSize() -> HbsSize {
+    return HbsSize { width: 320, height: 240 }
+}
+
+Test HbsRuntimeNativeStructValueReturn {
+    test {
+        let s = hbsRootSize()
+        // positional encoding of the printed 320 / 240
+        return s.width * 1000 + s.height
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(320240); return e }
+}
+
+// ---------------------------------------------------------------------------
+// large_runtime_native_descriptor_boundary — a large nested @Runtime
+// descriptor (arrays of structs, nested struct fields, Bools) scored
+// runtime-side, bounced native->runtime, and probed natively.
+// Original stdout: 13238 / 13238 / 29.
+// ---------------------------------------------------------------------------
+
+@Runtime
+struct HbsVertexAttribute {
+    var location: Int
+    var format: Int
+    var offset: Int
+}
+
+@Runtime
+struct HbsBlend {
+    var enabled: Bool
+    var preset: Int
+}
+
+@Runtime
+struct HbsColorTarget {
+    var format: Int
+    var blend: HbsBlend
+}
+
+@Runtime
+struct HbsDepth {
+    var compare: Int
+    var writeEnabled: Bool
+}
+
+@Runtime
+struct HbsDescriptor {
+    var stride: Int
+    var attributes: [HbsVertexAttribute]
+    var colors: [HbsColorTarget]
+    var depth: HbsDepth
+}
+
+@Runtime
+function hbsMakeDescriptor() -> HbsDescriptor {
+    return HbsDescriptor {
+        stride: 24,
+        attributes: [
+            HbsVertexAttribute { location: 0, format: 31, offset: 0 },
+            HbsVertexAttribute { location: 1, format: 31, offset: 12 },
+            HbsVertexAttribute { location: 2, format: 22, offset: 20 }
+        ],
+        colors: [
+            HbsColorTarget { format: 80, blend: HbsBlend { enabled: true, preset: 4 } },
+            HbsColorTarget { format: 81, blend: HbsBlend { enabled: false, preset: 9 } }
+        ],
+        depth: HbsDepth { compare: 5, writeEnabled: true }
+    }
+}
+
+@Runtime
+function hbsDescriptorScore(descriptor: borrow HbsDescriptor) -> Int {
+    var checksum = descriptor.stride
+    var i = 0
+    while i < 3 {
+        let attr = descriptor.attributes[i]
+        checksum = checksum + attr.location * 1000
+        checksum = checksum + descriptor.attributes[i].format * 100
+        checksum = checksum + descriptor.attributes[i].offset
+        i = i + 1
+    }
+    var c = 0
+    while c < 2 {
+        let blend = descriptor.colors[c].blend
+        checksum = checksum + descriptor.colors[c].format * 10
+        checksum = checksum + descriptor.colors[c].blend.preset
+        if blend.enabled {
+            checksum = checksum + 77
+        }
+        c = c + 1
+    }
+    checksum = checksum + descriptor.depth.compare * 13
+    if descriptor.depth.writeEnabled {
+        checksum = checksum + 17
+    }
+    return checksum
+}
+
+@Native
+function hbsNativeBounceScore(descriptor: borrow HbsDescriptor) -> Int {
+    return hbsDescriptorScore(descriptor)
+}
+
+@Native
+function hbsNativeScalarProbe(descriptor: borrow HbsDescriptor) -> Int {
+    return descriptor.stride + descriptor.depth.compare
+}
+
+Test HbsDescriptorRuntimeScore {
+    test {
+        let descriptor = hbsMakeDescriptor()
+        return hbsDescriptorScore(descriptor)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(13238); return e }
+}
+
+Test HbsDescriptorNativeBounceScore {
+    test {
+        let descriptor = hbsMakeDescriptor()
+        return hbsNativeBounceScore(descriptor)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(13238); return e }
+}
+
+Test HbsDescriptorNativeScalarProbe {
+    test {
+        let descriptor = hbsMakeDescriptor()
+        return hbsNativeScalarProbe(descriptor)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(29); return e }
+}
+
+// ---------------------------------------------------------------------------
+// native_print_struct_array — printing a @Native struct and an array from
+// native code was the surface (original stdout: "Color(r: 255, g: 128, b: 64)"
+// / "array(len: 3)"). Reduced by returning the printed field values
+// positionally (r,g,b) plus the array length as the last digit.
+// ---------------------------------------------------------------------------
+
+@Native
+struct HbsColor {
+    var r: Int
+    var g: Int
+    var b: Int
+}
+
+@Native
+function hbsColorArrayProbe() -> Int {
+    let color = HbsColor { r: 255, g: 128, b: 64 }
+    let values = [1, 2, 3]
+    return ((color.r * 1000 + color.g) * 1000 + color.b) * 10 + values.count
+}
+
+Test HbsNativePrintStructArray {
+    test { return hbsColorArrayProbe() }
+    expect { let e: Result<Int, TestFailure> = .Ok(2551280643); return e }
+}

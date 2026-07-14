@@ -1,0 +1,265 @@
+// SpxTests.kira — String primitive coverage: String(scalar), .count, charAt,
+// substring, indexOf, plus composition, a deserialization round-trip, and
+// out-of-bounds trap tests. Asserts byte-identical behavior across vm/llvm/
+// hybrid (the package [defaults] execution_mode is hybrid; the corpus driver
+// runs the matrix).
+// PREFIX: spx / Spx.
+// No `import Foundation` — package-wide Test/Result/TestFailure/print already
+// available via main.kira.
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Render a "Point { x: N }" style string by composing `+` and `String(Int)`.
+function spxPoint(x: Int) -> String {
+    return "Point { x: " + String(x) + " }"
+}
+
+// Deserialize an integer out of a "key=NN" string using only the string
+// primitives: locate the delimiter with indexOf, carve the value with
+// substring, then fold the ASCII digits with charAt arithmetic. Proves the
+// primitives compose into a real parse path.
+function spxParseValue(entry: String) -> Int {
+    let eq = entry.indexOf("=")
+    let digits = entry.substring(eq + 1, entry.count)
+    var acc = 0
+    var i = 0
+    while i < digits.count {
+        let d = digits.charAt(i) - 48
+        acc = acc * 10 + d
+        i = i + 1
+    }
+    return acc
+}
+
+// ---------------------------------------------------------------------------
+// String(Int)
+// ---------------------------------------------------------------------------
+
+Test SpxStringIntZero {
+    test { return String(0) }
+    expect { let e: Result<String, TestFailure> = .Ok("0"); return e }
+}
+
+Test SpxStringIntNegative {
+    test { return String(-42) }
+    expect { let e: Result<String, TestFailure> = .Ok("-42"); return e }
+}
+
+Test SpxStringIntLargePositive {
+    test { return String(9223372036854775807) }
+    expect { let e: Result<String, TestFailure> = .Ok("9223372036854775807"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// String(Bool)
+// ---------------------------------------------------------------------------
+
+Test SpxStringBoolTrue {
+    test { return String(true) }
+    expect { let e: Result<String, TestFailure> = .Ok("true"); return e }
+}
+
+Test SpxStringBoolFalse {
+    test { return String(false) }
+    expect { let e: Result<String, TestFailure> = .Ok("false"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// String(Float) — shortest round-trip decimal, plain notation
+// ---------------------------------------------------------------------------
+
+Test SpxStringFloatWhole {
+    test { return String(2.0) }
+    expect { let e: Result<String, TestFailure> = .Ok("2"); return e }
+}
+
+Test SpxStringFloatTenth {
+    test { return String(0.1) }
+    expect { let e: Result<String, TestFailure> = .Ok("0.1"); return e }
+}
+
+Test SpxStringFloatThird {
+    test { return String(1.0 / 3.0) }
+    expect { let e: Result<String, TestFailure> = .Ok("0.3333333333333333"); return e }
+}
+
+Test SpxStringFloatHuge {
+    test { return String(100000000000000000000.0) }
+    expect { let e: Result<String, TestFailure> = .Ok("100000000000000000000"); return e }
+}
+
+Test SpxStringFloatTiny {
+    test { return String(0.00000015) }
+    expect { let e: Result<String, TestFailure> = .Ok("0.00000015"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// s.count — byte count (UTF-8)
+// ---------------------------------------------------------------------------
+
+Test SpxCountEmpty {
+    test { return "".count }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test SpxCountAscii {
+    test { return "hello".count }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}
+
+Test SpxCountMultibyteLatin {
+    // "café" = c a f (3 bytes) + é (U+00E9, 2 bytes) = 5 bytes.
+    test { return "café".count }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
+}
+
+Test SpxCountMultibyteCjk {
+    // "中文" = two 3-byte CJK codepoints = 6 bytes.
+    test { return "中文".count }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
+}
+
+// ---------------------------------------------------------------------------
+// s.charAt(i) — byte at index as Int
+// ---------------------------------------------------------------------------
+
+Test SpxCharAtFirst {
+    // 'h' == 104
+    test { return "hello".charAt(0) }
+    expect { let e: Result<Int, TestFailure> = .Ok(104); return e }
+}
+
+Test SpxCharAtLast {
+    // 'o' == 111
+    test { return "hello".charAt(4) }
+    expect { let e: Result<Int, TestFailure> = .Ok(111); return e }
+}
+
+Test SpxCharAtMid {
+    // 'l' == 108
+    test { return "hello".charAt(2) }
+    expect { let e: Result<Int, TestFailure> = .Ok(108); return e }
+}
+
+// ---------------------------------------------------------------------------
+// s.substring(start, end) — half-open slice
+// ---------------------------------------------------------------------------
+
+Test SpxSubstringEmpty {
+    test { return "hello".substring(0, 0) }
+    expect { let e: Result<String, TestFailure> = .Ok(""); return e }
+}
+
+Test SpxSubstringFull {
+    test { return "hello".substring(0, 5) }
+    expect { let e: Result<String, TestFailure> = .Ok("hello"); return e }
+}
+
+Test SpxSubstringMid {
+    test { return "hello".substring(1, 4) }
+    expect { let e: Result<String, TestFailure> = .Ok("ell"); return e }
+}
+
+Test SpxSubstringOnConcat {
+    // substring on the fresh heap buffer produced by `+`. "catdog"[2..5] = "tdo".
+    test {
+        let joined = "cat" + "dog"
+        return joined.substring(2, 5)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("tdo"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// s.indexOf(needle)
+// ---------------------------------------------------------------------------
+
+Test SpxIndexOfHitZero {
+    test { return "hello".indexOf("he") }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test SpxIndexOfHitMid {
+    test { return "hello".indexOf("ll") }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
+}
+
+Test SpxIndexOfHitEnd {
+    test { return "hello".indexOf("lo") }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+Test SpxIndexOfMiss {
+    test { return "hello".indexOf("z") }
+    expect { let e: Result<Int, TestFailure> = .Ok(-1); return e }
+}
+
+Test SpxIndexOfEmptyNeedle {
+    // Empty needle matches at the front → 0.
+    test { return "hello".indexOf("") }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+Test SpxIndexOfNeedleEqualsHaystack {
+    test { return "hello".indexOf("hello") }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Composition + round-trip parse
+// ---------------------------------------------------------------------------
+
+Test SpxComposePoint {
+    test { return spxPoint(1) }
+    expect { let e: Result<String, TestFailure> = .Ok("Point { x: 1 }"); return e }
+}
+
+Test SpxRoundTripParse {
+    // indexOf + substring + charAt arithmetic reconstruct the integer 42.
+    test { return spxParseValue("x=42") }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}
+
+Test SpxRoundTripParseWide {
+    test { return spxParseValue("count=1024") }
+    expect { let e: Result<Int, TestFailure> = .Ok(1024); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Trap tests (kept last; the driver re-runs each in isolation). Each passes
+// iff the body traps — the declared Ok value is never produced.
+// ---------------------------------------------------------------------------
+
+Test SpxTrapCharAtNegative {
+    test {
+        let c = "hello".charAt(-1)
+        return c
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test SpxTrapCharAtLen {
+    test {
+        let c = "hello".charAt(5)
+        return c
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test SpxTrapSubstringReversed {
+    test {
+        let s = "hello".substring(2, 1)
+        return s.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}
+
+Test SpxTrapSubstringOverLen {
+    test {
+        let n = "hello".count
+        let s = "hello".substring(0, n + 1)
+        return s.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
+}

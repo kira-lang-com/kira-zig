@@ -1,9 +1,0 @@
-annotation Tagged { targets: struct }
-
-@Tagged
-struct Marker {}
-
-@Main
-function entry() {
-    return
-}

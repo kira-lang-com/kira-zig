@@ -380,6 +380,7 @@ fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .string => |node| node.span,
         .bool => |node| node.span,
         .identifier => |node| node.span,
+        .implicit_member => |node| node.span,
         .array => |node| node.span,
         .builder_array => |node| node.span,
         .callback => |node| node.span,

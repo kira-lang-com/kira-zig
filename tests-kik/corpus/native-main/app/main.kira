@@ -1,0 +1,15 @@
+// native-main: migrated from tests/fail/backend/vm_native_main.
+//
+// A per-backend-differential case. The legacy expect.toml declared pass on
+// ["hybrid", "llvm"] with stdout "native main\n" and simply omitted vm — an
+// @Native @Main is unsupported on the pure VM. There is no diagnostic to assert,
+// so it is a pass-corpus case (manifest matrix hybrid+llvm), not a FailTest.
+
+import Foundation
+
+@Main
+@Native
+function main() {
+    print("native main")
+    return
+}

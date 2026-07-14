@@ -1,0 +1,315 @@
+// TgxTests.kira
+// Migrated from tests/pass/run/llvm_textcore_glyphrun_parity.
+// All top-level names use prefix tgx / Tgx. No `import Foundation` here —
+// main.kira imports it for the whole package.
+// Text-core shaped stress: glyph runs, clusters, fallback runs and multi-line
+// layouts (deep struct/array nesting, dynamic indexing, copies mutated
+// locally) folded into one checksum that must agree across backends.
+
+// ---------------------------------------------------------------------------
+// llvm_textcore_glyphrun_parity
+// ---------------------------------------------------------------------------
+
+struct TgxFontMetrics {
+    var ascender: Int
+    var descender: Int
+    var lineGap: Int
+    var capHeight: Int
+    var xHeight: Int
+    var underlinePosition: Int
+    var underlineThickness: Int
+}
+
+struct TgxGlyphPosition {
+    var x: Int
+    var y: Int
+    var advanceX: Int
+    var advanceY: Int
+    var offsetX: Int
+    var offsetY: Int
+    var bearingX: Int
+    var bearingY: Int
+}
+
+struct TgxGlyphInfo {
+    var glyphId: Int
+    var codepoint: Int
+    var clusterIndex: Int
+    var fontIndex: Int
+    var position: TgxGlyphPosition
+}
+
+struct TgxGlyphRun {
+    var fontId: Int
+    var startGlyph: Int
+    var glyphCount: Int
+    var glyphs: [TgxGlyphInfo]
+    var metrics: TgxFontMetrics
+    var totalAdvance: Int
+}
+
+struct TgxClusterInfo {
+    var startGlyph: Int
+    var endGlyph: Int
+    var byteStart: Int
+    var byteEnd: Int
+    var advance: Int
+    var direction: Int
+}
+
+struct TgxFontFallbackRun {
+    var fontId: Int
+    var startGlyph: Int
+    var endGlyph: Int
+    var score: Int
+}
+
+struct TgxTextLine {
+    var lineIndex: Int
+    var startCluster: Int
+    var endCluster: Int
+    var runs: [TgxGlyphRun]
+    var clusters: [TgxClusterInfo]
+    var baseline: Int
+    var width: Int
+    var height: Int
+}
+
+struct TgxTextStyle {
+    var size: Int
+    var weight: Int
+    var slant: Int
+    var letterSpacing: Int
+    var fallback: TgxFontFallbackRun
+}
+
+struct TgxTextLayout {
+    var lines: [TgxTextLine]
+    var style: TgxTextStyle
+    var fallbackRuns: [TgxFontFallbackRun]
+    var totalWidth: Int
+    var totalHeight: Int
+}
+
+struct TgxTextMeasurement {
+    var layout: TgxTextLayout
+    var glyphCount: Int
+    var clusterCount: Int
+    var lineCount: Int
+    var checksumSeed: Int
+}
+
+function tgxPos(base: Int) -> TgxGlyphPosition {
+    return TgxGlyphPosition {
+        x: base + 1,
+        y: base + 2,
+        advanceX: base + 3,
+        advanceY: base + 4,
+        offsetX: base + 5,
+        offsetY: base + 6,
+        bearingX: base + 7,
+        bearingY: base + 8
+    }
+}
+
+function tgxMetrics(base: Int) -> TgxFontMetrics {
+    return TgxFontMetrics {
+        ascender: base + 11,
+        descender: base + 12,
+        lineGap: base + 13,
+        capHeight: base + 14,
+        xHeight: base + 15,
+        underlinePosition: base + 16,
+        underlineThickness: base + 17
+    }
+}
+
+function tgxGlyph(base: Int, cluster: Int, font: Int) -> TgxGlyphInfo {
+    return TgxGlyphInfo {
+        glyphId: base + 101,
+        codepoint: base + 202,
+        clusterIndex: cluster,
+        fontIndex: font,
+        position: tgxPos(base + 300)
+    }
+}
+
+function tgxCluster(base: Int, startGlyph: Int, endGlyph: Int) -> TgxClusterInfo {
+    return TgxClusterInfo {
+        startGlyph: startGlyph,
+        endGlyph: endGlyph,
+        byteStart: base + 31,
+        byteEnd: base + 32,
+        advance: base + 33,
+        direction: base + 34
+    }
+}
+
+function tgxFallback(base: Int) -> TgxFontFallbackRun {
+    return TgxFontFallbackRun {
+        fontId: base + 41,
+        startGlyph: base + 42,
+        endGlyph: base + 43,
+        score: base + 44
+    }
+}
+
+function tgxMakeRun(base: Int, font: Int) -> TgxGlyphRun {
+    return TgxGlyphRun {
+        fontId: font,
+        startGlyph: base + 1,
+        glyphCount: 4,
+        glyphs: [
+            tgxGlyph(base + 10, base + 100, font),
+            tgxGlyph(base + 20, base + 101, font),
+            tgxGlyph(base + 30, base + 102, font),
+            tgxGlyph(base + 40, base + 103, font)
+        ],
+        metrics: tgxMetrics(base + 500),
+        totalAdvance: base + 900
+    }
+}
+
+function tgxMakeLine(base: Int, lineIndex: Int) -> TgxTextLine {
+    return TgxTextLine {
+        lineIndex: lineIndex,
+        startCluster: base + 1,
+        endCluster: base + 4,
+        runs: [
+            tgxMakeRun(base + 1000, lineIndex + 10),
+            tgxMakeRun(base + 2000, lineIndex + 20)
+        ],
+        clusters: [
+            tgxCluster(base + 3000, 0, 1),
+            tgxCluster(base + 3100, 1, 2),
+            tgxCluster(base + 3200, 2, 3),
+            tgxCluster(base + 3300, 3, 4)
+        ],
+        baseline: base + 401,
+        width: base + 402,
+        height: base + 403
+    }
+}
+
+function tgxMakeMeasurement() -> TgxTextMeasurement {
+    return TgxTextMeasurement {
+        layout: TgxTextLayout {
+            lines: [
+                tgxMakeLine(10000, 0),
+                tgxMakeLine(20000, 1),
+                tgxMakeLine(30000, 2)
+            ],
+            style: TgxTextStyle {
+                size: 17,
+                weight: 600,
+                slant: 3,
+                letterSpacing: 2,
+                fallback: tgxFallback(70000)
+            },
+            fallbackRuns: [
+                tgxFallback(71000),
+                tgxFallback(72000),
+                tgxFallback(73000)
+            ],
+            totalWidth: 888001,
+            totalHeight: 999002
+        },
+        glyphCount: 24,
+        clusterCount: 12,
+        lineCount: 3,
+        checksumSeed: 12345
+    }
+}
+
+function tgxScorePosition(position: borrow TgxGlyphPosition) -> Int {
+    return position.x + position.y * 2 + position.advanceX * 3 + position.advanceY * 4 + position.offsetX * 5 + position.offsetY * 6 + position.bearingX * 7 + position.bearingY * 8
+}
+
+function tgxScoreGlyph(g: borrow TgxGlyphInfo) -> Int {
+    return g.glyphId * 3 + g.codepoint * 5 + g.clusterIndex * 7 + g.fontIndex * 11 + tgxScorePosition(g.position)
+}
+
+function tgxScoreCluster(c: borrow TgxClusterInfo) -> Int {
+    return c.startGlyph * 13 + c.endGlyph * 17 + c.byteStart * 19 + c.byteEnd * 23 + c.advance * 29 + c.direction * 31
+}
+
+function tgxPickGlyph(run: borrow TgxGlyphRun, index: Int) -> TgxGlyphInfo {
+    return run.glyphs[index]
+}
+
+function tgxPickPosition(g: borrow TgxGlyphInfo) -> TgxGlyphPosition {
+    return g.position
+}
+
+function tgxPickCluster(line: borrow TgxTextLine, index: Int) -> TgxClusterInfo {
+    return line.clusters[index]
+}
+
+function tgxRewriteGlyphCopy(g: borrow TgxGlyphInfo) -> TgxGlyphInfo {
+    var copy = g
+    copy.glyphId = copy.glyphId + 700000
+    copy.position.x = copy.position.x + 800000
+    return copy
+}
+
+function tgxLineScore(line: borrow TgxTextLine, dynamicRun: Int, dynamicGlyph: Int) -> Int {
+    let firstGlyph = line.runs[0].glyphs[0]
+    let middleGlyph = line.runs[dynamicRun].glyphs[dynamicGlyph]
+    let lastGlyph = line.runs[1].glyphs[line.runs[1].glyphs.count - 1]
+    let returnedGlyph = tgxPickGlyph(line.runs[dynamicRun], dynamicGlyph)
+    let returnedPosition = tgxPickPosition(returnedGlyph)
+    let firstCluster = line.clusters[0]
+    let middleCluster = tgxPickCluster(line, dynamicGlyph)
+    let lastCluster = line.clusters[line.clusters.count - 1]
+    var copiedGlyph = middleGlyph
+    copiedGlyph.clusterIndex = copiedGlyph.clusterIndex + 500000
+    var copiedPosition = middleGlyph.position
+    copiedPosition.advanceX = copiedPosition.advanceX + 600000
+    let mutatedCopy = tgxRewriteGlyphCopy(middleGlyph)
+
+    var checksum = line.lineIndex * 37 + line.startCluster * 41 + line.endCluster * 43
+    checksum = checksum + line.baseline * 47 + line.width * 53 + line.height * 59
+    checksum = checksum + tgxScoreGlyph(firstGlyph)
+    checksum = checksum + tgxScoreGlyph(middleGlyph)
+    checksum = checksum + tgxScoreGlyph(lastGlyph)
+    checksum = checksum + tgxScoreGlyph(returnedGlyph)
+    checksum = checksum + tgxScorePosition(returnedPosition)
+    checksum = checksum + tgxScoreCluster(firstCluster)
+    checksum = checksum + tgxScoreCluster(middleCluster)
+    checksum = checksum + tgxScoreCluster(lastCluster)
+    checksum = checksum + copiedGlyph.clusterIndex
+    checksum = checksum + copiedPosition.advanceX
+    checksum = checksum + mutatedCopy.glyphId + mutatedCopy.position.x
+    checksum = checksum + middleGlyph.clusterIndex + middleGlyph.position.advanceX
+    checksum = checksum + line.runs[0].metrics.ascender + line.runs[1].metrics.underlineThickness
+    checksum = checksum + line.runs[dynamicRun].totalAdvance
+    return checksum
+}
+
+function tgxMeasurementScore(measurement: borrow TgxTextMeasurement) -> Int {
+    let layout = measurement.layout
+    var checksum = measurement.checksumSeed + measurement.glyphCount * 61 + measurement.clusterCount * 67 + measurement.lineCount * 71
+    checksum = checksum + layout.totalWidth + layout.totalHeight
+    checksum = checksum + layout.style.size * 73 + layout.style.weight * 79 + layout.style.slant * 83 + layout.style.letterSpacing * 89
+    checksum = checksum + layout.style.fallback.fontId + layout.style.fallback.score
+    checksum = checksum + layout.fallbackRuns[0].fontId + layout.fallbackRuns[1].startGlyph + layout.fallbackRuns[2].endGlyph
+
+    var index = 0
+    while index < layout.lines.count {
+        let dynamicRun = index % 2
+        let dynamicGlyph = index + 1
+        let line = layout.lines[index]
+        checksum = checksum + tgxLineScore(line, dynamicRun, dynamicGlyph)
+        checksum = checksum + layout.lines[index].runs[dynamicRun].glyphs[dynamicGlyph].position.offsetY
+        index = index + 1
+    }
+    return checksum
+}
+
+Test TgxTextcoreGlyphrunParity {
+    test {
+        let measurement = tgxMakeMeasurement()
+        return tgxMeasurementScore(measurement)
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(62449188); return e }
+}

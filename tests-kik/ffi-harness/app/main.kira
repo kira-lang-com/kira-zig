@@ -1,7 +1,7 @@
 // FFI / native-bridge test harness — Foundation `Test`-construct shape.
 //
 // Every test exercises the @Native <-> @Runtime hybrid bridge and reduces the
-// result to a scalar asserted via `Result.Ok(...)`. The suite is HYBRID-only
+// result to a scalar asserted via `.Ok(...)`. The suite is HYBRID-only
 // (the @Native + @Runtime mix is rejected on pure vm/llvm), and runs through the
 // pure-Kira test driver, which executes each Test at BUILD time on the hybrid
 // runtime — so the @Native calls bridge and the verdict is backend-independent:

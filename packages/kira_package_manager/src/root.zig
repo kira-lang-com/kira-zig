@@ -12,3 +12,8 @@ pub const fetchPackageVersion = @import("registry_fetch.zig").fetchPackageVersio
 pub const fetchPackageMetadata = @import("registry_fetch.zig").fetchPackageMetadata;
 pub const syncProject = @import("manager.zig").syncProject;
 pub const loadModuleMapForSource = @import("manager.zig").loadModuleMapForSource;
+pub const setProgressCallback = @import("progress.zig").setCallback;
+
+test {
+    _ = @import("progress.zig");
+}

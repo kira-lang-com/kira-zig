@@ -1,7 +1,0 @@
-[project]
-name = "foundation_fs_argparser_leak_regression"
-version = "0.1.0"
-
-[defaults]
-execution_mode = "hybrid"
-build_target = "host"

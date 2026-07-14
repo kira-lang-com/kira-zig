@@ -1,0 +1,774 @@
+// CsfCheckTests.kira — must-COMPILE migration of the legacy analysis-only corpus
+// tests/pass/check/ (19 cases) into the FailTest must-compile construct.
+// PREFIX: Csf / CsfCheckSurface.
+//
+// Each FailTest inlines a legacy case main.kira VERBATIM in its source { } block
+// and asserts .Ok(1) = compiles-cleanly on every listed backend. backends
+// are copied faithfully from each case expect.toml backends array (in array order).
+//
+// MANIFEST (18 migrated):
+//   annotation_definitions                 CsfAnnotationDefinitions           { hybrid vm }
+//   any_construct_qualifier                CsfAnyConstructQualifier           { hybrid vm }
+//   callback_syntax_and_function_types     CsfCallbackSyntaxAndFunctionTypes  { hybrid vm }
+//   construct_content_channels             CsfConstructContentChannels        { hybrid vm }
+//   construct_content_composition          CsfConstructContentComposition     { hybrid vm }
+//   construct_extends                      CsfConstructExtends                { vm llvm hybrid }
+//   construct_properties                   CsfConstructProperties             { hybrid vm }
+//   construct_required_functions           CsfConstructRequiredFunctions      { hybrid vm }
+//   construct_typed_content_widget         CsfConstructTypedContentWidget     { hybrid vm }
+//   declaration_rules                      CsfDeclarationRules                { hybrid vm }
+//   field_override_enum_payload_defaults   CsfFieldOverrideEnumPayloadDefaults { hybrid vm llvm }
+//   game_item_generated                    CsfGameItemGenerated               { hybrid vm }
+//   inheritance_parent_qualification       CsfInheritanceParentQualification  { hybrid vm }
+//   nested_struct_literal_defaults         CsfNestedStructLiteralDefaults     { hybrid vm }
+//   type_execution_annotations             CsfTypeExecutionAnnotations        { hybrid vm }
+//   widget_content_composition             CsfWidgetContentComposition        { vm llvm hybrid }
+//   widget_extend_modifier                 CsfWidgetExtendModifier            { vm llvm hybrid }
+//   widget_required_and_node_bridge        CsfWidgetRequiredAndNodeBridge     { vm llvm hybrid }
+//
+// SKIPPED (1, multi-file): imported_global_namespace — see SKIPPED.md.
+
+// --- annotation_definitions (tests/pass/check/annotation_definitions)
+FailTest CsfAnnotationDefinitions {
+    backends { hybrid vm }
+    source {
+annotation State {
+}
+
+annotation Attribute {
+    parameters {
+        index: Int
+    }
+}
+
+annotation InputMapping {
+    parameters {
+        priority: Int = 0
+        blocksLowerPriorityMappings: Bool = false
+    }
+}
+
+construct Widget {
+    annotations {
+        @State;
+        @Attribute;
+        @InputMapping;
+    }
+}
+
+Widget Button() {
+    @State
+    let isPressed: Bool = false;
+
+    @Attribute(0)
+    let position: Float = 0.0;
+
+    @InputMapping
+    let mapping: Int = 1;
+
+    content {
+    }
+}
+
+@Main
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- any_construct_qualifier (tests/pass/check/any_construct_qualifier)
+FailTest CsfAnyConstructQualifier {
+    backends { hybrid vm }
+    source {
+construct Widget {
+}
+
+@Runtime
+function acceptWidget(value: any Widget) {
+    return;
+}
+
+@Main
+function entry() {
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- callback_syntax_and_function_types (tests/pass/check/callback_syntax_and_function_types)
+FailTest CsfCallbackSyntaxAndFunctionTypes {
+    backends { hybrid vm }
+    source {
+function sink(value: Int) {
+    print(value);
+    return;
+}
+
+function register(handler: (Int) -> Void) {
+    return;
+}
+
+@Main
+function main() {
+    let callback: (Int) -> Void = sink;
+    register { value in
+        sink(value);
+    }
+    callback(1);
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_content_channels (tests/pass/check/construct_content_channels)
+FailTest CsfConstructContentChannels {
+    backends { hybrid vm }
+    source {
+// Construct 2.0: a construct's child content is a slot field typed `some X` (one child) or
+// `[some X]` (many). Slots are filled by the trailing content block at the construction site,
+// replacing the old named-channel `content { head { accepts ...; count ... } }` schema.
+
+construct WebElement {
+    @Required let body: WebElement
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+WebElement Title(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+WebElement Document() {
+    let children: [some WebElement]
+
+    function render() -> [String] {
+        return children[0].render()
+    }
+}
+
+@Main
+function main() {
+    let page = Document() {
+        Title("Home")
+        Title("Welcome")
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_content_composition (tests/pass/check/construct_content_composition)
+FailTest CsfConstructContentComposition {
+    backends { hybrid vm }
+    source {
+// Construct 2.0: content composition is expressed by nesting slot-typed widgets inside a
+// `body { ... }` builder block — a parent composes children by constructing them in its body.
+// There are no `refine` / `project` / `passthrough` / `sealed` content directives.
+
+construct WebElement {
+    @Required let body: WebElement
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+WebElement Text(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+WebElement Stack() {
+    let children: [some WebElement]
+
+    function render() -> [String] {
+        return children[0].render()
+    }
+}
+
+WebElement Article() {
+    body {
+        Stack() {
+            Text("hello")
+        }
+    }
+}
+
+@Main
+function main() {
+    let article = Article()
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_extends (tests/pass/check/construct_extends)
+FailTest CsfConstructExtends {
+    backends { vm llvm hybrid }
+    source {
+// Constructs form declaration families that can inherit from other constructs with
+// `extends` (not `:` and not `extend`). The local inheritance graph may reference
+// constructs declared later in the file and may list multiple direct parents, as long
+// as it stays acyclic.
+
+construct WebElement {
+}
+
+construct Drawable {
+}
+
+// Multiple direct parents.
+construct Surface extends WebElement, Drawable {
+}
+
+// Forward reference: `Route` extends `Surface` which is declared above, and `Page`
+// (declared below) extends `Route` — registration is order-independent.
+construct Route extends Surface {
+}
+
+construct Page extends Route {
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_properties (tests/pass/check/construct_properties)
+FailTest CsfConstructProperties {
+    backends { hybrid vm }
+    source {
+// Construct 2.0: a construct's caller-provided values are `@Required let` fields (every
+// construct-backed declaration must provide them) and `let field = value` defaults (optional,
+// overridable). Fields are inherited through `extends`. A declaration provides required values
+// as constructor parameters — there is no `properties { ... }` schema section.
+
+construct WebElement {
+    let id: String = "element"
+}
+
+construct Route extends WebElement {
+    @Required let path: String
+    let title: String = "untitled"
+}
+
+Route Home(path: String) {
+}
+
+@Main
+function main() {
+    let home = Home(path = "/")
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_required_functions (tests/pass/check/construct_required_functions)
+FailTest CsfConstructRequiredFunctions {
+    backends { hybrid vm }
+    source {
+// A construct's `requires { function ... }` block lists functions that its first concrete
+// declaration must implement. Declarations inherit implementations from a parent declaration
+// and may override them. The inheritance graph spans construct->construct, declaration->construct,
+// and declaration->declaration.
+
+construct Drawable {
+    requires {
+        function draw()
+    }
+}
+
+// First concrete child of `Drawable`: must implement draw().
+Drawable Sprite {
+    function draw() {
+    }
+}
+
+// Inherits draw() from the `Sprite` declaration — valid without re-implementing.
+Sprite Player {
+}
+
+// Overrides draw() — valid.
+Sprite AnimatedPlayer {
+    function draw() {
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- construct_typed_content_widget (tests/pass/check/construct_typed_content_widget)
+FailTest CsfConstructTypedContentWidget {
+    backends { hybrid vm }
+    source {
+// Construct 2.0: a construct that holds a single typed child declares it as a `some X` slot,
+// filled by the trailing content block at the construction site. This replaces the old
+// `content: Content<Widget>;` typed-content section.
+
+construct Surface {
+    @Required let body: Surface
+
+    function render() -> [String] {
+        return body.render()
+    }
+}
+
+Surface Panel(label: String) {
+    function render() -> [String] {
+        return [label]
+    }
+}
+
+Surface Dashboard() {
+    let content: some Surface
+
+    function render() -> [String] {
+        return content.render()
+    }
+}
+
+@Main
+function main() {
+    let dashboard = Dashboard() {
+        Panel("panel")
+    }
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- declaration_rules (tests/pass/check/declaration_rules)
+FailTest CsfDeclarationRules {
+    backends { hybrid vm }
+    source {
+@Main
+function entry() {
+    var inferred = "abc"
+    var text: String
+    var amount: Float
+    var precise: Float = 0.0
+    return
+}
+
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- field_override_enum_payload_defaults (tests/pass/check/field_override_enum_payload_defaults)
+FailTest CsfFieldOverrideEnumPayloadDefaults {
+    backends { hybrid vm llvm }
+    source {
+struct Color {
+    let r: F32 = 1.0
+}
+
+struct GlowPayload {
+    let color: Color = Color {}
+    let radius: Int = 4
+}
+
+enum Paint {
+    Flat
+    Glow(GlowPayload)
+}
+
+class Surface {
+    let paint: Paint = .Flat
+    let effects: [Paint] = []
+}
+
+class Card extends Surface {
+    override let paint: Paint = .Flat
+    override let effects: [Paint] = [.Glow(GlowPayload { color: Color { r: 0.5 } })]
+}
+
+@Main
+function main() {
+    let card = Card()
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- game_item_generated (tests/pass/check/game_item_generated)
+FailTest CsfGameItemGenerated {
+    backends { hybrid vm }
+    source {
+capability Serializable {
+    generated {
+        overridable function transportFormat(): String {
+            return "ktl"
+        }
+
+        function toJson(): String {
+            return "json"
+        }
+    }
+}
+
+annotation GameItem {
+    targets: class
+    uses Serializable
+
+    generated {
+        overridable function displayName(): String {
+            return "item"
+        }
+    }
+}
+
+struct Position {
+    let x: Float = 0.0
+    let y: Float = 0.0
+    let z: Float = 0.0
+}
+
+class GameData {
+    let createdAt: Int = 0
+
+    function debugLabel(): String {
+        return "GameData"
+    }
+}
+
+@GameItem
+class PlayerData extends GameData {
+    let name: String = "DefaultName"
+    let level: Int = 1
+    let position: Position
+
+    override function transportFormat(): String {
+        return "ktl+player"
+    }
+
+    override function displayName(): String {
+        return name
+    }
+}
+
+@Main
+function entry() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- inheritance_parent_qualification (tests/pass/check/inheritance_parent_qualification)
+FailTest CsfInheritanceParentQualification {
+    backends { hybrid vm }
+    source {
+class Left {
+    let value: I64 = 1
+
+    function read(): I64 {
+        return value
+    }
+}
+
+class Right {
+    let value: I64 = 2
+
+    function read(): I64 {
+        return value
+    }
+}
+
+class Child extends Left, Right {
+    function combine(): I64 {
+        return Left.read() + Right.read() + Left.value + Right.value
+    }
+}
+
+@Main
+function entry() {
+    let child: Child = Child()
+    child.combine()
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- nested_struct_literal_defaults (tests/pass/check/nested_struct_literal_defaults)
+FailTest CsfNestedStructLiteralDefaults {
+    backends { hybrid vm }
+    source {
+struct Point {
+    let x: Int = 0;
+    let y: Int = 0;
+}
+
+struct Rect {
+    let origin: Point = Point {};
+    let width: Int = 10;
+
+    function maxX() -> Int {
+        return origin.x + width;
+    }
+}
+
+@Main
+function main() {
+    let rect = Rect {
+        origin: Point {
+            x: 7
+            y: 2
+        }
+        width: 5
+    };
+    let defaultRect = Rect { };
+
+    print(rect.maxX());
+    print(defaultRect.maxX());
+    return;
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- type_execution_annotations (tests/pass/check/type_execution_annotations)
+FailTest CsfTypeExecutionAnnotations {
+    backends { hybrid vm }
+    source {
+annotation Tagged { targets: class }
+
+@Native
+struct NativePoint {
+    var x: Int = 0
+}
+
+@Runtime
+struct RuntimePoint {
+    var y: Int = 0
+}
+
+@Tagged
+class Label {}
+
+@Tagged
+@Native
+class NativeLabel {}
+
+@Main
+function entry() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- widget_content_composition (tests/pass/check/widget_content_composition)
+FailTest CsfWidgetContentComposition {
+    backends { vm llvm hybrid }
+    source {
+// `@Content` fields are caller-provided children. A trailing `{ ... }` block on a construction
+// fills them: a single `Widget` field takes one child, a `[Widget]` field takes many in order,
+// and multiple `@Content` fields are filled by name. Field names are the channel names.
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+Widget Text {
+    let text: String = ""
+    let node: Node { TextNode(text: text) }
+}
+
+Widget VStack {
+    @Content let children: [Widget]
+    let node: Node { VStackNode() }
+}
+
+Widget HStack {
+    @Content let children: [Widget]
+    let node: Node { HStackNode() }
+}
+
+Widget Padding {
+    @Content let child: Widget
+    let node: Node { PaddingNode() }
+}
+
+Widget Dialog {
+    @Content let header: Widget
+    @Content let content: Widget
+    let node: Node { DialogNode() }
+}
+
+// Nested composition: list content, single content, and named fills, all in source order.
+Widget Screen {
+    let body: Widget {
+        VStack {
+            Text(text: "title")
+            HStack {
+                Text(text: "left")
+                Text(text: "right")
+            }
+            Padding {
+                Text(text: "inner")
+            }
+            Dialog {
+                header {
+                    Text(text: "Title")
+                }
+                content {
+                    Text(text: "Message")
+                }
+            }
+        }
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- widget_extend_modifier (tests/pass/check/widget_extend_modifier)
+FailTest CsfWidgetExtendModifier {
+    backends { vm llvm hybrid }
+    source {
+// `extend C { ... }` adds fluent modifier functions to a construct family. Modifiers return the
+// family type and are used as call chains (`Text(...).padding(amount: 8)`), distinct from the
+// core Widget->Node bridge.
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+Widget Text {
+    let text: String = ""
+    let node: Node { TextNode(text: text) }
+}
+
+Widget Padding {
+    let amount: Float = 16
+    @Content let child: Widget
+    let node: Node { PaddingNode(amount: amount) }
+}
+
+extend Widget {
+    function padding(amount: Float) -> Widget {
+        Padding(amount: amount) {
+            self
+        }
+    }
+}
+
+Widget Button {
+    let title: String = ""
+    let body: Widget {
+        Text(text: title).padding(amount: 8)
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- widget_required_and_node_bridge (tests/pass/check/widget_required_and_node_bridge)
+FailTest CsfWidgetRequiredAndNodeBridge {
+    backends { vm llvm hybrid }
+    source {
+// The SwiftUI-style construct surface: `@Required` marks required construct members directly,
+// and `let node: Node { ... }` is the typed Widget->Node bridge.
+//
+// * `construct Node` requires two functions (test: @Required function requirement).
+// * `construct Widget` requires the `body` field and supplies a default `node = body.node`
+//   (test: @Required field requirement + default computed member).
+// * A composite widget provides `body` and inherits the default `node`.
+// * A primitive widget provides `node` directly and omits `body` (terminal rule), without
+//   triggering infinite `body` resolution.
+
+construct Node {
+    @Required function measure() -> Int
+    @Required function place() -> Int
+}
+
+construct Widget {
+    @Required let body: Widget
+    let node: Node { body.node }
+}
+
+// Concrete Node declaration: must implement every @Required function.
+Node TextNode {
+    function measure() -> Int {
+        return 0
+    }
+    function place() -> Int {
+        return 0
+    }
+}
+
+// Primitive/terminal widget: provides `node`, omits `body`. The explicit `node` discharges the
+// required `body`, and resolution stops here (no infinite body recursion).
+Widget Text {
+    let text: String = ""
+
+    let node: Node {
+        TextNode()
+    }
+}
+
+// Composite widget: provides `body`, inherits the default `node = body.node`.
+Widget Button {
+    let title: String = ""
+
+    let body: Widget {
+        Text(text: title)
+    }
+}
+
+@Main
+function main() {
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// --- imported_global_namespace (tests/pass/check/imported_global_namespace)
+// Multi-file must-compile case: main.kira does `import UI as Kit` and both the
+// unqualified `Card(...)` and alias-qualified `Kit.Card(...)` resolve to the
+// imported widget in UI.kira. The import graph cannot be expressed in a single
+// inline source; compiled clean via fixture mode (.Ok sentinel).
+FailTest CsfImportedGlobalNamespace {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/imported_global_namespace")
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+

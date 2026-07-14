@@ -17,6 +17,7 @@ enum TestStatus {
 enum TestFailure {
     Runtime(String)
     Diagnostic(KiraError)
+    Compile(String)
 }
 
 struct TestRuntime {

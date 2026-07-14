@@ -6,6 +6,7 @@ const diag_messages = @import("kira_diagnostic_messages");
 const diagnostics = @import("kira_diagnostics");
 const kira_log = @import("kira_log");
 const kira_project = @import("kira_project");
+const package_manager = @import("kira_package_manager");
 const source_pkg = @import("kira_source");
 const kira_toolchain = @import("kira_toolchain");
 const build_options = @import("kira_cli_build_options");
@@ -56,10 +57,18 @@ pub fn resolveResourceRoot(allocator: std.mem.Allocator) ![]u8 {
 
 pub fn renderDiagnostics(stderr: anytype, source: *const source_pkg.SourceFile, items: []const diagnostics.Diagnostic) !void {
     if (items.len == 0) return;
+    if (diagnostics.hasErrors(items)) build.emitProgress("[kira:control] suspend");
     try diagnostics.renderer.renderAll(stderr, source, items);
 }
 
 pub fn renderStandaloneDiagnostics(stderr: anytype, items: []const diagnostics.Diagnostic) !void {
+    const has_errors = diagnostics.hasErrors(items);
+    if (has_errors) {
+        build.emitProgress("[kira:control] suspend");
+    } else {
+        build.emitProgress("[kira:control] pause");
+    }
+    defer if (!has_errors) build.emitProgress("[kira:control] resume");
     for (items) |item| {
         const severity = switch (item.severity) {
             .@"error" => "error",
@@ -85,6 +94,8 @@ pub fn renderStandaloneDiagnostic(stderr: anytype, item: diagnostics.Diagnostic)
 }
 
 pub fn logFrontendStarted(stderr: anytype, command: []const u8, path: []const u8) !void {
+    build.emitProgress("[kira:control] pause");
+    defer build.emitProgress("[kira:control] resume");
     try kira_log.write(stderr, .{
         .level = .info,
         .scope = "frontend",
@@ -98,6 +109,8 @@ pub fn logFrontendStarted(stderr: anytype, command: []const u8, path: []const u8
 }
 
 pub fn logFrontendFailed(stderr: anytype, stage: ?build.FrontendStage, path: []const u8, diagnostics_len: usize) !void {
+    build.emitProgress("[kira:control] pause");
+    defer build.emitProgress("[kira:control] resume");
     var diagnostics_buffer: [32]u8 = undefined;
     const diagnostics_text = try std.fmt.bufPrint(&diagnostics_buffer, "{d}", .{diagnostics_len});
     try kira_log.write(stderr, .{
@@ -114,6 +127,8 @@ pub fn logFrontendFailed(stderr: anytype, stage: ?build.FrontendStage, path: []c
 }
 
 pub fn logBuildAborted(stderr: anytype, command: []const u8, kind: build.BuildFailureKind, path: []const u8) !void {
+    build.emitProgress("[kira:control] pause");
+    defer build.emitProgress("[kira:control] resume");
     try kira_log.write(stderr, .{
         .level = .@"error",
         .scope = "build",
@@ -178,6 +193,23 @@ pub fn resolveCliInput(allocator: std.mem.Allocator, path: []const u8) !Resolved
     };
 }
 
+pub fn resolveCliInputWithDiagnostics(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !ResolvedCliInput {
+    var manifest_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    defer manifest_diagnostics.deinit();
+    const target = kira_project.resolveTargetFromPathWithDiagnostics(allocator, path, &manifest_diagnostics) catch |err| {
+        if (err == error.DiagnosticsEmitted) {
+            try renderStandaloneDiagnostics(stderr, manifest_diagnostics.items);
+            return error.CommandFailed;
+        }
+        return err;
+    };
+    const default_backend = if (target.project) |project|
+        try parseExecutionTarget(project.manifest.execution_mode)
+    else
+        null;
+    return .{ .target = target, .default_backend = default_backend };
+}
+
 pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedCommandInput {
     const input = try resolveCliInput(allocator, path);
     const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
@@ -186,6 +218,42 @@ pub fn resolveCommandInput(allocator: std.mem.Allocator, path: []const u8) !Reso
         .project_root = input.target.root_path,
         .project_name = input.target.project_name,
         .default_backend = input.default_backend,
+    };
+}
+
+pub fn resolveCommandInputWithDiagnostics(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !ResolvedCommandInput {
+    const input = try resolveCliInputWithDiagnostics(allocator, path, stderr);
+    const source_path = input.target.source_path orelse return error.ProjectEntrypointNotFound;
+    return .{
+        .source_path = source_path,
+        .project_root = input.target.root_path,
+        .project_name = input.target.project_name,
+        .default_backend = input.default_backend,
+    };
+}
+
+pub fn syncCommandDependencies(
+    allocator: std.mem.Allocator,
+    input_path: []const u8,
+    offline: bool,
+    locked: bool,
+    stderr: anytype,
+) !void {
+    const input = resolveCliInputWithDiagnostics(allocator, input_path, stderr) catch |err| {
+        if (err == error.CommandFailed) return err;
+        return;
+    };
+    const project_root = input.target.root_path orelse return;
+    var package_diagnostics = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    _ = package_manager.syncProject(allocator, project_root, versionString(), .{
+        .offline = offline,
+        .locked = locked,
+    }, &package_diagnostics) catch |err| {
+        if (err == error.DiagnosticsEmitted) {
+            try renderStandaloneDiagnostics(stderr, package_diagnostics.items);
+            return error.CommandFailed;
+        }
+        return err;
     };
 }
 
@@ -288,20 +356,9 @@ fn nativeWarningDiagnostic(
     }
     const notes = try allocator.dupe([]const u8, &.{
         warning.manifest_path orelse "<unknown manifest>",
-        warning.artifact_path orelse warning.bindings_path orelse "<unknown path>",
+        warning.bindings_path orelse "<unknown path>",
     });
     return switch (warning.kind) {
-        .artifact_out_of_date => .{
-            .severity = .warning,
-            .title = "native artifact is out of date",
-            .message = try std.fmt.allocPrint(
-                allocator,
-                "Native library `{s}` changed since its cached artifact was produced while running `{s}` for `{s}`.",
-                .{ warning.library_name, command, target_path },
-            ),
-            .notes = notes,
-            .help = "Run `kira ffi autobind <target>` to refresh bindings after header changes. `build` and `run` may still rebuild native artifacts as needed.",
-        },
         .bindings_out_of_date => .{
             .severity = .warning,
             .title = "native autobind output is out of date",
@@ -311,7 +368,7 @@ fn nativeWarningDiagnostic(
                 .{ warning.library_name, command, target_path },
             ),
             .notes = notes,
-            .help = "Run `kira ffi autobind <target>` to regenerate native bindings.",
+            .help = "Run `kira ffi autobind` from the project directory to regenerate native bindings.",
         },
         // Handled by the early return above.
         .skipped_missing_environment => unreachable,
@@ -327,8 +384,8 @@ pub fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
 }
 
 pub fn outputRoot(allocator: std.mem.Allocator, project_root: ?[]const u8) ![]u8 {
-    if (project_root) |root| return std.fs.path.join(allocator, &.{ root, "generated" });
-    return allocator.dupe(u8, "generated");
+    if (project_root) |root| return std.fs.path.join(allocator, &.{ root, ".kira-build" });
+    return allocator.dupe(u8, ".kira-build");
 }
 
 pub fn ensurePath(path: []const u8) !void {

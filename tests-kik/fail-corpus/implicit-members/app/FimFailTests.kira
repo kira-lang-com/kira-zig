@@ -1,0 +1,25 @@
+FailTest FimUnanchoredImplicitMember {
+    backends { vm llvm hybrid }
+    source {
+@Main
+function main() {
+    let value = .Missing
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM166")); return e }
+}
+
+FailTest FimUnknownAnchoredImplicitMember {
+    backends { vm llvm hybrid }
+    source {
+enum FimMode { On Off }
+
+@Main
+function main() {
+    let value: FimMode = .Missing
+    return
+}
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM167")); return e }
+}

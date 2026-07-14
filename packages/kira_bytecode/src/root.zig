@@ -11,6 +11,7 @@ pub const MethodMember = bytecode.MethodMember;
 pub const EnumTypeDecl = bytecode.EnumTypeDecl;
 pub const EnumVariantDecl = bytecode.EnumVariantDecl;
 pub const Field = bytecode.Field;
+pub const SourceLoc = bytecode.SourceLoc;
 pub const Instruction = @import("instruction.zig").Instruction;
 pub const OpCode = @import("instruction.zig").OpCode;
 pub const isFused = @import("instruction.zig").isFused;

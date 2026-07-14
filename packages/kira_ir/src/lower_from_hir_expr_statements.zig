@@ -4,6 +4,7 @@
 //! normalization, and short-circuit logical / conditional expression lowering.
 const std = @import("std");
 const ir = @import("ir.zig");
+const InstructionBuf = @import("instruction_buf.zig").InstructionBuf;
 const model = @import("kira_semantics_model");
 const parent = @import("lower_from_hir.zig");
 const type_impl = @import("lower_from_hir_types.zig");
@@ -59,7 +60,7 @@ fn resolvedTypeFromStorageText(text: []const u8) ?model.ResolvedType {
     return .{ .kind = .named, .name = text };
 }
 
-pub fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Managed(ir.Instruction), expr: *model.Expr) !void {
+pub fn lowerExprStatement(lowerer: *Lowerer, instructions: *InstructionBuf, expr: *model.Expr) !void {
     switch (expr.*) {
         .call => |call| {
             if (call.trailing_builder != null) return error.UnsupportedExecutableFeature;
@@ -155,7 +156,7 @@ pub fn lowerExprStatement(lowerer: *Lowerer, instructions: *std.array_list.Manag
 
 pub fn lowerBuilderArrayExpr(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     node: model.hir.BuilderArrayExpr,
 ) !u32 {
     const len_reg = lowerer.freshRegister();
@@ -172,7 +173,7 @@ pub fn lowerBuilderArrayExpr(
 
 fn emitBuilderArrayItems(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     array_reg: u32,
     builder: model.BuilderBlock,
 ) !void {
@@ -298,7 +299,7 @@ pub const CompareOperands = struct {
 
 pub fn normalizeCompareOperands(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     operand_vt: ir.ValueType,
     lhs: u32,
     rhs: u32,
@@ -317,7 +318,7 @@ pub fn normalizeCompareOperands(
 
 pub fn lowerLogicalBinaryExpr(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     node: model.hir.BinaryExpr,
     lhs: u32,
 ) anyerror!u32 {
@@ -357,7 +358,7 @@ pub fn lowerLogicalBinaryExpr(
 
 pub fn lowerConditionalExpr(
     lowerer: *Lowerer,
-    instructions: *std.array_list.Managed(ir.Instruction),
+    instructions: *InstructionBuf,
     node: model.hir.ConditionalExpr,
 ) anyerror!u32 {
     _ = try lowerExecutableBooleanType(lowerer.program, model.hir.exprType(node.condition.*));

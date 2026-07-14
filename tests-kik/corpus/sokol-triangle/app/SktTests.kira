@@ -1,0 +1,144 @@
+// SktTests.kira — migrated corpus case from tests/pass/run/ffi_sokol_triangle_native.
+// PREFIX: skt / Skt — all top-level names unique.
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// The FFI surface is the test: the all_public autobound `sokol` module, an
+// @FFI.Struct app state handed to C as user_data, and the @Native
+// init/frame/event/cleanup callbacks (the intact
+// sg_setup -> make_shader -> make_pipeline -> draw -> shutdown sequence)
+// wired into sapp_desc as C function pointers. As in the original, main never
+// enters sapp_run, so no window is created: the executed assertions are
+// sapp_isvalid() == false and desc.width == 640 (original stdout
+// "false\n640\n"), folded into one scalar.
+
+import sokol as sokol
+
+@FFI.Struct { layout: c; }
+struct sktAppState {
+    var shader: sokol.sg_shader
+    var pipeline: sokol.sg_pipeline
+    var viewport_width: I32
+    var viewport_height: I32
+}
+
+@FFI.Pointer { target: sktAppState; ownership: borrowed; }
+struct sktAppStatePtr {}
+
+// ---------------------------------------------------------------------------
+// ffi_sokol_triangle_native
+// ---------------------------------------------------------------------------
+// Original @Native main body: build the state + sapp_desc with userdata
+// callbacks, then print sapp_isvalid() ("false") and desc.width ("640").
+
+@Native
+function sktRunTriangle() -> Int {
+    let state = sktAppState {
+        viewport_width: 128
+        viewport_height: 128
+    }
+
+    let desc = sokol.sapp_desc {
+        init_userdata_cb: sktInit
+        frame_userdata_cb: sktFrame
+        cleanup_userdata_cb: sktCleanup
+        event_userdata_cb: sktEvent
+        user_data: state
+        width: 640
+        height: 480
+        window_title: "Kira Sokol Triangle"
+    }
+
+    let valid: CBool = sokol.sapp_isvalid()
+    var out = 0
+    if valid {
+        out = 10000
+    } else {
+        out = 1000
+    }
+    out = out + Int(desc.width)
+    return out
+}
+
+Test SktFfiSokolTriangleNative {
+    test { return sktRunTriangle() }
+    expect { let e: Result<Int, TestFailure> = .Ok(1640); return e }
+}
+
+@Native
+function sktInit(user_data: RawPtr): Void {
+    let state: sktAppStatePtr = user_data
+
+    let desc = sokol.sg_desc {
+        environment: sokol.sglue_environment()
+    }
+    sokol.sg_setup(move desc)
+
+    let shader_desc = sokol.sg_shader_desc {
+        vertex_func: sokol.sg_shader_function {
+            source: "#version 330
+out vec4 color;
+const vec2 positions[3] = vec2[3](
+    vec2(0.0, 0.55),
+    vec2(0.55, -0.55),
+    vec2(-0.55, -0.55)
+);
+const vec4 colors[3] = vec4[3](
+    vec4(1.0, 0.25, 0.25, 1.0),
+    vec4(0.25, 1.0, 0.35, 1.0),
+    vec4(0.25, 0.45, 1.0, 1.0)
+);
+void main() {
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+    color = colors[gl_VertexID];
+}"
+        }
+        fragment_func: sokol.sg_shader_function {
+            source: "#version 330
+in vec4 color;
+out vec4 frag_color;
+void main() {
+    frag_color = color;
+}"
+        }
+    }
+    state.shader = sokol.sg_make_shader(move shader_desc)
+
+    let pipeline_desc = sokol.sg_pipeline_desc {
+        shader: state.shader
+    }
+    state.pipeline = sokol.sg_make_pipeline(move pipeline_desc)
+    return
+}
+
+@Native
+function sktFrame(user_data: RawPtr): Void {
+    let state: sktAppStatePtr = user_data
+
+    let pass = sokol.sg_pass {
+        swapchain: sokol.sglue_swapchain()
+    }
+    sokol.sg_begin_pass(move pass)
+    sokol.sg_apply_viewport(0, 0, state.viewport_width, state.viewport_height, true)
+    sokol.sg_apply_pipeline(state.pipeline)
+    sokol.sg_draw(0, 3, 1)
+    sokol.sg_end_pass()
+    sokol.sg_commit()
+    sokol.sapp_request_quit()
+    return
+}
+
+@Native
+function sktEvent(event: sokol.sapp_event_ptr, user_data: RawPtr): Void {
+    let state: sktAppStatePtr = user_data
+    state.viewport_width = event.framebuffer_width
+    state.viewport_height = event.framebuffer_height
+    return
+}
+
+@Native
+function sktCleanup(user_data: RawPtr): Void {
+    let state: sktAppStatePtr = user_data
+    sokol.sg_destroy_pipeline(state.pipeline)
+    sokol.sg_destroy_shader(state.shader)
+    sokol.sg_shutdown()
+    return
+}

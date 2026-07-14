@@ -489,6 +489,7 @@ fn walkBuilder(ctx: *Context, block: ast.BuilderBlock) RewriteError!void {
                 }
                 if (s.default_block) |db| try walkBuilder(ctx, db);
             },
+            .field_override => |f| try walkExpr(ctx, f.value),
         }
     }
 }

@@ -3,9 +3,11 @@ const builtin = @import("builtin");
 const native = @import("kira_native_lib_definition");
 const build_options = @import("kira_llvm_build_options");
 const backend_utils = @import("backend_utils.zig");
+const runtime_utils = @import("backend_runtime_utils.zig");
 const clang_driver = @import("clang_driver.zig");
 const emscripten = @import("emscripten.zig");
 const toolchain = @import("toolchain.zig");
+const progress = @import("progress.zig");
 
 pub fn buildRuntimeHelpersObject(
     allocator: std.mem.Allocator,
@@ -65,6 +67,20 @@ pub fn combineObjects(
     selector: ?native.TargetSelector,
 ) !void {
     try ensureParentDir(output_object_path);
+    if (combineObjectsAsArchive(selector)) {
+        // COFF/MSVC has no GNU-style relocatable `-r` link. Passing `-r` to
+        // clang on Windows reaches link.exe as `/r`, which is ignored and then
+        // accidentally attempts an executable link. A COFF archive preserves
+        // the per-CGU objects as one cacheable artifact and is accepted as an
+        // ordinary input by the final clang/link.exe invocation.
+        const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+        const ar_path = try llvm_toolchain.llvmArPath(allocator);
+        var archive_argv = std.array_list.Managed([]const u8).init(allocator);
+        try archive_argv.appendSlice(&.{ ar_path, "rcs", output_object_path });
+        for (object_paths) |path| try archive_argv.append(path);
+        try runCommand(allocator, archive_argv.items);
+        return;
+    }
     const driver_path = try compilerDriverPathForSelector(allocator, selector);
     var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(driver_path);
@@ -91,6 +107,7 @@ pub fn linkExecutable(
     if (windowsConsoleSubsystemArg(selector)) |subsystem_arg| {
         try argv.append(subsystem_arg);
     }
+    try appendNativeExecutableFlags(&argv, selector);
     try appendEmscriptenExecutableFlags(&argv, selector);
     try appendPreloadedAssets(allocator, &argv, selector, assets);
     try appendNativeLibraryPaths(allocator, &argv);
@@ -109,6 +126,26 @@ pub fn linkExecutable(
     try appendDefaultSystemLibraries(&argv, selector);
 
     try runCommand(allocator, argv.items);
+
+    // On Apple targets DWARF stays in the object files' debug sections; the
+    // debugger reads it from a companion `.dSYM` bundle that `dsymutil` builds
+    // from the linked executable. Best-effort: a missing/failing dsymutil warns
+    // (the executable is still linked) rather than failing the build.
+    if (runtime_utils.debugInfoRequested() and isAppleTarget(selector)) {
+        progress.print("Generating debug symbols for {s}", .{std.fs.path.basename(executable_path)});
+        generateDsym(allocator, executable_path) catch |err| {
+            std.debug.print("kira llvm backend: dsymutil did not run ({s}); executable linked without a .dSYM bundle\n", .{@errorName(err)});
+        };
+    }
+    progress.print("Published executable {s}", .{std.fs.path.basename(executable_path)});
+}
+
+/// Kira's current LLVM object model uses absolute relocations for native global
+/// data. Linux distributions commonly configure clang to link PIE executables
+/// by default, which rejects those objects with R_X86_64_32S relocation errors.
+/// Make the executable policy explicit until object emission itself is PIC.
+fn appendNativeExecutableFlags(argv: *std.array_list.Managed([]const u8), selector: ?native.TargetSelector) !void {
+    if (isLinuxTarget(selector) and !emscripten.isSelector(selector)) try argv.append("-no-pie");
 }
 
 pub fn linkSharedLibrary(
@@ -279,9 +316,49 @@ fn isWindowsTarget(selector: ?native.TargetSelector) bool {
     return std.mem.eql(u8, value.operating_system, "windows");
 }
 
+fn combineObjectsAsArchive(selector: ?native.TargetSelector) bool {
+    return isWindowsTarget(selector);
+}
+
 fn isLinuxTarget(selector: ?native.TargetSelector) bool {
     const value = selector orelse return builtin.os.tag == .linux;
     return std.mem.eql(u8, value.operating_system, "linux");
+}
+
+fn isAppleTarget(selector: ?native.TargetSelector) bool {
+    const value = selector orelse return builtin.os.tag == .macos or builtin.os.tag == .ios;
+    const os = value.operating_system;
+    return std.mem.eql(u8, os, "macos") or
+        std.mem.eql(u8, os, "ios") or
+        std.mem.eql(u8, os, "tvos") or
+        std.mem.eql(u8, os, "watchos") or
+        std.mem.eql(u8, os, "xros");
+}
+
+// Run `dsymutil <executable>` to produce the companion `.dSYM` bundle. Tolerant:
+// returns an error (which the caller downgrades to a warning) if dsymutil is
+// missing or exits non-zero, so a toolchain without dsymutil still links.
+fn generateDsym(allocator: std.mem.Allocator, executable_path: []const u8) !void {
+    const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    const dsymutil_path = try llvm_toolchain.toolPath(allocator, "dsymutil");
+    defer allocator.free(dsymutil_path);
+    var environ_map = try llvm_toolchain.processEnvironMap(allocator);
+    defer environ_map.deinit();
+    const process_environ = backend_utils.inheritedProcessEnviron();
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = process_environ });
+    defer io_impl.deinit();
+    const result = try std.process.run(allocator, io_impl.io(), .{
+        .argv = &.{ dsymutil_path, executable_path },
+        .expand_arg0 = .expand,
+        .environ_map = &environ_map,
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term == .exited and result.term.exited == 0) return;
+    if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+    return error.DsymutilFailed;
 }
 
 test "windows console subsystem only applies to native windows targets" {
@@ -308,7 +385,7 @@ test "preload-file args are emitted only for the emscripten target" {
     const allocator = arena.allocator();
 
     const assets = [_]native.AssetMount{
-        .{ .host_path = "/proj/generated/Shaders", .mount_path = "/generated/Shaders" },
+        .{ .host_path = "/proj/.kira-build/shaders", .mount_path = "/.kira-build/shaders" },
         .{ .host_path = "/proj/fonts", .mount_path = "/fonts" },
     };
 
@@ -321,7 +398,7 @@ test "preload-file args are emitted only for the emscripten target" {
     }, &assets);
     try std.testing.expectEqual(@as(usize, 4), wasm_argv.items.len);
     try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[0]);
-    try std.testing.expectEqualStrings("/proj/generated/Shaders@/generated/Shaders", wasm_argv.items[1]);
+    try std.testing.expectEqualStrings("/proj/.kira-build/shaders@/.kira-build/shaders", wasm_argv.items[1]);
     try std.testing.expectEqualStrings("--preload-file", wasm_argv.items[2]);
     try std.testing.expectEqualStrings("/proj/fonts@/fonts", wasm_argv.items[3]);
 
@@ -382,4 +459,37 @@ test "windows console subsystem flag matches windows toolchain abi" {
         .operating_system = "windows",
         .abi = "gnu",
     }).?);
+}
+
+test "linux executable links explicitly disable pie" {
+    var linux_args = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer linux_args.deinit();
+    try appendNativeExecutableFlags(&linux_args, .{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    });
+    try std.testing.expectEqualSlices([]const u8, &.{"-no-pie"}, linux_args.items);
+
+    var windows_args = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer windows_args.deinit();
+    try appendNativeExecutableFlags(&windows_args, .{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "msvc",
+    });
+    try std.testing.expectEqual(@as(usize, 0), windows_args.items.len);
+}
+
+test "windows object combination uses the coff archive path" {
+    try std.testing.expect(combineObjectsAsArchive(.{
+        .architecture = "x86_64",
+        .operating_system = "windows",
+        .abi = "msvc",
+    }));
+    try std.testing.expect(!combineObjectsAsArchive(.{
+        .architecture = "x86_64",
+        .operating_system = "linux",
+        .abi = "gnu",
+    }));
 }

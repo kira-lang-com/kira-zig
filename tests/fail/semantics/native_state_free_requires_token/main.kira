@@ -1,6 +1,0 @@
-@Main
-function main() {
-    let value = 41
-    nativeStateFree(value)
-    return
-}

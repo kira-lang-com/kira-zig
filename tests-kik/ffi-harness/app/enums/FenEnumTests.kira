@@ -13,13 +13,13 @@ enum FenVal { Empty Loaded(Int) }
 
 @Native
 struct FenPacket {
-    let dir: FenDir = FenDir.North
+    let dir: FenDir = .North
     var n: Int
 }
 
 @Native
 struct FenCell {
-    let state: FenState = FenState.Idle
+    let state: FenState = .Idle
     var count: Int
 }
 
@@ -27,31 +27,31 @@ struct FenCell {
 
 @Runtime
 function fenPickDir(i: Int) -> FenDir {
-    if i == 0 { return FenDir.North }
-    if i == 1 { return FenDir.South }
-    if i == 2 { return FenDir.East }
-    return FenDir.West
+    if i == 0 { return .North }
+    if i == 1 { return .South }
+    if i == 2 { return .East }
+    return .West
 }
 
 @Runtime
 function fenPickColor(i: Int) -> FenColor {
-    if i == 0 { return FenColor.Red }
-    if i == 1 { return FenColor.Green }
-    return FenColor.Blue
+    if i == 0 { return .Red }
+    if i == 1 { return .Green }
+    return .Blue
 }
 
 @Runtime
 function fenPickState(i: Int) -> FenState {
-    if i == 0 { return FenState.Idle }
-    if i == 1 { return FenState.Running }
-    if i == 2 { return FenState.Paused }
-    return FenState.Done
+    if i == 0 { return .Idle }
+    if i == 1 { return .Running }
+    if i == 2 { return .Paused }
+    return .Done
 }
 
 @Runtime
 function fenPickVal(i: Int) -> FenVal {
-    if i % 2 == 0 { return FenVal.Empty }
-    return FenVal.Loaded(i * 7)
+    if i % 2 == 0 { return .Empty }
+    return .Loaded(i * 7)
 }
 
 // ── @Runtime — enum dispatch ──────────────────────────────────────────────────
@@ -118,10 +118,10 @@ function fenCellScore(c: borrow FenCell) -> Int {
 @Runtime
 function fenNextState(s: borrow FenState) -> FenState {
     match s {
-        Idle ->    { return FenState.Running }
-        Running -> { return FenState.Paused }
-        Paused ->  { return FenState.Done }
-        Done ->    { return FenState.Idle }
+        Idle ->    { return .Running }
+        Running -> { return .Paused }
+        Paused ->  { return .Done }
+        Done ->    { return .Idle }
     }
 }
 
@@ -260,7 +260,7 @@ function fenMixedLoopSum(iters: Int) -> Int {
 // Uses var s reassignment of a payload-less (Copy) enum — safe in VM context.
 @Runtime
 function fenStateChain(steps: Int) -> Int {
-    var s = FenState.Idle
+    var s: FenState = .Idle
     var acc = 0
     var i = 0
     while i < steps {
@@ -283,57 +283,57 @@ function fenNativeStateChain(steps: Int) -> Int {
 
 Test FenDirNorthScore {
     test { return fenNativeDirScore(0) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test FenDirSouthScore {
     test { return fenNativeDirScore(1) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test FenDirEastScore {
     test { return fenNativeDirScore(2) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test FenDirWestScore {
     test { return fenNativeDirScore(3) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4); return e }
 }
 
 Test FenColorRedScore {
     test { return fenNativeColorScore(0) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test FenColorGreenScore {
     test { return fenNativeColorScore(1) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test FenColorBlueScore {
     test { return fenNativeColorScore(2) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test FenStateIdleScore {
     test { return fenNativeStateScore(0) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test FenStateRunningScore {
     test { return fenNativeStateScore(1) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 Test FenStatePausedScore {
     test { return fenNativeStateScore(2) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test FenStateDoneScore {
     test { return fenNativeStateScore(3) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // ── Tests — Group B: @Native struct with enum field ─────────────────────────
@@ -346,7 +346,7 @@ Test FenPacketNorth {
         let p = fenMakePacket(0)
         return fenPacketScore(p)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // fenMakePacket(1): dir=South, n=5 → 5+2 = 7
@@ -355,7 +355,7 @@ Test FenPacketSouth {
         let p = fenMakePacket(1)
         return fenPacketScore(p)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // fenMakePacket(2): dir=East, n=10 → 10+3 = 13
@@ -364,7 +364,7 @@ Test FenPacketEast {
         let p = fenMakePacket(2)
         return fenPacketScore(p)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(13); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(13); return e }
 }
 
 // fenMakePacket(3): dir=West, n=15 → 15+4 = 19
@@ -373,7 +373,7 @@ Test FenPacketWest {
         let p = fenMakePacket(3)
         return fenPacketScore(p)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(19); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(19); return e }
 }
 
 // fenMakeCell(0): state=Idle, count=1 → 0
@@ -382,7 +382,7 @@ Test FenCellIdle {
         let c = fenMakeCell(0)
         return fenCellScore(c)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // fenMakeCell(1): state=Running, count=2 → 2*10 = 20
@@ -391,7 +391,7 @@ Test FenCellRunning {
         let c = fenMakeCell(1)
         return fenCellScore(c)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 // fenMakeCell(2): state=Paused, count=3 → 3*5 = 15
@@ -400,7 +400,7 @@ Test FenCellPaused {
         let c = fenMakeCell(2)
         return fenCellScore(c)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 // fenMakeCell(3): state=Done, count=4 → 4+100 = 104
@@ -409,7 +409,7 @@ Test FenCellDone {
         let c = fenMakeCell(3)
         return fenCellScore(c)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(104); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(104); return e }
 }
 
 // ── Tests — Group C: single-payload(Int) enum across the bridge ──────────────
@@ -419,25 +419,25 @@ Test FenCellDone {
 // i=0 → Empty → 0
 Test FenValEmpty {
     test { return fenNativeValScore(0) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // i=1 → Loaded(7) → 7
 Test FenValLoaded7 {
     test { return fenNativeValScore(1) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 // i=3 → Loaded(21) → 21
 Test FenValLoaded21 {
     test { return fenNativeValScore(3) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(21); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(21); return e }
 }
 
 // i=5 → Loaded(35) → 35
 Test FenValLoaded35 {
     test { return fenNativeValScore(5) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(35); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(35); return e }
 }
 
 // ── Tests — Group D: loop churns ─────────────────────────────────────────────
@@ -446,62 +446,62 @@ Test FenValLoaded35 {
 // 12 iters, dir=i%4: 3 full cycles of (1+2+3+4) = 30
 Test FenDirLoopSum12 {
     test { return fenDirLoopSum(12) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 // 9 iters, color=i%3: 3 full cycles of (10+20+30) = 180
 Test FenColorLoopSum9 {
     test { return fenColorLoopSum(9) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(180); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(180); return e }
 }
 
 // 8 iters, state=i%4: 2 full cycles of (0+1+2+3) = 12
 Test FenStateLoopSum8 {
     test { return fenStateLoopSum(8) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // 10 iters, val=fenPickVal(i): even→0, odd→i*7
 // odd i in 0..9: 1(7)+3(21)+5(35)+7(49)+9(63) = 175
 Test FenValLoopSum10 {
     test { return fenValLoopSum(10) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(175); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(175); return e }
 }
 
 // 4 iters, packets 0..3: 1+7+13+19 = 40
 Test FenPacketLoopSum4 {
     test { return fenPacketLoopSum(4) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 // 8 iters (2 cycles of the same 4 packets): 80
 Test FenPacketLoopSum8 {
     test { return fenPacketLoopSum(8) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(80); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(80); return e }
 }
 
 // 4 iters, cells 0..3: 0+20+15+104 = 139
 Test FenCellLoopSum4 {
     test { return fenCellLoopSum(4) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(139); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(139); return e }
 }
 
 // 8 iters (2 cycles): 278
 Test FenCellLoopSum8 {
     test { return fenCellLoopSum(8) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(278); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(278); return e }
 }
 
 // High-volume: 100 iters of dir, 25 full cycles of (1+2+3+4)=250
 Test FenDirHighVolume {
     test { return fenDirLoopSum(100) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(250); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(250); return e }
 }
 
 // High-volume: 60 iters of color, 20 full cycles of (10+20+30)=1200
 Test FenColorHighVolume {
     test { return fenColorLoopSum(60) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1200); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1200); return e }
 }
 
 // ── Tests — Group E: mixed-enum bridge ───────────────────────────────────────
@@ -515,13 +515,13 @@ Test FenColorHighVolume {
 // total = 288
 Test FenMixedLoopSum12 {
     test { return fenMixedLoopSum(12) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(288); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(288); return e }
 }
 
 // 24 iters: double the above = 576
 Test FenMixedLoopSum24 {
     test { return fenMixedLoopSum(24) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(576); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(576); return e }
 }
 
 // ── Tests — Group F: state machine chain ─────────────────────────────────────
@@ -531,19 +531,19 @@ Test FenMixedLoopSum24 {
 // 4 steps from Idle: R(1)+P(2)+D(3)+I(0) = 6
 Test FenStateChain4 {
     test { return fenNativeStateChain(4) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 // 8 steps: 2 full cycles = 12
 Test FenStateChain8 {
     test { return fenNativeStateChain(8) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 // 12 steps: 3 full cycles = 18
 Test FenStateChain12 {
     test { return fenNativeStateChain(12) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(18); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(18); return e }
 }
 
 // ── Tests — Group G: multi-struct / multi-borrow patterns ────────────────────
@@ -557,7 +557,7 @@ Test FenPacketDoubleBorrow {
         acc = acc + fenPacketScore(p)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(26); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(26); return e }
 }
 
 // Four packets created and scored; all are owned locals, each borrowed once.
@@ -574,7 +574,7 @@ Test FenFourPacketsSequential {
         acc = acc + fenPacketScore(p3)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 // All four cell types scored; 0+20+15+104 = 139
@@ -590,7 +590,7 @@ Test FenFourCellsSequential {
         acc = acc + fenCellScore(c3)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(139); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(139); return e }
 }
 
 // Mix packet and cell in the same test:
@@ -603,7 +603,7 @@ Test FenPacketAndCell {
         acc = acc + fenCellScore(c)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(22); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(22); return e }
 }
 
 // All four dirs, direct bridge (not via struct), sum = 1+2+3+4 = 10
@@ -615,7 +615,7 @@ Test FenAllDirsSum {
         acc = acc + fenNativeDirScore(3)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 // All three colors, sum = 10+20+30 = 60
@@ -626,7 +626,7 @@ Test FenAllColorsSum {
         acc = acc + fenNativeColorScore(2)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 // All four states, sum = 0+1+2+3 = 6
@@ -638,7 +638,7 @@ Test FenAllStatesSum {
         acc = acc + fenNativeStateScore(3)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 // ── Tests — Group H: val (payload Int) loop variants ─────────────────────────
@@ -647,7 +647,7 @@ Test FenAllStatesSum {
 // values: 7,21,35,49,63,77,91,105,119,133 → sum = 700
 Test FenValLoopSum20 {
     test { return fenValLoopSum(20) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(700); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(700); return e }
 }
 
 // Sequential val calls (no loop): 4 specific values
@@ -660,7 +660,7 @@ Test FenValFourCalls {
         acc = acc + fenNativeValScore(3)
         return acc
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(28); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(28); return e }
 }
 
 // ── Tests — Group I: high-churn struct loop ───────────────────────────────────
@@ -668,13 +668,13 @@ Test FenValFourCalls {
 // 40 iters of packets (i%4 cycles): 10 cycles * 40 = 400
 Test FenPacketHighVolume {
     test { return fenPacketLoopSum(40) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(400); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(400); return e }
 }
 
 // 40 iters of cells: 10 cycles * 139 = 1390
 Test FenCellHighVolume {
     test { return fenCellLoopSum(40) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1390); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1390); return e }
 }
 
 // 50 iters of val loop: odd i in 0..49 = 25 odds: 1,3,...,49
@@ -682,7 +682,7 @@ Test FenCellHighVolume {
 // sum = 7*(1+3+5+...+49) = 7 * 25^2 = 7*625 = 4375
 Test FenValHighVolume {
     test { return fenValLoopSum(50) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(4375); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(4375); return e }
 }
 
 // ── Tests — Group J: state machine variants ────────────────────────────────────
@@ -690,24 +690,24 @@ Test FenValHighVolume {
 // 1 step: Idle→Running, score=1
 Test FenStateChain1 {
     test { return fenNativeStateChain(1) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(1); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // 2 steps: R+P = 1+2 = 3
 Test FenStateChain2 {
     test { return fenNativeStateChain(2) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 // 3 steps: R+P+D = 1+2+3 = 6  (note: same as chain4 sum minus final Idle)
 // Actually: step1=R(1)+step2=P(2)+step3=D(3) = 6
 Test FenStateChain3 {
     test { return fenNativeStateChain(3) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(6); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(6); return e }
 }
 
 // 20 steps: 5 full cycles = 5*6 = 30
 Test FenStateChain20 {
     test { return fenNativeStateChain(20) }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }

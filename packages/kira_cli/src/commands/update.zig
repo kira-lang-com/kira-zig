@@ -4,7 +4,7 @@ const package_support = @import("package_support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len > 1) return error.InvalidArguments;
-    var location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0]);
+    var location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0], stderr);
     var changed = false;
     var deps = std.array_list.Managed(manifest.DependencySpec).init(allocator);
 

@@ -52,16 +52,16 @@ function createDeveloperSession() -> DeveloperSession {
 }
 
 function backendCode(backend: borrow Backend) -> U32 {
-    if backend == Backend.Vm {
+    if backend == .Vm {
         return 1
     }
-    if backend == Backend.Llvm {
+    if backend == .Llvm {
         return 2
     }
-    if backend == Backend.Hybrid {
+    if backend == .Hybrid {
         return 3
     }
-    if backend == Backend.Wasm {
+    if backend == .Wasm {
         return 4
     }
     return 0

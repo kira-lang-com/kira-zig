@@ -1,0 +1,23 @@
+Package KikCorpusSokol {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "sokol_gfx",
+            linkMode: .Static,
+            headers: Headers {
+                entrypoint: "../../../third_party/sokol/sokol_gfx.h",
+                includeDirs: ["../../../third_party/sokol"],
+                defines: ["SOKOL_DUMMY_BACKEND"]
+            },
+            sources: ["../../../third_party/sokol/sokol_gfx_impl.c"],
+            autobind: Autobind {
+                module: "sokol_gfx",
+                functions: ["sg_setup", "sg_isvalid", "sg_shutdown"],
+                structs: ["sg_desc"]
+            }
+        }
+    ]
+    let tests = Tests { backends: [.Hybrid], phase: .Both }
+}

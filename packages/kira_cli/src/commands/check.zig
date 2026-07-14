@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build = @import("kira_build");
 const build_def = @import("kira_build_definition");
 const manifest = @import("kira_manifest");
 const kira_main = @import("kira_main");
@@ -9,7 +11,10 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     _ = parsed.print_backend_policy;
     _ = parsed.offline;
     _ = parsed.locked;
-    _ = parsed.timings;
+    const previous_timings = build.timingsEnabled();
+    build.setTimingsEnabled(parsed.timings or timingsEnvEnabled());
+    defer build.setTimingsEnabled(previous_timings);
+    try support.syncCommandDependencies(allocator, parsed.input_path, parsed.offline, parsed.locked, stderr);
     const path = try allocator.dupeZ(u8, parsed.input_path);
     defer allocator.free(path);
     const developer = kira_main.kira_developer_create() orelse return error.OutOfMemory;
@@ -20,6 +25,7 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
         try stdout.writeAll(report);
         return;
     }
+    build.emitProgress("[kira:control] suspend");
     if (report.len != 0) try stderr.writeAll(report) else try stderr.writeAll(std.mem.span(kira_main.kira_developer_last_error(developer) orelse ""));
     return error.CommandFailed;
 }
@@ -102,7 +108,10 @@ fn selectedBackend(parsed: ParsedArgs) ?build_def.ExecutionTarget {
 }
 
 fn timingsEnvEnabled() bool {
-    return false;
+    if (!builtin.link_libc) return false;
+    const raw = std.c.getenv("KIRA_TIMINGS") orelse return false;
+    const value = std.mem.span(raw);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {

@@ -68,7 +68,7 @@ sources = ["../../third_party/sokol/sokol_impl.m"]
 include_dirs = ["../../third_party/sokol"]
 
 [target.aarch64-macos-none]
-static_lib = "../generated/native/aarch64-macos/libsokol.a"
+static_lib = "../.kira-build/native/aarch64-macos/libsokol.a"
 frameworks = ["AppKit", "QuartzCore", "OpenGL"]
 ```
 
@@ -87,7 +87,7 @@ the native toolchain for that target only:
 
 ```toml
 [target.wasm32-emscripten-unknown]
-static_lib = "generated/native/wasm32-emscripten-unknown/libwebgpu_shim.a"
+static_lib = ".kira-build/native/wasm32-emscripten-unknown/libwebgpu_shim.a"
 compiler_flags = ["--use-port=emdawnwebgpu"]
 linker_flags = ["--use-port=emdawnwebgpu", "-sASYNCIFY"]
 ```
@@ -281,7 +281,7 @@ abi = "c"
 sources = ["ffimath.c"]
 
 [target.x86_64-windows-msvc]
-dynamic_lib = "../generated/native/x86_64-windows-msvc/ffimath.dll"
+dynamic_lib = "../.kira-build/native/x86_64-windows-msvc/ffimath.dll"
 ```
 
 Supported VM LibFFI types are the scalar primitives (`I8`…`I64`, `U8`…`U64`,
