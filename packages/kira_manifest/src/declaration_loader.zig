@@ -193,7 +193,11 @@ fn applyDefaults(loader: *Loader, manifest: *ProjectManifest, value: *Expr) !voi
             }
         } else if (std.mem.eql(u8, f.name, "buildTarget") or std.mem.eql(u8, f.name, "build_target")) {
             if (try enumValue(loader, f.value, "BuildTarget")) |variant| {
-                manifest.build_target = try loader.allocator.dupe(u8, lowerFirst(loader.allocator, variant) catch variant);
+                if (buildTargetMode(variant)) |mode| {
+                    manifest.build_target = try loader.allocator.dupe(u8, mode);
+                } else {
+                    try loader.err(exprSpan(f.value), "KMAN006", "unknown BuildTarget", "Expected BuildTarget.Host or BuildTarget.Wasm.");
+                }
             }
         } else {
             try loader.err(f.span, "KMAN004", "unknown Defaults field", "This field is not part of the Defaults schema.");
@@ -555,19 +559,18 @@ fn backendMode(variant: []const u8) ?[]const u8 {
     return null;
 }
 
+fn buildTargetMode(variant: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, variant, "Host")) return "host";
+    if (std.mem.eql(u8, variant, "Wasm")) return "wasm";
+    return null;
+}
+
 /// Foundation `Backend` variants that are valid test backends.
 fn backendEnum(variant: []const u8) ?platform_config.Backend {
     if (std.mem.eql(u8, variant, "Vm")) return .vm;
     if (std.mem.eql(u8, variant, "Llvm")) return .llvm;
     if (std.mem.eql(u8, variant, "Hybrid")) return .hybrid;
     return null;
-}
-
-fn lowerFirst(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
-    if (value.len == 0) return value;
-    const out = try allocator.dupe(u8, value);
-    out[0] = std.ascii.toLower(out[0]);
-    return out;
 }
 
 fn memberSpan(member: syntax.ast.BodyMember) Span {

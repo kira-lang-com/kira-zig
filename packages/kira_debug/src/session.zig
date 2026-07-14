@@ -168,6 +168,14 @@ pub const DebugSession = struct {
     /// machine to the target. A step that lands on a registered breakpoint has its
     /// handle translated to the session id.
     pub fn step(self: *DebugSession, kind: StepKind) !StopReason {
+        if (!self.started) {
+            self.started = true;
+            const initial = try self.target.start();
+            switch (initial) {
+                .entry, .paused => {},
+                else => return self.translateStop(initial),
+            }
+        }
         return self.translateStop(try self.target.step(kind));
     }
 

@@ -211,6 +211,25 @@ test "step delegates to the target and records the kind" {
     try testing.expectEqual(StepKind.over, fake.last_step.?);
 }
 
+test "first step starts once and the next run continues" {
+    var fake = FakeTarget{};
+    fake.start_stop = .entry;
+    fake.step_stop = .step;
+    fake.cont_stop = .{ .exited = 0 };
+    var session = DebugSession.init(testing.allocator, fake.debugTarget());
+    defer session.deinit();
+
+    const stepped = try session.step(.into);
+    try testing.expect(stepped == .step);
+    try testing.expectEqual(@as(u32, 1), fake.start_calls);
+    try testing.expectEqual(StepKind.into, fake.last_step.?);
+
+    const resumed = try session.run();
+    try testing.expect(resumed == .exited);
+    try testing.expectEqual(@as(u32, 1), fake.start_calls);
+    try testing.expectEqual(@as(u32, 1), fake.cont_calls);
+}
+
 test "evaluate renders an expression over the frame's locals" {
     var locals_arr = [_]LocalView{
         .{ .name = "i", .value = "3", .slot = 0 },

@@ -125,9 +125,9 @@ pub const VmTarget = struct {
 
     // --- Lifecycle ----------------------------------------------------------
 
-    /// Attach the controller, spawn the worker, and drive execution to the FIRST
-    /// stop (an armed breakpoint, program end, or trap) — matching the DebugTarget
-    /// contract that `start` returns the first stop rather than parking at entry.
+    /// Attach the controller and spawn the worker parked at program entry. The
+    /// session can then continue freely or enable stepping before any instruction
+    /// executes, matching the native target's start contract.
     pub fn start(self: *VmTarget) anyerror!StopReason {
         if (self.started) {
             if (self.finished) return self.exitedReason();
@@ -137,12 +137,7 @@ pub const VmTarget = struct {
         self.vm.debug = &self.controller;
         self.thread = try std.Thread.spawn(.{}, workerMain, .{self});
         self.started = true;
-        // Drive the freshly-spawned (parked) worker to its first stop.
-        self.controller.single_step = false;
-        self.active_action = .resume_run;
-        self.resumeVm();
-        if (self.finished) return self.exitedReason();
-        return self.stopReasonFor(self.pending_stop.?);
+        return .entry;
     }
 
     /// Run freely until the next armed breakpoint (or program end / trap).

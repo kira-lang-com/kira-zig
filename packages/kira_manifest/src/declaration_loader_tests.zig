@@ -179,6 +179,23 @@ test "diagnoses unknown enum value" {
     try std.testing.expectEqualStrings("KMAN005", result.diagnostics[0].code.?);
 }
 
+test "diagnoses unknown BuildTarget value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try loadProjectManifestFromDeclaration(arena.allocator(),
+        \\Package Demo {
+        \\    let defaults = Defaults { executionMode: .Vm, buildTarget: .Wsam }
+        \\}
+    , "package.kira");
+
+    try std.testing.expect(!result.ok());
+    var found = false;
+    for (result.diagnostics) |diagnostic| {
+        if (diagnostic.code != null and std.mem.eql(u8, diagnostic.code.?, "KMAN006")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "diagnoses missing Package declaration" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
