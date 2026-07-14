@@ -1,0 +1,20 @@
+Package sokol_runtime_entry {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "sokol",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/../../../third_party/sokol/sokol_bindings.h", includeDirs: ["NativeLibs/../../../third_party/sokol"], defines: ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"] },
+            sources: ["NativeLibs/../../../third_party/sokol/sokol_impl.m"],
+            autobind: Autobind { module: "sokol", headers: ["NativeLibs/../../../third_party/sokol/sokol_app.h", "NativeLibs/../../../third_party/sokol/sokol_gfx.h", "NativeLibs/../../../third_party/sokol/sokol_glue.h"], mode: AutobindMode.AllPublic }
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libsokol.a", frameworks: ["AppKit", "QuartzCore", "OpenGL"] },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libsokol.a", systemLibs: ["X11", "Xi", "Xcursor", "GL", "dl", "pthread", "m"] },
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../.kira-build/native/x86_64-windows-msvc/sokol.lib" }
+            ],
+        }
+    ]
+}

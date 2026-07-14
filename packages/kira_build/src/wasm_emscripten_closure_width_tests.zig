@@ -131,7 +131,7 @@ test "wasm32 emscripten keeps a capturing closure installed into a struct field 
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "DEFAULT-HANDLER") == null);
 }
 
-test "wasm32 emscripten invokes a field-stored capturing closure with a borrow value-struct arg from a C callback" {
+test "wasm32 emscripten invokes a field-stored capturing closure with a borrow value-struct arg from a C callback (legacy manifest compat)" {
     // Regression for symptom 2 (the kira-graphics event-dispatch trap): the
     // app struct (with the closure field) rides through nativeState into a
     // C-invoked @Native callback, which recovers it, loads the handler field,

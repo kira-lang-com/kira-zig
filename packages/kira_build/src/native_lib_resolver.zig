@@ -20,7 +20,6 @@ pub fn resolveInlineLibrary(
     project_root: []const u8,
     pseudo_manifest_path: []const u8,
 ) !native.ResolvedNativeLibrary {
-    const artifact_path = try inlineArtifactPath(allocator, project_root, spec.name, spec.link_mode, target);
     var matched_target: ?native.TargetSpec = null;
     for (spec.targets) |candidate| {
         if (candidate.selector.eql(target)) {
@@ -28,6 +27,21 @@ pub fn resolveInlineLibrary(
             break;
         }
     }
+    // A target may declare its artifact explicitly: a path to a prebuilt
+    // library, or the empty string meaning "no compiled shim — symbols
+    // resolve in-process" (e.g. Foundation's kira_runtime). Only when no
+    // artifact is declared does the inline build-cache path apply.
+    const declared_artifact: ?[]const u8 = if (matched_target) |selected|
+        (if (spec.link_mode == .static) selected.static_lib else selected.dynamic_lib)
+    else
+        null;
+    const artifact_path = if (declared_artifact) |declared|
+        (if (declared.len == 0)
+            try allocator.dupe(u8, "")
+        else
+            try absolutizePath(allocator, try std.fs.path.join(allocator, &.{ project_root, "package.kira" }), declared))
+    else
+        try inlineArtifactPath(allocator, project_root, spec.name, spec.link_mode, target);
     var resolved = native.ResolvedNativeLibrary{
         .manifest_path = try allocator.dupe(u8, pseudo_manifest_path),
         .name = try allocator.dupe(u8, spec.name),

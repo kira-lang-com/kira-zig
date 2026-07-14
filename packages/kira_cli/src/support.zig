@@ -463,9 +463,21 @@ fn hasManagedResources(path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, templates_path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, templates_path, .{}) catch return false;
     dir.close(std.Options.debug_io);
 
-    const foundation_manifest_path = std.fs.path.join(std.heap.page_allocator, &.{ path, "foundation", "kira.toml" }) catch return false;
-    defer std.heap.page_allocator.free(foundation_manifest_path);
-    return fileExists(foundation_manifest_path);
+    return foundationManifestExists(path);
+}
+
+// True when `<root>/foundation` carries any recognized manifest, honoring the
+// same precedence as the rest of the toolchain (`package.kira` first, then the
+// legacy TOML names). Bundled Foundation is `package.kira`-only, so a hardcoded
+// `kira.toml` check would treat a valid managed toolchain as missing resources.
+fn foundationManifestExists(root: []const u8) bool {
+    const candidates = [_][]const u8{ "package.kira", "kira.toml", "project.toml", "Kira.toml" };
+    for (candidates) |name| {
+        const manifest_path = std.fs.path.join(std.heap.page_allocator, &.{ root, "foundation", name }) catch continue;
+        defer std.heap.page_allocator.free(manifest_path);
+        if (fileExists(manifest_path)) return true;
+    }
+    return false;
 }
 
 fn fileExists(path: []const u8) bool {

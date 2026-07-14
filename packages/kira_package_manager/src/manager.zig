@@ -674,7 +674,7 @@ fn emitMissingPathDependencyDiagnostic(
     );
     const help = try std.fmt.allocPrint(
         allocator,
-        "Check the dependency path or point it at the package root directory that contains `kira.toml`.",
+        "Check the dependency path or point it at the package root directory that contains `package.kira`.",
         .{},
     );
     try diag.append(allocator, out_diagnostics, "KPKG001", "path dependency not found", message, help);
@@ -688,7 +688,7 @@ fn emitMissingPathManifestDiagnostic(
 ) !void {
     const message = try std.fmt.allocPrint(
         allocator,
-        "Path dependency `{s}` does not contain a `kira.toml` or legacy `project.toml` manifest at `{s}`.",
+        "Path dependency `{s}` does not contain a `package.kira`, `kira.toml`, or legacy `project.toml` manifest at `{s}`.",
         .{ name, abs_path },
     );
     try diag.append(
@@ -719,9 +719,10 @@ fn discoverBundledFoundationRoot(allocator: std.mem.Allocator, source_path: []co
     if (try kira_toolchain.toolchainRootFromSelfExecutable(allocator)) |toolchain_root| {
         defer allocator.free(toolchain_root);
         const foundation_root = try std.fs.path.join(allocator, &.{ toolchain_root, "foundation" });
-        const foundation_manifest = try std.fs.path.join(allocator, &.{ foundation_root, "kira.toml" });
-        defer allocator.free(foundation_manifest);
-        if (fileExists(foundation_manifest)) return foundation_root;
+        if (try discoverManifestPath(allocator, foundation_root)) |foundation_manifest| {
+            allocator.free(foundation_manifest);
+            return foundation_root;
+        }
         allocator.free(foundation_root);
     }
 
@@ -750,10 +751,12 @@ fn discoverBundledFoundationRoot(allocator: std.mem.Allocator, source_path: []co
 fn foundationRootFromRepoRoot(allocator: std.mem.Allocator, repo_root: []const u8) !?[]u8 {
     const foundation_root = try std.fs.path.join(allocator, &.{ repo_root, "foundation" });
     errdefer allocator.free(foundation_root);
-    const foundation_manifest = try std.fs.path.join(allocator, &.{ foundation_root, "kira.toml" });
-    defer allocator.free(foundation_manifest);
-    if (!fileExists(foundation_manifest)) return null;
-    return foundation_root;
+    if (try discoverManifestPath(allocator, foundation_root)) |foundation_manifest| {
+        allocator.free(foundation_manifest);
+        return foundation_root;
+    }
+    allocator.free(foundation_root);
+    return null;
 }
 
 fn findRepoRootFromPath(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
