@@ -313,9 +313,9 @@ The real proof target for this pass is a full generated Sokol binding and a nati
 - manifest-driven binding generation and static library build:
   - [examples/sokol_triangle/package.kira](../examples/sokol_triangle/package.kira)
 - generated Kira module emitted directly from the public headers (lands at
-  `app/bindings/sokol.kira` per the autobind output law; regenerated on every
-  `kira check`/`kira build`/`kira run`, not committed):
-  - [examples/sokol_triangle/app/bindings/sokol.kira](../examples/sokol_triangle/app/bindings/sokol.kira)
+  `examples/sokol_triangle/app/bindings/sokol.kira` per the autobind output
+  law; regenerated on every `kira check`/`kira build`/`kira run`, not
+  committed, so there is no file to link here)
 - fully Kira-written app logic using the generated bindings directly:
   - [examples/sokol_triangle/app/main.kira](../examples/sokol_triangle/app/main.kira)
   - [examples/sokol_runtime_entry/app/main.kira](../examples/sokol_runtime_entry/app/main.kira)

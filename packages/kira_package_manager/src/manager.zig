@@ -719,6 +719,7 @@ fn discoverBundledFoundationRoot(allocator: std.mem.Allocator, source_path: []co
     if (try kira_toolchain.toolchainRootFromSelfExecutable(allocator)) |toolchain_root| {
         defer allocator.free(toolchain_root);
         const foundation_root = try std.fs.path.join(allocator, &.{ toolchain_root, "foundation" });
+        errdefer allocator.free(foundation_root);
         if (try discoverManifestPath(allocator, foundation_root)) |foundation_manifest| {
             allocator.free(foundation_manifest);
             return foundation_root;

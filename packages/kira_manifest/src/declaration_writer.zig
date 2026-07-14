@@ -232,7 +232,7 @@ fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
         try writer.writeAll(", callbacks: ");
         try writeStringArray(writer, auto.bindings.callbacks);
     }
-    try writer.writeAll(" }\n");
+    try writer.writeAll(" },\n");
 }
 
 fn autobindProfileVariant(profile: native.AutobindingProfile) []const u8 {

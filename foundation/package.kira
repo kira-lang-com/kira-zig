@@ -10,7 +10,7 @@ Package Foundation {
             linkMode: LinkMode.Static,
             headers: Headers { entrypoint: "NativeLibs/FS/fs.h", includeDirs: ["NativeLibs/FS"] },
             sources: ["NativeLibs/FS/fs.c"],
-            autobind: Autobind { module: "fs", headers: ["NativeLibs/FS/fs.h"], mode: AutobindMode.AllPublic }
+            autobind: Autobind { module: "fs", headers: ["NativeLibs/FS/fs.h"], mode: AutobindMode.AllPublic },
             nativeTargets: [
                 NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libfs.a" },
                 NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libfs.a" },
@@ -22,7 +22,7 @@ Package Foundation {
             name: "kira_runtime",
             linkMode: LinkMode.Dynamic,
             headers: Headers { entrypoint: "NativeLibs/DynamicFfi/kira_dynamic_ffi.h", includeDirs: ["NativeLibs/DynamicFfi"] },
-            autobind: Autobind { module: "dynamicffi", headers: ["NativeLibs/DynamicFfi/kira_dynamic_ffi.h"], mode: AutobindMode.AllPublic }
+            autobind: Autobind { module: "dynamicffi", headers: ["NativeLibs/DynamicFfi/kira_dynamic_ffi.h"], mode: AutobindMode.AllPublic },
             nativeTargets: [
                 NativeTarget { triple: "x86_64-windows-msvc", dynamicLib: "" },
                 NativeTarget { triple: "x86_64-linux-gnu", dynamicLib: "" },
@@ -37,7 +37,7 @@ Package Foundation {
             linkMode: LinkMode.Static,
             headers: Headers { entrypoint: "NativeLibs/ArgumentParser/argument_parser.h", includeDirs: ["NativeLibs/ArgumentParser"] },
             sources: ["NativeLibs/ArgumentParser/argument_parser.c"],
-            autobind: Autobind { module: "argument_parser", headers: ["NativeLibs/ArgumentParser/argument_parser.h"], mode: AutobindMode.AllPublic }
+            autobind: Autobind { module: "argument_parser", headers: ["NativeLibs/ArgumentParser/argument_parser.h"], mode: AutobindMode.AllPublic },
             nativeTargets: [
                 NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libkira_argument_parser.a" },
                 NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libkira_argument_parser.a" },
@@ -49,7 +49,7 @@ Package Foundation {
             name: "kira_main",
             linkMode: LinkMode.Dynamic,
             headers: Headers { entrypoint: "NativeLibs/../../packages/kira_main/include/kira_main.h", includeDirs: ["NativeLibs/../../packages/kira_main/include"] },
-            autobind: Autobind { module: "kira_api", headers: ["NativeLibs/../../packages/kira_main/include/kira_main.h"], mode: AutobindMode.AllPublic }
+            autobind: Autobind { module: "kira_api", headers: ["NativeLibs/../../packages/kira_main/include/kira_main.h"], mode: AutobindMode.AllPublic },
             nativeTargets: [
                 NativeTarget { triple: "x86_64-windows-msvc", dynamicLib: "" },
                 NativeTarget { triple: "x86_64-linux-gnu", dynamicLib: "" },

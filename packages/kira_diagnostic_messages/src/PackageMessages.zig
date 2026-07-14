@@ -60,7 +60,7 @@ pub fn missingAssetDirectory(allocator: std.mem.Allocator, entry: []const u8) !d
             "The manifest `assets` entry `{s}` was not found under the project root.",
             .{entry},
         ),
-        .help = "Create the directory/file, generate it before building (e.g. `kira shader build`), or remove the entry from the `assets` list in `package.kira` (or `kira.toml`).",
+        .help = "Create the directory/file, generate it before building (e.g. `kira shader build`), or remove the entry from the `assets` list in `package.kira` (or legacy `kira.toml`/`project.toml`).",
     });
 }
 
