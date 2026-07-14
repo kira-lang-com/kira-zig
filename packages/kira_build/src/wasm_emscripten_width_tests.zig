@@ -18,7 +18,7 @@ const replaceExtension = support.replaceExtension;
 const ensureRuntimeToolingAvailable = support.ensureRuntimeToolingAvailable;
 const inheritedProcessEnviron = support.inheritedProcessEnviron;
 
-test "wasm32 emscripten marshals a String to a CString extern without a size-width trap" {
+test "wasm32 emscripten marshals a String to a CString extern without a size-width trap (legacy manifest compat)" {
     // Regression for the wasm32 (32-bit size_t/pointer) C-ABI width bug: the LLVM
     // backend used to declare malloc/memcpy/strlen/kira_struct_alloc with 64-bit
     // size params, so the String->CString marshal path (malloc a NUL buffer, memcpy
@@ -234,29 +234,19 @@ test "wasm32 emscripten invokes a Kira @Native callback from C without a signatu
     try tmp.dir.createDirPath(std.testing.io, "App/NativeLibs");
     try tmp.dir.createDirPath(std.testing.io, "out");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/kira.toml",
+        .sub_path = "App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\native_libraries = ["NativeLibs/kira_wcb.toml"]
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/NativeLibs/kira_wcb.toml",
-        .data =
-        \\[library]
-        \\name = "kira_wcb"
-        \\link_mode = "static"
-        \\abi = "c"
-        \\
-        \\[build]
-        \\sources = ["kira_wcb.c"]
-        \\
-        \\[target.wasm32-emscripten-unknown]
-        \\static_lib = "libkira_wcb.a"
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let nativeLibraries = [
+        \\        NativeLibrary {
+        \\            name: "kira_wcb",
+        \\            linkMode: LinkMode.Static,
+        \\            sources: ["NativeLibs/kira_wcb.c"]
+        \\        }
+        \\    ]
+        \\}
         ,
     });
     // The C callback type is `int (*)(void*, int)` — both params are i32 on wasm32.
@@ -368,29 +358,19 @@ test "wasm32 emscripten deep-clones a struct with a RawPtr field without a clone
     try tmp.dir.createDirPath(std.testing.io, "App/NativeLibs");
     try tmp.dir.createDirPath(std.testing.io, "out");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/kira.toml",
+        .sub_path = "App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\native_libraries = ["NativeLibs/kira_hnd.toml"]
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/NativeLibs/kira_hnd.toml",
-        .data =
-        \\[library]
-        \\name = "kira_hnd"
-        \\link_mode = "static"
-        \\abi = "c"
-        \\
-        \\[build]
-        \\sources = ["kira_hnd.c"]
-        \\
-        \\[target.wasm32-emscripten-unknown]
-        \\static_lib = "libkira_hnd.a"
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let nativeLibraries = [
+        \\        NativeLibrary {
+        \\            name: "kira_hnd",
+        \\            linkMode: LinkMode.Static,
+        \\            sources: ["NativeLibs/kira_hnd.c"]
+        \\        }
+        \\    ]
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{

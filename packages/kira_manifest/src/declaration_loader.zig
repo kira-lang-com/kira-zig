@@ -358,9 +358,15 @@ fn parseNativeTargets(loader: *Loader, value: *Expr) ![]const native.TargetSpec 
         var triple: ?[]const u8 = null;
         var compiler_flags: []const []const u8 = &.{};
         var link = native.LinkExtras{};
+        var static_lib: ?[]const u8 = null;
+        var dynamic_lib: ?[]const u8 = null;
         for (fields.fields) |field| {
             if (std.mem.eql(u8, field.name, "triple")) {
                 triple = try stringValue(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "staticLib") or std.mem.eql(u8, field.name, "static_lib")) {
+                static_lib = try stringValue(loader, field.value);
+            } else if (std.mem.eql(u8, field.name, "dynamicLib") or std.mem.eql(u8, field.name, "dynamic_lib")) {
+                dynamic_lib = try stringValue(loader, field.value);
             } else if (std.mem.eql(u8, field.name, "compilerFlags") or std.mem.eql(u8, field.name, "compiler_flags")) {
                 compiler_flags = try stringArray(loader, field.value);
             } else if (std.mem.eql(u8, field.name, "includeDirs") or std.mem.eql(u8, field.name, "include_dirs")) {
@@ -385,7 +391,7 @@ fn parseNativeTargets(loader: *Loader, value: *Expr) ![]const native.TargetSpec 
             try loader.err(exprSpan(element), "KMAN009", "invalid NativeTarget triple", "Expected an architecture-operating_system-abi target triple.");
             continue;
         };
-        try targets.append(.{ .selector = selector, .compiler_flags = compiler_flags, .link = link });
+        try targets.append(.{ .selector = selector, .static_lib = static_lib, .dynamic_lib = dynamic_lib, .compiler_flags = compiler_flags, .link = link });
     }
     return targets.toOwnedSlice();
 }

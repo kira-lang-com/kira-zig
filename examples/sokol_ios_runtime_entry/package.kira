@@ -1,0 +1,18 @@
+Package sokol_ios_runtime_entry {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Hybrid, buildTarget: BuildTarget.Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "sokol",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/../../../third_party/sokol/sokol_bindings.h", includeDirs: ["NativeLibs/../../../third_party/sokol"], defines: ["SOKOL_NO_ENTRY", "SOKOL_GLES3"] },
+            sources: ["NativeLibs/sokol_gles_impl.m"],
+            autobind: Autobind { module: "sokol", headers: ["NativeLibs/../../../third_party/sokol/sokol_app.h", "NativeLibs/../../../third_party/sokol/sokol_gfx.h", "NativeLibs/../../../third_party/sokol/sokol_glue.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../.kira-build/native/aarch64-ios-simulator/libsokol.a", frameworks: ["UIKit", "QuartzCore", "OpenGLES", "GLKit"] }
+            ],
+        }
+    ]
+}

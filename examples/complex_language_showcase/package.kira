@@ -1,4 +1,4 @@
-Package hello {
+Package complex_language_showcase {
     let version = "0.1.0"
     let kira = "0.1.0"
     let kind = PackageKind.App

@@ -68,7 +68,7 @@ Discovery order:
 
 ## Project/package discovery
 
-- `kira_project` finds `kira.toml`, legacy `project.toml`, or repo-root variants.
+- `kira_project` finds `package.kira` first (the declaration manifest wins when both exist), falling back to legacy `kira.toml`/`project.toml`/repo-root variants.
 - `kira_package_manager` syncs registry/path/git dependencies and writes `kira.lock`.
 - `kira_program_graph` keeps source rooted under package `app/` directories.
 

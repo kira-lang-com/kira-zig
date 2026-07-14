@@ -151,6 +151,8 @@ fn rebaseNativeLibrary(
     for (library.targets) |target| {
         var rebased_target = target;
         rebased_target.link.include_dirs = try rebasePaths(allocator, base, target.link.include_dirs);
+        rebased_target.static_lib = if (target.static_lib) |value| try rebasePath(allocator, base, value) else null;
+        rebased_target.dynamic_lib = if (target.dynamic_lib) |value| try rebasePath(allocator, base, value) else null;
         try targets.append(rebased_target);
     }
     rebased.targets = try targets.toOwnedSlice();

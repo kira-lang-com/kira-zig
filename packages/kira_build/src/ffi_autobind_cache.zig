@@ -201,14 +201,21 @@ test "autobind stamp identity survives project relocation" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "source", "installed" }) |root| {
-        try tmp.dir.createDirPath(std.testing.io, try std.fs.path.join(allocator, &.{ root, "bindings" }));
+    // The `source` root carries a declaration `package.kira`; `installed` carries
+    // a legacy `kira.toml`. Both must be recognized as project roots so the
+    // relocation-stable digest keeps working across the manifest migration.
+    const roots = [_]struct { name: []const u8, manifest: []const u8, data: []const u8 }{
+        .{ .name = "source", .manifest = "package.kira", .data = "Package foundation {}\n" },
+        .{ .name = "installed", .manifest = "kira.toml", .data = "[project]\nname = \"foundation\"\n" },
+    };
+    for (roots) |root| {
+        try tmp.dir.createDirPath(std.testing.io, try std.fs.path.join(allocator, &.{ root.name, "bindings" }));
         try tmp.dir.writeFile(std.testing.io, .{
-            .sub_path = try std.fs.path.join(allocator, &.{ root, "kira.toml" }),
-            .data = "[project]\nname = \"foundation\"\n",
+            .sub_path = try std.fs.path.join(allocator, &.{ root.name, root.manifest }),
+            .data = root.data,
         });
         try tmp.dir.writeFile(std.testing.io, .{
-            .sub_path = try std.fs.path.join(allocator, &.{ root, "bindings", "fs.kira" }),
+            .sub_path = try std.fs.path.join(allocator, &.{ root.name, "bindings", "fs.kira" }),
             .data = "// generated\n",
         });
     }
