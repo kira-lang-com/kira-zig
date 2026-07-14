@@ -1,8 +1,8 @@
 // FnsTests.kira — migrated corpus cases from tests/pass/run/{ffi_struct_return_parity,foundation_filesystem_compile}.
 // PREFIX: fns / Fns (all top-level names use this prefix).
 // No `import Foundation` — package-wide Test/Result/TestFailure/FS API already available.
-// File IO uses unique paths in the package's cross-platform .kira-build
-// directory, created and removed inside each exercise.
+// File IO uses unique package-relative paths created and removed inside each
+// exercise.
 
 // ---------------------------------------------------------------------------
 // ffi_struct_return_parity
@@ -17,7 +17,7 @@
 
 @Native
 function fnsStructReturnRoundtrip() -> String {
-    let path = ".kira-build/kik_corpus_fns_struct_return.txt"
+    let path = "kik_corpus_fns_struct_return.txt"
     let wrote = writeFile(path, "roundtrip-ok")
     if !wrote {
         return "write-failed"
@@ -47,7 +47,7 @@ Test FnsStructReturnParity {
 
 @Native
 function fnsHandleReadSample() -> String {
-    let path = ".kira-build/kik_corpus_fns_handle_read.txt"
+    let path = "kik_corpus_fns_handle_read.txt"
     let wrote = writeFile(path, "Kira file contents\n")
     if !wrote {
         return "write-failed"

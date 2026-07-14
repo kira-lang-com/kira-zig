@@ -256,7 +256,7 @@ pub const DeveloperFacade = struct {
         if (pure_test and backend == .hybrid) {
             const output_root = try outputRoot(allocator, input.target.root_path);
             try ensurePath(output_root);
-            return executeViaHybridDriver(allocator, source_path, output_root, writer);
+            return executeViaHybridDriver(allocator, source_path, output_root, input.target.root_path orelse ".", writer);
         }
         const result = try build.compileFileForBackendWithOptions(allocator, source_path, test_backend, null, &.{}, .{
             .allow_runtime_direct_ffi = true,
@@ -277,7 +277,7 @@ pub const DeveloperFacade = struct {
             {
                 const output_root = try outputRoot(allocator, input.target.root_path);
                 try ensurePath(output_root);
-                return executeViaHybridDriver(allocator, source_path, output_root, writer);
+                return executeViaHybridDriver(allocator, source_path, output_root, input.target.root_path orelse ".", writer);
             }
             if (expected_diagnostic) |expected| {
                 const actual = firstErrorCode(result.diagnostics) orelse "";

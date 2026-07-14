@@ -294,7 +294,13 @@ const HybridTrapChecker = struct {
 /// Run the pure-Kira test driver under the hybrid runtime so @Native/FFI calls
 /// bridge: build the leaf for hybrid (with the driver + Test sections), load the
 /// manifest, and invoke `__kira_test_main` through the bridge, capturing output.
-pub fn executeViaHybridDriver(allocator: std.mem.Allocator, source_path: []const u8, output_root: []const u8, writer: anytype) !TestReport {
+pub fn executeViaHybridDriver(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    output_root: []const u8,
+    project_root: []const u8,
+    writer: anytype,
+) !TestReport {
     const stem = std.fs.path.stem(source_path);
     const manifest_path = try std.fmt.allocPrint(allocator, "{s}/{s}.test.khm", .{ output_root, stem });
     var system = build.BuildSystem.init(allocator);
@@ -330,6 +336,21 @@ pub fn executeViaHybridDriver(allocator: std.mem.Allocator, source_path: []const
 
     var captured: std.Io.Writer.Allocating = .init(allocator);
     defer captured.deinit();
+
+    // Match `kira run`: relative file and asset paths are rooted at the leaf
+    // package, not at whichever corpus parent launched `kira test`.
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+    defer {
+        std.process.setCurrentDir(std.Options.debug_io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
+    }
+    var project_dir = if (std.fs.path.isAbsolute(project_root))
+        try std.Io.Dir.openDirAbsolute(std.Options.debug_io, project_root, .{})
+    else
+        try std.Io.Dir.cwd().openDir(std.Options.debug_io, project_root, .{});
+    defer project_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.Options.debug_io, project_dir);
+
     runtime.runFunctionWithWriter(driver_id, &captured.writer) catch |err| {
         try writer.print("FAIL <test-driver> ({s})\n", .{@errorName(err)});
         return .{ .failed = 1, .total = 1 };
