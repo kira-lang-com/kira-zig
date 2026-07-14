@@ -187,7 +187,7 @@ fn usage() void {
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr           fork default -> upstream default with complete-branch metadata
         \\  next-version               print the next computed release version
-        \\  release-prep               store the next version in build.zig + release.yml (changelog required)
+        \\  release-prep               store the next version in build.zig + .github/workflows/release.yml (changelog required)
         \\  release                    signed v<version> tag on synced main, pushed upstream (triggers release.yml)
     );
 }

@@ -96,11 +96,15 @@ pub fn release(ctx: Context) !void {
 }
 
 /// Next version from the real clock and the union of new-scheme and legacy
-/// calendar tags for the current year/month.
+/// calendar tags for the current year/month. Tags are refreshed from the
+/// landing remote first — stale local tags would recompute a version that
+/// is already released.
 fn computeNextVersion(ctx: Context) ![]u8 {
     const now_ns = std.Io.Clock.Timestamp.now(ctx.io, .real).raw.toNanoseconds();
     const now = civilFromTimestamp(@intCast(@divFloor(now_ns, std.time.ns_per_s)));
     const major: u32 = @intCast(now.year - version_epoch_year);
+    const tag_remote = if (ctx.hasUpstream()) "upstream" else "origin";
+    try proc.check(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "fetch", tag_remote, "--tags" });
     const tags = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{ "git", "tag", "-l" });
     defer ctx.allocator.free(tags);
     const patch = nextPatch(tags, major, @intCast(now.year), now.month);
@@ -218,7 +222,7 @@ fn storedVersion(ctx: Context, sub_path: []const u8, prefix: []const u8) ![]u8 {
     const text = try readRepoFile(ctx, sub_path);
     defer ctx.allocator.free(text);
     const value = extractQuotedValue(text, prefix) orelse {
-        out.print("devflow: could not find `{s}...\"` in {s}\n", .{ prefix, sub_path });
+        out.print("devflow: could not find exactly one `{s}...\"` in {s}\n", .{ prefix, sub_path });
         return error.VersionNotFound;
     };
     return ctx.allocator.dupe(u8, value);
@@ -236,10 +240,12 @@ fn rewriteQuotedValue(ctx: Context, sub_path: []const u8, prefix: []const u8, va
 }
 
 /// The single quoted value following `prefix`, or null when the prefix is
-/// missing or its line is malformed.
+/// missing, ambiguous, or its line is malformed — a release must never
+/// guess which version string it is reading.
 fn extractQuotedValue(text: []const u8, prefix: []const u8) ?[]const u8 {
     const at = std.mem.indexOf(u8, text, prefix) orelse return null;
     const start = at + prefix.len;
+    if (std.mem.indexOfPos(u8, text, start, prefix) != null) return null;
     const end = std.mem.indexOfScalarPos(u8, text, start, '"') orelse return null;
     return text[start..end];
 }
@@ -299,6 +305,14 @@ test "replaceQuotedValue rewrites exactly one site" {
     try std.testing.expectError(error.PrefixNotFound, replaceQuotedValue(allocator, "nothing here", build_zig_prefix, "1.7.3"));
     const twice = "const kirac_version = \"a\";\nconst kirac_version = \"b\";\n";
     try std.testing.expectError(error.PrefixAmbiguous, replaceQuotedValue(allocator, twice, build_zig_prefix, "1.7.3"));
+}
+
+test "extractQuotedValue reads one site and rejects ambiguity" {
+    const text = "const kirac_version = \"2026.07.2\";\n";
+    try std.testing.expectEqualStrings("2026.07.2", extractQuotedValue(text, build_zig_prefix).?);
+    const twice = "const kirac_version = \"a\";\nconst kirac_version = \"b\";\n";
+    try std.testing.expect(extractQuotedValue(twice, build_zig_prefix) == null);
+    try std.testing.expect(extractQuotedValue("nothing", build_zig_prefix) == null);
 }
 
 test "changelogSectionNonEmpty requires body text before the next heading" {
