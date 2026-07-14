@@ -3,7 +3,7 @@ const diagnostics = @import("kira_diagnostics");
 const package_manager = @import("kira_package_manager");
 const pipeline = @import("pipeline.zig");
 
-test "check and build stop points share imported graph diagnostics" {
+test "check and build stop points share imported graph diagnostics (legacy manifest compat)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -90,20 +90,16 @@ test "built-in Foundation resolves before installed package conflicts" {
     try tmp.dir.createDirPath(std.testing.io, "Workspace/App/app");
     try tmp.dir.createDirPath(std.testing.io, "Workspace/ConflictFoundation");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/App/kira.toml",
+        .sub_path = "Workspace/App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\Foundation = { path = "../ConflictFoundation" }
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\    let dependencies = [
+        \\        Dependency { name: "Foundation", path: "../ConflictFoundation" }
+        \\    ]
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -119,14 +115,13 @@ test "built-in Foundation resolves before installed package conflicts" {
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/ConflictFoundation/kira.toml",
+        .sub_path = "Workspace/ConflictFoundation/package.kira",
         .data =
-        \\[package]
-        \\name = "Foundation"
-        \\version = "9.9.9"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "Foundation"
+        \\Package Foundation {
+        \\    let version = "9.9.9"
+        \\    let kind = PackageKind.Library
+        \\    let moduleRoot = "Foundation"
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -155,14 +150,13 @@ test "path dependency rooted at repo root resolves module file from app director
     try tmp.dir.createDirPath(std.testing.io, "Workspace/CardExample/app");
 
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/KiraUI/kira.toml",
+        .sub_path = "Workspace/KiraUI/package.kira",
         .data =
-        \\[package]
-        \\name = "KiraUI"
-        \\version = "0.1.0"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "KiraUI"
+        \\Package KiraUI {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.Library
+        \\    let moduleRoot = "KiraUI"
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -174,20 +168,16 @@ test "path dependency rooted at repo root resolves module file from app director
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/CardExample/kira.toml",
+        .sub_path = "Workspace/CardExample/package.kira",
         .data =
-        \\[package]
-        \\name = "CardExample"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\KiraUI = { path = "../KiraUI" }
+        \\Package CardExample {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\    let dependencies = [
+        \\        Dependency { name: "KiraUI", path: "../KiraUI" }
+        \\    ]
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -222,17 +212,13 @@ test "ksl builtin resolves shaders from package root while main lives in app dir
     try tmp.dir.createDirPath(std.testing.io, "Workspace/App/app");
     try tmp.dir.createDirPath(std.testing.io, "Workspace/App/Shaders");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/App/kira.toml",
+        .sub_path = "Workspace/App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -324,14 +310,13 @@ test "current package app files share one namespace without importing sibling fi
 
     try tmp.dir.createDirPath(std.testing.io, "Workspace/UILibrary/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UILibrary/kira.toml",
+        .sub_path = "Workspace/UILibrary/package.kira",
         .data =
-        \\[package]
-        \\name = "UILibrary"
-        \\version = "0.1.0"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "UI"
+        \\Package UILibrary {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.Library
+        \\    let moduleRoot = "UI"
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -376,15 +361,13 @@ test "compile frontend deduplicates mixed-separator paths while walking current 
 
     try tmp.dir.createDirPath(std.testing.io, "Workspace/callbacks/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/callbacks/project.toml",
+        .sub_path = "Workspace/callbacks/package.kira",
         .data =
-        \\[project]
-        \\name = "callbacks"
-        \\version = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "llvm"
-        \\build_target = "host"
+        \\Package callbacks {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -424,14 +407,13 @@ test "lowerProgram accepts imported type constant accessors used by widget code"
     try tmp.dir.createDirPath(std.testing.io, "Workspace/UI/app");
     try tmp.dir.createDirPath(std.testing.io, "Workspace/App/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/UI/kira.toml",
+        .sub_path = "Workspace/UI/package.kira",
         .data =
-        \\[package]
-        \\name = "UI"
-        \\version = "0.1.0"
-        \\kind = "library"
-        \\kira = "0.1.0"
-        \\module_root = "UI"
+        \\Package UI {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.Library
+        \\    let moduleRoot = "UI"
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -483,20 +465,16 @@ test "lowerProgram accepts imported type constant accessors used by widget code"
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "Workspace/App/kira.toml",
+        .sub_path = "Workspace/App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "vm"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\UI = { path = "../UI" }
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\    let dependencies = [
+        \\        Dependency { name: "UI", path: "../UI" }
+        \\    ]
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{

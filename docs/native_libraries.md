@@ -4,7 +4,7 @@ Kira's first real FFI system is intentionally strict:
 
 - C ABI only
 - static linking first
-- per-library TOML manifests
+- native libraries declared inline in `package.kira` (legacy per-library TOML manifests still load for unmigrated projects)
 - Clang-driven autobinding generation
 - generated bindings emitted as real Kira source files
 - direct LLVM/native extern calls with no public wrapper layer
@@ -25,87 +25,91 @@ boundary.
 Native library work is intentionally split across packages:
 
 - `kira_native_lib_definition` defines manifest and resolved-library contracts
-- `kira_manifest` parses the native library TOML shape
-- `kira_build` discovers manifests near source files, builds static archives when needed, and runs autobinding generation
+- `kira_manifest` parses inline `NativeLibrary` declarations in `package.kira` (and the legacy per-library TOML shape for unmigrated projects)
+- `kira_build` discovers manifests near source files, builds static or shared archives when needed, and runs autobinding generation
 - `kira_backend_api` carries resolved native libraries into the backend
 - `kira_llvm_backend` emits direct extern declarations/calls and hybrid bridge wrappers
 - `kira_native_bridge` and `kira_hybrid_runtime` marshal arguments and results across the runtime/native boundary
 
 ## Manifest Shape
 
-Projects list native-library manifests explicitly in `project.toml`, and each native library keeps its own detail in a dedicated TOML file.
+Native libraries are declared inline in `package.kira` under `nativeLibraries` —
+see [docs/package-manifest.md](package-manifest.md) for the full manifest
+format and schema. (Legacy `project.toml`/`kira.toml` projects instead list
+each library's manifest path via `native_libraries = ["NativeLibs/*.toml"]`,
+with per-library detail in a dedicated TOML file; that format still loads for
+unmigrated packages.)
 
-```toml
-[project]
-name = "sokol_triangle"
-version = "0.1.0"
-native_libraries = ["NativeLibs/sokol.toml"]
-```
+[examples/sokol_triangle/package.kira](../examples/sokol_triangle/package.kira)
+declares its native library this way:
 
-Per-library detail then lives in the referenced manifest:
-
-```toml
-[library]
-name = "sokol"
-link_mode = "static"
-abi = "c"
-
-[headers]
-entrypoint = "../../third_party/sokol/sokol_bindings.h"
-include_dirs = ["../../third_party/sokol"]
-defines = ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"]
-
-[autobinding]
-module = "sokol"
-output = "../sokol.kira"
-headers = ["../../third_party/sokol/sokol_app.h", "../../third_party/sokol/sokol_gfx.h", "../../third_party/sokol/sokol_glue.h"]
-
-[bindings]
-mode = "all_public"
-
-[build]
-sources = ["../../third_party/sokol/sokol_impl.m"]
-include_dirs = ["../../third_party/sokol"]
-
-[target.aarch64-macos-none]
-static_lib = "../.kira-build/native/aarch64-macos/libsokol.a"
-frameworks = ["AppKit", "QuartzCore", "OpenGL"]
+```kira
+Package sokol_triangle {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "sokol",
+            linkMode: LinkMode.Static,
+            headers: Headers {
+                entrypoint: "../../third_party/sokol/sokol_bindings.h",
+                includeDirs: ["../../third_party/sokol"],
+                defines: ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"]
+            },
+            sources: ["../../third_party/sokol/sokol_impl.m"],
+            autobind: Autobind {
+                module: "sokol",
+                headers: ["../../third_party/sokol/sokol_app.h", "../../third_party/sokol/sokol_gfx.h", "../../third_party/sokol/sokol_glue.h"],
+                mode: AutobindMode.AllPublic
+            },
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", frameworks: ["AppKit", "QuartzCore", "OpenGL"] },
+                NativeTarget { triple: "x86_64-linux-gnu", systemLibs: ["X11", "Xi", "Xcursor", "GL", "dl", "pthread", "m"] },
+                NativeTarget { triple: "x86_64-windows-msvc" }
+            ]
+        }
+    ]
+}
 ```
 
 Important rules:
 
-- `project.toml` explicitly lists every native-library manifest used by the project
-- one TOML per native library
-- the library TOML owns header paths, autobinding inputs, binding filters, and target artifacts
-- Kira source does not hardcode binary paths
+- each `NativeLibrary { ... }` entry lives inline in `package.kira`'s `nativeLibraries` list — there is no separate per-library manifest file
+- one `NativeLibrary` entry per native library
+- the entry owns header paths, autobinding inputs, binding filters, and per-target settings (`nativeTargets`)
+- Kira source does not hardcode binary paths — libraries are compiled from source into `.kira-build/native/<arch>-<os>-<abi>/lib<name>.a` (or the shared-object equivalent for `LinkMode.Dynamic`)
+- generated bindings always land at `app/bindings/<module>.kira` (the autobind output law; see docs/package-manifest.md)
 - `.bind.toml` sidecar files are no longer used
 
 ## Per-Target Compiler and Linker Flags
 
-Each `[target.<triple>]` section may carry extra flags that are threaded through
-the native toolchain for that target only:
+Each `NativeTarget { triple: "..." }` entry may carry extra flags that are
+threaded through the native toolchain for that target only:
 
-```toml
-[target.wasm32-emscripten-unknown]
-static_lib = ".kira-build/native/wasm32-emscripten-unknown/libwebgpu_shim.a"
-compiler_flags = ["--use-port=emdawnwebgpu"]
-linker_flags = ["--use-port=emdawnwebgpu", "-sASYNCIFY"]
+```kira
+NativeTarget {
+    triple: "wasm32-emscripten-unknown",
+    compilerFlags: ["--use-port=emdawnwebgpu"],
+    linkerFlags: ["--use-port=emdawnwebgpu", "-sASYNCIFY"]
+}
 ```
 
-- `compiler_flags` are appended to every source-compile command for this
+- `compilerFlags` are appended to every source-compile command for this
   library on this target (e.g. Emscripten ports, `-fno-exceptions`).
-- `linker_flags` are appended verbatim to the final program/library link.
+- `linkerFlags` are appended verbatim to the final program/library link.
 
 Both are generic across every backend, not just Emscripten.
 
 ## WebAssembly / Emscripten Targets
 
-Declare a `[target.wasm32-emscripten-unknown]` section (architecture `wasm32`,
-OS `emscripten`, ABI `unknown`) to make a native library available under
-`kira build --target wasm32-emscripten`. Its sources compile with `emcc` (no
-`-target` flag — `emcc` implies `wasm32-emscripten`) and archive with `emar`,
-both discovered next to the active `emcc` (or on `PATH`). C++ translation units
-dispatch to `em++` by file extension.
+Declare a `NativeTarget { triple: "wasm32-emscripten-unknown" }` entry
+(architecture `wasm32`, OS `emscripten`, ABI `unknown`) to make a native
+library available under `kira build --target wasm32-emscripten`. Its sources
+compile with `emcc` (no `-target` flag — `emcc` implies `wasm32-emscripten`)
+and archive with `emar`, both discovered next to the active `emcc` (or on
+`PATH`). C++ translation units dispatch to `em++` by file extension.
 
 A library that omits a matching wasm target still reports diagnostic `KTC003`
 ("unsupported native library target") for a wasm build, so Web/WASM support is
@@ -214,9 +218,9 @@ Current lifetime model:
 
 The callback proof paths now live in:
 
-- [tests/pass/run/ffi_callback_native/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_native/main.kira)
-- [tests/pass/run/ffi_callback_hybrid/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_hybrid/main.kira)
-- [tests/pass/run/ffi_callback_state_parity/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_callback_state_parity/main.kira)
+- [tests/pass/run/ffi_callback_native/main.kira](../tests/pass/run/ffi_callback_native/main.kira)
+- [tests/pass/run/ffi_callback_hybrid/main.kira](../tests/pass/run/ffi_callback_hybrid/main.kira)
+- [tests/pass/run/ffi_callback_state_parity/main.kira](../tests/pass/run/ffi_callback_state_parity/main.kira)
 
 ## Hybrid Support
 
@@ -268,20 +272,19 @@ How it works:
   (`~/.kira/toolchains/libffi/...`, installed with `zig build fetch-libffi`).
 
 Library resolution mirrors the rest of the native-library system. A library
-built or shipped as a shared object is declared with `link_mode = "dynamic"`;
-the build can compile dynamic libraries from sources just like static archives:
+built or shipped as a shared object is declared with `linkMode:
+LinkMode.Dynamic`; the build compiles a dynamic library from `sources` just
+like a static archive:
 
-```toml
-[library]
-name = "ffimath"
-link_mode = "dynamic"
-abi = "c"
-
-[build]
-sources = ["ffimath.c"]
-
-[target.x86_64-windows-msvc]
-dynamic_lib = "../.kira-build/native/x86_64-windows-msvc/ffimath.dll"
+```kira
+NativeLibrary {
+    name: "ffimath",
+    linkMode: LinkMode.Dynamic,
+    sources: ["ffimath.c"],
+    nativeTargets: [
+        NativeTarget { triple: "x86_64-windows-msvc" }
+    ]
+}
 ```
 
 Supported VM LibFFI types are the scalar primitives (`I8`…`I64`, `U8`…`U64`,
@@ -302,20 +305,22 @@ kira run --backend vm tests/pass/run/ffi_dynamic_vm
 The real proof target for this pass is a full generated Sokol binding and a native triangle app:
 
 - real upstream headers:
-  - [third_party/sokol/sokol_app.h](/Users/priamc/Coding/kira-projects/kira-zig/third_party/sokol/sokol_app.h)
-  - [third_party/sokol/sokol_gfx.h](/Users/priamc/Coding/kira-projects/kira-zig/third_party/sokol/sokol_gfx.h)
-  - [third_party/sokol/sokol_glue.h](/Users/priamc/Coding/kira-projects/kira-zig/third_party/sokol/sokol_glue.h)
+  - [third_party/sokol/sokol_app.h](../third_party/sokol/sokol_app.h)
+  - [third_party/sokol/sokol_gfx.h](../third_party/sokol/sokol_gfx.h)
+  - [third_party/sokol/sokol_glue.h](../third_party/sokol/sokol_glue.h)
 - a normal upstream-style implementation TU:
-  - [third_party/sokol/sokol_impl.m](/Users/priamc/Coding/kira-projects/kira-zig/third_party/sokol/sokol_impl.m)
+  - [third_party/sokol/sokol_impl.m](../third_party/sokol/sokol_impl.m)
 - manifest-driven binding generation and static library build:
-  - [examples/sokol_triangle/NativeLibs/sokol.toml](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/NativeLibs/sokol.toml)
-- generated Kira module emitted directly from the public headers:
-  - [examples/sokol_triangle/sokol.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/sokol.kira)
+  - [examples/sokol_triangle/package.kira](../examples/sokol_triangle/package.kira)
+- generated Kira module emitted directly from the public headers (lands at
+  `examples/sokol_triangle/app/bindings/sokol.kira` per the autobind output
+  law; regenerated on every `kira check`/`kira build`/`kira run`, not
+  committed, so there is no file to link here)
 - fully Kira-written app logic using the generated bindings directly:
-  - [examples/sokol_triangle/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_triangle/app/main.kira)
-  - [examples/sokol_runtime_entry/app/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/examples/sokol_runtime_entry/app/main.kira)
+  - [examples/sokol_triangle/app/main.kira](../examples/sokol_triangle/app/main.kira)
+  - [examples/sokol_runtime_entry/app/main.kira](../examples/sokol_runtime_entry/app/main.kira)
 - runnable native proof case:
-  - [tests/pass/run/ffi_sokol_triangle_native/main.kira](/Users/priamc/Coding/kira-projects/kira-zig/tests/pass/run/ffi_sokol_triangle_native/main.kira)
+  - [tests/pass/run/ffi_sokol_triangle_native/main.kira](../tests/pass/run/ffi_sokol_triangle_native/main.kira)
 
 To regenerate the bindings without launching the app, run:
 
