@@ -10,7 +10,8 @@
 //! Two front-ends over the same `DebugSession`:
 //!   - default: an interactive terminal REPL (`kira_debug.Repl`).
 //!   - `--dap`: the Debug Adapter Protocol server (`kira_debug.dap.Server`) an
-//!     editor speaks; stdio transport by default, TCP with `--port`.
+//!     editor speaks; stdio transport only (`--port` is parsed but rejected
+//!     until a TCP listener is wired).
 //!
 //! Backend parity: the VM path debugs bytecode in-process; `--backend llvm`
 //! builds the native artifact and drives it under the hardware-assisted debug

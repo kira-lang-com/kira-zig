@@ -101,7 +101,7 @@ fn writeNativeLibrary(writer: anytype, lib: native.NativeLibrarySpec) !void {
     try writeQuotedString(writer, lib.name);
     try writer.writeAll(",\n");
     try writer.print("            linkMode: LinkMode.{s},\n", .{linkModeVariant(lib.link_mode)});
-    try writeHeaders(writer, lib.headers);
+    try writeHeaders(writer, lib.headers, lib.build);
     if (lib.build.sources.len > 0) {
         try writer.writeAll("            sources: ");
         try writeStringArray(writer, lib.build.sources);
@@ -155,8 +155,13 @@ fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
     try writer.writeAll("            ],\n");
 }
 
-fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
-    if (headers.entrypoint == null and headers.include_dirs.len == 0 and headers.defines.len == 0 and
+fn writeHeaders(writer: anytype, headers: native.HeaderSpec, build: native.BuildRecipe) !void {
+    // The declaration schema carries one includeDirs/defines set (the loader
+    // applies it to both header parsing and source builds), so legacy
+    // build-only flags must be folded in here or migration drops them.
+    const has_include_dirs = headers.include_dirs.len > 0 or build.include_dirs.len > 0;
+    const has_defines = headers.defines.len > 0 or build.defines.len > 0;
+    if (headers.entrypoint == null and !has_include_dirs and !has_defines and
         headers.frameworks.len == 0 and headers.system_libs.len == 0) return;
     try writer.writeAll("            headers: Headers {");
     var first = true;
@@ -165,16 +170,16 @@ fn writeHeaders(writer: anytype, headers: native.HeaderSpec) !void {
         try writeQuotedString(writer, entry);
         first = false;
     }
-    if (headers.include_dirs.len > 0) {
+    if (has_include_dirs) {
         if (!first) try writer.writeAll(",");
         try writer.writeAll(" includeDirs: ");
-        try writeStringArray(writer, headers.include_dirs);
+        try writeMergedStringArray(writer, headers.include_dirs, build.include_dirs);
         first = false;
     }
-    if (headers.defines.len > 0) {
+    if (has_defines) {
         if (!first) try writer.writeAll(",");
         try writer.writeAll(" defines: ");
-        try writeStringArray(writer, headers.defines);
+        try writeMergedStringArray(writer, headers.defines, build.defines);
         first = false;
     }
     if (headers.frameworks.len > 0) {
@@ -232,6 +237,30 @@ fn writeStringArray(writer: anytype, values: []const []const u8) !void {
     for (values, 0..) |value, index| {
         if (index != 0) try writer.writeAll(", ");
         try writeQuotedString(writer, value);
+    }
+    try writer.writeAll("]");
+}
+
+/// Emit `primary` followed by entries of `extra` not already in `primary`,
+/// as one deduplicated array.
+fn writeMergedStringArray(writer: anytype, primary: []const []const u8, extra: []const []const u8) !void {
+    try writer.writeAll("[");
+    var written: usize = 0;
+    for (primary) |value| {
+        if (written != 0) try writer.writeAll(", ");
+        try writeQuotedString(writer, value);
+        written += 1;
+    }
+    outer: for (extra, 0..) |value, index| {
+        for (primary) |seen| {
+            if (std.mem.eql(u8, seen, value)) continue :outer;
+        }
+        for (extra[0..index]) |seen| {
+            if (std.mem.eql(u8, seen, value)) continue :outer;
+        }
+        if (written != 0) try writer.writeAll(", ");
+        try writeQuotedString(writer, value);
+        written += 1;
     }
     try writer.writeAll("]");
 }
@@ -323,13 +352,17 @@ test "writes a round-trippable package.kira" {
             .name = "demo",
             .link_mode = .static,
             .abi = .c,
-            .headers = .{ .frameworks = &.{"Metal"}, .system_libs = &.{"m"} },
+            .headers = .{ .include_dirs = &.{"include"}, .frameworks = &.{"Metal"}, .system_libs = &.{"m"} },
             .autobinding = .{
                 .module_name = "demo",
                 .output_path = "ignored.kira",
                 .bindings = .{ .profile = .directx12 },
             },
-            .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+            .build = .{
+                .sources = &.{"NativeLibs/demo.c"},
+                .include_dirs = &.{ "include", "src/native" },
+                .defines = &.{"DEMO_BUILD=1"},
+            },
             .targets = &.{.{
                 .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
                 .compiler_flags = &.{"-pthread"},
@@ -369,9 +402,15 @@ test "writes a round-trippable package.kira" {
     const git_dep = result.manifest.dependencies[1].source.git;
     try std.testing.expectEqualStrings("https://example.com/remote.git", git_dep.url);
     try std.testing.expectEqualStrings("abc123", git_dep.rev.?);
+    try std.testing.expect(std.mem.indexOf(u8, text, "includeDirs: [\"include\", \"src/native\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "defines: [\"DEMO_BUILD=1\"]") != null);
     const headers = result.manifest.inline_native_libraries[0].headers;
     try std.testing.expectEqualStrings("Metal", headers.frameworks[0]);
     try std.testing.expectEqualStrings("m", headers.system_libs[0]);
+    const build = result.manifest.inline_native_libraries[0].build;
+    try std.testing.expectEqual(@as(usize, 2), build.include_dirs.len);
+    try std.testing.expectEqualStrings("src/native", build.include_dirs[1]);
+    try std.testing.expectEqualStrings("DEMO_BUILD=1", build.defines[0]);
     try std.testing.expectEqual(native.AutobindingProfile.directx12, result.manifest.inline_native_libraries[0].autobinding.?.bindings.profile);
     const target = result.manifest.inline_native_libraries[0].targets[0];
     try std.testing.expectEqualStrings("linux", target.selector.operating_system);

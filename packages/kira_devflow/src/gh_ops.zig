@@ -242,12 +242,20 @@ pub fn rerunWorkflow(ctx: Context, slug: []const u8, run_id: []const u8) !void {
 pub fn codeRabbitCheckResponded(ctx: Context, slug: []const u8, number: u32) !bool {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
-    const response = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+    // `gh pr checks` exits 1/8 while other checks are failing/pending; those
+    // documented states still carry the JSON payload, so treat them as "no
+    // CodeRabbit response yet" rather than an invocation failure.
+    const result = try proc.tryRun(ctx.allocator, ctx.io, ctx.repo_root, &.{
         "gh",     "pr",         "checks", num_str,                                                                                                  "-R", slug,
         "--json", "name,state", "--jq",   "[.[] | select((.name | ascii_downcase | contains(\"coderabbit\")) and .state == \"SUCCESS\")] | length",
     });
-    defer ctx.allocator.free(response);
-    return (std.fmt.parseInt(u32, std.mem.trim(u8, response, " \r\n"), 10) catch 0) > 0;
+    defer result.deinit(ctx.allocator);
+    const accepted = switch (result.term) {
+        .exited => |code| code == 0 or code == 1 or code == 8,
+        else => false,
+    };
+    if (!accepted) return error.CheckQueryFailed;
+    return (std.fmt.parseInt(u32, std.mem.trim(u8, result.stdout, " \r\n"), 10) catch 0) > 0;
 }
 
 /// Count of unresolved review threads across ALL pages (0 = all findings
