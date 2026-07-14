@@ -8,7 +8,12 @@ Package KikCorpusFfiCallbacks {
             linkMode: .Static,
             headers: Headers { entrypoint: "NativeLibs/callbacks.h", includeDirs: ["NativeLibs"] },
             sources: ["NativeLibs/callbacks.c"],
-            autobind: Autobind { module: "callbacks", functions: ["kira_invoke_callback"], callbacks: ["kira_i64_callback"] }
+            autobind: Autobind {
+                module: "callbacks",
+                headers: ["NativeLibs/callbacks.h"],
+                functions: ["kira_invoke_callback"],
+                callbacks: ["kira_i64_callback"]
+            }
         }
     ]
     let tests = Tests { backends: [.Hybrid], phase: .Both }
