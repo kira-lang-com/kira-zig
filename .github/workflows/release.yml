@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: "2026.07.2"
+  VERSION: "1.7.3"
   BINARY_NAME: "kira"
   PRIMARY_EXECUTABLE: "kirac"
 
