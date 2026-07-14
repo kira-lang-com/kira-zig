@@ -103,29 +103,19 @@ test "wasm32 emscripten compiles and links a declared native library through emc
     try tmp.dir.createDirPath(std.testing.io, "App/NativeLibs");
     try tmp.dir.createDirPath(std.testing.io, "out");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/kira.toml",
+        .sub_path = "App/package.kira",
         .data =
-        \\[package]
-        \\name = "App"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\native_libraries = ["NativeLibs/kira_add.toml"]
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "App/NativeLibs/kira_add.toml",
-        .data =
-        \\[library]
-        \\name = "kira_add"
-        \\link_mode = "static"
-        \\abi = "c"
-        \\
-        \\[build]
-        \\sources = ["kira_add.c"]
-        \\
-        \\[target.wasm32-emscripten-unknown]
-        \\static_lib = "libkira_add.a"
+        \\Package App {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let nativeLibraries = [
+        \\        NativeLibrary {
+        \\            name: "kira_add",
+        \\            linkMode: LinkMode.Static,
+        \\            sources: ["NativeLibs/kira_add.c"]
+        \\        }
+        \\    ]
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
@@ -188,7 +178,7 @@ test "wasm32 emscripten compiles and links a declared native library through emc
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "42") != null);
 }
 
-test "wasm32 emscripten reports host native library target exclusion" {
+test "wasm32 emscripten reports host native library target exclusion (legacy manifest compat)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

@@ -386,13 +386,13 @@ test "web bundle compiles a real wasm app and node runs the entrypoint" {
     // baked-in wasm basename: the bundle must keep that name resolvable.
     try tmp.dir.createDirPath(std.testing.io, "proj/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "proj/kira.toml",
+        .sub_path = "proj/package.kira",
         .data =
-        \\[package]
-        \\name = "webproj"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
+        \\Package webproj {
+        \\    let version = "0.1.0"
+        \\    let kind = PackageKind.App
+        \\    let kira = "0.1.0"
+        \\}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{

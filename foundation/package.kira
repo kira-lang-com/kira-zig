@@ -1,0 +1,63 @@
+Package Foundation {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.Library
+    let moduleRoot = "Foundation"
+    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "fs",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/FS/fs.h", includeDirs: ["NativeLibs/FS"] },
+            sources: ["NativeLibs/FS/fs.c"],
+            autobind: Autobind { module: "fs", headers: ["NativeLibs/FS/fs.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libfs.a" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libfs.a" },
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../.kira-build/native/x86_64-windows-msvc/fs.lib" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../.kira-build/native/wasm32-emscripten/libfs.a" }
+            ],
+        },
+        NativeLibrary {
+            name: "kira_runtime",
+            linkMode: LinkMode.Dynamic,
+            headers: Headers { entrypoint: "NativeLibs/DynamicFfi/kira_dynamic_ffi.h", includeDirs: ["NativeLibs/DynamicFfi"] },
+            autobind: Autobind { module: "dynamicffi", headers: ["NativeLibs/DynamicFfi/kira_dynamic_ffi.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-windows-msvc", dynamicLib: "" },
+                NativeTarget { triple: "x86_64-linux-gnu", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-macos-none", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-ios-none", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-ios-simulator", dynamicLib: "" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", dynamicLib: "" }
+            ],
+        },
+        NativeLibrary {
+            name: "kira_argument_parser",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/ArgumentParser/argument_parser.h", includeDirs: ["NativeLibs/ArgumentParser"] },
+            sources: ["NativeLibs/ArgumentParser/argument_parser.c"],
+            autobind: Autobind { module: "argument_parser", headers: ["NativeLibs/ArgumentParser/argument_parser.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libkira_argument_parser.a" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libkira_argument_parser.a" },
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../.kira-build/native/x86_64-windows-msvc/kira_argument_parser.lib" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../.kira-build/native/wasm32-emscripten/libkira_argument_parser.a" }
+            ],
+        },
+        NativeLibrary {
+            name: "kira_main",
+            linkMode: LinkMode.Dynamic,
+            headers: Headers { entrypoint: "NativeLibs/../../packages/kira_main/include/kira_main.h", includeDirs: ["NativeLibs/../../packages/kira_main/include"] },
+            autobind: Autobind { module: "kira_api", headers: ["NativeLibs/../../packages/kira_main/include/kira_main.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-windows-msvc", dynamicLib: "" },
+                NativeTarget { triple: "x86_64-linux-gnu", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-macos-none", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-ios-none", dynamicLib: "" },
+                NativeTarget { triple: "aarch64-ios-simulator", dynamicLib: "" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", dynamicLib: "" }
+            ],
+        }
+    ]
+}

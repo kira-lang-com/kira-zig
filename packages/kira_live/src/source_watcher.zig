@@ -55,8 +55,9 @@ pub const SourceWatcher = struct {
         self.collectFiles(path) catch {};
     }
 
-    /// Watch a single file (e.g. a package's `kira.toml`) without recursing
-    /// into its directory — watching a package ROOT recursively would pick up
+    /// Watch a single file (e.g. a package's `package.kira` or legacy
+    /// `kira.toml`) without recursing into its directory — watching a package
+    /// ROOT recursively would pick up
     /// `.kira-build/` outputs and re-trigger forever.
     pub fn addFile(self: *Self, path: []const u8) !void {
         for (self.watched_files.items) |existing| {
@@ -292,13 +293,14 @@ test "SourceWatcher watches shader, native, and manifest inputs" {
     const shader_file = "/tmp/kira_live_inputs_test_app/Shader/effect.ksl";
     const native_file = "/tmp/kira_live_inputs_test_app/impl.c";
     const manifest_file = "/tmp/kira_live_inputs_test_manifest/kira.toml";
+    const declaration_manifest_file = "/tmp/kira_live_inputs_test_manifest/package.kira";
 
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, "/tmp/kira_live_inputs_test_app/Shader");
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, "/tmp/kira_live_inputs_test_manifest");
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, "/tmp/kira_live_inputs_test_manifest") catch {};
 
-    for ([_][]const u8{ shader_file, native_file, manifest_file }) |path| {
+    for ([_][]const u8{ shader_file, native_file, manifest_file, declaration_manifest_file }) |path| {
         const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, path, .{ .truncate = true });
         try file.writeStreamingAll(std.Options.debug_io, "// v1");
         file.close(std.Options.debug_io);
@@ -308,6 +310,7 @@ test "SourceWatcher watches shader, native, and manifest inputs" {
     defer watcher.deinit();
     try watcher.addDirectory(tmp_path);
     try watcher.addFile(manifest_file);
+    try watcher.addFile(declaration_manifest_file);
     try std.testing.expect(!try watcher.changed());
 
     // Shader edit is a change.
@@ -330,10 +333,20 @@ test "SourceWatcher watches shader, native, and manifest inputs" {
     try watcher.refresh();
     try std.testing.expect(!try watcher.changed());
 
-    // Watched single file (kira.toml) edit is a change.
+    // Watched single file (legacy kira.toml) edit is a change.
     {
         const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, manifest_file, .{ .truncate = true });
         try file.writeStreamingAll(std.Options.debug_io, "# v2 manifest");
+        file.close(std.Options.debug_io);
+    }
+    try std.testing.expect(try watcher.changed());
+    try watcher.refresh();
+    try std.testing.expect(!try watcher.changed());
+
+    // Watched declaration manifest (package.kira) edit is a change too.
+    {
+        const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, declaration_manifest_file, .{ .truncate = true });
+        try file.writeStreamingAll(std.Options.debug_io, "Package demo { let version = \"0.2.0\" }");
         file.close(std.Options.debug_io);
     }
     try std.testing.expect(try watcher.changed());

@@ -87,7 +87,7 @@ pub fn invalidProjectPath(allocator: std.mem.Allocator, path: []const u8) !diagn
             "Kira could not open `{s}` as a source file, manifest, or project directory.",
             .{path},
         ),
-        .help = "Pass a `.kira` source file, a project root, or a `kira.toml`/`project.toml` path.",
+        .help = "Pass a `.kira` source file, a project root, or a `package.kira` (or legacy `kira.toml`/`project.toml`) path.",
     });
 }
 

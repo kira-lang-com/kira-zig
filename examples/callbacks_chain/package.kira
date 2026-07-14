@@ -1,0 +1,20 @@
+Package callbacks_chain {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "callbacks",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/callbacks.h", includeDirs: ["NativeLibs/."] },
+            sources: ["NativeLibs/callbacks.c"],
+            autobind: Autobind { module: "callbacks", headers: ["NativeLibs/callbacks.h"], functions: ["kira_invoke_callback"], callbacks: ["kira_i64_callback"] }
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../.kira-build/native/aarch64-macos/libcallbacks.a" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../.kira-build/native/x86_64-linux-gnu/libcallbacks.a" },
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../.kira-build/native/x86_64-windows-msvc/callbacks.lib" }
+            ],
+        }
+    ]
+}

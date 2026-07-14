@@ -185,13 +185,13 @@ test "invalid Kira input exits cleanly with rendered diagnostics" {
 
     try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "DemoApp/project.toml",
-        .data = "[project]\n" ++
-            "name = \"DemoApp\"\n" ++
-            "version = \"0.1.0\"\n\n" ++
-            "[defaults]\n" ++
-            "execution_mode = \"vm\"\n" ++
-            "build_target = \"host\"\n",
+        .sub_path = "DemoApp/package.kira",
+        .data =
+        \\Package DemoApp {
+        \\    let version = "0.1.0"
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\}
+        ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
@@ -256,6 +256,9 @@ test "invalid hybrid input exits cleanly without renderer crash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    // Legacy-compat coverage: this is the one CLI test that deliberately keeps a
+    // legacy TOML `project.toml` manifest, proving the loader still accepts the
+    // pre-migration format. Every other CLI fixture uses `package.kira`.
     try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/project.toml",
@@ -323,7 +326,7 @@ test "version prints standalone binary identity" {
     try std.testing.expectEqualStrings("", stderr.buffered());
 }
 
-test "run defaults to project.toml in the current directory" {
+test "run defaults to package.kira in the current directory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -332,13 +335,13 @@ test "run defaults to project.toml in the current directory" {
 
     try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "DemoApp/project.toml",
-        .data = "[project]\n" ++
-            "name = \"DemoApp\"\n" ++
-            "version = \"0.1.0\"\n\n" ++
-            "[defaults]\n" ++
-            "execution_mode = \"vm\"\n" ++
-            "build_target = \"host\"\n",
+        .sub_path = "DemoApp/package.kira",
+        .data =
+        \\Package DemoApp {
+        \\    let version = "0.1.0"
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\}
+        ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
@@ -372,6 +375,64 @@ test "run defaults to project.toml in the current directory" {
     try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "invalid Kira input") == null);
 }
 
+test "run prefers package.kira over a legacy manifest in the current directory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Both a declaration manifest and a legacy TOML manifest sit in the same
+    // directory. `package.kira` must win: it declares a runnable vm app, while
+    // the sibling `project.toml` is deliberately malformed so that selecting it
+    // would surface a manifest diagnostic instead of the app's output.
+    try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "DemoApp/package.kira",
+        .data =
+        \\Package DemoApp {
+        \\    let version = "0.1.0"
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "DemoApp/project.toml",
+        .data = "[project\nname = broken toml =\n",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "DemoApp/app/main.kira",
+        .data = "@Main\nfunction main() { print(\"precedence-ok\"); return; }\n",
+    });
+
+    var original_cwd = try std.Io.Dir.cwd().openDir(std.Options.debug_io, ".", .{});
+    defer {
+        std.process.setCurrentDir(std.testing.io, original_cwd) catch {};
+        original_cwd.close(std.Options.debug_io);
+    }
+
+    var app_dir = try tmp.dir.openDir(std.testing.io, "DemoApp", .{});
+    defer app_dir.close(std.Options.debug_io);
+    try std.process.setCurrentDir(std.testing.io, app_dir);
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.Writer.fixed(&stdout_buffer);
+    var stderr = std.Io.Writer.fixed(&stderr_buffer);
+
+    const exit_code = try runWithWriters(
+        arena.allocator(),
+        &.{ "kirac", "run", "--backend", "vm" },
+        &stdout,
+        &stderr,
+    );
+
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "precedence-ok") != null);
+    // The malformed legacy manifest was never read: no manifest diagnostic.
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "KMAN") == null);
+}
+
 test "vm run launches bytecode produced by the build pipeline" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -381,13 +442,13 @@ test "vm run launches bytecode produced by the build pipeline" {
 
     try tmp.dir.createDirPath(std.testing.io, "DemoApp/app");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "DemoApp/project.toml",
-        .data = "[project]\n" ++
-            "name = \"DemoApp\"\n" ++
-            "version = \"0.1.0\"\n\n" ++
-            "[defaults]\n" ++
-            "execution_mode = \"vm\"\n" ++
-            "build_target = \"host\"\n",
+        .sub_path = "DemoApp/package.kira",
+        .data =
+        \\Package DemoApp {
+        \\    let version = "0.1.0"
+        \\    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+        \\}
+        ,
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "DemoApp/app/main.kira",
