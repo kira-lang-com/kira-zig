@@ -17,12 +17,16 @@
 //!   land N             squash-as-PR (one flat entry) + resync local default branch
 //!   sync               resync local default branch to the fork
 //!   open-upstream-pr   fork default -> upstream default (needs upstream remote)
+//!   next-version       print the next computed release version
+//!   release-prep       store the next version + require its changelog section
+//!   release            signed tag on synced main -> upstream (triggers release)
 
 const std = @import("std");
 const builtin = @import("builtin");
 const proc = @import("proc.zig");
 const context = @import("context.zig");
 const commands = @import("commands.zig");
+const release = @import("release.zig");
 const out = @import("out.zig");
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -74,6 +78,9 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "land")) return commands.land(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "sync")) return commands.sync(ctx);
     if (eq(verb, "open-upstream-pr")) return commands.openUpstreamPr(ctx);
+    if (eq(verb, "next-version")) return release.nextVersion(ctx);
+    if (eq(verb, "release-prep")) return release.releasePrep(ctx);
+    if (eq(verb, "release")) return release.release(ctx);
 
     usage();
     return error.UnknownVerb;
@@ -148,6 +155,16 @@ fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
     return environ[0..len :null];
 }
 
+// Test discovery only collects from the root file; without these references
+// every imported module's tests silently drop out of `zig build devflow-test`.
+test {
+    _ = @import("commit_msg.zig");
+    _ = @import("context.zig");
+    _ = @import("gh_ops.zig");
+    _ = @import("pr_scope.zig");
+    _ = @import("release.zig");
+}
+
 fn usage() void {
     out.line(
         \\devflow — fork/upstream PR flow automation
@@ -169,5 +186,8 @@ fn usage() void {
         \\  land <pr> [--codex]        squash-merge upstream PR (merge subject) + mirror fork + resync
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr           fork default -> upstream default with complete-branch metadata
+        \\  next-version               print the next computed release version
+        \\  release-prep               store the next version in build.zig + .github/workflows/release.yml (changelog required)
+        \\  release                    signed v<version> tag on synced main, pushed upstream (triggers release.yml)
     );
 }
