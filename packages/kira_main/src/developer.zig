@@ -148,67 +148,43 @@ pub const DeveloperFacade = struct {
         };
         if (root_input == null and self.report_owned != null) return false;
 
-        // Read the manifest `Tests { backends, phase }` config (best-effort). A
-        // package without it keeps the historical single-backend behavior.
-        const project_manifest: ?manifest_pkg.ProjectManifest = if (root_input) |input|
-            if (input.target.project) |project| project.manifest else null
-        else
-            null;
-        const plan = try tests_config.resolvePlan(allocator, project_manifest, backend);
-
         var full = ProgressReport.init(allocator);
         defer full.deinit();
         var aggregate = TestReport{};
 
-        // Test declarations run once per planned backend (each must end 0-failed);
-        // a manifest-driven matrix prints a per-backend tally.
-        for (plan.backends) |entry| {
-            var backend_report = TestReport{};
-            for (leaves) |leaf| {
-                if (leaves.len > 1) try full.writer.print("suite {s}\n", .{leaf});
+        // Resolve each leaf's own Tests matrix. Corpus roots intentionally have
+        // no manifest, so resolving a single root plan would discard every child
+        // package's declared backends and phase.
+        for (leaves) |leaf| {
+            const plan = try resolveTestPlan(allocator, leaf, backend);
+            if (leaves.len > 1) try full.writer.print("suite {s}\n", .{leaf});
+            for (plan.backends) |entry| {
+                var backend_report = TestReport{};
                 if (tests_config.runsCheck(plan.phase)) {
                     backend_report.add(try self.checkLeaf(leaf, entry.backend, &full.writer));
                 }
                 if (tests_config.runsExecute(plan.phase)) {
                     backend_report.add(try self.executeLeaf(leaf, entry.backend, &full.writer));
                 }
+                if (plan.from_manifest) {
+                    try full.writer.print("test result [{s}]: {d} passed; {d} failed; {d} total\n", .{
+                        entry.label, backend_report.passed, backend_report.failed, backend_report.total,
+                    });
+                }
+                aggregate.add(backend_report);
             }
-            if (plan.from_manifest) {
-                try full.writer.print("test result [{s}]: {d} passed; {d} failed; {d} total\n", .{
-                    entry.label, backend_report.passed, backend_report.failed, backend_report.total,
-                });
-            }
-            aggregate.add(backend_report);
-        }
 
-        // FailTests are compiled once per their own declared backends, entirely
-        // runner-side, and tallied into the same PASS/FAIL stream. They are
-        // compile-time (so they still evaluate under the Check phase) and
-        // backend-independent, so they run once rather than per planned backend.
-        for (leaves) |leaf| {
+            // Cross-backend `@Main` stdout parity and native leak checks inherit
+            // the same leaf-local manifest matrix.
+            if ((parity.enabled() or leak.enabled()) and plan.from_manifest) {
+                const targets = try parityTargets(allocator, plan.backends);
+                aggregate.add(try runParityForLeaf(allocator, leaf, targets, &full.writer));
+            }
+
+            // FailTests carry their own backend declarations and run once per
+            // leaf, independently from the Tests matrix above.
             const ft = try failtest.runForLeaf(allocator, leaf, &full.writer);
             aggregate.add(.{ .passed = ft.passed, .failed = ft.failed, .total = ft.total });
-        }
-
-        // Cross-backend `@Main` stdout parity (KIRA_TEST_PARITY=1) and native
-        // `@Main` leak check (KIRA_TEST_CHECK_LEAKS=1): only when the package
-        // declares a `Tests { backends }` matrix AND carries an `@Main`. Replaces
-        // the legacy corpus's exact-stdout-across-backends and native leaks
-        // guarantees for the packages (harness, hybrid-bridge, string-primitives)
-        // whose READMEs document the parity/leak run.
-        if ((parity.enabled() or leak.enabled()) and plan.from_manifest) {
-            const targets = try parityTargets(allocator, plan.backends);
-            for (leaves) |leaf| {
-                const input = resolveInput(allocator, leaf) catch continue;
-                const source_path = input.target.source_path orelse continue;
-                const root = input.target.root_path orelse ".";
-                if (!parity.hasMain(allocator, root, source_path)) continue;
-                const output_root = try outputRoot(allocator, input.target.root_path);
-                try ensurePath(output_root);
-                const skip_diff = parity.mainIsNative(allocator, root, source_path);
-                const pr = try parity.run(allocator, source_path, input.target.root_path, output_root, targets, leak.enabled(), skip_diff, &full.writer);
-                aggregate.add(.{ .passed = pr.passed, .failed = pr.failed, .total = pr.total });
-            }
         }
 
         try full.writer.print("test result: {d} passed; {d} failed; {d} total\n", .{
@@ -457,6 +433,12 @@ fn resolveInput(allocator: std.mem.Allocator, path: []const u8) !ResolvedInput {
     };
 }
 
+fn resolveTestPlan(allocator: std.mem.Allocator, leaf: []const u8, backend: api.KiraDeveloperBackend) !tests_config.Plan {
+    const input = try resolveInput(allocator, leaf);
+    const project_manifest: ?manifest_pkg.ProjectManifest = if (input.target.project) |project| project.manifest else null;
+    return tests_config.resolvePlan(allocator, project_manifest, backend);
+}
+
 fn selectedBackend(input: ResolvedInput, backend: api.KiraDeveloperBackend) ?build_def.ExecutionTarget {
     return switch (backend) {
         .default => input.default_backend,
@@ -482,6 +464,18 @@ fn parityTargets(allocator: std.mem.Allocator, entries: []const tests_config.Bac
         try list.append(target);
     }
     return list.toOwnedSlice();
+}
+
+fn runParityForLeaf(allocator: std.mem.Allocator, leaf: []const u8, targets: []const build_def.ExecutionTarget, writer: anytype) !TestReport {
+    const input = resolveInput(allocator, leaf) catch return .{};
+    const source_path = input.target.source_path orelse return .{};
+    const root = input.target.root_path orelse ".";
+    if (!parity.hasMain(allocator, root, source_path)) return .{};
+    const output_root = try outputRoot(allocator, input.target.root_path);
+    try ensurePath(output_root);
+    const skip_diff = parity.mainIsNative(allocator, root, source_path);
+    const result = try parity.run(allocator, source_path, input.target.root_path, output_root, targets, leak.enabled(), skip_diff, writer);
+    return .{ .passed = result.passed, .failed = result.failed, .total = result.total };
 }
 
 fn parseExecutionTarget(text: []const u8) !build_def.ExecutionTarget {
@@ -515,4 +509,19 @@ test "developer facade checks and tests through C API boundary" {
     defer kira_developer_destroy(developer);
     try std.testing.expectEqual(api.KiraStatus.ok, kira_developer_check(developer, "examples/hello", .vm));
     try std.testing.expect(std.mem.indexOf(u8, std.mem.span(kira_developer_report(developer).?), "check passed") != null);
+}
+
+test "corpus leaves resolve their own Tests matrices" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const harness = try resolveTestPlan(arena.allocator(), "tests-kik/harness", .default);
+    try std.testing.expect(harness.from_manifest);
+    try std.testing.expectEqual(@as(usize, 3), harness.backends.len);
+    try std.testing.expectEqual(tests_config.Phase.both, harness.phase);
+
+    const ffi_harness = try resolveTestPlan(arena.allocator(), "tests-kik/ffi-harness", .default);
+    try std.testing.expect(ffi_harness.from_manifest);
+    try std.testing.expectEqual(@as(usize, 1), ffi_harness.backends.len);
+    try std.testing.expectEqual(api.KiraDeveloperBackend.hybrid, ffi_harness.backends[0].backend);
 }

@@ -117,6 +117,23 @@ test "diagnoses unknown field" {
     try std.testing.expectEqualStrings("KMAN004", result.diagnostics[0].code.?);
 }
 
+test "diagnoses empty Tests backend matrix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try loadProjectManifestFromDeclaration(arena.allocator(),
+        \\Package Demo {
+        \\    let tests = Tests { backends: [], phase: .Both }
+        \\}
+    , "package.kira");
+
+    try std.testing.expect(!result.ok());
+    var found = false;
+    for (result.diagnostics) |diagnostic| {
+        if (diagnostic.code != null and std.mem.eql(u8, diagnostic.code.?, "KMAN008")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "diagnoses non-literal initializer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -233,7 +233,7 @@ fn applyTests(loader: *Loader, manifest: *ProjectManifest, value: *Expr) !void {
         }
     }
 
-    if (!saw_backends) {
+    if (!saw_backends or backends.items.len == 0) {
         try loader.err(exprSpan(value), "KMAN008", "Tests requires backends", "A Tests declaration must list at least one backend.");
         return;
     }
