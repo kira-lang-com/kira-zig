@@ -25,6 +25,9 @@ zig build devflow -- review-findings N [--codex]   # exact-head inline findings
 zig build devflow -- wait-reviews N [--codex]      # blocks until resolved
 zig build devflow -- land N              # squash-merge, mirror fork, resync local
 zig build devflow -- sync                # resync local main if drifted
+zig build devflow -- next-version        # print the next computed release version
+zig build devflow -- release-prep        # store next version; changelog section required first
+zig build devflow -- release             # signed v<version> tag on synced main (triggers release.yml)
 ```
 
 Branch off `upstream/main`. `open-fork-pr` opens directly on upstream
