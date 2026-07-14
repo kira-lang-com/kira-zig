@@ -1,6 +1,7 @@
 name: Test
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
   push:
@@ -22,13 +23,13 @@ jobs:
         include:
           - os: linux
             arch: x64
-            runner: ubuntu-24.04
+            runner: blacksmith-4vcpu-ubuntu-2404
           - os: macos
             arch: arm64
-            runner: macos-14
+            runner: blacksmith-6vcpu-macos-15
           - os: windows
             arch: x64
-            runner: windows-2022
+            runner: blacksmith-4vcpu-windows-2025
 
     steps:
       - name: Check out Kira
@@ -226,3 +227,18 @@ jobs:
       - name: Run test suite
         run: |
           zig build test
+
+      - name: Run all Kira tests-kik suites (Unix)
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          KIRA_TEST_PARITY: "1"
+        run: |
+          ./zig-out/bin/kira test tests-kik
+
+      - name: Run all Kira tests-kik suites (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIRA_TEST_PARITY: "1"
+        run: |
+          .\zig-out\bin\kira.exe test tests-kik

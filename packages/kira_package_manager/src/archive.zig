@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn sha256Hex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
@@ -15,8 +16,11 @@ pub fn sha256Hex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 
 pub fn extractTarSecure(allocator: std.mem.Allocator, archive_path: []const u8, destination_path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, destination_path);
-    try validateTarEntries(archive_path);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
+    var io_impl: std.Io.Threaded = .init(std.heap.smp_allocator, .{ .environ = inheritedProcessEnviron() });
+    defer io_impl.deinit();
+    const io = io_impl.io();
+    try validateTarEntries(io, archive_path);
+    const result = try std.process.run(allocator, io, .{
         .argv = &.{ "tar", "-xf", archive_path, "-C", destination_path },
         .expand_arg0 = .expand,
         .stdout_limit = .limited(64 * 1024),
@@ -42,8 +46,8 @@ fn isSafeArchivePath(path: []const u8) bool {
     return true;
 }
 
-fn validateTarEntries(archive_path: []const u8) !void {
-    const result = try std.process.run(std.heap.page_allocator, std.Options.debug_io, .{
+fn validateTarEntries(io: std.Io, archive_path: []const u8) !void {
+    const result = try std.process.run(std.heap.page_allocator, io, .{
         .argv = &.{ "tar", "-tvf", archive_path },
         .expand_arg0 = .expand,
         .stdout_limit = .limited(256 * 1024),
@@ -66,6 +70,22 @@ fn validateTarEntries(archive_path: []const u8) !void {
         const path = last orelse return error.ArchiveExtractionFailed;
         if (!isSafeArchivePath(path)) return error.ArchivePathTraversal;
     }
+}
+
+fn inheritedProcessEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        .wasi, .emscripten, .freestanding, .other => .empty,
+        else => .{ .block = .{ .slice = currentPosixEnvironBlock() } },
+    };
+}
+
+fn currentPosixEnvironBlock() [:null]const ?[*:0]const u8 {
+    if (!builtin.link_libc) return &.{};
+    const environ = std.c.environ;
+    var len: usize = 0;
+    while (environ[len] != null) : (len += 1) {}
+    return environ[0..len :null];
 }
 
 test "rejects archive traversal paths" {

@@ -1,0 +1,73 @@
+// WblTests.kira — migrated from tests/pass/run/widget_body_locals_and_for.
+// PREFIX: wbl / Wbl (all top-level names use this prefix, except the shared
+// `Widget` family from WidgetFamily.kira, reused verbatim across the migrated
+// body-block cases). The `Widget` name is a sharing convention, not a
+// requirement: `body {}` builder blocks are family-generic (Construct 2.0).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_body_locals_and_for
+// ---------------------------------------------------------------------------
+// A `body { ... }` builder block can read declaration-local stored fields and
+// expand a `For(item in items)` loop into `@Content` children. Original
+// printed each rendered label (stdout "one\ntwo\nthree") — reduced here to a
+// "|"-joined String.
+
+function wblJoinChildren(children: borrow [some Widget]) -> [String] {
+    var labels: [String] = []
+    var childIndex = 0
+    while childIndex < children.count {
+        let rendered = children[childIndex].render()
+        var labelIndex = 0
+        while labelIndex < rendered.count {
+            labels.append(rendered[labelIndex])
+            labelIndex = labelIndex + 1
+        }
+        childIndex = childIndex + 1
+    }
+    return labels
+}
+
+Widget WblText(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget WblVStack(spacing: Float) {
+    @Content let children: [Widget]
+
+    function render() -> [String] {
+        let ignored = spacing + 0.0
+        return wblJoinChildren(children)
+    }
+}
+
+Widget WblScreen() {
+    let items: [String] = ["one", "two", "three"]
+
+    body {
+        WblVStack(spacing = 8.0) {
+            For(item in items) {
+                WblText(item)
+            }
+        }
+    }
+}
+
+Test WblBodyLocalsAndFor {
+    test {
+        let rendered = WblScreen().render()
+        var out = ""
+        var index = 0
+        while index < rendered.count {
+            if index > 0 {
+                out = out + "|"
+            }
+            out = out + rendered[index]
+            index = index + 1
+        }
+        return out
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("one|two|three"); return e }
+}

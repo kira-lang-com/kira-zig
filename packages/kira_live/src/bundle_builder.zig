@@ -9,6 +9,7 @@ const native = @import("kira_native_lib_definition");
 const package_manager = @import("kira_package_manager");
 const ResolvedLiveTarget = @import("target.zig").ResolvedLiveTarget;
 const model = @import("model.zig");
+const manifest_loader = @import("manifest_loader.zig");
 
 pub const BundleBuildArtifacts = struct {
     graph: model.BundleGraph,
@@ -33,8 +34,7 @@ pub fn buildBundles(
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, shims_root);
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, server_graph_dir);
 
-    const app_manifest_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, target.validation_manifest_path, allocator, .limited(2 * 1024 * 1024));
-    const app_manifest = try manifest.parseProjectManifest(allocator, app_manifest_text);
+    const app_manifest = try manifest_loader.load(allocator, target.validation_manifest_path);
 
     var package_diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     const sync_result = package_manager.syncProject(allocator, target.validation_app_root, "0.1.0", .{}, &package_diags) catch |err| switch (err) {

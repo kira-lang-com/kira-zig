@@ -127,6 +127,33 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
         // It both requires a content block and pins the element type used to validate
         // construct-backed declarations.
         if (std.mem.eql(u8, section.name, "content")) {
+            // Construct 2.0 (item 6): named content channels (`head { accepts X; count 0..1 }`)
+            // and the content-composition directives (`sealed` / `refine` / `passthrough` /
+            // `project`) are removed. A construct types its child slots directly as `some X` /
+            // `[some X]` fields instead. A typed `content: Content<T>;` section (a named_rule
+            // entry) is left alone here.
+            for (section.entries) |entry| {
+                const is_channel_surface = switch (entry) {
+                    .content_channel, .content_directive, .content_projection => true,
+                    else => false,
+                };
+                if (!is_channel_surface) continue;
+                const entry_span = switch (entry) {
+                    .content_channel => |c| c.span,
+                    .content_directive => |d| d.span,
+                    .content_projection => |p| p.span,
+                    else => section.span,
+                };
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM165",
+                    .title = "content channels are removed",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The construct '{s}' declares a content channel or composition directive, which Construct 2.0 no longer supports.", .{construct_decl.name}),
+                    .labels = &.{diagnostics.primaryLabel(entry_span, "content channels / `accepts` / `count` / `sealed` / `refine` / `project` are no longer a construct surface")},
+                    .help = "Type the construct's child slot directly as a field: `some X` for one child or `[some X]` for many.",
+                });
+                return error.DiagnosticsEmitted;
+            }
             var refine_mode = false;
             for (section.entries) |entry| {
                 if (entry == .content_directive and entry.content_directive.mode == .refine) refine_mode = true;
@@ -272,35 +299,18 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
                 }
             },
             .properties => {
-                for (section.entries) |entry| {
-                    if (entry != .property_schema) continue;
-                    const property = entry.property_schema;
-                    if (property_names.get(property.name)) |previous_span| {
-                        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
-                            .severity = .@"error",
-                            .code = "KSEM126",
-                            .title = "duplicate property",
-                            .message = try std.fmt.allocPrint(ctx.allocator, "The construct '{s}' declares the property '{s}' more than once.", .{ construct_decl.name, property.name }),
-                            .labels = &.{
-                                diagnostics.primaryLabel(property.span, "duplicate property declared here"),
-                                diagnostics.secondaryLabel(previous_span, "the property was already declared here"),
-                            },
-                            .help = "Declare each property at most once in the construct's `properties { ... }` schema.",
-                        });
-                        return error.DiagnosticsEmitted;
-                    }
-                    try property_names.put(ctx.allocator, property.name, property.span);
-                    const type_text = if (property.type_expr) |type_expr|
-                        try shared.typeTextFromSyntax(ctx, type_expr.*)
-                    else
-                        "";
-                    try properties.append(.{
-                        .required = property.required,
-                        .name = try ctx.allocator.dupe(u8, property.name),
-                        .type_text = type_text,
-                        .span = property.span,
-                    });
-                }
+                // Construct 2.0 (item 6): the `properties { ... }` schema surface is removed.
+                // A construct expresses caller-provided values as `@Required let name: T` and
+                // defaults as `let name: T = value` direct members instead.
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM164",
+                    .title = "properties block is removed",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "The construct '{s}' declares a `properties {{ ... }}` schema, which Construct 2.0 no longer supports.", .{construct_decl.name}),
+                    .labels = &.{diagnostics.primaryLabel(section.span, "`properties { ... }` is no longer a construct surface")},
+                    .help = "Declare caller-provided values as `@Required let name: T` and defaults as `let name: T = value` direct members.",
+                });
+                return error.DiagnosticsEmitted;
             },
             else => {},
         }
@@ -439,6 +449,21 @@ pub fn validateFormProperties(
     constructs: []const model.Construct,
     construct_headers: *const std.StringHashMapUnmanaged(shared.ConstructHeader),
 ) !void {
+    // Construct 2.0 (item 6): a declaration that supplies a `properties { ... }` section is
+    // rejected — the whole properties surface is removed.
+    for (form_decl.body.members) |member| {
+        if (member != .properties_section) continue;
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM164",
+            .title = "properties block is removed",
+            .message = try std.fmt.allocPrint(ctx.allocator, "The declaration '{s}' supplies a `properties {{ ... }}` section, which Construct 2.0 no longer supports.", .{form_decl.name}),
+            .labels = &.{diagnostics.primaryLabel(member.properties_section.span, "`properties { ... }` is no longer a declaration surface")},
+            .help = "Pass values as constructor arguments `Name(field = value)` or an override block `Name { let field = value }`.",
+        });
+        return error.DiagnosticsEmitted;
+    }
+
     var schema = std.StringArrayHashMapUnmanaged(model.PropertySchema){};
     defer schema.deinit(ctx.allocator);
     try collectConstructPropertySchema(ctx, construct_model, constructs, construct_headers, &schema);
@@ -800,6 +825,7 @@ pub fn resolveLocalTypeHeader(
         .parent_views = try parent_views.toOwnedSlice(),
         .ffi = ffi_type,
         .is_printable = hasAnnotationNamed(type_decl.annotations, "Printable"),
+        .derive_copy = type_decl.derive_copy,
         .span = type_decl.span,
     };
 }

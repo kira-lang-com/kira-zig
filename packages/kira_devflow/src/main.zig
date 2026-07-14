@@ -5,8 +5,14 @@
 //!   status            content diff, never ahead/behind counts
 //!   commit [-m ...]    stage all + signed commit (auto Conventional message)
 //!   push               always via the fork SSH remote (workflow-scope proof)
-//!   open-fork-pr [t]   fork-internal PR, empty body (CodeRabbit writes it)
+//!   pr-scope           title/body from the complete base...HEAD branch
+//!   open-fork-pr       open or refresh PR with complete-branch metadata
 //!   request-reviews N  always CodeRabbit; --codex to also ping Codex
+//!   wait-ci N           block until exact-head checks are green
+//!   ci-failures N       print exact-head failed workflow logs
+//!   ci-runners N        report exact-head job runner identities and labels
+//!   rerun-ci N          rerun completed exact-head workflows
+//!   review-findings N   print exact-head bot review comments
 //!   wait-reviews N     block until reviewers posted + threads resolved
 //!   land N             squash-as-PR (one flat entry) + resync local default branch
 //!   sync               resync local default branch to the fork
@@ -56,12 +62,18 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "status")) return commands.status(ctx);
     if (eq(verb, "commit")) return commands.commit(ctx, flagValue(rest, "-m"));
     if (eq(verb, "push")) return commands.push(ctx);
-    if (eq(verb, "open-fork-pr")) return commands.openForkPr(ctx, positional(rest));
+    if (eq(verb, "pr-scope")) return commands.prScope(ctx);
+    if (eq(verb, "open-fork-pr")) return commands.openForkPr(ctx);
     if (eq(verb, "request-reviews")) return commands.requestReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
+    if (eq(verb, "wait-ci")) return commands.waitCi(ctx, try requireNumber(rest));
+    if (eq(verb, "ci-failures")) return commands.ciFailures(ctx, try requireNumber(rest));
+    if (eq(verb, "ci-runners")) return commands.ciRunners(ctx, try requireNumber(rest));
+    if (eq(verb, "rerun-ci")) return commands.rerunCi(ctx, try requireNumber(rest));
+    if (eq(verb, "review-findings")) return commands.reviewFindings(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "wait-reviews")) return commands.waitReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "land")) return commands.land(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "sync")) return commands.sync(ctx);
-    if (eq(verb, "open-upstream-pr")) return commands.openUpstreamPr(ctx, positional(rest));
+    if (eq(verb, "open-upstream-pr")) return commands.openUpstreamPr(ctx);
 
     usage();
     return error.UnknownVerb;
@@ -145,11 +157,17 @@ fn usage() void {
         \\  status                     content diff (fork vs upstream, local vs fork)
         \\  commit [-m "subject"]      stage all + signed commit (auto message if no -m)
         \\  push                       push current branch to the fork over SSH
-        \\  open-fork-pr [title]       open ONE PR against upstream (single-stage)
+        \\  pr-scope                   print title/body derived from complete branch scope
+        \\  open-fork-pr               open or refresh ONE PR with complete-branch metadata
         \\  request-reviews <pr> [--codex]
+        \\  wait-ci <pr>                block until exact-head checks are green
+        \\  ci-failures <pr>            print exact-head failed workflow logs
+        \\  ci-runners <pr>             print exact-head job runner identities and labels
+        \\  rerun-ci <pr>               rerun completed exact-head workflows
+        \\  review-findings <pr> [--codex]
         \\  wait-reviews <pr> [--codex]
         \\  land <pr> [--codex]        squash-merge upstream PR (merge subject) + mirror fork + resync
         \\  sync                       resync local default branch to the fork
-        \\  open-upstream-pr [title]   fork default -> upstream default
+        \\  open-upstream-pr           fork default -> upstream default with complete-branch metadata
     );
 }

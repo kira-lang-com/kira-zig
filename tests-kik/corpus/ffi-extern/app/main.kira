@@ -1,0 +1,14 @@
+// KikCorpusFfiExtern — migrated dynamic-FFI (@FFI.Extern) corpus cases from
+// tests/pass/run/. The suite mixes @Native and @Runtime code, so run it
+// through the hybrid test driver:
+//
+//   kira test --backend hybrid tests-kik/corpus/ffi-extern
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    print("kik-corpus-ffi-extern")
+    return
+}

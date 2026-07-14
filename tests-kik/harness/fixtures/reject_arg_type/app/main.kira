@@ -1,9 +1,0 @@
-// MUST FAIL: argument type mismatch (String passed to an Int parameter).
-function fhTakesInt(n: Int) -> Int {
-    return n + 1
-}
-@Main
-function main() {
-    let x = fhTakesInt("not an int")
-    return
-}

@@ -134,7 +134,7 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     // (backend_capi_fresh_any.zig): the .struct_ptr slot then runs
                     // the runtime-typed destroy at scope exit — this reclaims
                     // `body`/factory widget trees. Alias-returning callees keep
-                    // the untracked default (KIRA_MEMORY_MODEL.md §3): tracking
+                    // the untracked default (.codex/KIRA_MEMORY_MODEL.md §3): tracking
                     // them would free storage the real owner still holds, and
                     // `ret` never deep-clones Any values.
                     .construct_any => if (fc.dtors.tracksFreshAnyResult(callee.id)) .struct_ptr else continue,
@@ -220,6 +220,12 @@ pub fn setup(fc: *FunctionCodegen) !void {
                     try allocStringSlot(fc, v.dst, "drop.scat.slot");
                 }
             },
+            // String(scalar) and substring both malloc a fresh result buffer
+            // (kira_string_from_scalar / kira_string_substring). Without a
+            // cleanup slot the matching drop.trackStringRegister at codegen is a
+            // no-op and the buffer leaks — same deep-value contract as concat.
+            .string_from_scalar => |v| try allocStringSlot(fc, v.dst, "drop.strscalar.slot"),
+            .string_substring => |v| try allocStringSlot(fc, v.dst, "drop.strsub.slot"),
             .array_get => |v| {
                 if (v.ty.kind == .string) {
                     try allocStringSlot(fc, v.dst, "drop.strelem.slot");

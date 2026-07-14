@@ -1,0 +1,112 @@
+// FccTests.kira — migrated corpus cases from tests/pass/run/ffi_callback_{native,hybrid,state_parity}.
+// PREFIX: fcn / fch / fcs (per original case) — all top-level names unique.
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// `callbacks` is the autobound module for NativeLibs/callbacks.toml: a C
+// function taking a Kira function as a C function pointer and invoking it.
+
+import callbacks as callbacks
+
+// ---------------------------------------------------------------------------
+// ffi_callback_native
+// ---------------------------------------------------------------------------
+// A @Native Kira function passed to C as a function pointer, invoked by C.
+// Original: kira_invoke_callback(add_one, 0, 5) printed 6.
+
+@Native
+function fcnAddOne(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 1
+    return sum
+}
+
+@Native
+function fcnInvoke() -> Int {
+    let result: I64 = callbacks.kira_invoke_callback(fcnAddOne, 0, 5)
+    var out = 0
+    if result == 6 { out = 1 }
+    return out
+}
+
+Test FcnCallbackNative {
+    test { return fcnInvoke() }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// ffi_callback_hybrid
+// ---------------------------------------------------------------------------
+// @Runtime entry -> @Native function -> C -> @Native callback: the callback
+// round-trips through C while the call originates on the VM side of the
+// bridge. Original: run_native(5) printed 7.
+
+@Native
+function fchAddTwo(value: I64, user_data: RawPtr): I64 {
+    let sum: I64 = value + 2
+    return sum
+}
+
+@Native
+function fchRunNative(value: I64): I64 {
+    return callbacks.kira_invoke_callback(fchAddTwo, 0, value)
+}
+
+Test FchCallbackHybrid {
+    test {
+        let result: I64 = fchRunNative(5)
+        var out = 0
+        if result == 7 { out = 1 }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// ffi_callback_state_parity
+// ---------------------------------------------------------------------------
+// Mutable Kira state threaded through C as the callback's user_data pointer:
+// nativeState pins the struct, nativeUserData passes it as RawPtr through
+// kira_invoke_callback, and the callback recovers + mutates it. Original
+// stdout: "6\n9\n2\n12\n" (run 5 -> 6, run 7 -> 9, count 2, total 12).
+
+struct FcsCounterState {
+    var count: Int
+    var total: Int
+}
+
+@Native
+function fcsRunNative(user_data: RawPtr, value: I64) -> I64 {
+    return callbacks.kira_invoke_callback(fcsOnValue, user_data, value)
+}
+
+@Native
+function fcsOnValue(value: I64, user_data: RawPtr) -> I64 {
+    var state = nativeRecover<FcsCounterState>(user_data)
+    state.count = state.count + 1
+    state.total = state.total + value
+    return value + state.count
+}
+
+Test FcsCallbackStateParity {
+    test {
+        var state = nativeState(FcsCounterState {
+            count: 0
+            total: 0
+        })
+        var token = nativeUserData(state)
+
+        let first = fcsRunNative(token, 5)
+        let second = fcsRunNative(token, 7)
+
+        var recovered = nativeRecover<FcsCounterState>(token)
+        let count = recovered.count
+        let total = recovered.total
+
+        // Fold "6\n9\n2\n12\n" into one scalar: 6*1000 + 9*100 + 2*10 + 12.
+        var out = 0
+        if first == 6 { out = out + 6000 }
+        if second == 9 { out = out + 900 }
+        if count == 2 { out = out + 20 }
+        if total == 12 { out = out + 12 }
+        return out
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(6932); return e }
+}

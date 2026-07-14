@@ -130,10 +130,22 @@ pub const BuilderItem = union(enum) {
     if_item: BuilderIfItem,
     for_item: BuilderForItem,
     switch_item: BuilderSwitchItem,
+    // A `let name = value` member inside a construction's trailing block, e.g.
+    // `Dialog(title = "Hi") { let subtitle = "…"; <bare children> }`. Only meaningful
+    // as a call/construction override block: semantics turns each into a labeled field
+    // argument (`buildContentArgs`); bare children continue to fill the `some X` slot.
+    // A `field_override` reaching builder lowering outside a construction site is rejected.
+    field_override: BuilderFieldOverrideItem,
 };
 
 pub const BuilderExprItem = struct {
     expr: *Expr,
+    span: Span,
+};
+
+pub const BuilderFieldOverrideItem = struct {
+    name: []const u8,
+    value: *Expr,
     span: Span,
 };
 
@@ -170,6 +182,7 @@ pub const Expr = union(enum) {
     string: StringLiteral,
     bool: BoolLiteral,
     identifier: IdentifierExpr,
+    implicit_member: ImplicitMemberExpr,
     array: ArrayExpr,
     builder_array: BuilderArrayExpr,
     callback: CallbackBlock,
@@ -233,6 +246,13 @@ pub const BoolLiteral = struct {
 
 pub const IdentifierExpr = struct {
     name: ast.QualifiedName,
+    span: Span,
+};
+
+/// `.name` in expression position. Semantics resolves it from the expected
+/// result type; the parser deliberately records no synthetic namespace.
+pub const ImplicitMemberExpr = struct {
+    name: []const u8,
     span: Span,
 };
 

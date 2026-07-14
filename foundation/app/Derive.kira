@@ -1,0 +1,112 @@
+// Derive.kira — builtin `@Derive(...)` macros, written in pure Kira and shipped in Foundation.
+//
+// Because Foundation is merged into every importing package, these `comptime macro`
+// declarations register as derive macros for all Kira code. Two builtins ship today:
+//
+//   @Derive(Equatable)  generates  function eq_<Type>(a: borrow <Type>, b: borrow <Type>) -> Bool
+//   @Derive(Clone)      generates  function clone_<Type>(v: borrow <Type>) -> <Type>
+//
+// Naming is a fixed contract other tooling depends on: the free function is `eq_<Type>` /
+// `clone_<Type>`, using the derived type's exact name. Only the macro names (`Equatable`,
+// `Clone`) are top-level public API; the macros introduce no other top-level names, so they can
+// never collide with user code. The generated `eq_`/`clone_` functions are keyed to the derived
+// type name and so are unique per type.
+//
+// Field classification (both macros share it):
+//   * A field whose type is a builtin scalar (Int, Float, Bool, String, the sized numeric/C
+//     types, ...) is compared with `!=` (Equatable) and copied by direct field read (Clone).
+//   * A field whose type is another *bare* named type is treated as a nested derived type and
+//     handled by recursion: `eq_<FieldType>(a.f, b.f)` / `clone_<FieldType>(v.f)`. That field's
+//     type must itself be `@Derive(Equatable)` / `@Derive(Clone)`; a missing `eq_X`/`clone_X`
+//     surfaces as an ordinary unknown-call diagnostic. This is the accepted v1 semantics.
+//
+// LIMITATIONS (v1):
+//   * Array / generic / optional fields (any type whose source text is not a single bare
+//     identifier, e.g. `[Int]`, `Map<K, V>`) are NOT supported. The compile-time evaluator has
+//     no string-slicing surface to derive the element type or synthesize a per-element loop, so
+//     rather than emitting broken code these macros raise a `Diagnostics.error` naming the field.
+//     Detection is exact: a type is "bare" iff concatenating its identifiers reproduces its
+//     source text (`[Int]` -> "Int" != "[Int]").
+//   * `appliesTo { struct }` only. Enums are a follow-up.
+
+comptime macro Equatable {
+    kind { derive }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var checks: [Syntax] = []
+        for field in target.fields {
+            // Reject array / generic / optional field types (non-bare type text).
+            var joined: String = ""
+            for id in field.type.asSyntax().identifiers() {
+                joined = joined + id.asString()
+            }
+            if joined != field.type.asSyntax() {
+                Diagnostics.error("Derive(Equatable): field has an unsupported array/generic type; only bare scalar or nested-derived struct fields are supported in v1", at: target.syntax)
+            }
+            // Builtin scalars compare directly; other bare named types recurse.
+            var isScalar: Bool = false
+            for sname in ["Int", "Float", "Bool", "String", "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "F32", "F64", "CBool", "CString", "RawPtr"] {
+                if field.type == sname {
+                    isScalar = true
+                }
+            }
+            if isScalar {
+                checks.append(quote {
+                    if a.#{field.name} != b.#{field.name} {
+                        return false
+                    }
+                })
+            } else {
+                checks.append(quote {
+                    if eq_#{field.type.asSyntax()}(a.#{field.name}, b.#{field.name}) == false {
+                        return false
+                    }
+                })
+            }
+        }
+        return quote {
+            function eq_#{target.name}(a: borrow #{target.name}, b: borrow #{target.name}) -> Bool {
+                #{Syntax.join(checks, "\n")}
+                return true
+            }
+        }
+    }
+}
+
+comptime macro Clone {
+    kind { derive }
+    appliesTo { struct }
+    expand(target: Declaration) -> Syntax {
+        var inits: [Syntax] = []
+        for field in target.fields {
+            // Reject array / generic / optional field types (non-bare type text).
+            var joined: String = ""
+            for id in field.type.asSyntax().identifiers() {
+                joined = joined + id.asString()
+            }
+            if joined != field.type.asSyntax() {
+                Diagnostics.error("Derive(Clone): field has an unsupported array/generic type; only bare scalar or nested-derived struct fields are supported in v1", at: target.syntax)
+            }
+            // Builtin scalars (and String, under the deep-value model) copy by direct read;
+            // other bare named types recurse through their own clone_ function.
+            var isScalar: Bool = false
+            for sname in ["Int", "Float", "Bool", "String", "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "F32", "F64", "CBool", "CString", "RawPtr"] {
+                if field.type == sname {
+                    isScalar = true
+                }
+            }
+            if isScalar {
+                inits.append(quote { #{field.name}: v.#{field.name} })
+            } else {
+                inits.append(quote { #{field.name}: clone_#{field.type.asSyntax()}(v.#{field.name}) })
+            }
+        }
+        return quote {
+            function clone_#{target.name}(v: borrow #{target.name}) -> #{target.name} {
+                return #{target.name} {
+                    #{Syntax.join(inits, "\n")}
+                }
+            }
+        }
+    }
+}

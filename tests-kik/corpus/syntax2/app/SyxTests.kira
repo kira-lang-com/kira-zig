@@ -1,0 +1,158 @@
+// SyxTests.kira — Construct 2.0 syntax coverage.
+// PREFIX: syx / Syx (all top-level names, except the shared `Widget` family).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+//
+// FEATURE 1 — `=` as the canonical value binder everywhere values are bound
+//   (call/construction args and struct literals), with `:` still accepted for
+//   the transition window and reserved for type annotations.
+// FEATURE 2 — content-block expression: `{ <builder items> }` in expression
+//   position evaluates to a `[some Widget]` children list.
+
+struct SyxPoint {
+    var x: Int = 0
+    var y: Int = 0
+}
+
+enum SyxMode { Fast Slow }
+
+struct SyxDefaults {
+    var mode: SyxMode = .Fast
+}
+
+// ---------------------------------------------------------------------------
+// Feature 1 — struct literals
+// ---------------------------------------------------------------------------
+
+// `=` is the canonical struct-field binder.
+Test SyxStructEqualsBinder {
+    test {
+        let p = SyxPoint { x = 3, y = 4 }
+        return p.x + p.y
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
+}
+
+// `:` struct fields still parse (transition window / existing corpus parity).
+Test SyxStructColonBinder {
+    test {
+        let p = SyxPoint { x: 5, y: 6 }
+        return p.x + p.y
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
+}
+
+// Old and new binders mixed in one literal normalize to the same AST.
+Test SyxStructMixedBinder {
+    test {
+        let p = SyxPoint { x = 10, y: 1 }
+        return p.x + p.y
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(11); return e }
+}
+
+// `Defaults { executionMode = .Hybrid }` shape: `=` binding an enum value.
+Test SyxStructEnumFieldEquals {
+    test {
+        let d = SyxDefaults { mode = .Slow }
+        var r = 0
+        match d.mode {
+            Fast -> { r = 0 }
+            Slow -> { r = 1 }
+        }
+        return r
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Feature 1 — call / construction args
+// ---------------------------------------------------------------------------
+
+// Labeled construction arg with `=`.
+Test SyxCallArgEquals {
+    test {
+        let w = SyxText(text = "eq")
+        let rendered = w.render()
+        return rendered[0]
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("eq"); return e }
+}
+
+// Labeled construction arg with `:` (existing corpus parity).
+Test SyxCallArgColon {
+    test {
+        let w = SyxText(text: "co")
+        let rendered = w.render()
+        return rendered[0]
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("co"); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Feature 2 — content-block expressions
+// ---------------------------------------------------------------------------
+
+// Basic content block: two constructions, annotated `[some Widget]`.
+Test SyxContentBlockBasic {
+    test {
+        let header: [some Widget] = {
+            SyxText("a")
+            SyxText("b")
+        }
+        let labels = syxJoin(header)
+        return labels[0] + labels[1]
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("ab"); return e }
+}
+
+// Let-bound child reused by bare identifier + declaration-local + For(...).
+Test SyxContentBlockForLocals {
+    test {
+        let items: [String] = ["one", "two", "three"]
+        let first = SyxText("head")
+        let body: [some Widget] = {
+            first
+            For(item in items) {
+                SyxText(item)
+            }
+        }
+        return syxPipe(syxJoin(body))
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("head|one|two|three"); return e }
+}
+
+// `if` inside a content block (full trailing-builder body grammar).
+Test SyxContentBlockIf {
+    test {
+        let show = true
+        let body: [some Widget] = {
+            SyxText("always")
+            if show {
+                SyxText("shown")
+            }
+        }
+        return syxPipe(syxJoin(body))
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("always|shown"); return e }
+}
+
+// Content block anchored by the receiving argument type (not an annotation).
+Test SyxContentBlockAsArg {
+    test {
+        let labels = syxJoin({
+            SyxText("x")
+            SyxText("y")
+        })
+        return syxPipe(labels)
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("x|y"); return e }
+}
+
+// Empty content block `{}` (the empty closure spells `{ in }`).
+Test SyxContentBlockEmpty {
+    test {
+        let empties: [some Widget] = {}
+        return empties.count
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}

@@ -22,7 +22,9 @@ test "KIC001 is only used in approved fallback locations" {
 
     var offending = std.array_list.Managed([]const u8).init(arena.allocator());
     try scanDirForFallbackUses(arena.allocator(), &offending, &approved, "packages");
-    try scanFlatDirForFallbackUses(arena.allocator(), &offending, &approved, "tests");
+    // The legacy tests/ tree (whose top-level .zig corpus runners were scanned
+    // here) was deleted; its Kira-native replacement under tests-kik/ has no
+    // top-level .zig files to scan.
     try scanFileForFallbackUses(arena.allocator(), &offending, &approved, "build.zig");
 
     if (offending.items.len != 0) {
@@ -104,9 +106,7 @@ fn shouldSkipDir(path: []const u8) bool {
     return pathsEqual(path, ".git") or
         pathsEqual(path, ".zig-cache") or
         pathsEqual(path, "zig-out") or
-        pathsEqual(path, "generated") or
         pathsEqual(path, "third_party") or
-        pathsEqual(path, "zig-pkg") or
         pathsEqual(path, ".codex") or
         pathsEqual(path, ".github") or
         pathsEqual(path, ".opencode");

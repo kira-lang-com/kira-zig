@@ -14,6 +14,7 @@ const native_bridge = @import("vm_native_bridge.zig");
 const vm_tasks = @import("vm_tasks.zig");
 const vm_interpreter_tasks = @import("vm_interpreter_tasks.zig");
 const vm_types = @import("vm_types.zig");
+const vm_debug = @import("vm_debug.zig");
 
 const ArrayObject = ownership.ArrayObject;
 const ClosureObject = ownership.ClosureObject;
@@ -99,6 +100,17 @@ pub const Vm = struct {
     // payload-type / clone-by-name resolve, which the per-frame UI enum churn
     // made one of the largest remaining hybrid-frame costs.
     enum_ptr_cache: std.HashMapUnmanaged(SliceKey, ?bytecode.EnumTypeDecl, SliceKeyContext, std.hash_map.default_max_load_percentage) = .empty,
+    // Debug seam (kira_vm_runtime/src/vm_debug.zig). Null in every normal run —
+    // the interpreter gates all debug work behind this single null check, so a
+    // non-debugging VM pays nothing beyond one predictable not-taken branch per
+    // instruction (the `trace.zig` idiom). When a debugger attaches it installs
+    // a controller here and the interpreter records a walkable frame stack.
+    debug: ?*vm_debug.DebugController = null,
+    // Explicit interpreter call-frame stack, populated ONLY while `debug` is
+    // set (bytecode frames are otherwise just native Zig recursion, invisible to
+    // a backtrace). Each entry aliases the live pc of the corresponding
+    // `runPrepared` frame; pushed in the prologue, popped on frame exit.
+    debug_frames: std.ArrayListUnmanaged(vm_debug.VmFrame) = .empty,
 
     pub const FrameBuf = struct { values: []runtime_abi.Value, owned: []bool };
 
@@ -290,6 +302,15 @@ pub const Vm = struct {
         self.element_type_cache.deinit(self.allocator);
         self.enum_cache.deinit(self.allocator);
         self.enum_ptr_cache.deinit(self.allocator);
+        self.debug_frames.deinit(self.allocator);
+    }
+
+    /// The live interpreter call-frame stack (outermost first), valid only while
+    /// a debugger is attached and the VM is stopped. Each frame's `pc` aliases
+    /// the interpreter's live program counter, and `sourceLocAt(pc)` on the
+    /// matching prepared function resolves it to a source span. Empty otherwise.
+    pub fn debugFrames(self: *const Vm) []const vm_debug.VmFrame {
+        return self.debug_frames.items;
     }
 
     pub fn managedObjectCount(self: *const Vm) usize {
@@ -475,8 +496,8 @@ pub const Vm = struct {
         return native_bridge.materializeCallbackValueFromNative(self, module, ty, value);
     }
 
-    pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize) !usize {
-        return native_bridge.exportRuntimeClosureToNative(self, module, closure_ptr);
+    pub fn exportRuntimeClosureToNative(self: *Vm, module: *const bytecode.Module, closure_ptr: usize, external_capture_types: ?[]const bytecode.TypeRef) !usize {
+        return native_bridge.exportRuntimeClosureToNative(self, module, closure_ptr, external_capture_types);
     }
 
     pub fn copyEnumToNativeLayout(self: *Vm, module: *const bytecode.Module, type_name: []const u8, runtime_ptr: usize) anyerror!usize {

@@ -1,0 +1,110 @@
+// Schema for the `package.kira` declaration manifest.
+//
+// A manifest is authored as a construct-form declaration whose members are
+// literal `let` bindings, mirroring `Widget Text { let text: String = "" }`:
+//
+//   Package LiquidGlass {
+//       let version = "0.1.0"
+//       let kind = .App
+//       let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+//       let tests = Tests { backends: [.Vm, .Llvm, .Hybrid], phase: .Both }
+//       let dependencies = [ Dependency { name: "Foundation", version: "0.1.0" } ]
+//       let nativeLibraries = [
+//           NativeLibrary {
+//               name: "sokol_gfx",
+//               linkMode: .Static,
+//               headers: Headers { entrypoint: "third_party/sokol/sokol_gfx.h", includeDirs: ["third_party/sokol"], defines: ["SOKOL_DUMMY_BACKEND"] },
+//               sources: ["third_party/sokol/sokol_gfx_impl.c"],
+//               autobind: Autobind { module: "sokol_gfx" }
+//           }
+//       ]
+//   }
+//
+// `Backend` (Kira/Build.kira) and `PackageKind` (Kira/Package.kira) already
+// exist and are reused here rather than duplicated.
+
+// Which build target native artifacts are produced for.
+enum BuildTarget {
+    Host
+    Wasm
+}
+
+// Which portion of a test suite `kira test` exercises.
+enum TestPhase {
+    Check
+    Run
+    Both
+}
+
+// How a native library is linked.
+enum LinkMode {
+    Static
+    Dynamic
+}
+
+// Whether autobind binds every public symbol or only a listed allow-list.
+enum AutobindMode {
+    Listed
+    AllPublic
+}
+
+// Default backend + build target for `kira run` / `kira build`.
+struct Defaults {
+    let executionMode: Backend
+    let buildTarget: BuildTarget
+}
+
+// The `kira test` backend matrix and phase.
+struct Tests {
+    let backends: [Backend]
+    let phase: TestPhase
+}
+
+// A package dependency, by registry version, local path, or Git source.
+struct Dependency {
+    let name: String
+    let version: String
+    let path: String
+    let git: String
+    let rev: String
+    let tag: String
+}
+
+// C headers a native library exposes to autobind and compilation.
+struct Headers {
+    let entrypoint: String
+    let includeDirs: [String]
+    let defines: [String]
+}
+
+// Autobind configuration. Output is always `app/bindings/<module>.kira`; there
+// is intentionally no `output` field.
+struct Autobind {
+    let module: String
+    let headers: [String]
+    let mode: AutobindMode
+    let functions: [String]
+    let structs: [String]
+    let callbacks: [String]
+}
+
+// Target-specific compile and link settings for a native library.
+struct NativeTarget {
+    let triple: String
+    let compilerFlags: [String]
+    let includeDirs: [String]
+    let defines: [String]
+    let frameworks: [String]
+    let systemLibs: [String]
+    let linkerFlags: [String]
+}
+
+// A native library compiled from source and bound into the package.
+struct NativeLibrary {
+    let name: String
+    let linkMode: LinkMode
+    let headers: Headers
+    let sources: [String]
+    let autobind: Autobind
+    let nativeTargets: [NativeTarget]
+}

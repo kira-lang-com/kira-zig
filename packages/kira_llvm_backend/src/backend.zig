@@ -12,6 +12,7 @@ const runtime_symbols = @import("runtime_symbols.zig");
 const backend_utils = @import("backend_utils.zig");
 const monomorphization = @import("backend_monomorphization.zig");
 const backend_capi = @import("backend_capi.zig");
+const progress = @import("progress.zig");
 
 pub const MonomorphizationPlan = monomorphization.Plan;
 pub const FunctionVariant = monomorphization.FunctionVariant;
@@ -82,6 +83,7 @@ fn compileViaCApi(
     // cached by content hash, full relink. Native executable links only; every
     // other request falls through to the whole-program build below.
     if (cgu_build.enabled() and cgu_build.handles(request)) {
+        progress.print("Preparing incremental native code generation", .{});
         try ensureParentDir(request.emit.object_path);
         if (request.emit.executable_path) |path| try ensureParentDir(path);
         return cgu_build.compileExecutable(allocator, request, triple);
@@ -91,16 +93,20 @@ fn compileViaCApi(
     if (request.emit.executable_path) |path| try ensureParentDir(path);
     if (request.emit.shared_library_path) |path| try ensureParentDir(path);
 
+    progress.print("Discovering the LLVM toolchain", .{});
     const llvm_toolchain = try toolchain.Toolchain.discover(allocator);
+    progress.print("Loading the LLVM code generator", .{});
     var api = try llvm.Api.open(llvm_toolchain);
     defer api.close();
 
+    progress.print("Lowering the program to native LLVM IR", .{});
     const lowered = try backend_capi.buildModule(allocator, &api, request, triple);
     // A module must be disposed before its owning context. defer runs LIFO, so
     // register the context disposal first (runs last) and the module second.
     defer api.LLVMContextDispose(lowered.context);
     defer api.LLVMDisposeModule(lowered.module_ref);
 
+    progress.print("Optimizing and emitting {s}", .{std.fs.path.basename(request.emit.object_path)});
     try emitObjectFileViaClang(allocator, &api, lowered.module_ref, request.emit.object_path, request.target_selector);
 
     var artifacts = std.array_list.Managed(backend_api.Artifact).init(allocator);
@@ -110,8 +116,11 @@ fn compileViaCApi(
     });
 
     if (request.emit.executable_path) |executable_path| {
+        progress.print("Compiling the Kira runtime bridge", .{});
         const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
+        progress.print("Compiling the dynamic FFI bridge", .{});
         const dynamic_ffi_object = try linker.buildDynamicFfiHelpersObject(allocator, request.emit.object_path, false, request.target_selector);
+        progress.print("Linking executable {s}", .{std.fs.path.basename(executable_path)});
         try linker.linkExecutable(allocator, executable_path, &.{ request.emit.object_path, bridge_object, dynamic_ffi_object }, request.resolved_native_libraries, request.target_selector, request.assets);
         try artifacts.append(.{
             .kind = .executable,
@@ -121,8 +130,11 @@ fn compileViaCApi(
 
     // Hybrid builds emit a shared library that the VM loads to call kira_native_impl_*.
     if (request.emit.shared_library_path) |library_path| {
+        progress.print("Compiling the hybrid runtime bridge", .{});
         const bridge_object = try linker.buildRuntimeHelpersObject(allocator, request.emit.object_path, true, request.target_selector);
+        progress.print("Compiling the hybrid FFI bridge", .{});
         const dynamic_ffi_object = try linker.buildDynamicFfiHelpersObject(allocator, request.emit.object_path, true, request.target_selector);
+        progress.print("Linking native library {s}", .{std.fs.path.basename(library_path)});
         try linker.linkSharedLibrary(allocator, library_path, &.{ request.emit.object_path, bridge_object, dynamic_ffi_object }, request.resolved_native_libraries, request.target_selector);
         try artifacts.append(.{
             .kind = .native_library,

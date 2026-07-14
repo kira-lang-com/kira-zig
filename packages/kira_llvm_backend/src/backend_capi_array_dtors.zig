@@ -23,7 +23,7 @@
 // callback falls back to today's behavior (kira_array_release itself defers).
 //
 // A type is deep-cloned everywhere iff deep-destroyed everywhere
-// (KIRA_MEMORY_MODEL.md §7): elementDestroy and elementClone consult the same
+// (.codex/KIRA_MEMORY_MODEL.md §7): elementDestroy and elementClone consult the same
 // array_map, so the pairing invariant holds by construction.
 const std = @import("std");
 const ir = @import("kira_ir");

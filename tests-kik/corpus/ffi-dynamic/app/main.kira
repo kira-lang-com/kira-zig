@@ -1,0 +1,15 @@
+// KikCorpusFfiDynamic — migrated corpus case tests/pass/run/ffi_dynamic_vm:
+// dynamic-FFI (@FFI.Extern) calls dispatched by the VM through LibFFI into
+// libffimath, built in-package from NativeLibs/ffimath.c by the kira
+// native-artifact flow. No @Native boundary — the point of the case is the
+// VM's direct LibFFI dispatch, so run on the default VM test driver:
+//
+//   kira test tests-kik/corpus/ffi-dynamic
+
+import Foundation
+
+@Main
+function main() {
+    print("kik-corpus-ffi-dynamic")
+    return
+}

@@ -882,5 +882,16 @@ pub fn statementFromBuilderItem(allocator: std.mem.Allocator, item: syntax.ast.B
                 .span = value.span,
             } };
         },
+        // A `let name = value` override member appearing in a statement-builder context lowers to
+        // an ordinary local binding. (Construction override blocks are consumed earlier by
+        // `buildContentArgs` and never reach this conversion.)
+        .field_override => |value| .{ .let_stmt = .{
+            .annotations = &.{},
+            .storage = .immutable,
+            .name = value.name,
+            .type_expr = null,
+            .value = value.value,
+            .span = value.span,
+        } },
     };
 }

@@ -49,7 +49,15 @@ pub fn callNative(self: anytype, function_id: u32, args: []const runtime_abi.Val
             .raw_ptr => {
                 if (param_type.name) |name| {
                     if (isCallbackTypeName(name) and self.vm.heap.getClosure(arg.raw_ptr) != null) {
-                        lowered_args[index] = .{ .raw_ptr = try self.vm.exportRuntimeClosureToNative(&self.module, arg.raw_ptr) };
+                        // A closure whose body is native-executed is stripped from the
+                        // VM bytecode module in hybrid mode, so the export bridge cannot
+                        // recover its capture types from the module. Supply them from the
+                        // manifest (which retains every function's metadata). The outer
+                        // slice is freed here; the TypeRef `.name` fields alias
+                        // manifest-owned strings and are consumed synchronously.
+                        const ext = try resolveExportedClosureCaptureTypes(self, arg.raw_ptr);
+                        defer if (ext) |slice| self.allocator.free(slice);
+                        lowered_args[index] = .{ .raw_ptr = try self.vm.exportRuntimeClosureToNative(&self.module, arg.raw_ptr, ext) };
                     }
                 }
             },
@@ -119,6 +127,27 @@ pub fn callNativeFunction(self: anytype, function_id: u32, args: []const runtime
     const result = try self.bridge.call(function_id, args);
     self.vm.retainManagedValue(result);
     return result;
+}
+
+/// Recover the capture types for a runtime closure whose body is native-executed
+/// (and therefore stripped from the VM bytecode module in hybrid mode) so the
+/// export bridge can lower its captures. Returns null — leaving the bridge's own
+/// module lookup to resolve the types — when the body still lives in the VM module,
+/// when the closure/function is unknown, or when the manifest lacks enough
+/// parameter metadata. The caller owns and frees the returned slice; the element
+/// `.name` fields alias manifest-owned strings and must not be freed.
+fn resolveExportedClosureCaptureTypes(self: anytype, closure_ptr: usize) !?[]bytecode.TypeRef {
+    const closure = self.vm.heap.getClosure(closure_ptr) orelse return null;
+    // Runtime-executed bodies remain in the VM module; the bridge resolves them.
+    if (self.module.findFunctionById(closure.function_id) != null) return null;
+    const function_decl = findFunction(self.manifest.functions, closure.function_id) orelse return null;
+    if (function_decl.param_types.len < closure.captures.len) return null;
+    const capture_types = try self.allocator.alloc(bytecode.TypeRef, closure.captures.len);
+    const start = function_decl.param_types.len - closure.captures.len;
+    for (capture_types, 0..) |*ty, index| {
+        ty.* = convertManifestTypeRef(function_decl.param_types[start + index]);
+    }
+    return capture_types;
 }
 
 fn findFunction(functions: []const hybrid.FunctionManifest, function_id: u32) ?hybrid.FunctionManifest {

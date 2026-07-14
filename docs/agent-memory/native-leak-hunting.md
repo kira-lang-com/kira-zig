@@ -224,7 +224,7 @@ anywhere in the stack.
    semantics. Guards: corpus `ownership_closure_*` (12 cases, all
    check_leaks) + memory_validation.
 3. **Type-erased (Any/construct) values — MOVE-FIRST model** (final form
-   2026-07-06 night; authoritative spec: `KIRA_MEMORY_MODEL.md`). The first
+   2026-07-06 night; authoritative spec: `.codex/KIRA_MEMORY_MODEL.md`). The first
    attempt (eac1445) made Any values full deep values — typed
    `kira_capi_dynamic_destroy`/`kira_capi_dynamic_clone` at every edge. The
    destroys were fine; the CLONES deep-copied whole widget trees on every
@@ -241,7 +241,7 @@ anywhere in the stack.
      (string/array/struct/closure; enum/Any slots skipped).
    - Any struct fields / elements / state slots are never freed: documented
      conservative leaks (bounded per tree node per rebuild) until the checker
-     enforces move-only Any flows (KIRA_MEMORY_MODEL.md roadmap 1).
+     enforces move-only Any flows (`.codex/KIRA_MEMORY_MODEL.md` roadmap 1).
    TRAPS PINNED: double-record of vcall results (dropPriorOccupant destroyed
    the just-stored result — widget-dispatch use-after-free); state-set of Any
    must ESCAPE the owned source (frame-exit free would dangle the state).
@@ -348,7 +348,7 @@ Gotchas:
   after compiler changes — invoking it directly tests the OLD compiler. Use
   `zig build test-*` (rebuilds it), or re-locate the newest with
   `ls -t .zig-cache/o/*/kira-corpus-tests | head -1` after a `zig build test-full`.
-- `kira ffi autobind <project>` writes regenerated bindings into the toolchain
+- `kira ffi autobind` regenerates bindings for the current project
   SNAPSHOT, not the repo — copy changed files back to `foundation/bindings/`.
 - `KIRA_CAPI_DUMP=1` did not produce module dumps through the `kira` launcher
   in testing; disassemble the built binary instead (below).
@@ -356,15 +356,15 @@ Gotchas:
 Running UI apps headless and deterministic:
 
 ```sh
-KIRA_METAL_OFFSCREEN=1 KIRA_METAL_OFFSCREEN_FRAMES=120 ./generated/<app>
+KIRA_METAL_OFFSCREEN=1 KIRA_METAL_OFFSCREEN_FRAMES=120 ./.kira-build/<app>
 # scripted input: KIRA_UI_CLICK_SCRIPT="f@x,y;..." KIRA_UI_DRAG_SCRIPT / KIRA_UI_KEY_SCRIPT / KIRA_UI_SCROLL_SCRIPT
 ```
 
 Leak measurement (macOS):
 
 ```sh
-leaks --atExit -- ./generated/<app>                      # rc=1 when leaks found — not a crash
-MallocStackLogging=1 leaks --atExit -- ./generated/<app> # adds allocation stacks
+leaks --atExit -- ./.kira-build/<app>                      # rc=1 when leaks found — not a crash
+MallocStackLogging=1 leaks --atExit -- ./.kira-build/<app> # adds allocation stacks
 # summarize distinct origins:
 grep -E "INSTANCES OF" report.txt | sed 's/.*<malloc in \([^>]*\)>.*/\1/' | sort | uniq -c | sort -rn
 ```
@@ -389,18 +389,18 @@ grep -oE '"symbol":"[^"]*","symbolLocation":[0-9]*' <report> | head
 
 # 2. libgmalloc traps AT the misuse (page-per-allocation). Old MallocGuardEdges
 #    flags are ignored by the new xzone allocator — use gmalloc:
-DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib ./generated/<app>
+DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib ./.kira-build/<app>
 
 # 3. Under lldb, scope env to the TARGET (inserting gmalloc into lldb itself
 #    makes it crawl for minutes):
 lldb -b -o "settings set target.env-vars DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib KIRA_METAL_OFFSCREEN=1 KIRA_METAL_OFFSCREEN_FRAMES=10" \
-     -o run -o "bt 30" ./generated/<app>
+     -o run -o "bt 30" ./.kira-build/<app>
 
 # 4. Frame-pointer chains are often 3 frames deep (tail calls). Disassemble
 #    around the crash offset instead:
-objdump -d --disassemble-symbols='_kira_fn_<id>_<Name>' generated/<app>
+objdump -d --disassemble-symbols='_kira_fn_<id>_<Name>' .kira-build/<app>
 # call profile of a function:
-objdump -d --disassemble-symbols='_kira_fn_...' generated/<app> | grep -E "bl\s" | awk '{print $NF}' | sort | uniq -c | sort -rn
+objdump -d --disassemble-symbols='_kira_fn_...' .kira-build/<app> | grep -E "bl\s" | awk '{print $NF}' | sort | uniq -c | sort -rn
 ```
 
 Guard malloc (deterministic double-free aborts, per project-matter AGENTS.md):
@@ -413,7 +413,7 @@ caveat above; gmalloc is what actually worked.
 K=<kira-or-copy>
 # near-zero baseline, fast, no GPU — first thing to run after a drop change:
 $K build --backend llvm ../ui-foundation/Examples/leak-harness
-(cd ../ui-foundation/Examples/leak-harness && leaks --atExit -- ./generated/leak-harness)  # expect: 80000, 0 leaks/0 B (2026-07-06 evening: was 2/224 before enum-call-result tracking)
+(cd ../ui-foundation/Examples/leak-harness && leaks --atExit -- ./.kira-build/leak-harness)  # expect: 80000, 0 leaks/0 B (2026-07-06 evening: was 2/224 before enum-call-result tracking)
 
 # GPU apps (Metal offscreen):
 $K build ../ui-foundation/Examples/liquid-glass-app       # expect rc=0, ~628 leaks
@@ -447,7 +447,7 @@ teardown, owned enum state slots, direct (unboxed) struct slot stores;
 fresh-Any return analysis for plain-call widget-tree results; Rust-parity
 partial moves (bytecode KBCA `moved` flag, VM void + LLVM null, KSEM107/KIR003
 relaxed for array/enum/Any fields); enum struct-field drop-before-overwrite;
-moved heap-shell free. See `KIRA_MEMORY_MODEL.md` (§5 state boxes, §3
+moved heap-shell free. See `.codex/KIRA_MEMORY_MODEL.md` (§5 state boxes, §3
 fresh-Any, §9 roadmap).
 
 NEXT: construct `body` must consume self so `{ content }` captures are partial

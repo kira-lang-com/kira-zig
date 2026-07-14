@@ -1,0 +1,6 @@
+Package DemoLibrary {
+    let version = "0.1.0"
+    let kind = .Library
+    let moduleRoot = "DemoLibrary"
+    let defaults = Defaults { executionMode: .Vm, buildTarget: .Host }
+}

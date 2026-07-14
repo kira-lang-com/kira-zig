@@ -300,7 +300,7 @@ Test SkxStructStateParity {
     }
 
     expect {
-        let e: Result<I64, TestFailure> = Result.Ok(60)
+        let e: Result<I64, TestFailure> = .Ok(60)
         return e
     }
 }
@@ -324,7 +324,7 @@ Test SkxBorrowMutStructWriteback {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(1221)
+        let e: Result<Int, TestFailure> = .Ok(1221)
         return e
     }
 }
@@ -336,7 +336,7 @@ Test SkxInstanceMethodParity {
     }
 
     expect {
-        let e: Result<I64, TestFailure> = Result.Ok(42)
+        let e: Result<I64, TestFailure> = .Ok(42)
         return e
     }
 }
@@ -365,7 +365,7 @@ Test SkxWhileIndexStructMethods {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(19)
+        let e: Result<Int, TestFailure> = .Ok(19)
         return e
     }
 }
@@ -389,7 +389,7 @@ Test SkxRetainedTreeAggregateDefaultsParity {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(14)
+        let e: Result<Int, TestFailure> = .Ok(14)
         return e
     }
 }
@@ -401,7 +401,7 @@ Test SkxPrintableDispatchParity {
     }
 
     expect {
-        let e: Result<String, TestFailure> = Result.Ok("Ada")
+        let e: Result<String, TestFailure> = .Ok("Ada")
         return e
     }
 }
@@ -412,7 +412,7 @@ Test SkxConstructDeclarationFunctions {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(10)
+        let e: Result<Int, TestFailure> = .Ok(10)
         return e
     }
 }
@@ -427,7 +427,7 @@ Test SkxConstructArrayFieldOwnedValue {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(41)
+        let e: Result<Int, TestFailure> = .Ok(41)
         return e
     }
 }
@@ -438,7 +438,7 @@ Test SkxConstructAnyBindingMoveParity {
     }
 
     expect {
-        let e: Result<Int, TestFailure> = Result.Ok(4)
+        let e: Result<Int, TestFailure> = .Ok(4)
         return e
     }
 }

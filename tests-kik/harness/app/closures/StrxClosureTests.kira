@@ -66,7 +66,7 @@ Test StrxClNamedAdd {
         return f(10, 32)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClNamedMul {
@@ -75,7 +75,7 @@ Test StrxClNamedMul {
         return f(6, 7)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClNamedSub {
@@ -84,7 +84,7 @@ Test StrxClNamedSub {
         return f(50, 8)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClNamedToApply {
@@ -93,7 +93,7 @@ Test StrxClNamedToApply {
         return strxCApply(move inc, 41)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ Test StrxClInlineAdd {
         return f(32)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClInlineMul {
@@ -115,7 +115,7 @@ Test StrxClInlineMul {
         return f(14)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClInlineNeg {
@@ -124,7 +124,7 @@ Test StrxClInlineNeg {
         return f(42)
     }
     // 0 - 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0 - 42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0 - 42); return e }
 }
 
 Test StrxClInlineId {
@@ -132,7 +132,7 @@ Test StrxClInlineId {
         let f: (Int) -> Int = { x in return x }
         return f(99)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(99); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(99); return e }
 }
 
 Test StrxClInlineSq {
@@ -141,7 +141,7 @@ Test StrxClInlineSq {
         return f(7)
     }
     // 49
-    expect { let e: Result<Int, TestFailure> = Result.Ok(49); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(49); return e }
 }
 
 Test StrxClInlineHalf {
@@ -150,7 +150,7 @@ Test StrxClInlineHalf {
         return f(100)
     }
     // 50
-    expect { let e: Result<Int, TestFailure> = Result.Ok(50); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(50); return e }
 }
 
 Test StrxClInlineMod {
@@ -159,7 +159,7 @@ Test StrxClInlineMod {
         return f(23)
     }
     // 23 % 7 = 2
-    expect { let e: Result<Int, TestFailure> = Result.Ok(2); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(2); return e }
 }
 
 Test StrxClInlineExpr {
@@ -168,7 +168,7 @@ Test StrxClInlineExpr {
         return f(5)
     }
     // (5+3)*2-1 = 15
-    expect { let e: Result<Int, TestFailure> = Result.Ok(15); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(15); return e }
 }
 
 Test StrxClInlineExpr2 {
@@ -177,7 +177,7 @@ Test StrxClInlineExpr2 {
         return g(4)
     }
     // 16+4+1 = 21
-    expect { let e: Result<Int, TestFailure> = Result.Ok(21); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(21); return e }
 }
 
 Test StrxClInlineTernary {
@@ -186,7 +186,7 @@ Test StrxClInlineTernary {
         return f(7)
     }
     // 100
-    expect { let e: Result<Int, TestFailure> = Result.Ok(100); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(100); return e }
 }
 
 Test StrxClInlineTernaryFalse {
@@ -195,7 +195,7 @@ Test StrxClInlineTernaryFalse {
         return f(3)
     }
     // 0
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ Test StrxClApplyTwiceInc {
         return strxCApplyTwice(move inc, 10)
     }
     // 10+1+1 = 12
-    expect { let e: Result<Int, TestFailure> = Result.Ok(12); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(12); return e }
 }
 
 Test StrxClApplyTwiceSq {
@@ -217,7 +217,7 @@ Test StrxClApplyTwiceSq {
         return strxCApplyTwice(move sq, 3)
     }
     // sq(sq(3)) = sq(9) = 81
-    expect { let e: Result<Int, TestFailure> = Result.Ok(81); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(81); return e }
 }
 
 Test StrxClApplyTwiceDbl {
@@ -226,7 +226,7 @@ Test StrxClApplyTwiceDbl {
         return strxCApplyTwice(move dbl, 5)
     }
     // 5*2*2 = 20
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StrxClApplyN5 {
@@ -235,7 +235,7 @@ Test StrxClApplyN5 {
         return strxCApplyN(move dbl, 1, 5)
     }
     // 2^5 = 32
-    expect { let e: Result<Int, TestFailure> = Result.Ok(32); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(32); return e }
 }
 
 Test StrxClApplyN0 {
@@ -244,7 +244,7 @@ Test StrxClApplyN0 {
         return strxCApplyN(move inc, 5, 0)
     }
     // 0 applications -> 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxClApplyNInc10 {
@@ -253,7 +253,7 @@ Test StrxClApplyNInc10 {
         return strxCApplyN(move inc, 100, 50)
     }
     // 100 + 50 = 150
-    expect { let e: Result<Int, TestFailure> = Result.Ok(150); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(150); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ Test StrxClReduceSquares {
         return strxCReduce(xs, move sq)
     }
     // 1+4+9+16+25 = 55
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 Test StrxClReduceDouble {
@@ -277,7 +277,7 @@ Test StrxClReduceDouble {
         return strxCReduce(xs, move dbl)
     }
     // 2+4+6+8+10+12 = 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClReduceIds {
@@ -287,7 +287,7 @@ Test StrxClReduceIds {
         return strxCReduce(xs, move id)
     }
     // 28
-    expect { let e: Result<Int, TestFailure> = Result.Ok(28); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(28); return e }
 }
 
 Test StrxClReduceAdd1 {
@@ -297,7 +297,7 @@ Test StrxClReduceAdd1 {
         return strxCReduce(xs, move add1)
     }
     // 11+21+31+41 = 104
-    expect { let e: Result<Int, TestFailure> = Result.Ok(104); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(104); return e }
 }
 
 Test StrxClReduceWithBonus {
@@ -308,7 +308,7 @@ Test StrxClReduceWithBonus {
         return strxCReduce(xs, move f)
     }
     // 51+52+53+54+55 = 265
-    expect { let e: Result<Int, TestFailure> = Result.Ok(265); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(265); return e }
 }
 
 Test StrxClReduceHalf {
@@ -318,7 +318,7 @@ Test StrxClReduceHalf {
         return strxCReduce(xs, move half)
     }
     // 2+5+7+10 = 24
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ Test StrxClFoldAdd {
         return strxCFold(xs, move add, 0)
     }
     // 60
-    expect { let e: Result<Int, TestFailure> = Result.Ok(60); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(60); return e }
 }
 
 Test StrxClFoldMul {
@@ -342,7 +342,7 @@ Test StrxClFoldMul {
         return strxCFold(xs, move mul, 1)
     }
     // 120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 Test StrxClFoldSub {
@@ -352,7 +352,7 @@ Test StrxClFoldSub {
         return strxCFold(xs, move sub, 20)
     }
     // 20-1-2-3-4 = 10
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10); return e }
 }
 
 Test StrxClFoldAddInit {
@@ -362,7 +362,7 @@ Test StrxClFoldAddInit {
         return strxCFold(xs, move add, 100)
     }
     // 100+1+2+3+4+5 = 115
-    expect { let e: Result<Int, TestFailure> = Result.Ok(115); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(115); return e }
 }
 
 Test StrxClFoldSmall {
@@ -372,7 +372,7 @@ Test StrxClFoldSmall {
         return strxCFold(xs, move add, 0)
     }
     // 23
-    expect { let e: Result<Int, TestFailure> = Result.Ok(23); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(23); return e }
 }
 
 Test StrxClFoldMulSmall {
@@ -382,7 +382,7 @@ Test StrxClFoldMulSmall {
         return strxCFold(xs, move mul, 1)
     }
     // 24
-    expect { let e: Result<Int, TestFailure> = Result.Ok(24); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(24); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +396,7 @@ Test StrxClCapImm1 {
         return f(42)
     }
     // 142
-    expect { let e: Result<Int, TestFailure> = Result.Ok(142); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(142); return e }
 }
 
 Test StrxClCapImm2 {
@@ -406,7 +406,7 @@ Test StrxClCapImm2 {
         return f(6)
     }
     // 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClCapImmLoop {
@@ -422,7 +422,7 @@ Test StrxClCapImmLoop {
         return acc
     }
     // sum(i+1000 for i in 0..9) = 45 + 10000 = 10045
-    expect { let e: Result<Int, TestFailure> = Result.Ok(10045); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(10045); return e }
 }
 
 Test StrxClCapImmPow2 {
@@ -433,7 +433,7 @@ Test StrxClCapImmPow2 {
         return strxCReduce(xs, move f)
     }
     // 2+4+6+8+10 = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClCapImmSub {
@@ -443,7 +443,7 @@ Test StrxClCapImmSub {
         return f(12)
     }
     // 7
-    expect { let e: Result<Int, TestFailure> = Result.Ok(7); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(7); return e }
 }
 
 Test StrxClCapImmMul3 {
@@ -459,7 +459,7 @@ Test StrxClCapImmMul3 {
         return acc
     }
     // 3*(1+2+3+4+5+6) = 63
-    expect { let e: Result<Int, TestFailure> = Result.Ok(63); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(63); return e }
 }
 
 Test StrxClCapImmTop {
@@ -475,7 +475,7 @@ Test StrxClCapImmTop {
         return acc
     }
     // (100+99+98+97+96) = 490
-    expect { let e: Result<Int, TestFailure> = Result.Ok(490); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(490); return e }
 }
 
 Test StrxClCapImmDiv {
@@ -491,7 +491,7 @@ Test StrxClCapImmDiv {
         return acc
     }
     // i*4/4 = i; sum(0..7) = 28
-    expect { let e: Result<Int, TestFailure> = Result.Ok(28); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(28); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ Test StrxClMutTotal {
         return total
     }
     // 1+2+...+10 = 55
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 Test StrxClMutCount {
@@ -530,7 +530,7 @@ Test StrxClMutCount {
         }
         return count
     }
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxClMutMul {
@@ -548,7 +548,7 @@ Test StrxClMutMul {
         return prod
     }
     // 1*2*3*4*5 = 120
-    expect { let e: Result<Int, TestFailure> = Result.Ok(120); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(120); return e }
 }
 
 Test StrxClMutToggle {
@@ -570,7 +570,7 @@ Test StrxClMutToggle {
         return flag
     }
     // 6 toggles from 0 -> 1,0,1,0,1,0 = 0
-    expect { let e: Result<Int, TestFailure> = Result.Ok(0); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
 }
 
 Test StrxClMutEvenCount {
@@ -590,7 +590,7 @@ Test StrxClMutEvenCount {
         return evens
     }
     // 0,2,4,6,8 -> 5 evens
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxClMutAccumProd {
@@ -609,7 +609,7 @@ Test StrxClMutAccumProd {
         return total
     }
     // 3*(1+2+3+4+5) = 45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test StrxClMutBucket {
@@ -627,7 +627,7 @@ Test StrxClMutBucket {
         return bucket
     }
     // 2*(1+2+3+4+5) = 30
-    expect { let e: Result<Int, TestFailure> = Result.Ok(30); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(30); return e }
 }
 
 Test StrxClMutMax {
@@ -648,7 +648,7 @@ Test StrxClMutMax {
         return mx
     }
     // max is 9
-    expect { let e: Result<Int, TestFailure> = Result.Ok(9); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(9); return e }
 }
 
 Test StrxClMutCountDown {
@@ -666,7 +666,7 @@ Test StrxClMutCountDown {
         return remaining
     }
     // 10 - 7 = 3
-    expect { let e: Result<Int, TestFailure> = Result.Ok(3); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
 }
 
 Test StrxClMutRunning {
@@ -685,7 +685,7 @@ Test StrxClMutRunning {
         return running
     }
     // 2+4+6+8 = 20
-    expect { let e: Result<Int, TestFailure> = Result.Ok(20); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(20); return e }
 }
 
 Test StrxClMutTriangle {
@@ -703,7 +703,7 @@ Test StrxClMutTriangle {
         return sum
     }
     // 1+2+...+10 = 55
-    expect { let e: Result<Int, TestFailure> = Result.Ok(55); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(55); return e }
 }
 
 Test StrxClMutLoopModify {
@@ -721,7 +721,7 @@ Test StrxClMutLoopModify {
         return accum
     }
     // 0+3+6+9+12+15+18+21 = 84
-    expect { let e: Result<Int, TestFailure> = Result.Ok(84); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(84); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +737,7 @@ Test StrxClCompose {
         return r2
     }
     // (5+3)*2 = 16
-    expect { let e: Result<Int, TestFailure> = Result.Ok(16); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(16); return e }
 }
 
 Test StrxClComposeLoop {
@@ -755,7 +755,7 @@ Test StrxClComposeLoop {
     }
     // i=0: (0+0)*2=0; i=1: (1+1)*2=4; i=2: (2+2)*2=8; i=3: (3+3)*2=12; i=4: (4+4)*2=16
     // sum = 40
-    expect { let e: Result<Int, TestFailure> = Result.Ok(40); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(40); return e }
 }
 
 Test StrxClNestedHOF {
@@ -767,7 +767,7 @@ Test StrxClNestedHOF {
         return strxCApply(move dbl, r1)
     }
     // reduce: 3+4+5+6=18; apply dbl: 36
-    expect { let e: Result<Int, TestFailure> = Result.Ok(36); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(36); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -781,7 +781,7 @@ Test StrxClSingleCall {
         return r
     }
     // 40+1+1 = 42
-    expect { let e: Result<Int, TestFailure> = Result.Ok(42); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
 }
 
 Test StrxClDirectCall {
@@ -790,7 +790,7 @@ Test StrxClDirectCall {
         return f(9)
     }
     // 81
-    expect { let e: Result<Int, TestFailure> = Result.Ok(81); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(81); return e }
 }
 
 Test StrxClMultiCallSameClosure {
@@ -803,7 +803,7 @@ Test StrxClMultiCallSameClosure {
         return acc
     }
     // 5+15+25 = 45
-    expect { let e: Result<Int, TestFailure> = Result.Ok(45); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(45); return e }
 }
 
 Test StrxClChainResult {
@@ -819,7 +819,7 @@ Test StrxClChainResult {
         return out
     }
     // starts 0, adds step=1 five times -> 5
-    expect { let e: Result<Int, TestFailure> = Result.Ok(5); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(5); return e }
 }
 
 Test StrxClReduceThenApply {
@@ -831,7 +831,7 @@ Test StrxClReduceThenApply {
         return strxCApply(move triple, sum)
     }
     // sum=12; 12*3=36
-    expect { let e: Result<Int, TestFailure> = Result.Ok(36); return e }
+    expect { let e: Result<Int, TestFailure> = .Ok(36); return e }
 }
 
 // ---------------------------------------------------------------------------
@@ -847,7 +847,7 @@ Test StrxClTrapOobInClosure {
         }
         return f(99)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClTrapDivZeroInClosure {
@@ -855,7 +855,7 @@ Test StrxClTrapDivZeroInClosure {
         let f: (Int) -> Int = { x in return 100 / x }
         return f(0)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClTrapModZeroInClosure {
@@ -863,7 +863,7 @@ Test StrxClTrapModZeroInClosure {
         let f: (Int) -> Int = { x in return x % 0 }
         return f(5)
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClTrapOobDirect {
@@ -872,7 +872,7 @@ Test StrxClTrapOobDirect {
         let _ = xs[10]
         return 0
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }
 
 Test StrxClTrapOobBeforeApply {
@@ -881,5 +881,5 @@ Test StrxClTrapOobBeforeApply {
         let xs = [1, 2, 3]
         return strxCApply(move f, xs[99])
     }
-    expect { let e: Result<Int, TestFailure> = Result.Error(TestFailure.Runtime("")); return e }
+    expect { let e: Result<Int, TestFailure> = .Error(.Runtime("")); return e }
 }

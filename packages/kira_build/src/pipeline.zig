@@ -23,6 +23,7 @@ pub const timingsEnabled = timing.timingsEnabled;
 const nowNs = timing.nowNs;
 const elapsedNs = timing.elapsedNs;
 pub const timingPrint = timing.timingPrint;
+pub const progressPrint = timing.progressPrint;
 
 pub const FrontendStage = frontend_pipeline.FrontendStage;
 pub const LexPipelineResult = frontend_pipeline.LexPipelineResult;
@@ -150,6 +151,7 @@ pub fn compileFileToIrForTargetWithOptions(
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     for (parsed.diagnostics) |diag| try diags.append(diag);
 
+    progressPrint("Loading dependency module map", .{});
     const module_map_start = nowNs();
     const module_map = try package_manager.loadModuleMapForSource(allocator, parsed.source.path);
     timingPrint("[kira:timing] loadModuleMapForSource path={s} owners={d} ns={d}\n", .{ parsed.source.path, module_map.owners.len, elapsedNs(module_map_start) });
@@ -157,6 +159,7 @@ pub fn compileFileToIrForTargetWithOptions(
     // Declared dependency packages must have their native artifacts and generated
     // `bindings/` sources ready before the program graph collects package files,
     // otherwise freshly generated bindings only become visible one run later.
+    progressPrint("Preparing native libraries from dependencies", .{});
     const native_import_start = nowNs();
     const native_libraries = ffi_support.prepareDeclaredNativeLibrariesForTarget(allocator, parsed.native_libraries, module_map, target_selector) catch |err| switch (err) {
         error.UnsupportedTarget => {
@@ -176,6 +179,7 @@ pub fn compileFileToIrForTargetWithOptions(
     };
     timingPrint("[kira:timing] prepareDeclaredNativeLibraries path={s} native_libraries={d} ns={d}\n", .{ parsed.source.path, native_libraries.len, elapsedNs(native_import_start) });
 
+    progressPrint("Building program graph", .{});
     const graph_start = nowNs();
     const merged_program = program_graph.buildProgramGraph(allocator, parsed.source.path, parsed.program.?, module_map, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -194,6 +198,7 @@ pub fn compileFileToIrForTargetWithOptions(
     };
     timingPrint("[kira:timing] buildProgramGraph path={s} imports={d} declarations={d} functions={d} ns={d}\n", .{ parsed.source.path, merged_program.imports.len, merged_program.decls.len, merged_program.functions.len, elapsedNs(graph_start) });
 
+    progressPrint("Validating imports", .{});
     const validate_start = nowNs();
     validateImports(allocator, &parsed.source, merged_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
@@ -214,6 +219,7 @@ pub fn compileFileToIrForTargetWithOptions(
     // In test mode, synthesize a pure-Kira driver entry that runs every Test and
     // prints PASS/FAIL/SKIP, so the suite executes as ordinary Kira on the chosen
     // backend (the runner invokes the driver instead of comparing in Zig).
+    if (options.synthesize_test_driver) progressPrint("Generating Kira test driver", .{});
     const driver_program = if (options.synthesize_test_driver)
         try synth_test_driver.injectTestDriver(allocator, merged_program, &diags)
     else
@@ -222,6 +228,7 @@ pub fn compileFileToIrForTargetWithOptions(
     // Expand declarative macros (AST -> AST) before semantics. Output is ordinary Kira AST, so
     // every backend sees identical post-expansion code. Package any expansion diagnostics into the
     // result (failure_stage = .semantics) rather than throwing a bare error.
+    progressPrint("Expanding macros", .{});
     const program_for_analysis = macro_expand.expandAndCheck(allocator, driver_program, &diags) catch |err| switch (err) {
         error.DiagnosticsEmitted => {
             timingPrint("[kira:timing] compileFileToIr.total path={s} ns={d}\n", .{ path, elapsedNs(total_start) });
@@ -236,6 +243,7 @@ pub fn compileFileToIrForTargetWithOptions(
         else => return err,
     };
 
+    progressPrint("Checking program semantics", .{});
     const semantics_start = nowNs();
     const hir = semantics.analyzeWithImportsOptions(allocator, program_for_analysis, .{}, .{
         .allow_runtime_direct_ffi = options.allow_runtime_direct_ffi,
@@ -258,6 +266,7 @@ pub fn compileFileToIrForTargetWithOptions(
 
     if (options.package_execution_defaults) applyPackageExecutionDefaults(hir, module_map);
 
+    progressPrint("Lowering Kira IR", .{});
     const ir_start = nowNs();
     var unsupported = ir.UnsupportedFeature{};
     const ir_program = ir.lowerProgramWithDiagnostics(allocator, hir, .{
@@ -380,6 +389,7 @@ pub fn compileFileForBackendWithOptions(
     explicit_native_libraries: []const native.ResolvedNativeLibrary,
     options: CompileOptions,
 ) !ExecutablePipelineResult {
+    progressPrint("Compiling {s} for {s}", .{ std.fs.path.basename(path), @tagName(target) });
     const total_start = nowNs();
     const effective_selector = if (target == .wasm32_emscripten and target_selector == null)
         try llvm_backend.emscripten.selector(allocator)
@@ -403,6 +413,7 @@ pub fn compileFileForBackendWithOptions(
     // Phase gate: prove the lowered program satisfies its executable obligations before any
     // backend consumes it. A failure here is a precise compile diagnostic, not a later
     // runtime detonation. Native backends additionally require known aggregate layouts.
+    progressPrint("Verifying executable requirements", .{});
     const verify_start = nowNs();
     const verify_caps = ir.BackendCapabilities{ .requires_native_layout = target != .vm };
     const verify_result = try ir.verify(allocator, .{ .program = ir_program }, verify_caps);
@@ -431,12 +442,14 @@ pub fn compileFileForBackendWithOptions(
     }
     const verified_program = verify_result.verified;
 
+    progressPrint("Collecting native link inputs", .{});
     const merge_start = nowNs();
     const merged_native_libraries = try mergeNativeLibraries(allocator, explicit_native_libraries, frontend.native_libraries);
     timingPrint("[kira:timing] mergeNativeLibraries path={s} explicit={d} discovered={d} merged={d} ns={d}\n", .{ path, explicit_native_libraries.len, frontend.native_libraries.len, merged_native_libraries.len, elapsedNs(merge_start) });
 
     switch (target) {
         .vm => {
+            progressPrint("Generating VM bytecode", .{});
             const bytecode_start = nowNs();
             const module = bytecode.compileProgram(allocator, verified_program, .vm) catch |err| {
                 const backend_diagnostics = try backendDiagnosticsForVm(allocator, frontend.source.path, err, merged_native_libraries);
@@ -471,6 +484,7 @@ pub fn compileFileForBackendWithOptions(
             // redundant work (~1s on the project-matter editor). Skip it there; `check` and
             // other analysis-only callers leave it on to get diagnostics without emitting.
             if (!options.skip_llvm_backend_validate) {
+                progressPrint("Validating LLVM lowering for {s}", .{@tagName(target)});
                 const llvm_start = nowNs();
                 llvm_backend.validate(allocator, .{
                     .mode = .llvm_native,
@@ -506,6 +520,7 @@ pub fn compileFileForBackendWithOptions(
             };
         },
         .hybrid => {
+            progressPrint("Generating hybrid runtime bytecode", .{});
             const bytecode_start = nowNs();
             const module = bytecode.compileProgram(allocator, verified_program, .hybrid_runtime) catch |err| {
                 const backend_diagnostics = try backendDiagnostics(allocator, frontend.source.path, err);
@@ -521,6 +536,7 @@ pub fn compileFileForBackendWithOptions(
                 };
             };
             timingPrint("[kira:timing] bytecode.compileProgram path={s} backend=hybrid_runtime ns={d}\n", .{ path, elapsedNs(bytecode_start) });
+            progressPrint("Validating hybrid native lowering", .{});
             const llvm_start = nowNs();
             llvm_backend.validate(allocator, .{
                 .mode = .hybrid,

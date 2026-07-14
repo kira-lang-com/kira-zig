@@ -1,0 +1,146 @@
+// DcxTests.kira — coverage for the opt-in `@Derive(Copy)` copyability assertion.
+// PREFIX: dcx / Dcx.
+//
+// `@Derive(Copy)` is a BUILTIN derive (see docs/macros.md and packages/kira_ir/src/
+// mid_ir_derive_copy.zig): on a structurally-copyable type it is a no-op assertion — the
+// type still behaves exactly as it did (Copy), and the pass just verifies eligibility. On a
+// non-copyable type it is a KIR005 compile error (proved by tests/fail/pipeline/derive_copy_*).
+// Every type here is eligible, so the assertion holds; the tests then exercise the Copy
+// semantics at runtime (no move, independent duplicates) plus interop with Foundation's
+// `@Derive(Equatable)` macro.
+//
+// No `import Foundation` here — Test / Result / TestFailure and the `Equatable` derive macro
+// are all package-wide once main.kira imports Foundation.
+
+// ---------------------------------------------------------------------------
+// Types under test (all eligible for `Copy`)
+// ---------------------------------------------------------------------------
+
+// A scalar struct is Copy-eligible. It ALSO derives Equatable so we can compare by value:
+// this proves the builtin `Copy` assertion and a user derive macro compose on one type.
+@Derive(Copy, Equatable)
+struct DcxPoint {
+    var x: Int
+    var y: Int
+}
+
+// A fieldless enum is trivially copyable.
+@Derive(Copy)
+enum DcxColor {
+    Red
+    Green
+    Blue
+}
+
+// An enum whose every payload is itself Copy (only `Float` here) is Copy — mirroring Rust's
+// rule. Reading such a value out of an owning aggregate BY VALUE must duplicate it, not move
+// it out; a non-Copy payload (e.g. a String) would make this a KIR005 error instead.
+@Derive(Copy)
+enum DcxDim {
+    Fixed(Float)
+    Fill
+}
+
+@Derive(Copy)
+struct DcxBox {
+    let w: DcxDim
+    let h: DcxDim
+}
+
+// Holds two fieldless-enum values so we can read one twice by value.
+@Derive(Copy)
+struct DcxHolder {
+    let first: DcxColor
+    let second: DcxColor
+}
+
+// ---------------------------------------------------------------------------
+// Helpers (owned parameters, so a non-Copy value passed to them would move)
+// ---------------------------------------------------------------------------
+
+function dcxColorRank(c: DcxColor) -> Int {
+    match c {
+        Red -> return 0;
+        Green -> return 1;
+        Blue -> return 2;
+    }
+}
+
+function dcxDimTag(d: DcxDim) -> Int {
+    match d {
+        Fill -> return 1;
+        Fixed(_) -> return 0;
+    }
+}
+
+// `box.w` is Copy, so both reads are independent duplicates and `box` stays fully live across
+// them. Were `DcxDim` non-Copy this would be a use-after-partial-move (KIR002/KIR003).
+function dcxBoxReuse(box: DcxBox) -> Int {
+    let a = dcxDimTag(box.w)
+    let b = dcxDimTag(box.w)
+    return a + b
+}
+
+// Same idea for a fieldless-enum field: `h.first` is read by value twice.
+function dcxHolderReuse(h: DcxHolder) -> Int {
+    let a = dcxColorRank(h.first)
+    let b = dcxColorRank(h.first)
+    return a + b
+}
+
+// ---------------------------------------------------------------------------
+// Combined @Derive(Copy, Equatable): builtin assertion + Foundation derive macro on one type
+// ---------------------------------------------------------------------------
+
+Test DcxCombinedEqTrue {
+    test {
+        let a = DcxPoint { x: 1, y: 2 }
+        let b = DcxPoint { x: 1, y: 2 }
+        return eq_DcxPoint(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DcxCombinedEqFalse {
+    test {
+        let a = DcxPoint { x: 1, y: 2 }
+        let b = DcxPoint { x: 1, y: 9 }
+        return eq_DcxPoint(a, b)
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(false); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Copy semantics preservation: reading a Copy field by value duplicates, never moves.
+// ---------------------------------------------------------------------------
+
+Test DcxCopyEnumFieldReuseNoMove {
+    test {
+        let box = DcxBox { w: .Fill, h: .Fixed(3.0) }
+        // Fill tags 1, read twice -> 2. `box` is moved once into the helper; the two reads of
+        // `box.w` inside are copies, so no partial-move error is raised.
+        return dcxBoxReuse(move box) == 2
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Fieldless enum @Derive(Copy): matches, and its value is a reusable Copy.
+// ---------------------------------------------------------------------------
+
+Test DcxFieldlessEnumMatches {
+    test {
+        let c: DcxColor = .Green
+        return dcxColorRank(move c) == 1
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}
+
+Test DcxFieldlessEnumFieldReuseNoMove {
+    test {
+        let h = DcxHolder { first: .Blue, second: .Red }
+        // Blue ranks 2, read twice -> 4.
+        return dcxHolderReuse(move h) == 4
+    }
+    expect { let e: Result<Bool, TestFailure> = .Ok(true); return e }
+}

@@ -1,0 +1,44 @@
+// FxcTests.kira — migrated corpus case from tests/pass/run/ffi_extern_cstring_arg_leak_regression.
+// PREFIX: fxc / Fxc (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// ffi_extern_cstring_arg_leak_regression
+// ---------------------------------------------------------------------------
+// Leak regression: a String (array element read-clone) marshalled to an extern
+// CString parameter. The marshal copies it into a transient NUL-terminated
+// buffer freed after the call — the C side never sees the Kira buffer — so the
+// caller must KEEP ownership of the string and free it at scope exit. The old
+// extern lowering escaped every arg, orphaning one read-clone per call (the
+// ui-foundation uiBatchStateLoadFont / editor 48 B font-path leak).
+
+@FFI.Extern { library: fs; symbol: fs_file_exists; abi: c; }
+function fxcRawFileExists(path: CString): CBool;
+
+@Native
+function fxcCandidates() -> [String] {
+    return ["/nonexistent/one.ttf", "/nonexistent/two.ttf", "/nonexistent/three.ttf"]
+}
+
+@Native
+function fxcProbeAll() -> Int {
+    var misses = 0
+    var round = 0
+    while round < 100 {
+        let paths = fxcCandidates()
+        var i = 0
+        while i < paths.count {
+            if !fxcRawFileExists(paths[i]) {
+                misses = misses + 1
+            }
+            i = i + 1
+        }
+        round = round + 1
+    }
+    return misses
+}
+
+Test FxcExternCStringArgLeakRegression {
+    test { return fxcProbeAll() }
+    expect { let e: Result<Int, TestFailure> = .Ok(300); return e }
+}

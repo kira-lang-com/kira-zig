@@ -1,0 +1,58 @@
+// SkgTests.kira — migrated corpus cases from tests/pass/run/ffi_sokol_{native,hybrid}.
+// PREFIX: skn / skh (per original case) — all top-level names unique.
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// `sokol_gfx` is the autobound module for NativeLibs/sokol_gfx.toml: the real
+// third_party/sokol/sokol_gfx.h compiled with SOKOL_DUMMY_BACKEND, so
+// sg_isvalid() is answered by the actual sokol runtime headlessly (false —
+// sg_setup has not run).
+
+import sokol_gfx as sg
+
+// ---------------------------------------------------------------------------
+// ffi_sokol_native
+// ---------------------------------------------------------------------------
+// @Native entry calls sg_isvalid() straight into the static sokol_gfx lib.
+// Original: main called sg_isvalid() then printed "sokol ffi". Folded to a
+// scalar: 1 when the FFI call completes and reports not-yet-valid.
+
+@Native
+function sknRunSokol() -> Int {
+    let valid: CBool = sg.sg_isvalid()
+    var out = 0
+    if valid {
+        out = 2
+    } else {
+        out = 1
+    }
+    return out
+}
+
+Test SknFfiSokolNative {
+    test { return sknRunSokol() }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// ffi_sokol_hybrid
+// ---------------------------------------------------------------------------
+// @Runtime entry -> @Native function -> sokol FFI: the call originates on the
+// VM side of the bridge (the test body) and crosses into native code that
+// talks to libsokol_gfx, exactly like the original @Runtime main calling the
+// @Native run_sokol().
+
+@Native
+function skhRunSokol() -> Int {
+    let valid: CBool = sg.sg_isvalid()
+    var out = 0
+    if valid {
+        out = 2
+    } else {
+        out = 1
+    }
+    return out
+}
+
+Test SkhFfiSokolHybrid {
+    test { return skhRunSokol() }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}

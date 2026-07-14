@@ -1,0 +1,46 @@
+// TskTests.kira — migrated corpus case from tests/pass/run/task_spawn_lifecycle_leak_parity.
+// PREFIX: tsk/Tsk (all top-level names use this prefix).
+// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+
+async function tskAdd(a: Int, b: Int) -> Int {
+    return a + b
+}
+
+async function tskFactorial(n: Int) -> Int {
+    if n <= 1 {
+        return 1
+    }
+    return n * tskFactorial(n - 1)
+}
+
+// ---------------------------------------------------------------------------
+// task_spawn_lifecycle_leak_parity
+// ---------------------------------------------------------------------------
+// Native task-runtime leak guard: every spawn lifecycle (joined, cancelled,
+// detached, dropped-without-join) must leave the run leak-clean. The
+// 50-iteration loop is the leak-regression surface — do not reduce it.
+
+Test TskSpawnLifecycleLeakParity {
+    test {
+        var total = 0
+        var i = 0
+        while i < 50 {
+            // Joined: result consumed, task struct reclaimed at exit.
+            let joined = Task { tskAdd(20, 22) }
+            // Cancelled before first drive: the call never runs; its captured
+            // ctx is freed on the cancel branch, the struct at teardown.
+            let cancelled = Task { tskAdd(1, 1) }
+            cancelled.requestCancel()
+            // Detached: runs at drain with the result discarded.
+            let detached = Task { tskAdd(2, 2) }
+            detached.detach()
+            // Dropped without join/detach/cancel: runs at the end-of-run drain;
+            // the orphaned handle's allocations are the registry's to reclaim.
+            let dropped = Task { tskFactorial(5) }
+            total = total + joined.await
+            i = i + 1
+        }
+        return total
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(2100); return e }
+}

@@ -63,7 +63,9 @@ pub fn buildFormContentFields(
         for (body_members) |member| {
             if (member != .field_decl) continue;
             const field = member.field_decl;
-            if (!construct_members.hasContentAnnotation(field.annotations)) continue;
+            // A block-bodied computed member is a bridge accessor, never a fillable slot.
+            if (field.body != null) continue;
+            if (!construct_members.fieldIsContentSlot(field)) continue;
             try fields.append(.{
                 .name = field.name,
                 .is_list = field.type_expr != null and field.type_expr.?.* == .array,
@@ -81,9 +83,11 @@ pub fn synthesizeFormStruct(ctx: *shared.Context, form_decl: syntax.ast.Construc
         const field = member.field_decl;
         // A computed `let node: T { ... }` is the bridge accessor, never stored state.
         if (field.body != null) continue;
-        if (construct_members.hasContentAnnotation(field.annotations)) {
+        if (construct_members.fieldIsContentSlot(field)) {
             // Caller-provided children are stored as `some Family` slots so heterogeneous widgets
-            // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `some` form.
+            // coexist. Rewrite the family-typed field (`[Widget]`/`Widget`) to `some` form. A
+            // field already typed `some X` / `[some X]` (slot-by-type) is left as-is by the
+            // existentializer, so this covers both `@Content` and slot-typed fields.
             var content_field = field;
             content_field.type_expr = if (field.type_expr) |type_expr| try existentializeContentType(ctx.allocator, type_expr) else null;
             try members.append(.{ .field_decl = content_field });

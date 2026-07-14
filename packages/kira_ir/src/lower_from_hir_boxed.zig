@@ -84,6 +84,20 @@ fn collectBoxedFromExpr(boxed: []bool, expr: *const model.Expr) void {
         },
         .array_len => |node| collectBoxedFromExpr(boxed, node.object),
         .string_len => |node| collectBoxedFromExpr(boxed, node.object),
+        .string_from_scalar => |node| collectBoxedFromExpr(boxed, node.operand),
+        .string_char_at => |node| {
+            collectBoxedFromExpr(boxed, node.object);
+            collectBoxedFromExpr(boxed, node.index);
+        },
+        .string_substring => |node| {
+            collectBoxedFromExpr(boxed, node.object);
+            collectBoxedFromExpr(boxed, node.start);
+            collectBoxedFromExpr(boxed, node.end);
+        },
+        .string_index_of => |node| {
+            collectBoxedFromExpr(boxed, node.object);
+            collectBoxedFromExpr(boxed, node.needle);
+        },
         .field => |node| collectBoxedFromExpr(boxed, node.object),
         .parent_view => |node| collectBoxedFromExpr(boxed, node.object),
         .native_state => |node| collectBoxedFromExpr(boxed, node.value),

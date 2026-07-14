@@ -28,7 +28,7 @@ struct ExpectedDiagnostic {
 
 function testPackage(path: borrow String) -> DeveloperCommandReport {
     let developer = createDeveloperSession()
-    let report = developer.test(path, Backend.Vm)
+    let report = developer.test(path, .Vm)
     developer.close()
     return report
 }

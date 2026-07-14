@@ -267,10 +267,9 @@ pub fn lowerNativeStateFieldSet(fc: *FunctionCodegen, v: ir.NativeStateFieldSet)
     // cleanup cannot free the tree the state now references (state.any.escape).
     // The slot itself is a documented conservative leak — the interior release
     // skips Any slots — until move-only Any flows are checker-enforced
-    // (KIRA_MEMORY_MODEL.md §5). Enum slots keep their pre-existing alias
+    // (.codex/KIRA_MEMORY_MODEL.md §5). Enum slots keep their pre-existing alias
     // semantics on this default path.
     if (v.field_ty.kind == .construct_any) drop.onEscape(fc, v.src);
     const bv = try fc.packBridge(fc.register_types[v.src], fc.registers[v.src]);
     _ = api.LLVMBuildStore(b, bv, slot);
 }
-

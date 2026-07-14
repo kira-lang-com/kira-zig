@@ -8,19 +8,10 @@ const Context = @import("context.zig").Context;
 const git = @import("git_ops.zig");
 const gh = @import("gh_ops.zig");
 const commit_msg = @import("commit_msg.zig");
+const pr_scope = @import("pr_scope.zig");
 const out = @import("out.zig");
 
 const poll_interval_ns: u64 = 30 * std.time.ns_per_s;
-/// Default wait cap: 8 minutes. Override (seconds) with KIRA_DEVFLOW_WAIT_SECS.
-/// A short cap is deliberate — reviews that need longer should be re-checked,
-/// not blocked on for the better part of an hour.
-const default_wait_secs: u64 = 8 * 60;
-
-fn waitTimeoutNs() u64 {
-    const raw = std.c.getenv("KIRA_DEVFLOW_WAIT_SECS") orelse return default_wait_secs * std.time.ns_per_s;
-    const secs = std.fmt.parseInt(u64, std.mem.span(raw), 10) catch return default_wait_secs * std.time.ns_per_s;
-    return secs * std.time.ns_per_s;
-}
 
 /// `status`: honest divergence via content diff, never commit counts.
 pub fn status(ctx: Context) !void {
@@ -38,6 +29,181 @@ pub fn status(ctx: Context) !void {
         try reportPair(ctx, "fork vs upstream", fork_ref, up_ref);
     }
     try reportPair(ctx, "local vs fork", ctx.default_branch, fork_ref);
+
+    const branch = try git.currentBranch(ctx);
+    defer ctx.allocator.free(branch);
+    const head = try git.headOid(ctx);
+    defer ctx.allocator.free(head);
+    out.print("  active head: {s} {s}\n", .{ branch, head });
+    const working_tree = try git.workingTreeSummary(ctx);
+    defer ctx.allocator.free(working_tree);
+    if (working_tree.len == 0) {
+        out.line("  working tree: CLEAN");
+    } else {
+        out.print("  working tree: CHANGES\n{s}\n", .{working_tree});
+    }
+    if (!std.mem.eql(u8, branch, ctx.default_branch) and !std.mem.eql(u8, branch, "HEAD")) {
+        const fork_branch_ref = try std.fmt.allocPrint(ctx.allocator, "origin/{s}", .{branch});
+        defer ctx.allocator.free(fork_branch_ref);
+        try reportPair(ctx, "active branch vs fork", "HEAD", fork_branch_ref);
+    }
+}
+
+/// `wait-ci <pr>`: block on the checks attached to the PR's exact current head.
+pub fn waitCi(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    out.print("devflow: waiting for CI on #{d} exact head {s}\n", .{ number, head });
+
+    while (true) {
+        const current_head = try gh.prHeadOid(ctx, slug, number);
+        defer ctx.allocator.free(current_head);
+        if (!std.mem.eql(u8, head, current_head)) {
+            out.print("devflow: PR #{d} head changed while waiting ({s} -> {s}); restart the exact-head gate\n", .{ number, head, current_head });
+            return error.PrHeadChanged;
+        }
+        const checks = try gh.prCheckStatus(ctx, slug, number);
+        defer checks.deinit(ctx.allocator);
+        if (checks.failing != 0) {
+            out.print("devflow: CI failed on #{d} ({d} failing check(s))\n{s}\n", .{ number, checks.failing, checks.lines });
+            return error.CiFailed;
+        }
+        if (checks.green()) {
+            out.print("devflow: CI green on #{d} exact head {s} ({d} checks)\n", .{ number, head, checks.total });
+            return;
+        }
+        if (checks.total == 0) {
+            out.print("devflow: #{d} has no checks on exact head yet; waiting...\n", .{number});
+        } else {
+            out.print("devflow: #{d} has {d} pending check(s)\n{s}\n", .{ number, checks.pending, checks.lines });
+        }
+        try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+    }
+}
+
+/// `review-findings <pr> [--codex]`: print exact-head inline findings without
+/// bypassing devflow for ad-hoc GitHub reads.
+pub fn reviewFindings(ctx: Context, number: u32, include_codex: bool) !void {
+    const findings = try gh.headReviewFindings(ctx, prSlug(ctx), number, include_codex);
+    defer ctx.allocator.free(findings);
+    if (findings.len == 0) {
+        out.print("devflow: no exact-head inline findings on #{d}\n", .{number});
+        return;
+    }
+    out.print("devflow: exact-head inline findings on #{d}\n{s}\n", .{ number, findings });
+}
+
+/// `ci-failures <pr>`: print failed job logs for workflow runs attached to the
+/// PR's exact current head.
+pub fn ciFailures(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.runIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no workflow runs on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+
+    var found = false;
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        const job_ids = try gh.failedJobIdsForRun(ctx, slug, run_id);
+        defer ctx.allocator.free(job_ids);
+        var jobs = std.mem.splitScalar(u8, job_ids, '\n');
+        while (jobs.next()) |job_id| {
+            if (job_id.len == 0) continue;
+            found = true;
+            const log = try gh.failedJobLog(ctx, slug, run_id, job_id);
+            defer ctx.allocator.free(log);
+            const excerpt = try failureExcerpt(ctx.allocator, log);
+            defer ctx.allocator.free(excerpt);
+            out.print("devflow: failed CI excerpt for #{d} exact head {s}, run {s}, job {s}\n{s}\n", .{ number, head, run_id, job_id, excerpt });
+        }
+    }
+    if (!found) out.print("devflow: no failed jobs on #{d} exact head {s}\n", .{ number, head });
+}
+
+fn failureExcerpt(allocator: std.mem.Allocator, log: []const u8) ![]u8 {
+    var result: std.Io.Writer.Allocating = .init(allocator);
+    errdefer result.deinit();
+    var lines = std.mem.splitScalar(u8, log, '\n');
+    var emitted: usize = 0;
+    var parity_context: usize = 0;
+    while (lines.next()) |line| {
+        const relevant = failureRelevant(line);
+        if (std.mem.indexOf(u8, line, "FAIL <parity") != null) parity_context = 40;
+        if (!relevant and parity_context == 0) continue;
+        try result.writer.print("{s}\n", .{line});
+        if (!relevant and parity_context != 0) parity_context -= 1;
+        emitted += 1;
+        if (emitted == 400) {
+            try result.writer.writeAll("... failure excerpt capped at 400 matching lines ...\n");
+            break;
+        }
+    }
+    if (emitted == 0) try result.writer.writeAll("(job failed without a matching error line; inspect the job URL from ci-runners)\n");
+    return result.toOwnedSlice();
+}
+
+fn failureRelevant(line: []const u8) bool {
+    const needles = [_][]const u8{
+        "##[error]",                        " error:",                     "error[",   "failed", "FAIL ",             "ExternalCommandFailed",
+        "undefined reference",              "linker",                      "clang:",   "lld:",   "kira llvm backend", "/usr/bin/x86_64-linux-gnu-ld:",
+        "Process completed with exit code", "A connection attempt failed", "dial tcp", "LNK",
+    };
+    for (needles) |needle| if (std.mem.indexOf(u8, line, needle) != null) return true;
+    return false;
+}
+
+/// `ci-runners <pr>`: report the actual runner assigned to every job attached
+/// to the PR's exact current head, including the requested runner labels.
+pub fn ciRunners(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.runIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no workflow runs on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+
+    out.print("devflow: CI runners on #{d} exact head {s}\n", .{ number, head });
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        const details = try gh.workflowRunnerDetails(ctx, slug, run_id);
+        defer ctx.allocator.free(details);
+        if (details.len == 0) {
+            out.print("  run {s}: jobs have not been created yet\n", .{run_id});
+        } else {
+            out.print("  run {s}\n{s}\n", .{ run_id, details });
+        }
+    }
+}
+
+/// `rerun-ci <pr>`: rerun every completed workflow attached to the PR's exact
+/// head. Useful after changing repository runner-provider configuration.
+pub fn rerunCi(ctx: Context, number: u32) !void {
+    const slug = prSlug(ctx);
+    const head = try gh.prHeadOid(ctx, slug, number);
+    defer ctx.allocator.free(head);
+    const run_ids = try gh.completedRunIdsForHead(ctx, slug, head);
+    defer ctx.allocator.free(run_ids);
+    if (run_ids.len == 0) {
+        out.print("devflow: no completed workflow runs to rerun on #{d} exact head {s}\n", .{ number, head });
+        return;
+    }
+    var ids = std.mem.splitScalar(u8, run_ids, '\n');
+    while (ids.next()) |run_id| {
+        if (run_id.len == 0) continue;
+        try gh.rerunWorkflow(ctx, slug, run_id);
+        out.print("devflow: reran workflow {s} on #{d} exact head {s}\n", .{ run_id, number, head });
+    }
 }
 
 /// Single-stage: the PR lives on upstream when there is an upstream remote
@@ -89,29 +255,40 @@ pub fn push(ctx: Context) !void {
     out.print("devflow: pushed {s} to {s}\n", .{ branch, ctx.fork_ssh_url });
 }
 
-/// `open-pr [title]`: open ONE PR against upstream (single-stage) from the
-/// current branch. With no upstream remote, opens a fork-internal PR instead.
-pub fn openForkPr(ctx: Context, title_opt: ?[]const u8) !void {
+/// `pr-scope`: print metadata computed from the complete branch.
+pub fn prScope(ctx: Context) !void {
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
+    out.print("{s}\n\n{s}", .{ metadata.title, metadata.body });
+}
+
+/// `open-pr`: open ONE PR against upstream (single-stage) from the current
+/// branch, or refresh an existing PR. Title and body always come from the
+/// complete base...HEAD branch inventory.
+pub fn openForkPr(ctx: Context) !void {
     const branch = try git.currentBranch(ctx);
     defer ctx.allocator.free(branch);
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
 
-    const title = title_opt orelse branch;
     if (ctx.hasUpstream()) {
         // Idempotent: if the upstream PR for this branch already exists (retry/
         // resume), report it instead of erroring on `gh pr create`.
         if (try gh.prNumberOn(ctx, ctx.upstream_slug, branch)) |existing| {
-            out.print("devflow: PR #{d} already open on {s} for {s}\n", .{ existing, ctx.upstream_slug, branch });
+            try gh.updatePr(ctx, ctx.upstream_slug, existing, metadata.title, metadata.body);
+            out.print("devflow: refreshed PR #{d} on {s} from complete branch scope\n", .{ existing, ctx.upstream_slug });
             return;
         }
-        const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, title);
+        const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, branch, metadata.title, metadata.body);
         out.print("devflow: opened PR #{d} on {s} ({s}:{s} -> {s})\n", .{ number, ctx.upstream_slug, ownerLogin(ctx.fork_slug), branch, ctx.default_branch });
         return;
     }
     if (try gh.prNumberForBranch(ctx, branch)) |existing| {
-        out.print("devflow: PR #{d} already open for {s}\n", .{ existing, branch });
+        try gh.updatePr(ctx, ctx.fork_slug, existing, metadata.title, metadata.body);
+        out.print("devflow: refreshed fork PR #{d} from complete branch scope\n", .{existing});
         return;
     }
-    const number = try gh.openForkPr(ctx, ctx.default_branch, branch, title);
+    const number = try gh.openForkPr(ctx, ctx.default_branch, branch, metadata.title, metadata.body);
     out.print("devflow: opened fork PR #{d} ({s} -> {s})\n", .{ number, branch, ctx.default_branch });
 }
 
@@ -135,15 +312,13 @@ pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
 /// no unresolved review threads remain. This is the gate that stops the flow
 /// advancing while findings are still open.
 pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
-    var waited: u64 = 0;
-    const timeout_ns = waitTimeoutNs();
     const slug = prSlug(ctx);
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
         // a rate-limited/incomplete review must not read as "reviewed".
-        const logins = try gh.reviewerLogins(ctx, slug, number);
+        const logins = try gh.headReviewerLogins(ctx, slug, number);
         defer ctx.allocator.free(logins);
-        const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
+        const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null or try gh.codeRabbitCheckResponded(ctx, slug, number);
         const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
         const reviewers_seen = has_rabbit and (!require_codex or has_codex);
 
@@ -158,9 +333,7 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
             out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
         }
 
-        if (waited >= timeout_ns) return error.ReviewWaitTimeout;
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
-        waited += poll_interval_ns;
     }
 }
 
@@ -171,9 +344,15 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
 /// wait-reviews (Codex P2: "Require reviewer completion before merging").
 pub fn land(ctx: Context, number: u32, require_codex: bool) !void {
     const slug = prSlug(ctx);
-    const logins = try gh.reviewerLogins(ctx, slug, number);
+    const checks = try gh.prCheckStatus(ctx, slug, number);
+    defer checks.deinit(ctx.allocator);
+    if (!checks.green()) {
+        out.print("devflow: refusing to land #{d}: CI is not green ({d} pending, {d} failing)\n{s}\n", .{ number, checks.pending, checks.failing, checks.lines });
+        return error.CiNotGreen;
+    }
+    const logins = try gh.headReviewerLogins(ctx, slug, number);
     defer ctx.allocator.free(logins);
-    const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null;
+    const has_rabbit = std.mem.indexOf(u8, logins, "coderabbit") != null or try gh.codeRabbitCheckResponded(ctx, slug, number);
     const has_codex = std.mem.indexOf(u8, logins, "codex") != null;
     if (!(has_rabbit and (!require_codex or has_codex))) {
         out.print("devflow: refusing to land #{d}: required review not submitted yet (submitted: {s})\n", .{ number, logins });
@@ -226,17 +405,18 @@ pub fn sync(ctx: Context) !void {
     }
 }
 
-/// `open-upstream-pr [title]`: only valid after the fork PR has merged and the
+/// `open-upstream-pr`: only valid after the fork PR has merged and the
 /// fork default branch matches upstream-ready content. Refuses without upstream.
-pub fn openUpstreamPr(ctx: Context, title_opt: ?[]const u8) !void {
+pub fn openUpstreamPr(ctx: Context) !void {
     if (!ctx.hasUpstream()) {
         out.line("devflow: no `upstream` remote configured");
         return error.NoUpstream;
     }
     try git.fetchRemote(ctx, "origin");
 
-    const title = title_opt orelse ctx.default_branch;
-    const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, ctx.default_branch, title);
+    const metadata = try pr_scope.generate(ctx);
+    defer metadata.deinit(ctx.allocator);
+    const number = try gh.openUpstreamPr(ctx, ctx.fork_slug, ctx.default_branch, ctx.default_branch, metadata.title, metadata.body);
     out.print("devflow: opened upstream PR #{d} ({s}:{s} -> {s}:{s})\n", .{
         number, ctx.fork_slug, ctx.default_branch, ctx.upstream_slug, ctx.default_branch,
     });

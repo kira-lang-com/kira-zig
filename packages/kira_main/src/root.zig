@@ -13,3 +13,8 @@ pub const kira_developer_build = developer.kira_developer_build;
 pub const kira_developer_test = developer.kira_developer_test;
 pub const kira_developer_report = developer.kira_developer_report;
 pub const kira_developer_last_error = developer.kira_developer_last_error;
+
+test {
+    _ = developer;
+    _ = @import("developer_failtest.zig");
+}

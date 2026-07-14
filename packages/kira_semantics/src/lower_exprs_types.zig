@@ -11,6 +11,7 @@ const signature_types = @import("lower_exprs_function_types.zig");
 const ownership_exprs = @import("lower_exprs_ownership.zig");
 const assignment = @import("lower_exprs_assignment.zig");
 const callbacks = @import("lower_exprs_callbacks.zig");
+const implicit_members = @import("lower_exprs_implicit_members.zig");
 const lowerCallbackBlockValue = parent.lowerCallbackBlockValue;
 const lowerExpr = parent.lowerExpr;
 pub const resolveSyntaxExprType = resolvers.resolveSyntaxExprType;
@@ -171,10 +172,47 @@ pub fn lowerExpectedValue(
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
     span: source_pkg.Span,
 ) anyerror!*model.Expr {
-    if (expected_type.kind == .enum_instance) {
-        if (try parent.lowerEnumVariantExprExpected(ctx, syntax_arg, expected_type, imports, scope, function_headers)) |lowered_enum| {
-            return lowered_enum;
+    // An expected array type anchors every element independently. Besides
+    // preserving precise ownership metadata for empty/nested arrays, this is
+    // what makes manifest-style lists such as `[.Vm, .Llvm, .Hybrid]` work.
+    if (expected_type.kind == .array and syntax_arg.* == .array and expected_type.name != null) {
+        var element_type = try shared.resolvedTypeFromText(expected_type.name.?);
+        if (element_type.kind == .named and element_type.name != null) {
+            const name = element_type.name.?;
+            if (ctx.enum_headers) |headers| {
+                if (headers.get(name) != null) element_type.kind = .enum_instance;
+            }
+            if (ctx.construct_headers) |headers| {
+                if (headers.get(name) != null) {
+                    element_type = .{
+                        .kind = .construct_any,
+                        .name = try std.fmt.allocPrint(ctx.allocator, "any {s}", .{name}),
+                        .construct_constraint = .{ .construct_name = name },
+                    };
+                }
+            }
         }
+        var elements = std.array_list.Managed(*model.Expr).init(ctx.allocator);
+        for (syntax_arg.array.elements) |element| {
+            const lowered_element = try lowerExpectedValue(ctx, element, element_type, imports, scope, function_headers, exprSpan(element.*));
+            shared.markAnyFieldMovedIntoOwned(ctx, scope, lowered_element, exprSpan(element.*));
+            try elements.append(lowered_element);
+        }
+        const lowered = try ctx.allocator.create(model.Expr);
+        lowered.* = .{ .array = .{
+            .elements = try elements.toOwnedSlice(),
+            .ty = expected_type,
+            .span = syntax_arg.array.span,
+        } };
+        return lowered;
+    }
+
+    if (try parent.lowerEnumVariantExprExpected(ctx, syntax_arg, expected_type, imports, scope, function_headers)) |lowered_enum| {
+        return lowered_enum;
+    }
+
+    if (try implicit_members.rewriteExpected(ctx, syntax_arg, expected_type, function_headers)) |rewritten| {
+        return lowerExpectedValue(ctx, rewritten, expected_type, imports, scope, function_headers, span);
     }
 
     if (shared.callbackInfo(ctx, expected_type)) |callback_info| {
@@ -349,6 +387,7 @@ pub fn exprSpan(expr: syntax.ast.Expr) source_pkg.Span {
         .string => |node| node.span,
         .bool => |node| node.span,
         .identifier => |node| node.span,
+        .implicit_member => |node| node.span,
         .array => |node| node.span,
         .builder_array => |node| node.span,
         .callback => |node| node.span,
@@ -415,6 +454,12 @@ pub fn resolveValueType(ctx: *shared.Context, explicit_type_expr: ?*syntax.ast.T
 }
 
 pub fn syntaxExprMatchesExplicitType(expr: *syntax.ast.Expr, explicit_type: model.ResolvedType) bool {
+    if (expr.* == .implicit_member) {
+        return explicit_type.kind == .enum_instance or explicit_type.kind == .named;
+    }
+    if (expr.* == .call and expr.call.callee.* == .implicit_member) {
+        return explicit_type.kind == .enum_instance or explicit_type.kind == .named;
+    }
     if (explicit_type.kind == .array) {
         if (expr.* != .array or explicit_type.name == null) return false;
         const element_type = shared.resolvedTypeFromText(explicit_type.name.?) catch return false;

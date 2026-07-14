@@ -14,6 +14,7 @@ pub const canonicalizeSourceRoot = @import("paths.zig").canonicalizeSourceRoot;
 pub const canonicalAppSourceRoot = @import("roots.zig").canonicalAppSourceRoot;
 pub const sourceRootForPackageRoot = @import("roots.zig").sourceRootForPackageRoot;
 pub const setTimingsEnabled = @import("builder.zig").setTimingsEnabled;
+pub const setProgressCallback = @import("builder.zig").setProgressCallback;
 
 test {
     _ = @import("builder.zig");

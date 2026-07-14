@@ -258,7 +258,7 @@ pub fn emitUseAfterMove(ctx: *shared.Context, name: []const u8, use_span: source
 ///
 /// A moved field whose type is a NAMED struct is still rejected: struct field
 /// reads lower as deep copies whose Any interiors alias the source
-/// (KIRA_MEMORY_MODEL.md §3), so the base's drop would free storage the copy
+/// (.codex/KIRA_MEMORY_MODEL.md §3), so the base's drop would free storage the copy
 /// still references. Re-initializing the field (`x.field = ...`) remains the
 /// escape hatch there.
 pub fn rejectOutstandingMovedFields(ctx: *shared.Context, scope: *model.Scope) !void {

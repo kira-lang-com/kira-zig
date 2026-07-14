@@ -5,25 +5,25 @@ const package_support = @import("package_support.zig");
 
 pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len == 0) return error.InvalidArguments;
-    if (std.mem.eql(u8, args[0], "pack")) return executePack(allocator, args[1..], stdout);
+    if (std.mem.eql(u8, args[0], "pack")) return executePack(allocator, args[1..], stdout, stderr);
     if (std.mem.eql(u8, args[0], "inspect")) return executeInspect(allocator, args[1..], stdout, stderr);
     return error.InvalidArguments;
 }
 
-fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype) !void {
+fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
     if (args.len > 1) return error.InvalidArguments;
-    const location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0]);
+    const location = try package_support.loadManifestLocation(allocator, if (args.len == 0) null else args[0], stderr);
     for (location.manifest.dependencies) |dep_spec| {
         if (dep_spec.source == .path) return error.InvalidArguments;
     }
 
-    const generated_root = try std.fs.path.join(allocator, &.{ location.root_path, "generated" });
-    defer allocator.free(generated_root);
-    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, generated_root);
+    const build_root = try std.fs.path.join(allocator, &.{ location.root_path, ".kira-build", "package" });
+    defer allocator.free(build_root);
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, build_root);
 
     const archive_name = try std.fmt.allocPrint(allocator, "{s}-{s}.tar", .{ location.manifest.name, location.manifest.version });
     defer allocator.free(archive_name);
-    const archive_path = try std.fs.path.join(allocator, &.{ generated_root, archive_name });
+    const archive_path = try std.fs.path.join(allocator, &.{ build_root, archive_name });
     defer allocator.free(archive_path);
 
     const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, archive_path, .{ .truncate = true });
@@ -48,11 +48,10 @@ fn executePack(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
 }
 
 fn executeInspect(allocator: std.mem.Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) !void {
-    _ = stderr;
     if (args.len > 1) return error.InvalidArguments;
     const target = args[0];
     if (isDirectory(target)) {
-        const location = try package_support.loadManifestLocation(allocator, target);
+        const location = try package_support.loadManifestLocation(allocator, target, stderr);
         try printManifestSummary(stdout, location.manifest);
         return;
     }
@@ -68,9 +67,13 @@ fn executeInspect(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const manifest_path = try printExtractedTree(allocator, stdout, temp_dir, temp_dir);
     if (manifest_path) |path| {
         const text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(2 * 1024 * 1024));
-        const parsed = try manifest.parseProjectManifest(allocator, text);
+        const parsed = try parseExtractedManifest(allocator, path, text, stderr);
         try printManifestSummary(stdout, parsed);
     }
+}
+
+fn parseExtractedManifest(allocator: std.mem.Allocator, path: []const u8, text: []const u8, stderr: anytype) !manifest.ProjectManifest {
+    return package_support.loadManifestTextWithDiagnostics(allocator, text, path, stderr);
 }
 
 fn printManifestSummary(stdout: anytype, project_manifest: manifest.ProjectManifest) !void {
@@ -149,7 +152,9 @@ fn printExtractedTree(
             },
             .file => {
                 try stdout.print("  {s}\n", .{relative});
-                if (isManifestFile(relative)) manifest_path = try allocator.dupe(u8, child_path);
+                if (isManifestFile(relative) and prefersManifest(relative, manifest_path)) {
+                    manifest_path = try allocator.dupe(u8, child_path);
+                }
             },
             else => {},
         }
@@ -162,6 +167,7 @@ fn shouldSkip(name: []const u8) bool {
         std.mem.eql(u8, name, ".zig-cache") or
         std.mem.eql(u8, name, "zig-out") or
         std.mem.eql(u8, name, ".kira") or
+        std.mem.eql(u8, name, ".kira-build") or
         std.mem.eql(u8, name, "generated");
 }
 
@@ -181,7 +187,20 @@ fn shouldSkipFile(path: []const u8) bool {
 
 fn isManifestFile(path: []const u8) bool {
     const base = std.fs.path.basename(path);
-    return std.mem.eql(u8, base, "kira.toml") or std.mem.eql(u8, base, "project.toml") or std.mem.eql(u8, base, "Kira.toml");
+    return manifestRank(base) != null;
+}
+
+fn prefersManifest(candidate: []const u8, current: ?[]const u8) bool {
+    const current_path = current orelse return true;
+    return manifestRank(std.fs.path.basename(candidate)).? < manifestRank(std.fs.path.basename(current_path)).?;
+}
+
+fn manifestRank(base: []const u8) ?u8 {
+    if (std.mem.eql(u8, base, "package.kira")) return 0;
+    if (std.mem.eql(u8, base, "kira.toml")) return 1;
+    if (std.mem.eql(u8, base, "project.toml")) return 2;
+    if (std.mem.eql(u8, base, "Kira.toml")) return 3;
+    return null;
 }
 
 fn normalizeArchivePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -191,7 +210,10 @@ fn normalizeArchivePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn isDirectory(path: []const u8) bool {
-    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, .{}) catch return false
+    else
+        std.Io.Dir.cwd().openDir(std.Options.debug_io, path, .{}) catch return false;
     dir.close(std.Options.debug_io);
     return true;
 }
@@ -199,4 +221,52 @@ fn isDirectory(path: []const u8) bool {
 fn absolutize(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, allocator);
+}
+
+test "archive inspection recognizes and loads package.kira" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    try std.testing.expect(isManifestFile("nested/package.kira"));
+    try std.testing.expect(prefersManifest("package.kira", "kira.toml"));
+    var stderr: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr.deinit();
+    const parsed = try parseExtractedManifest(allocator, "/archive/package.kira",
+        \\Package Archived {
+        \\    let version = "1.2.3"
+        \\}
+    , &stderr.writer);
+    try std.testing.expectEqualStrings("Archived", parsed.name);
+    try std.testing.expectEqualStrings("1.2.3", parsed.version);
+}
+
+test "directory detection accepts relative paths" {
+    try std.testing.expect(isDirectory("."));
+    try std.testing.expect(!isDirectory("this-relative-path-must-not-exist.kira-archive"));
+}
+
+test "packed package.kira archive can be inspected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "app", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "package.kira",
+        .data =
+        \\Package ArchiveDemo {
+        \\    let version = "1.2.3"
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "app/main.kira", .data = "fn main() {}\n" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try executePack(allocator, &.{root}, &output.writer, &output.writer);
+    const archive_path = try std.fs.path.join(allocator, &.{ root, ".kira-build", "package", "ArchiveDemo-1.2.3.tar" });
+    try executeInspect(allocator, &.{archive_path}, &output.writer, &output.writer);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "package ArchiveDemo 1.2.3") != null);
 }

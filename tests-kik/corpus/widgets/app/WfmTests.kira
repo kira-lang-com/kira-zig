@@ -1,0 +1,101 @@
+// WfmTests.kira — migrated from tests/pass/run/widget_for_modifier_content.
+// PREFIX: wfm / Wfm (all top-level names use this prefix, except the shared
+// `Widget` family from WidgetFamily.kira: the compiler requires the literal
+// family name `Widget` for `body {}` builder-block declarations).
+// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+
+// ---------------------------------------------------------------------------
+// widget_for_modifier_content
+// ---------------------------------------------------------------------------
+// Regression: a content builder block that mixes a modifier-chained widget
+// (`Text(..).font(..)`) with a `For(...)` item used to crash semantics with
+// KIC014; the content array must preserve the real modifier chain so the
+// FontLayer prefix stays observable ahead of the For items. Original printed
+// the rendered tree (stdout "font\nheader\none\ntwo\nthree") — reduced here
+// to a "|"-joined String.
+
+function wfmJoinChildren(children: borrow [some Widget]) -> [String] {
+    var labels: [String] = []
+    var childIndex = 0
+    while childIndex < children.count {
+        let rendered = children[childIndex].render()
+        var labelIndex = 0
+        while labelIndex < rendered.count {
+            labels.append(rendered[labelIndex])
+            labelIndex = labelIndex + 1
+        }
+        childIndex = childIndex + 1
+    }
+    return labels
+}
+
+Widget WfmText(text: String) {
+    function render() -> [String] {
+        return [text]
+    }
+}
+
+Widget WfmFontLayer(size: Float) {
+    @Content let child: Widget
+
+    function render() -> [String] {
+        var out: [String] = []
+        if size > 0.0 {
+            out.append("font")
+        }
+        let inner = child.render()
+        var index = 0
+        while index < inner.count {
+            out.append(inner[index])
+            index = index + 1
+        }
+        return out
+    }
+}
+
+extend Widget {
+    function wfmFont(size: Float) -> Widget {
+        return WfmFontLayer(size: size) {
+            self
+        }
+    }
+}
+
+Widget WfmVStack(spacing: Float) {
+    @Content let children: [Widget]
+
+    function render() -> [String] {
+        let ignored = spacing + 0.0
+        return wfmJoinChildren(children)
+    }
+}
+
+Widget WfmScreen() {
+    let items: [String] = ["one", "two", "three"]
+
+    body {
+        WfmVStack(spacing = 8.0) {
+            WfmText("header").wfmFont(size = 18.0)
+            For(item in items) {
+                WfmText(item)
+            }
+        }
+    }
+}
+
+Test WfmForModifierContent {
+    test {
+        let rendered = WfmScreen().render()
+        var out = ""
+        var index = 0
+        while index < rendered.count {
+            if index > 0 {
+                out = out + "|"
+            }
+            out = out + rendered[index]
+            index = index + 1
+        }
+        return out
+    }
+    expect { let e: Result<String, TestFailure> = .Ok("font|header|one|two|three"); return e }
+}

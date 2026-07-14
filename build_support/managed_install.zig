@@ -23,6 +23,10 @@ pub fn addManagedToolchainInstallStep(
                     "$ErrorActionPreference = 'Stop'; " ++
                     "$kiraHome = Join-Path $HOME '.kira'; " ++
                     "$toolchainRoot = Join-Path $kiraHome ('toolchains\\' + $channel + '\\' + $version); " ++
+                    "$nativeCacheSource = Join-Path $toolchainRoot 'foundation\\.kira-build\\native'; " ++
+                    "if (-not (Test-Path $nativeCacheSource)) {{ $channelRoot = Join-Path $kiraHome ('toolchains\\' + $channel); if (Test-Path $channelRoot) {{ $nativeCacheSource = Get-ChildItem $channelRoot -Directory | Sort-Object LastWriteTime -Descending | ForEach-Object {{ Join-Path $_.FullName 'foundation\\.kira-build\\native' }} | Where-Object {{ Test-Path $_ }} | Select-Object -First 1; }} }}; " ++
+                    "$nativeCacheBackup = Join-Path ([System.IO.Path]::GetTempPath()) ('kira-native-cache-' + [System.Guid]::NewGuid().ToString('N')); " ++
+                    "if ($nativeCacheSource -and (Test-Path $nativeCacheSource)) {{ New-Item -ItemType Directory -Force -Path $nativeCacheBackup | Out-Null; Copy-Item $nativeCacheSource (Join-Path $nativeCacheBackup 'native') -Recurse -Force; }}; " ++
                     "if (Test-Path $toolchainRoot) {{ Remove-Item $toolchainRoot -Recurse -Force; }}; " ++
                     "$binDir = Join-Path $toolchainRoot 'bin'; " ++
                     "New-Item -ItemType Directory -Force -Path $binDir | Out-Null; " ++
@@ -47,6 +51,8 @@ pub fn addManagedToolchainInstallStep(
                     "$foundationDest = Join-Path $toolchainRoot 'foundation'; " ++
                     "if (Test-Path $foundationDest) {{ Remove-Item $foundationDest -Recurse -Force; }}; " ++
                     "Copy-Item $foundationSource $foundationDest -Recurse -Force; " ++
+                    "$restoredNativeCache = Join-Path $nativeCacheBackup 'native'; " ++
+                    "if (Test-Path $restoredNativeCache) {{ $nativeBuildDest = Join-Path $foundationDest '.kira-build'; $nativeDest = Join-Path $nativeBuildDest 'native'; if (Test-Path $nativeDest) {{ Remove-Item $nativeDest -Recurse -Force; }}; New-Item -ItemType Directory -Force -Path $nativeBuildDest | Out-Null; Move-Item $restoredNativeCache $nativeDest -Force; Remove-Item $nativeCacheBackup -Recurse -Force; }}; " ++
                     "$kiraMainIncludeDest = Join-Path $toolchainRoot 'packages\\kira_main\\include'; " ++
                     "New-Item -ItemType Directory -Force -Path $kiraMainIncludeDest | Out-Null; " ++
                     "Copy-Item (Join-Path $kiraMainIncludeSource '*') $kiraMainIncludeDest -Recurse -Force; " ++
@@ -56,6 +62,7 @@ pub fn addManagedToolchainInstallStep(
                     "Set-Content -Path $currentPath -Value ('channel = \"' + $channel + '\"'); " ++
                     "Add-Content -Path $currentPath -Value ('version = \"' + $version + '\"'); " ++
                     "Add-Content -Path $currentPath -Value 'primary = \"kirac\"'; " ++
+                    "Push-Location $foundationDest; try {{ & $kiracDest ffi autobind --locked --quiet --backend llvm; if ($LASTEXITCODE -ne 0) {{ throw 'Foundation FFI autobind failed' }} }} finally {{ Pop-Location }}; " ++
                     "$normalize = {{ param([string]$value) if ([string]::IsNullOrWhiteSpace($value)) {{ return '' }} return $value.Trim().TrimEnd([char[]]@(92, 47)).ToLowerInvariant() }}; " ++
                     "$target = & $normalize $bootstrapperBinDir; " ++
                     "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); " ++
@@ -81,6 +88,9 @@ pub fn addManagedToolchainInstallStep(
                 "set -eu; " ++
                     "cli_source=\"$0\"; bootstrapper_source=\"$1\"; version=\"$2\"; channel=\"$3\"; metadata_source=\"$4\"; templates_source=\"$5\"; foundation_source=\"$6\"; kira_main_include_source=\"$7\"; bootstrapper_bin_dir=\"$8\"; " ++
                     "kira_home=\"$HOME/.kira\"; toolchain_root=\"$kira_home/toolchains/$channel/$version\"; bin_dir=\"$toolchain_root/bin\"; " ++
+                    "mkdir -p \"$kira_home/toolchains\"; native_cache_backup=$(mktemp -d \"$kira_home/toolchains/.kira-native-cache.XXXXXX\"); " ++
+                    "native_cache_source=\"$toolchain_root/foundation/.kira-build/native\"; if [ ! -d \"$native_cache_source\" ]; then for candidate in \"$kira_home/toolchains/$channel\"/*/foundation/.kira-build/native; do if [ -d \"$candidate\" ]; then native_cache_source=\"$candidate\"; fi; done; fi; " ++
+                    "if [ -d \"$native_cache_source\" ]; then cp -Rp \"$native_cache_source\" \"$native_cache_backup/native\"; fi; " ++
                     "rm -rf \"$toolchain_root\"; " ++
                     "mkdir -p \"$bin_dir\"; " ++
                     "cp \"$cli_source\" \"$bin_dir/kirac\"; chmod +x \"$bin_dir/kirac\"; touch \"$bin_dir/kirac\"; " ++
@@ -90,9 +100,11 @@ pub fn addManagedToolchainInstallStep(
                     "cp \"$metadata_source\" \"$toolchain_root/llvm-metadata.toml\"; " ++
                     "rm -rf \"$toolchain_root/templates\"; cp -R \"$templates_source\" \"$toolchain_root/templates\"; " ++
                     "rm -rf \"$toolchain_root/foundation\"; cp -R \"$foundation_source\" \"$toolchain_root/foundation\"; " ++
+                    "if [ -d \"$native_cache_backup/native\" ]; then rm -rf \"$toolchain_root/foundation/.kira-build/native\"; mkdir -p \"$toolchain_root/foundation/.kira-build\"; mv \"$native_cache_backup/native\" \"$toolchain_root/foundation/.kira-build/native\"; fi; rm -rf \"$native_cache_backup\"; " ++
                     "mkdir -p \"$toolchain_root/packages/kira_main/include\"; cp -R \"$kira_main_include_source\"/. \"$toolchain_root/packages/kira_main/include\"; " ++
                     "mkdir -p \"$kira_home/toolchains\"; " ++
                     "cat > \"$kira_home/toolchains/current.toml\" <<EOF\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
+                    "(cd \"$toolchain_root/foundation\" && \"$bin_dir/kirac\" ffi autobind --locked --quiet --backend llvm); " ++
                     "path_added=0; " ++
                     "case \":$PATH:\" in *\":$bootstrapper_bin_dir:\"*) path_exists=1 ;; *) path_exists=0 ;; esac; " ++
                     "if [ \"$path_exists\" -eq 0 ]; then " ++

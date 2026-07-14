@@ -25,17 +25,27 @@ pub const Context = struct {
 pub fn lowerProgram(allocator: std.mem.Allocator, program: model.Program, options: LowerOptions) !mid.Program {
     var reachable = std.AutoHashMapUnmanaged(u32, void){};
     defer reachable.deinit(allocator);
-    try lower_hir.markReachableFunction(allocator, program, &reachable, program.functions[program.entry_index].id);
-    if (options.include_tests) {
-        for (program.tests) |test_case| {
-            if (lower_hir.functionIdByName(program, test_case.test_function)) |id| {
-                try lower_hir.markReachableFunction(allocator, program, &reachable, id);
-            }
-            if (lower_hir.functionIdByName(program, test_case.expect_function)) |id| {
-                try lower_hir.markReachableFunction(allocator, program, &reachable, id);
+    // Collect every root first, then mark them against ONE Reach context —
+    // per-root marking rebuilds Reach's whole-program lookup maps and made
+    // test-mode lowering quadratic in suite size.
+    var roots = std.array_list.Managed(u32).init(allocator);
+    defer roots.deinit();
+    try roots.append(program.functions[program.entry_index].id);
+    if (options.include_tests and program.tests.len != 0) {
+        var id_by_name = std.StringHashMapUnmanaged(u32){};
+        defer id_by_name.deinit(allocator);
+        try id_by_name.ensureTotalCapacity(allocator, @intCast(program.functions.len));
+        for (program.functions) |function_decl| {
+            if (!id_by_name.contains(function_decl.name)) {
+                id_by_name.putAssumeCapacity(function_decl.name, function_decl.id);
             }
         }
+        for (program.tests) |test_case| {
+            if (id_by_name.get(test_case.test_function)) |id| try roots.append(id);
+            if (id_by_name.get(test_case.expect_function)) |id| try roots.append(id);
+        }
     }
+    try lower_hir.markReachableFunctionSet(allocator, program, &reachable, roots.items);
 
     var ctx = Context{
         .allocator = allocator,

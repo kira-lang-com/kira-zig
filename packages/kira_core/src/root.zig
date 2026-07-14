@@ -1,6 +1,7 @@
 pub const types = @import("types.zig");
 pub const ids = @import("ids.zig");
 pub const errors = @import("errors.zig");
+pub const identifiers = @import("identifiers.zig");
 
 pub const Allocator = types.Allocator;
 pub const String = types.String;
@@ -12,3 +13,10 @@ pub const LibraryId = ids.LibraryId;
 pub const BridgeId = ids.BridgeId;
 
 pub const CommonError = errors.CommonError;
+
+pub const sanitizeKiraIdentifier = identifiers.sanitizeKiraIdentifier;
+pub const writeKiraIdentifier = identifiers.writeKiraIdentifier;
+
+test {
+    _ = identifiers;
+}

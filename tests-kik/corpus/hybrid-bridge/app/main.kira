@@ -1,0 +1,17 @@
+// Hybrid native-bridge corpus — legacy tests/pass/run hybrid/native-bridge
+// cases migrated to Foundation `Test` constructs. HYBRID-only (the @Native +
+// @Runtime mix is rejected on pure vm/llvm); runs through the pure-Kira test
+// driver, which executes each Test at BUILD time on the hybrid runtime:
+//
+//   KIRA_PURE_TEST=1 kira test --backend hybrid tests-kik/corpus/hybrid-bridge
+//
+// main is trivial; the driver synthesized in test mode is the real entry.
+// Each app/<theme>/ module contributes Test declarations with a unique prefix.
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    return
+}

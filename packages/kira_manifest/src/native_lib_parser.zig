@@ -140,7 +140,7 @@ test "parses native library manifest" {
         \\defines = ["SOKOL_IMPL", "SOKOL_DUMMY_BACKEND"]
         \\
         \\[target.x86_64-linux-gnu]
-        \\static_lib = "generated/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a"
+        \\static_lib = ".kira-build/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a"
         \\frameworks = ["X11"]
     );
 
@@ -151,7 +151,7 @@ test "parses native library manifest" {
     try std.testing.expectEqual(native.AutobindingProfile.vulkan, manifest.library.autobinding.?.bindings.profile);
     try std.testing.expectEqualStrings("sg_setup", manifest.library.autobinding.?.bindings.functions[0]);
     try std.testing.expectEqual(@as(usize, 1), manifest.library.targets.len);
-    try std.testing.expectEqualStrings("generated/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a", manifest.library.targets[0].static_lib.?);
+    try std.testing.expectEqualStrings(".kira-build/native/sokol_gfx/x86_64-linux-gnu/libsokol_gfx.a", manifest.library.targets[0].static_lib.?);
 }
 
 test "parses native library target compiler and linker flags" {
@@ -168,7 +168,7 @@ test "parses native library target compiler and linker flags" {
         \\sources = ["src/webgpu_shim.c"]
         \\
         \\[target.wasm32-emscripten-unknown]
-        \\static_lib = "generated/native/webgpu_shim/wasm32-emscripten-unknown/libwebgpu_shim.a"
+        \\static_lib = ".kira-build/native/webgpu_shim/wasm32-emscripten-unknown/libwebgpu_shim.a"
         \\compiler_flags = ["--use-port=emdawnwebgpu"]
         \\linker_flags = ["--use-port=emdawnwebgpu", "-sASYNCIFY"]
     );

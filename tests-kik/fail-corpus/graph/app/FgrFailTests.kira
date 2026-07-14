@@ -1,0 +1,18 @@
+// FgrFailTests.kira — migrated import-graph compile-failure corpus (tests/fail/graph).
+//
+// MANIFEST (legacy case -> FailTest name -> expected Compile code):
+//   outside_app_import -> FgrOutsideAppImport (fixture) KSEM032
+
+// --- outside_app_import (tests/fail/graph/outside_app_import)
+// Import-graph case: app/main.kira does `import support as Support`, but the
+// `support.kira` module lives OUTSIDE the app/ module root, so the import cannot
+// resolve (KSEM032). The failure is a property of the on-disk directory layout
+// spanning two files, so it needs a fixture DIRECTORY — no single-file source
+// (block or raw-string) can express a module physically outside the package.
+FailTest FgrOutsideAppImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/outside_app_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM032")); return e }
+}

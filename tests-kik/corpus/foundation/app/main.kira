@@ -1,0 +1,16 @@
+// KikCorpusFoundation — migrated Foundation filesystem corpus cases from
+// tests/pass/run/. The tests do real file IO through the Foundation FS API
+// (unique package-relative paths, created and removed inside each test).
+// Foundation FS helpers are @Native, so
+// run through the hybrid test driver:
+//
+//   kira test --backend hybrid tests-kik/corpus/foundation
+
+import Foundation
+
+@Main
+@Runtime
+function main() {
+    print("kik-corpus-foundation")
+    return
+}

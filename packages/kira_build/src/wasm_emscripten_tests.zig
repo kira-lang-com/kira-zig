@@ -30,9 +30,27 @@ test "wasm32 emscripten build runs real Kira entrypoint through node" {
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "App/app/main.kira",
         .data =
+        \\enum WmxMode {
+        \\    Ready
+        \\    Busy(Int)
+        \\}
+        \\
+        \\function wmxScore(mode: borrow WmxMode) -> Int {
+        \\    match mode {
+        \\        Ready -> return 1;
+        \\        Busy(value) -> return value;
+        \\    }
+        \\}
+        \\
         \\@Main
         \\function main() {
-        \\    print("wasm-entrypoint-ok");
+        \\    let ready: WmxMode = .Ready
+        \\    let score = wmxScore(ready) + wmxScore(.Busy(5))
+        \\    if score == 6 {
+        \\        print("wasm-implicit-member-ok")
+        \\    } else {
+        \\        print("wasm-implicit-member-failed")
+        \\    }
         \\    return;
         \\}
         ,
@@ -67,7 +85,7 @@ test "wasm32 emscripten build runs real Kira entrypoint through node" {
     defer process_allocator.free(result.stderr);
 
     try std.testing.expectEqual(@as(std.process.Child.Term, .{ .exited = 0 }), result.term);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "wasm-entrypoint-ok") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "wasm-implicit-member-ok") != null);
 }
 
 test "wasm32 emscripten compiles and links a declared native library through emcc" {

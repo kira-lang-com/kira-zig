@@ -18,6 +18,7 @@ const std = @import("std");
 const syntax = @import("kira_syntax_model");
 const diagnostics = @import("kira_diagnostics");
 const parser = @import("kira_parser");
+const eq = @import("synth_test_driver_eq.zig");
 
 /// The synthesized driver function's name. The test runner invokes it by name.
 pub const driver_function_name = "__kira_test_main";
@@ -34,21 +35,59 @@ pub fn injectTestDriver(
     program: syntax.ast.Program,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
 ) !syntax.ast.Program {
-    var names = std.array_list.Managed([]const u8).init(allocator);
-    defer names.deinit();
+    const Test = struct { name: []const u8, form: syntax.ast.ConstructFormDecl };
+    var tests = std.array_list.Managed(Test).init(allocator);
+    defer tests.deinit();
     for (program.decls) |decl| {
         if (decl != .construct_form_decl) continue;
         const form = decl.construct_form_decl;
         if (!isTestForm(form)) continue;
-        try names.append(form.name);
+        try tests.append(.{ .name = form.name, .form = form });
     }
-    if (names.items.len == 0) return program;
+    if (tests.items.len == 0) return program;
+
+    // Type environment for structural-equality synthesis: struct/enum decls plus
+    // any authoritative `eq_<T>` bridges (hand-written or `@Derive(Equatable)`).
+    var env = try eq.Env.build(allocator, program);
+
+    // Per-test comparison dispatch, and the set of struct comparators to
+    // synthesize (transitively). A `null` dispatch keeps the scalar `==` path.
+    var dispatch = std.array_list.Managed(?[]const u8).init(allocator);
+    defer dispatch.deinit();
+    var needed: std.StringHashMapUnmanaged(void) = .{};
+    for (tests.items) |t| {
+        const value_type = eq.resultValueType(t.form);
+        switch (try eq.topLevelDispatch(&env, value_type)) {
+            .scalar => try dispatch.append(null),
+            .comparator => |fn_name| {
+                try dispatch.append(fn_name);
+                if (std.mem.startsWith(u8, fn_name, eq.synth_prefix))
+                    try needed.put(allocator, fn_name[eq.synth_prefix.len..], {});
+            },
+            .refuse => |type_name| {
+                try eq.refuseTopLevel(&env, diags, type_name, t.form.span);
+                return program;
+            },
+        }
+    }
+    try eq.expandNeeded(&env, &needed);
 
     var src: std.Io.Writer.Allocating = .init(allocator);
     defer src.deinit();
     const writer = &src.writer;
+
+    // Synthesize the recursive struct comparators the driver dispatches through.
+    // A refusal (unsupported field type with no `eq_` bridge) aborts injection so
+    // the build fails loudly with a KTEST001 diagnostic — never silent-wrong.
+    var needed_it = needed.iterator();
+    while (needed_it.next()) |entry| {
+        if (!try eq.emitStructComparator(&env, writer, entry.key_ptr.*, diags))
+            return program;
+    }
+
     try writer.print("function {s}() {{\n", .{driver_function_name});
-    for (names.items) |name| {
+    for (tests.items, dispatch.items) |t, cmp| {
+        const name = t.name;
         // The string literals bake the test name in at synthesis time (Kira has
         // no string concatenation), so each line is self-describing.
         //
@@ -58,11 +97,19 @@ pub fn injectTestDriver(
         // printed e.g. "PASS x" would be miscounted as a test result. The runner
         // only treats NUL-prefixed lines as driver markers; ordinary test output
         // never begins with a NUL.
+        //
+        // `condition` is `__actual == __expected` for scalar results, or a
+        // structural comparator call `<eq_fn>(__actual, __expected)` for struct
+        // results. Comparators take `borrow` params, so neither operand is moved.
+        const condition = if (cmp) |fn_name|
+            try std.fmt.allocPrint(allocator, "{s}(__actual, __expected)", .{fn_name})
+        else
+            "__actual == __expected";
         try writer.print(
             "    match {s}__expect() {{\n" ++
                 "        Ok(__expected) -> {{\n" ++
                 "            let __actual = {s}__test()\n" ++
-                "            if __actual == __expected {{ print(\"\\0PASS {s}\") }} else {{ print(\"\\0FAIL {s} (value mismatch)\") }}\n" ++
+                "            if {s} {{ print(\"\\0PASS {s}\") }} else {{ print(\"\\0FAIL {s} (value mismatch)\") }}\n" ++
                 "        }}\n" ++
                 // A trap-expectation test (expect = Result.Error): the driver must
                 // NOT call test() here (a hard abort would kill the whole driver).
@@ -70,7 +117,7 @@ pub fn injectTestDriver(
                 // checks that it traps.
                 "        Error(__failure) -> {{ print(\"\\0KTRAP {s}\") }}\n" ++
                 "    }}\n",
-            .{ name, name, name, name, name },
+            .{ name, name, condition, name, name, name },
         );
     }
     try writer.writeAll("    return\n}\n");

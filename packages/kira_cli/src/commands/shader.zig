@@ -134,7 +134,7 @@ fn parseBuildArgs(args: []const []const u8) !BuildArgs {
 
 fn defaultOutputDir(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const dir = std.fs.path.dirname(path) orelse ".";
-    return std.fs.path.join(allocator, &.{ dir, "generated", "shaders" });
+    return std.fs.path.join(allocator, &.{ dir, ".kira-build", "shaders" });
 }
 
 fn resolveBuildInputs(allocator: std.mem.Allocator, parsed: BuildArgs, stderr: anytype) !ResolvedBuildInputs {
@@ -157,7 +157,7 @@ fn resolveBuildInputs(allocator: std.mem.Allocator, parsed: BuildArgs, stderr: a
 
     return .{
         .paths = try discoverShaderFilesInDir(allocator, "Shaders", true, stderr),
-        .output_dir = parsed.output_dir orelse try allocator.dupe(u8, "generated/Shaders"),
+        .output_dir = parsed.output_dir orelse try allocator.dupe(u8, ".kira-build/shaders"),
         .target = parsed.target,
     };
 }
@@ -166,9 +166,9 @@ fn defaultOutputDirForDirectory(allocator: std.mem.Allocator, path: []const u8) 
     const base = std.fs.path.basename(path);
     if (std.mem.eql(u8, base, "Shaders")) {
         const parent = std.fs.path.dirname(path) orelse ".";
-        return std.fs.path.join(allocator, &.{ parent, "generated", "Shaders" });
+        return std.fs.path.join(allocator, &.{ parent, ".kira-build", "shaders" });
     }
-    return std.fs.path.join(allocator, &.{ path, "generated", "shaders" });
+    return std.fs.path.join(allocator, &.{ path, ".kira-build", "shaders" });
 }
 
 fn discoverShaderFilesInDir(allocator: std.mem.Allocator, dir_path: []const u8, enforce_pascal: bool, stderr: anytype) ![]const []const u8 {
@@ -288,7 +288,7 @@ test "shader build command writes WGSL artifacts when requested" {
     var stdout = std.Io.Writer.fixed(&stdout_buffer);
     var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-    try execute(allocator, &.{ "build", "tests/shaders/pass/graphics/basic_triangle/main.ksl", "--target", "wgsl", "--out-dir", out_dir }, &stdout, &stderr);
+    try execute(allocator, &.{ "build", "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", "--target", "wgsl", "--out-dir", out_dir }, &stdout, &stderr);
 
     try std.testing.expect(fileExists(out_dir, "BasicTriangle.vert.wgsl"));
     try std.testing.expect(fileExists(out_dir, "BasicTriangle.frag.wgsl"));
@@ -314,7 +314,7 @@ test "shader build command writes cross-target artifacts when requested" {
         var stdout = std.Io.Writer.fixed(&stdout_buffer);
         var stderr = std.Io.Writer.fixed(&stderr_buffer);
 
-        try execute(allocator, &.{ "build", "tests/shaders/pass/graphics/basic_triangle/main.ksl", "--target", case.target, "--out-dir", out_dir }, &stdout, &stderr);
+        try execute(allocator, &.{ "build", "tests-kik/shaders/pass/graphics/basic_triangle/main.ksl", "--target", case.target, "--out-dir", out_dir }, &stdout, &stderr);
 
         try std.testing.expect(fileExists(out_dir, case.vertex));
         try std.testing.expect(fileExists(out_dir, case.fragment));
@@ -374,9 +374,9 @@ test "shader build discovers PascalCase entry shaders in Shaders directory" {
 
     try execute(arena.allocator(), &.{"build"}, &stdout, &stderr);
 
-    try std.testing.expect(fileExists("generated/Shaders", "BasicTriangle.vert.glsl"));
-    try std.testing.expect(fileExists("generated/Shaders", "BasicTriangle.frag.glsl"));
-    try std.testing.expect(fileExists("generated/Shaders", "BasicTriangle.reflection.json"));
+    try std.testing.expect(fileExists(".kira-build/shaders", "BasicTriangle.vert.glsl"));
+    try std.testing.expect(fileExists(".kira-build/shaders", "BasicTriangle.frag.glsl"));
+    try std.testing.expect(fileExists(".kira-build/shaders", "BasicTriangle.reflection.json"));
 }
 
 test "shader build rejects non-PascalCase shader entry files in Shaders directory" {

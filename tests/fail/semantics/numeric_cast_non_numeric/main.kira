@@ -1,6 +1,0 @@
-// `Int(...)` only converts numeric operands; passing a string must be rejected.
-@Main
-function main() {
-    print(Int("hello"))
-    return
-}

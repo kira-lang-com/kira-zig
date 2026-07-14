@@ -124,6 +124,16 @@ pub const RuntimeDecls = struct {
     array_append: Decl,
     array_release: Decl,
     array_clone: Decl,
+    // String primitives (String(x) / substring / charAt / indexOf). The
+    // string-producing helpers write a {ptr,len} value into a caller slot
+    // (the array_load out-pointer pattern); the malloc'd buffer is owned by
+    // the dst register's string_buf cleanup slot (freed with plain free()).
+    string_from_i64: Decl,
+    string_from_f64: Decl,
+    string_from_bool: Decl,
+    string_char_at: Decl,
+    string_substring: Decl,
+    string_index_of: Decl,
     state_alloc: Decl,
     state_payload: Decl,
     state_recover: Decl,
@@ -182,6 +192,18 @@ pub const RuntimeDecls = struct {
         const array_release_ty = api.LLVMFunctionType(types.void_ty, &release_args, release_args.len, 0);
         var clone_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.ptr_ty };
         const array_clone_ty = api.LLVMFunctionType(types.ptr_ty, &clone_args, clone_args.len, 0);
+        // String primitives. The producers take the scalar and an out-pointer to
+        // a {ptr,len} slot; substring adds the source buffer + half-open range.
+        var string_from_i64_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.ptr_ty };
+        const string_from_i64_ty = api.LLVMFunctionType(types.void_ty, &string_from_i64_args, string_from_i64_args.len, 0);
+        var string_from_f64_args = [_]llvm.c.LLVMTypeRef{ types.double_ty, types.ptr_ty };
+        const string_from_f64_ty = api.LLVMFunctionType(types.void_ty, &string_from_f64_args, string_from_f64_args.len, 0);
+        var string_char_at_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.i64 };
+        const string_char_at_ty = api.LLVMFunctionType(types.i64, &string_char_at_args, string_char_at_args.len, 0);
+        var string_substring_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.i64, types.i64, types.ptr_ty };
+        const string_substring_ty = api.LLVMFunctionType(types.void_ty, &string_substring_args, string_substring_args.len, 0);
+        var string_index_of_args = [_]llvm.c.LLVMTypeRef{ types.ptr_ty, types.i64, types.ptr_ty, types.i64 };
+        const string_index_of_ty = api.LLVMFunctionType(types.i64, &string_index_of_args, string_index_of_args.len, 0);
         var state_alloc_args = [_]llvm.c.LLVMTypeRef{ types.i64, types.i64 };
         const state_alloc_ty = api.LLVMFunctionType(types.ptr_ty, &state_alloc_args, state_alloc_args.len, 0);
         var state_payload_args = [_]llvm.c.LLVMTypeRef{types.ptr_ty};
@@ -218,6 +240,12 @@ pub const RuntimeDecls = struct {
             .array_append = .{ .ty = array_append_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_append", array_append_ty) },
             .array_release = .{ .ty = array_release_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_release", array_release_ty) },
             .array_clone = .{ .ty = array_clone_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_array_clone", array_clone_ty) },
+            .string_from_i64 = .{ .ty = string_from_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_from_i64", string_from_i64_ty) },
+            .string_from_f64 = .{ .ty = string_from_f64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_from_f64", string_from_f64_ty) },
+            .string_from_bool = .{ .ty = string_from_i64_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_from_bool", string_from_i64_ty) },
+            .string_char_at = .{ .ty = string_char_at_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_char_at", string_char_at_ty) },
+            .string_substring = .{ .ty = string_substring_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_substring", string_substring_ty) },
+            .string_index_of = .{ .ty = string_index_of_ty, .fn_value = api.LLVMAddFunction(module_ref, "kira_string_index_of", string_index_of_ty) },
             .state_alloc = .{ .ty = state_alloc_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_alloc, state_alloc_ty) },
             .state_payload = .{ .ty = state_payload_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_payload, state_payload_ty) },
             .state_recover = .{ .ty = state_recover_ty, .fn_value = api.LLVMAddFunction(module_ref, runtime_symbols.native_state_recover, state_recover_ty) },

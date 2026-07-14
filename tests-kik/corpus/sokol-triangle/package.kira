@@ -1,0 +1,28 @@
+Package KikCorpusSokolTriangle {
+    let version = "0.1.0"
+    let kind = .App
+    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "sokol",
+            linkMode: .Static,
+            headers: Headers { entrypoint: "../../../third_party/sokol/sokol_bindings.h", includeDirs: ["../../../third_party/sokol"], defines: ["SOKOL_NO_ENTRY", "SOKOL_GLCORE"] },
+            sources: ["../../../third_party/sokol/sokol_impl.m"],
+            autobind: Autobind {
+                module: "sokol",
+                headers: [
+                    "../../../third_party/sokol/sokol_app.h",
+                    "../../../third_party/sokol/sokol_gfx.h",
+                    "../../../third_party/sokol/sokol_glue.h"
+                ],
+                mode: .AllPublic
+            },
+            nativeTargets: [
+                NativeTarget { triple: "aarch64-macos-none", frameworks: ["AppKit", "QuartzCore", "OpenGL"] },
+                NativeTarget { triple: "x86_64-linux-gnu", systemLibs: ["X11", "Xi", "Xcursor", "GL", "dl", "pthread", "m"] },
+                NativeTarget { triple: "x86_64-windows-msvc" }
+            ]
+        }
+    ]
+    let tests = Tests { backends: [.Hybrid], phase: .Check }
+}

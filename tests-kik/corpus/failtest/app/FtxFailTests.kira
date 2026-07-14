@@ -1,0 +1,70 @@
+// FtxFailTests.kira — FailTest corpus: expected-compile-failure tests in pure
+// Kira, plus a regular Test proving the two constructs coexist in one package.
+// No `import Foundation` — the package's main.kira imports it once, and FailTest
+// `expect` blocks are never compiled (they are read textually by the runner), so
+// Result / TestFailure need not even be in scope here.
+// PREFIX: ftx / Ftx.
+
+// ---------------------------------------------------------------------------
+// Rejected-with-right-code: use-after-move must fail with KSEM107 (vm default).
+// ---------------------------------------------------------------------------
+FailTest FtxUseAfterMove {
+    backends { vm }
+    source {
+        struct Thing { var x: Int }
+        function consume(t: Thing) { return }
+        @Main function main() {
+            let a = Thing { x: 1 }
+            consume(move a)
+            print(a.x)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM107")); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Must-compile assertion: the source compiles cleanly (.Ok sentinel).
+// ---------------------------------------------------------------------------
+FailTest FtxCompilesClean {
+    source {
+        function ftxDouble(n: Int) -> Int { return n + n }
+        @Main function main() {
+            let x = ftxDouble(21)
+            print(x)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Backend matrix: an unknown name is rejected identically on vm, llvm, hybrid.
+// ---------------------------------------------------------------------------
+FailTest FtxUnknownNameAllBackends {
+    backends { vm llvm hybrid }
+    source {
+        @Main function main() {
+            print(ftxDoesNotExist)
+            return
+        }
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM012")); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Raw-string tier: an unparseable source (source = "...") yields a parser
+// diagnostic. Used for cases that must not even tokenize/brace-balance.
+// ---------------------------------------------------------------------------
+FailTest FtxParserError {
+    source = "@Main function main() {\n    let x = \n}\n"
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KPAR002")); return e }
+}
+
+// ---------------------------------------------------------------------------
+// Coexistence: an ordinary Test in the same package/file still runs normally.
+// ---------------------------------------------------------------------------
+Test FtxRegularTestCoexists {
+    test { return 42 }
+    expect { let e: Result<Int, TestFailure> = .Ok(42); return e }
+}
