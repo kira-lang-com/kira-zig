@@ -28,8 +28,6 @@ pub fn resolveInlineLibrary(
             break;
         }
     }
-    if (spec.targets.len > 0 and matched_target == null) return error.UnsupportedTarget;
-
     var resolved = native.ResolvedNativeLibrary{
         .manifest_path = try allocator.dupe(u8, pseudo_manifest_path),
         .name = try allocator.dupe(u8, spec.name),
@@ -397,6 +395,36 @@ test "resolveInlineLibrary applies matching target compiler and linker options" 
     );
     const expected_target_dir = try std.fs.path.join(allocator, &.{ ".kira-build", "native", "x86_64-linux-gnu" });
     try std.testing.expect(std.mem.indexOf(u8, resolved.artifact_path, expected_target_dir) != null);
+}
+
+test "resolveInlineLibrary keeps generic sources without a matching target override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const project_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    const manifest_path = try std.fs.path.join(allocator, &.{ project_root, "package.kira" });
+    const macos = try native.TargetSelector.parse(allocator, "aarch64-macos-none");
+    const spec = native.NativeLibrarySpec{
+        .name = "demo",
+        .link_mode = .static,
+        .abi = .c,
+        .build = .{ .sources = &.{"NativeLibs/demo.c"} },
+        .targets = &.{.{
+            .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+            .compiler_flags = &.{"-pthread"},
+            .link = .{ .system_libs = &.{"X11"} },
+        }},
+    };
+
+    const resolved = try resolveInlineLibrary(allocator, spec, macos, project_root, manifest_path);
+    try std.testing.expectEqual(@as(usize, 0), resolved.compiler_flags.len);
+    try std.testing.expectEqual(@as(usize, 0), resolved.link.system_libs.len);
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ project_root, "NativeLibs", "demo.c" }),
+        resolved.build.sources[0],
+    );
 }
 
 test "inline native artifact paths distinguish target ABIs" {
