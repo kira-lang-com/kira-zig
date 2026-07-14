@@ -330,11 +330,12 @@ test "file-scoped import visibility helpers gate dependency symbols per file" {
 // writes: `Package UILibrary { moduleRoot "UI" }`. The importer writes `import UI`, but the
 // owner index keys UILibrary's symbols by "UILibrary". The graph builder records the owner on
 // the import origin (`module_owner_package`), so `import UI` must grant visibility to symbols
-// owned by UILibrary. The control run (owner not recorded) proves the gate really rejects.
+// owned by UILibrary — and a missing-import hint must name the importable root "UI", never
+// the owner "UILibrary". `import_source_path` places the `import UI` statement in a file.
 fn buildSplitModulePaletteProgram(
     allocator: std.mem.Allocator,
     diags: *std.array_list.Managed(diagnostics.Diagnostic),
-    record_owner: bool,
+    import_source_path: []const u8,
 ) !syntax.ast.Program {
     var program = try parseSource(
         allocator,
@@ -349,13 +350,11 @@ fn buildSplitModulePaletteProgram(
     decl_origins[0] = .{ .package_name = "UILibrary", .source_path = "uilib/UI.kira" };
     program.decl_origins = decl_origins;
 
-    // The `import UI` statement lives in the root file; the module root written is "UI" but the
-    // owning package is "UILibrary". When `record_owner` is false the owner is omitted, mirroring
-    // the pre-fix behavior where only the written module root reached the per-file index.
+    // The module root written is "UI" but the owning package is "UILibrary".
     const import_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.imports.len);
     for (import_origins) |*origin| origin.* = .{
-        .source_path = "app/main.kira",
-        .module_owner_package = if (record_owner) "UILibrary" else null,
+        .source_path = import_source_path,
+        .module_owner_package = "UILibrary",
     };
     program.import_origins = import_origins;
     return program;
@@ -366,26 +365,90 @@ test "import of a module root grants visibility to its owning package's symbols"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Fix: `import UI` records the owner "UILibrary" too, so the dependency `Palette` resolves.
+    // `import UI` in the referencing file records the owner "UILibrary" too, so the
+    // dependency `Palette` (owned by UILibrary) resolves.
     {
         var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        const program = try buildSplitModulePaletteProgram(allocator, &diags, true);
+        const program = try buildSplitModulePaletteProgram(allocator, &diags, "app/main.kira");
         const analyzed = try analyzer.analyze(allocator, program, &diags);
         try std.testing.expectEqual(@as(usize, 0), diags.items.len);
         try std.testing.expect(findTypeDeclByName(analyzed, "Palette") != null);
     }
 
-    // Control: without recording the owner, the gate keeps `Palette` invisible in the file that
-    // wrote `import UI`, and the reference is rejected with an import hint naming "UILibrary".
+    // When only a SIBLING file imports UI, the gate rejects `Palette` in main.kira — and the
+    // hint must name the importable module root ("import UI"), never the owner package name
+    // ("import UILibrary" would not resolve).
     {
         var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-        const program = try buildSplitModulePaletteProgram(allocator, &diags, false);
+        const program = try buildSplitModulePaletteProgram(allocator, &diags, "app/other.kira");
         try std.testing.expectError(error.DiagnosticsEmitted, analyzer.analyze(allocator, program, &diags));
-        var mentions_owner = false;
+        try std.testing.expect(diags.items.len > 0);
+        var hints_module_root = false;
         for (diags.items) |item| {
-            if (std.mem.indexOf(u8, item.message, "UILibrary") != null) mentions_owner = true;
+            if (item.help) |help| {
+                try std.testing.expect(std.mem.indexOf(u8, help, "UILibrary") == null);
+                if (std.mem.indexOf(u8, help, "import UI") != null) hints_module_root = true;
+            }
+            try std.testing.expect(std.mem.indexOf(u8, item.message, "UILibrary") == null);
         }
-        try std.testing.expect(mentions_owner);
+        try std.testing.expect(hints_module_root);
+    }
+}
+
+// Type ANNOTATIONS are gated by the declaring file's imports too: a sibling file must not
+// use a dependency type in a parameter/return/field position without importing its module.
+fn buildSignatureVisibilityProgram(
+    allocator: std.mem.Allocator,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    sibling_imports_foundation: bool,
+) !syntax.ast.Program {
+    var program = try parseSource(
+        allocator,
+        "import Foundation\n" ++
+            "struct TestResult { let ok: Bool = true; }\n" ++
+            "function usesIt(x: TestResult) { return; }\n" ++
+            "struct Holder { let r: TestResult; }\n" ++
+            "@Main function entry() { return; }",
+        diags,
+    );
+    // decls: [0] dependency `struct TestResult` owned by Foundation; [1] `usesIt` and
+    // [2] `Holder` live in the sibling file; [3] entry lives in the importing file.
+    const decl_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.decls.len);
+    decl_origins[0] = .{ .package_name = "Foundation", .source_path = "foundation/app/Test.kira" };
+    decl_origins[1] = .{ .source_path = "app/sibling.kira" };
+    decl_origins[2] = .{ .source_path = "app/sibling.kira" };
+    decl_origins[3] = .{ .source_path = "app/main.kira" };
+    program.decl_origins = decl_origins;
+
+    const import_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.imports.len);
+    for (import_origins) |*origin| origin.* = .{
+        .source_path = if (sibling_imports_foundation) "app/sibling.kira" else "app/main.kira",
+    };
+    program.import_origins = import_origins;
+    return program;
+}
+
+test "signature types using a dependency type require the declaring file's import" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // The declaring file imports Foundation: parameter and field types resolve cleanly.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildSignatureVisibilityProgram(allocator, &diags, true);
+        _ = try analyzer.analyze(allocator, program, &diags);
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    }
+
+    // Only ANOTHER file imports Foundation: the sibling's `x: TestResult` / `let r: TestResult`
+    // annotations are rejected with an import hint naming Foundation.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildSignatureVisibilityProgram(allocator, &diags, false);
+        try std.testing.expectError(error.DiagnosticsEmitted, analyzer.analyze(allocator, program, &diags));
+        try expectFirstDiagnosticTitle(diags.items, "type is not visible in this file");
+        try std.testing.expect(std.mem.indexOf(u8, diags.items[0].help.?, "import Foundation") != null);
     }
 }
 
