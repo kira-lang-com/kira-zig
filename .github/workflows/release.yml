@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: "2026.07.2"
+  VERSION: "1.7.3"
   BINARY_NAME: "kira"
   PRIMARY_EXECUTABLE: "kirac"
 
@@ -355,7 +355,10 @@ jobs:
           name: checksums
           path: artifacts
 
-      - name: Create release
+      # Release notes are authored and published by `devflow release`
+      # (writing-github-releases skill) before the tag lands here; this job
+      # only attaches assets and must never touch the release body.
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -363,55 +366,12 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
 
-          # The matching .codex/CHANGELOG.md section (everything between this version's
-          # heading and the next "## [" heading), captured before the header so the
-          # empty-section fallback can actually trigger.
-          awk -v ver="$VERSION" '
-            index($0, "## [" ver "]") == 1 { capture = 1; next }
-            capture && index($0, "## [") == 1 { exit }
-            capture { print }
-          ' .codex/CHANGELOG.md > /tmp/section.md
-
-          printf '## Kira %s\n\n' "$VERSION" > /tmp/notes.md
-          if grep -q '[^[:space:]]' /tmp/section.md; then
-            cat /tmp/section.md >> /tmp/notes.md
-          else
-            printf 'Kira %s release.\n' "$VERSION" >> /tmp/notes.md
-          fi
-
-          cat >> /tmp/notes.md << 'RELEASE_NOTES'
-
-          ## Installation
-
-          Download the `kira-<platform>` archive for your host, put `kira` on your
-          `PATH`, and run it once to install the matching managed toolchain. Run
-          `kira fetch-llvm` afterwards for LLVM/native and hybrid backends.
-
-          ## Assets
-
-          - `kira-<platform>` — bootstrapper launcher for each supported host
-            (linux-x64, macos-arm64, windows-x64)
-          - `kira-toolchain-<platform>` — managed toolchain archive fetched
-            automatically by the launcher
-          - `SHA256SUMS.txt` — checksums for every published asset
-
-          ## Verification
-
-          Verify the checksums with `sha256sum -c SHA256SUMS.txt`.
-          RELEASE_NOTES
-
-          printf '\n**Full changelog**: https://github.com/%s/blob/%s/.codex/CHANGELOG.md\n' \
-            "$GH_REPO" "$TAG_NAME" >> /tmp/notes.md
-
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release edit "$TAG_NAME" \
-              --title "Kira ${VERSION}" \
-              --notes-file /tmp/notes.md
             gh release upload "$TAG_NAME" artifacts/* --clobber
           else
             gh release create "$TAG_NAME" \
               --title "Kira ${VERSION}" \
-              --notes-file /tmp/notes.md \
+              --notes "Kira ${VERSION}" \
               artifacts/*
           fi
 
