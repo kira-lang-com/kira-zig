@@ -12,16 +12,6 @@ const pr_scope = @import("pr_scope.zig");
 const out = @import("out.zig");
 
 const poll_interval_ns: u64 = 30 * std.time.ns_per_s;
-/// Default wait cap: 8 minutes. Override (seconds) with KIRA_DEVFLOW_WAIT_SECS.
-/// A short cap is deliberate — reviews that need longer should be re-checked,
-/// not blocked on for the better part of an hour.
-const default_wait_secs: u64 = 8 * 60;
-
-fn waitTimeoutNs() u64 {
-    const raw = std.c.getenv("KIRA_DEVFLOW_WAIT_SECS") orelse return default_wait_secs * std.time.ns_per_s;
-    const secs = std.fmt.parseInt(u64, std.mem.span(raw), 10) catch return default_wait_secs * std.time.ns_per_s;
-    return secs * std.time.ns_per_s;
-}
 
 /// `status`: honest divergence via content diff, never commit counts.
 pub fn status(ctx: Context) !void {
@@ -61,8 +51,6 @@ pub fn status(ctx: Context) !void {
 
 /// `wait-ci <pr>`: block on the checks attached to the PR's exact current head.
 pub fn waitCi(ctx: Context, number: u32) !void {
-    var waited: u64 = 0;
-    const timeout_ns = waitTimeoutNs();
     const slug = prSlug(ctx);
     const head = try gh.prHeadOid(ctx, slug, number);
     defer ctx.allocator.free(head);
@@ -90,9 +78,7 @@ pub fn waitCi(ctx: Context, number: u32) !void {
         } else {
             out.print("devflow: #{d} has {d} pending check(s)\n{s}\n", .{ number, checks.pending, checks.lines });
         }
-        if (waited >= timeout_ns) return error.CiWaitTimeout;
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
-        waited += poll_interval_ns;
     }
 }
 
@@ -326,8 +312,6 @@ pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
 /// no unresolved review threads remain. This is the gate that stops the flow
 /// advancing while findings are still open.
 pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
-    var waited: u64 = 0;
-    const timeout_ns = waitTimeoutNs();
     const slug = prSlug(ctx);
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
@@ -349,9 +333,7 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
             out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
         }
 
-        if (waited >= timeout_ns) return error.ReviewWaitTimeout;
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
-        waited += poll_interval_ns;
     }
 }
 

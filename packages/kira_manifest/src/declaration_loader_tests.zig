@@ -12,6 +12,7 @@ test "loads a full package.kira declaration" {
     const result = try loadProjectManifestFromDeclaration(allocator,
         \\Package LiquidGlass {
         \\    let version = "0.2.0"
+        \\    let kira = "0.7.0"
         \\    let kind = .App
         \\    let defaults = Defaults { executionMode: .Hybrid, buildTarget: .Host }
         \\    let tests = Tests { backends: [.Vm, .Llvm, .Hybrid], phase: .Both }
@@ -22,6 +23,7 @@ test "loads a full package.kira declaration" {
     try std.testing.expect(result.ok());
     try std.testing.expectEqualStrings("LiquidGlass", result.manifest.name);
     try std.testing.expectEqualStrings("0.2.0", result.manifest.version);
+    try std.testing.expectEqualStrings("0.7.0", result.manifest.kira_version);
     try std.testing.expectEqual(PackageKind.app, result.manifest.kind);
     try std.testing.expectEqualStrings("hybrid", result.manifest.execution_mode);
     try std.testing.expectEqualStrings("host", result.manifest.build_target);
@@ -79,7 +81,7 @@ test "loads inline native library" {
         \\            linkMode: .Static,
         \\            headers: Headers { entrypoint: "third_party/sokol/sokol_gfx.h", includeDirs: ["third_party/sokol"], defines: ["SOKOL_DUMMY_BACKEND"] },
         \\            sources: ["third_party/sokol/sokol_gfx_impl.c"],
-        \\            autobind: Autobind { module: "sokol_gfx", headers: ["third_party/sokol/sokol_gfx.h"], functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] }
+        \\            autobind: Autobind { module: "sokol_gfx", profile: .Vulkan, headers: ["third_party/sokol/sokol_gfx.h"], functions: ["sg_setup", "sg_isvalid"], structs: ["sg_desc"] }
         \\        }
         \\    ]
         \\}
@@ -95,6 +97,7 @@ test "loads inline native library" {
     try std.testing.expect(lib.autobinding != null);
     try std.testing.expectEqualStrings("sokol_gfx", lib.autobinding.?.module_name);
     try std.testing.expectEqualStrings("third_party/sokol/sokol_gfx.h", lib.autobinding.?.headers[0]);
+    try std.testing.expectEqual(native.AutobindingProfile.vulkan, lib.autobinding.?.bindings.profile);
     try std.testing.expectEqual(@as(usize, 2), lib.autobinding.?.bindings.functions.len);
 }
 

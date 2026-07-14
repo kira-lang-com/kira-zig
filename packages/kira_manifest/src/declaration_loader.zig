@@ -11,6 +11,7 @@ const platform_config = @import("platform_config.zig");
 const tests_config = @import("tests_config.zig");
 const ProjectManifest = @import("project_manifest.zig").ProjectManifest;
 const PackageKind = @import("project_manifest.zig").PackageKind;
+const Loader = @import("declaration_loader_state.zig").Loader;
 
 const Diagnostic = diagnostics.Diagnostic;
 const Span = source_pkg.Span;
@@ -40,34 +41,6 @@ pub const LoadResult = struct {
             if (d.severity == .@"error") count += 1;
         }
         return count;
-    }
-};
-
-const Loader = struct {
-    allocator: std.mem.Allocator,
-    diags: std.array_list.Managed(Diagnostic),
-    source_path: []const u8,
-
-    fn err(self: *Loader, span: Span, code: []const u8, title: []const u8, message: []const u8) !void {
-        try diagnostics.appendOwned(self.allocator, &self.diags, .{
-            .severity = .@"error",
-            .code = code,
-            .domain = "manifest",
-            .title = title,
-            .message = message,
-            .labels = &.{diagnostics.primaryLabel(span, title)},
-        });
-    }
-
-    fn warn(self: *Loader, span: Span, code: []const u8, title: []const u8, message: []const u8) !void {
-        try diagnostics.appendOwned(self.allocator, &self.diags, .{
-            .severity = .warning,
-            .code = code,
-            .domain = "manifest",
-            .title = title,
-            .message = message,
-            .labels = &.{diagnostics.primaryLabel(span, title)},
-        });
     }
 };
 
@@ -438,6 +411,7 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
     const fields = (try structValue(loader, value, "Autobind")) orelse return null;
     var module_name: []const u8 = "";
     var mode: native.AutobindingMode = .listed;
+    var profile: native.AutobindingProfile = .generic;
     var functions: []const []const u8 = &.{};
     var structs: []const []const u8 = &.{};
     var callbacks: []const []const u8 = &.{};
@@ -462,6 +436,18 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
             }
         } else if (std.mem.eql(u8, f.name, "headers")) {
             headers = try stringArray(loader, f.value);
+        } else if (std.mem.eql(u8, f.name, "profile")) {
+            if (try enumValue(loader, f.value, "AutobindProfile")) |variant| {
+                if (std.mem.eql(u8, variant, "Generic") or std.mem.eql(u8, variant, "generic")) {
+                    profile = .generic;
+                } else if (std.mem.eql(u8, variant, "Vulkan") or std.mem.eql(u8, variant, "vulkan")) {
+                    profile = .vulkan;
+                } else if (std.mem.eql(u8, variant, "DirectX12") or std.mem.eql(u8, variant, "directx12")) {
+                    profile = .directx12;
+                } else {
+                    try loader.err(exprSpan(f.value), "KMAN006", "unknown AutobindProfile", "Expected AutobindProfile.Generic, AutobindProfile.Vulkan, or AutobindProfile.DirectX12.");
+                }
+            }
         } else if (std.mem.eql(u8, f.name, "functions")) {
             functions = try stringArray(loader, f.value);
         } else if (std.mem.eql(u8, f.name, "structs")) {
@@ -483,7 +469,7 @@ fn parseAutobind(loader: *Loader, value: *Expr) !?native.AutobindingSpec {
         // Placeholder; kira_build derives the real path (app/bindings/<module>.kira).
         .output_path = "",
         .headers = headers,
-        .bindings = .{ .mode = mode, .functions = functions, .structs = structs, .callbacks = callbacks },
+        .bindings = .{ .mode = mode, .profile = profile, .functions = functions, .structs = structs, .callbacks = callbacks },
     };
 }
 

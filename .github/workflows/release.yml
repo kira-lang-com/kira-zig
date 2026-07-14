@@ -363,14 +363,14 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
 
-          # The matching CHANGELOG.md section (everything between this version's
+          # The matching .codex/CHANGELOG.md section (everything between this version's
           # heading and the next "## [" heading), captured before the header so the
           # empty-section fallback can actually trigger.
           awk -v ver="$VERSION" '
             index($0, "## [" ver "]") == 1 { capture = 1; next }
             capture && index($0, "## [") == 1 { exit }
             capture { print }
-          ' CHANGELOG.md > /tmp/section.md
+          ' .codex/CHANGELOG.md > /tmp/section.md
 
           printf '## Kira %s\n\n' "$VERSION" > /tmp/notes.md
           if grep -q '[^[:space:]]' /tmp/section.md; then
@@ -400,7 +400,7 @@ jobs:
           Verify the checksums with `sha256sum -c SHA256SUMS.txt`.
           RELEASE_NOTES
 
-          printf '\n**Full changelog**: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+          printf '\n**Full changelog**: https://github.com/%s/blob/%s/.codex/CHANGELOG.md\n' \
             "$GH_REPO" "$TAG_NAME" >> /tmp/notes.md
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then

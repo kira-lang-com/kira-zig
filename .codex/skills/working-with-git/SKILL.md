@@ -47,6 +47,9 @@ PR head; a stale review from an earlier push never satisfies the gate.
 applies the same green-CI gate itself. Use `review-findings` instead of raw
 GitHub commands to read current-head bot comments, and `ci-failures` for failed
 workflow logs.
+Kai keeps `wait-ci` and `wait-reviews` polling until their gate completes or the
+user interrupts. A transient command, network, or service failure starts another
+devflow poll; it never ends the task while the requested land remains pending.
 CodeRabbit's successful head check counts as its response when it explicitly
 skips an oversized PR. `land` refuses with `ReviewsPending` or
 `UnresolvedReviews` if CI isn't green or a requested review (CodeRabbit always,

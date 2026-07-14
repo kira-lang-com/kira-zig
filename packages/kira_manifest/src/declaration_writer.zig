@@ -21,6 +21,9 @@ pub fn writeProjectManifestAsDeclaration(writer: anytype, manifest: ProjectManif
     try writer.writeAll("    let version = ");
     try writeQuotedString(writer, manifest.version);
     try writer.writeAll("\n");
+    try writer.writeAll("    let kira = ");
+    try writeQuotedString(writer, manifest.kira_version);
+    try writer.writeAll("\n");
     try writer.print("    let kind = PackageKind.{s}\n", .{kindVariant(manifest.kind)});
     if (manifest.module_root) |root| {
         try writer.writeAll("    let moduleRoot = ");
@@ -198,6 +201,9 @@ fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
     if (auto.bindings.mode == .all_public) {
         try writer.writeAll(", mode: AutobindMode.AllPublic");
     }
+    if (auto.bindings.profile != .generic) {
+        try writer.print(", profile: AutobindProfile.{s}", .{autobindProfileVariant(auto.bindings.profile)});
+    }
     if (auto.bindings.functions.len > 0) {
         try writer.writeAll(", functions: ");
         try writeStringArray(writer, auto.bindings.functions);
@@ -211,6 +217,14 @@ fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
         try writeStringArray(writer, auto.bindings.callbacks);
     }
     try writer.writeAll(" }\n");
+}
+
+fn autobindProfileVariant(profile: native.AutobindingProfile) []const u8 {
+    return switch (profile) {
+        .generic => "Generic",
+        .vulkan => "Vulkan",
+        .directx12 => "DirectX12",
+    };
 }
 
 fn writeStringArray(writer: anytype, values: []const []const u8) !void {
@@ -296,6 +310,7 @@ test "writes a round-trippable package.kira" {
     const manifest = ProjectManifest{
         .name = "DemoApp",
         .version = "0.1.0",
+        .kira_version = "0.8.0",
         .kind = .app,
         .execution_mode = "hybrid",
         .build_target = "host",
@@ -309,6 +324,11 @@ test "writes a round-trippable package.kira" {
             .link_mode = .static,
             .abi = .c,
             .headers = .{ .frameworks = &.{"Metal"}, .system_libs = &.{"m"} },
+            .autobinding = .{
+                .module_name = "demo",
+                .output_path = "ignored.kira",
+                .bindings = .{ .profile = .directx12 },
+            },
             .build = .{ .sources = &.{"NativeLibs/demo.c"} },
             .targets = &.{.{
                 .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
@@ -324,6 +344,8 @@ test "writes a round-trippable package.kira" {
 
     const text = output.written();
     try std.testing.expect(std.mem.indexOf(u8, text, "Package DemoApp {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "let kira = \"0.8.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "profile: AutobindProfile.DirectX12") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "executionMode: Backend.Hybrid") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Foundation\", version: \"0.1.0\" }") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Dependency { name: \"Remote\", git: \"https://example.com/remote.git\", rev: \"abc123\" }") != null);
@@ -339,6 +361,7 @@ test "writes a round-trippable package.kira" {
     }
     try std.testing.expect(result.ok());
     try std.testing.expectEqualStrings("DemoApp", result.manifest.name);
+    try std.testing.expectEqualStrings("0.8.0", result.manifest.kira_version);
     try std.testing.expectEqualStrings("hybrid", result.manifest.execution_mode);
     try std.testing.expectEqual(@as(usize, 2), result.manifest.assets.len);
     try std.testing.expectEqualStrings("assets\\quoted\"name\n", result.manifest.assets[1]);
@@ -349,6 +372,7 @@ test "writes a round-trippable package.kira" {
     const headers = result.manifest.inline_native_libraries[0].headers;
     try std.testing.expectEqualStrings("Metal", headers.frameworks[0]);
     try std.testing.expectEqualStrings("m", headers.system_libs[0]);
+    try std.testing.expectEqual(native.AutobindingProfile.directx12, result.manifest.inline_native_libraries[0].autobinding.?.bindings.profile);
     const target = result.manifest.inline_native_libraries[0].targets[0];
     try std.testing.expectEqualStrings("linux", target.selector.operating_system);
     try std.testing.expectEqualStrings("-pthread", target.compiler_flags[0]);
