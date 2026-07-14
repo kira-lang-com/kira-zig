@@ -14,13 +14,13 @@
 //   every parsed option leaked its C-side copy.
 // The loops (100 iterations each, preserved from the original) make surviving
 // allocations obvious under a leak run; the value checks prove the frees did
-// not turn into use-after-free. Fixture files are created under /tmp and
-// removed at the end so the test is deterministic and cwd-independent.
+// not turn into use-after-free. Fixture files are created under the package's
+// cross-platform .kira-build directory and removed at the end.
 
 @Native
 function fnaFsArgparserChurn() -> String {
-    let emptyPath = "/tmp/kik_corpus_fna_empty.txt"
-    let samplePath = "/tmp/kik_corpus_fna_sample.txt"
+    let emptyPath = ".kira-build/kik_corpus_fna_empty.txt"
+    let samplePath = ".kira-build/kik_corpus_fna_sample.txt"
     if !writeFile(emptyPath, "") {
         return "setup empty write failed"
     }
