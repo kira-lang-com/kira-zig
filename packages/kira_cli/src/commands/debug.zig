@@ -12,9 +12,9 @@
 //!   - `--dap`: the Debug Adapter Protocol server (`kira_debug.dap.Server`) an
 //!     editor speaks; stdio transport by default, TCP with `--port`.
 //!
-//! Backend parity: the VM path debugs bytecode in-process; `--backend llvm` and
-//! `--backend hybrid` build the native/hybrid artifact and drive it under the
-//! hardware-assisted / hybrid debug targets. No backend fakes a stop — an
+//! Backend parity: the VM path debugs bytecode in-process; `--backend llvm`
+//! builds the native artifact and drives it under the hardware-assisted debug
+//! target. No backend fakes a stop — an
 //! unsupported request surfaces a `kira_debug` limitation, never a smoke marker.
 const std = @import("std");
 const bytecode = @import("kira_bytecode");
@@ -57,6 +57,10 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     // (libraries and non-runnable roots are rejected with the same diagnostics).
     try support.validateTargetSelection(allocator, stderr, .run, input);
     const backend = parsed.backend orelse input.default_backend orelse .vm;
+    if (backend == .hybrid) {
+        try stderr.writeAll("kira debug: hybrid debugging is not yet available; debug with --backend vm or llvm.\n");
+        return error.CommandFailed;
+    }
     const source_path = input.target.source_path.?;
 
     if (input.target.root_path) |project_root| {
@@ -97,12 +101,12 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8, stdout: a
     switch (backend) {
         .vm => try debugVm(result, input.target.root_path, parsed, stdout, stderr),
         .llvm_native => try debugNative(allocator, result, input.target.root_path, parsed, stdout, stderr),
-        .hybrid => try debugHybrid(allocator, result, input.target.root_path, parsed, stdout, stderr),
+        .hybrid => unreachable,
         .wasm32_emscripten => {
             // The wasm32-emscripten runtime runs inside a browser/node sandbox
             // with no in-process debug target here; reject clearly rather than
             // pretend to attach.
-            try stderr.writeAll("kira debug: the wasm32-emscripten backend is not debuggable in-process; debug with vm, llvm, or hybrid.\n");
+            try stderr.writeAll("kira debug: the wasm32-emscripten backend is not debuggable in-process; debug with vm or llvm.\n");
             return error.CommandFailed;
         },
     }
@@ -153,7 +157,6 @@ fn debugVm(
         .context = &ffi_dispatcher,
         .call_native = vm_runtime.FfiDispatcher.hook,
     });
-    defer vm_target.deinit();
 
     var session = kira_debug.DebugSession.init(runtime_allocator, vm_target.target());
     defer session.deinit();
@@ -197,44 +200,11 @@ fn debugNative(
     const tool_dir = build.llvmToolDir(allocator);
     defer if (tool_dir) |dir| allocator.free(dir);
     var native_target = try kira_debug.NativeTarget.initWithToolDir(allocator, &argv, tool_dir);
-    defer native_target.deinit();
 
     var session = kira_debug.DebugSession.init(allocator, native_target.target());
     defer session.deinit();
 
     try driveSession(allocator, &session, parsed, stdout, stderr);
-}
-
-/// Hybrid backend: `kira_debug.HybridTarget` composes a VM sub-target (runtime-bodied
-/// functions) with a native sub-target (native-bodied functions) over one inferior,
-/// so a single session steps across the boundary. Constructing the VM sub-target for
-/// hybrid requires the hybrid runtime's in-process native-dispatch hooks
-/// (`RuntimeContext`/`nativeCallHook`), which `kira_hybrid_runtime` does not yet
-/// expose. Until those are surfaced, we reject clearly rather than attach a
-/// half-composed target that would fail on the first VM<->native crossing — an honest
-/// limitation, never a smoke stop.
-fn debugHybrid(
-    allocator: std.mem.Allocator,
-    result: build.BuildArtifactOutcome,
-    project_root: ?[]const u8,
-    parsed: ParsedArgs,
-    stdout: anytype,
-    stderr: anytype,
-) !void {
-    _ = allocator;
-    _ = project_root;
-    _ = parsed;
-    _ = stdout;
-    // Ground the diagnostic in the real artifact: a missing manifest is a distinct,
-    // more precise failure than the unsupported-composition case below.
-    const manifest_artifact = findHybridManifest(result.artifacts) orelse return error.MissingHybridManifestArtifact;
-    try stderr.print(
-        "kira debug: hybrid debugging is not yet available from the CLI (manifest {s} built successfully). " ++
-            "The hybrid debug target exists but composing its VM sub-target needs the hybrid runtime's " ++
-            "in-process native-dispatch hooks, which are not yet exported; debug with --backend vm or llvm.\n",
-        .{manifest_artifact.path},
-    );
-    return error.CommandFailed;
 }
 
 /// Pick the front-end for a constructed session: DAP server for editor clients, or
@@ -318,7 +288,6 @@ fn parseArgs(args: []const []const u8) !ParsedArgs {
 fn parseBackend(arg: []const u8) ?build_def.ExecutionTarget {
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "llvm")) return .llvm_native;
-    if (std.mem.eql(u8, arg, "hybrid")) return .hybrid;
     if (std.mem.eql(u8, arg, "wasm") or std.mem.eql(u8, arg, "wasm32-emscripten")) return .wasm32_emscripten;
     return null;
 }
@@ -337,13 +306,6 @@ fn findBytecode(artifacts: []const build_def.Artifact) ?build_def.Artifact {
     return null;
 }
 
-fn findHybridManifest(artifacts: []const build_def.Artifact) ?build_def.Artifact {
-    for (artifacts) |artifact| {
-        if (artifact.kind == .hybrid_manifest) return artifact;
-    }
-    return null;
-}
-
 fn debugOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: []const u8, backend: build_def.ExecutionTarget) ![]const u8 {
     return switch (backend) {
         .vm => std.fmt.allocPrint(allocator, "{s}/{s}.debug.kbc", .{ output_root, stem }),
@@ -354,11 +316,15 @@ fn debugOutputPath(allocator: std.mem.Allocator, output_root: []const u8, stem: 
 }
 
 test "parseArgs recognizes dap and backend" {
-    const parsed = try parseArgs(&.{ "--backend", "hybrid", "--dap", "examples/hello.kira" });
+    const parsed = try parseArgs(&.{ "--backend", "llvm", "--dap", "examples/hello.kira" });
     try std.testing.expect(parsed.dap);
-    try std.testing.expectEqual(build_def.ExecutionTarget.hybrid, parsed.backend.?);
+    try std.testing.expectEqual(build_def.ExecutionTarget.llvm_native, parsed.backend.?);
     try std.testing.expectEqualStrings("examples/hello.kira", parsed.input_path);
     try std.testing.expectEqual(@as(?u16, null), parsed.port);
+}
+
+test "parseArgs rejects unsupported hybrid backend" {
+    try std.testing.expectError(error.InvalidArguments, parseArgs(&.{ "--backend", "hybrid" }));
 }
 
 test "parseArgs parses port and defaults input path" {

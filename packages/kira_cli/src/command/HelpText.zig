@@ -70,7 +70,7 @@ fn printCommand(writer: anytype, kind: CommandKind) !void {
             \\
         ),
         .debug => try writer.writeAll(
-            \\usage: kira debug [--backend vm|llvm|hybrid] [--dap] [--port <tcp-port>] [<project-dir|manifest|source>]
+            \\usage: kira debug [--backend vm|llvm] [--dap] [--port <tcp-port>] [<project-dir|manifest|source>]
             \\Build and debug an app, example, or source file. Without `--dap`, starts an interactive source-level REPL.
             \\With `--dap`, serves the Debug Adapter Protocol over stdio (or TCP with `--port`) for an editor client.
             \\
