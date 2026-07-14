@@ -18,8 +18,8 @@
 //!   sync               resync local default branch to the fork
 //!   open-upstream-pr   fork default -> upstream default (needs upstream remote)
 //!   next-version       print the next computed release version
-//!   release-prep       store the next version + require its changelog section
-//!   release            signed tag on synced main -> upstream (triggers release)
+//!   release-prep       store the next version in build.zig + release.yml
+//!   release            signed tag + GitHub release from an untracked notes draft
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -80,7 +80,13 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "open-upstream-pr")) return commands.openUpstreamPr(ctx);
     if (eq(verb, "next-version")) return release.nextVersion(ctx);
     if (eq(verb, "release-prep")) return release.releasePrep(ctx);
-    if (eq(verb, "release")) return release.release(ctx);
+    if (eq(verb, "release")) {
+        const notes = flagValue(rest, "--notes") orelse {
+            out.line("devflow: release requires --notes <file> (untracked release-notes draft)");
+            return error.MissingReleaseNotes;
+        };
+        return release.release(ctx, notes);
+    }
 
     usage();
     return error.UnknownVerb;
@@ -187,7 +193,7 @@ fn usage() void {
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr           fork default -> upstream default with complete-branch metadata
         \\  next-version               print the next computed release version
-        \\  release-prep               store the next version in build.zig + .github/workflows/release.yml (changelog required)
-        \\  release                    signed v<version> tag on synced main, pushed upstream (triggers release.yml)
+        \\  release-prep               store the next version in build.zig + .github/workflows/release.yml
+        \\  release --notes <file>     signed v<version> tag on synced main + GitHub release from the notes draft
     );
 }

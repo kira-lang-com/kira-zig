@@ -10,8 +10,7 @@ whole-program path. See "Status: default ON" and the cold-build verdict below.
 
 A one-line edit to a `@Native` program should recompile only the affected
 function(s), not the whole program. Target: the 30s+ full native rebuild of a
-real app (Project Matter, the editor) drops to well under a second on a warm
-cache.
+large real-world app drops to well under a second on a warm cache.
 
 Design: **incremental compilation + full linking.** Optimize and codegen changed
 functions only; always relink the full set of objects (linking is cheap; LLD /
