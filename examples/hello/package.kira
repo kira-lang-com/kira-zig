@@ -1,6 +1,6 @@
 Package hello {
     let version = "0.1.0"
-    let kind = .App
-    let moduleRoot = "main"
-    let defaults = Defaults { executionMode: .Vm, buildTarget: .Host }
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
 }

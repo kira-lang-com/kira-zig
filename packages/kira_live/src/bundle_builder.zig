@@ -283,26 +283,27 @@ fn buildDependencyBundle(
     const shim_app_root = try std.fs.path.join(allocator, &.{ shim_root, "app" });
     try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, shim_app_root);
 
-    const shim_manifest_path = try std.fs.path.join(allocator, &.{ shim_root, "kira.toml" });
-    const shim_manifest = try std.fmt.allocPrint(
-        allocator,
-        \\[package]
-        \\name = "live-{s}"
-        \\version = "0.1.0"
-        \\kind = "app"
-        \\kira = "0.1.0"
-        \\
-        \\[defaults]
-        \\execution_mode = "hybrid"
-        \\build_target = "host"
-        \\
-        \\[dependencies]
-        \\{s} = {{ path = "{s}" }}
-        \\
-    ,
-        .{ bundle_id, package_name, package_root },
-    );
-    try writeFile(shim_manifest_path, shim_manifest);
+    // Emit the synthetic shim manifest in the declaration `package.kira` format
+    // (the loader dispatches on the basename), so the live pipeline never depends
+    // on a legacy TOML manifest existing.
+    const shim_manifest_path = try std.fs.path.join(allocator, &.{ shim_root, "package.kira" });
+    const shim_name = try std.fmt.allocPrint(allocator, "live-{s}", .{bundle_id});
+    const shim_manifest_manifest = manifest.ProjectManifest{
+        .name = shim_name,
+        .version = "0.1.0",
+        .kind = .app,
+        .kira_version = "0.1.0",
+        .execution_mode = "hybrid",
+        .build_target = "host",
+        .dependencies = &.{.{
+            .name = package_name,
+            .source = .{ .path = .{ .path = package_root } },
+        }},
+    };
+    var shim_manifest_buffer: std.Io.Writer.Allocating = .init(allocator);
+    defer shim_manifest_buffer.deinit();
+    try manifest.writeProjectManifestAsDeclaration(&shim_manifest_buffer.writer, shim_manifest_manifest);
+    try writeFile(shim_manifest_path, shim_manifest_buffer.written());
 
     const shim_entrypoint_path = try std.fs.path.join(allocator, &.{ shim_app_root, "main.kira" });
     const shim_source = try std.fmt.allocPrint(

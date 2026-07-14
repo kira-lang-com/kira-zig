@@ -12,7 +12,7 @@ pub fn missingProjectManifest(allocator: std.mem.Allocator, path: []const u8) !d
         .title = "project manifest not found",
         .message = try std.fmt.allocPrint(
             allocator,
-            "Kira could not find `kira.toml` or `project.toml` under `{s}`.",
+            "Kira could not find `package.kira` (or the legacy `kira.toml`/`project.toml`) under `{s}`.",
             .{path},
         ),
         .help = "Run the command from a project root, or pass an explicit manifest path.",
@@ -60,7 +60,7 @@ pub fn missingAssetDirectory(allocator: std.mem.Allocator, entry: []const u8) !d
             "The manifest `assets` entry `{s}` was not found under the project root.",
             .{entry},
         ),
-        .help = "Create the directory/file, generate it before building (e.g. `kira shader build`), or remove the entry from the `assets` list in `kira.toml`.",
+        .help = "Create the directory/file, generate it before building (e.g. `kira shader build`), or remove the entry from the `assets` list in `package.kira` (or legacy `kira.toml`/`project.toml`).",
     });
 }
 

@@ -126,6 +126,17 @@ fn writeTargets(writer: anytype, targets: []const native.TargetSpec) !void {
         try writer.writeAll("-");
         try writeEscapedStringContents(writer, target.selector.abi);
         try writer.writeAll("\"");
+        // Emit artifact paths even when empty: `dynamicLib: ""` means "no
+        // compiled shim — resolve symbols in-process", which is distinct
+        // from the field being absent (build from sources / unsupported).
+        if (target.static_lib) |path| {
+            try writer.writeAll(", staticLib: ");
+            try writeQuotedString(writer, path);
+        }
+        if (target.dynamic_lib) |path| {
+            try writer.writeAll(", dynamicLib: ");
+            try writeQuotedString(writer, path);
+        }
         if (target.compiler_flags.len > 0) {
             try writer.writeAll(", compilerFlags: ");
             try writeStringArray(writer, target.compiler_flags);
@@ -221,7 +232,7 @@ fn writeAutobind(writer: anytype, auto: native.AutobindingSpec) !void {
         try writer.writeAll(", callbacks: ");
         try writeStringArray(writer, auto.bindings.callbacks);
     }
-    try writer.writeAll(" }\n");
+    try writer.writeAll(" },\n");
 }
 
 fn autobindProfileVariant(profile: native.AutobindingProfile) []const u8 {
@@ -363,11 +374,15 @@ test "writes a round-trippable package.kira" {
                 .include_dirs = &.{ "include", "src/native" },
                 .defines = &.{"DEMO_BUILD=1"},
             },
-            .targets = &.{.{
+            .targets = &.{ .{
                 .selector = .{ .architecture = "x86_64", .operating_system = "linux", .abi = "gnu" },
+                .static_lib = "../.kira-build/native/x86_64-linux-gnu/libdemo.a",
                 .compiler_flags = &.{"-pthread"},
                 .link = .{ .frameworks = &.{"AppKit"}, .system_libs = &.{"X11"} },
-            }},
+            }, .{
+                .selector = .{ .architecture = "aarch64", .operating_system = "macos", .abi = "none" },
+                .dynamic_lib = "",
+            } },
         }},
     };
 
@@ -417,6 +432,11 @@ test "writes a round-trippable package.kira" {
     try std.testing.expectEqualStrings("-pthread", target.compiler_flags[0]);
     try std.testing.expectEqualStrings("AppKit", target.link.frameworks[0]);
     try std.testing.expectEqualStrings("X11", target.link.system_libs[0]);
+    try std.testing.expectEqualStrings("../.kira-build/native/x86_64-linux-gnu/libdemo.a", target.static_lib.?);
+    try std.testing.expect(target.dynamic_lib == null);
+    const inproc_target = result.manifest.inline_native_libraries[0].targets[1];
+    try std.testing.expectEqualStrings("", inproc_target.dynamic_lib.?);
+    try std.testing.expect(inproc_target.static_lib == null);
 }
 
 test "migration sanitizes legacy package names into declaration identifiers" {

@@ -475,11 +475,11 @@ test "iOS live runner uses stable reusable development bundle identifier" {
 
     const target = live.ResolvedLiveTarget{
         .target_root = "/tmp/ui-foundation",
-        .target_manifest_path = "/tmp/ui-foundation/kira.toml",
+        .target_manifest_path = "/tmp/ui-foundation/package.kira",
         .target_package_name = "KiraUIFoundation",
         .target_kind = .executable,
         .validation_app_root = "/tmp/ui-foundation/Examples/basic-foundation-app",
-        .validation_manifest_path = "/tmp/ui-foundation/Examples/basic-foundation-app/kira.toml",
+        .validation_manifest_path = "/tmp/ui-foundation/Examples/basic-foundation-app/package.kira",
         .validation_entrypoint_path = "/tmp/ui-foundation/Examples/basic-foundation-app/app/main.kira",
         .output_root = "/tmp/ui-foundation/Examples/basic-foundation-app/.kira-build/live",
         .runner_display_name = "UIFoundationLiveRunner",

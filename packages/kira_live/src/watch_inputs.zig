@@ -1,8 +1,9 @@
 //! Builds the SourceWatcher over every file-system input of a live bundle
 //! build, for the main target and each dependency package: `app/`
 //! sources/shaders/assets, native library sources under `NativeLibs/`, and
-//! each package's `kira.toml`. Shared by the desktop supervisor and the Apple
-//! live sessions so every `kira live` platform reloads on any input change.
+//! each package's manifest (`package.kira` or a legacy `kira.toml` /
+//! `project.toml`). Shared by the desktop supervisor and the Apple live sessions
+//! so every `kira live` platform reloads on any input change.
 const std = @import("std");
 const live = @import("root.zig");
 const SourceWatcher = @import("source_watcher.zig").SourceWatcher;
@@ -32,9 +33,16 @@ fn watchPackageInputs(watcher: *SourceWatcher, allocator: std.mem.Allocator, pac
             try watcher.addDirectory(dir);
         }
     }
-    const manifest_path = try std.fs.path.join(allocator, &.{ package_root, "kira.toml" });
-    defer allocator.free(manifest_path);
-    try watcher.addFile(manifest_path);
+    // Watch every recognized manifest name so a live session reloads whether the
+    // package uses the declaration `package.kira` or a legacy TOML manifest.
+    // `addFile` no-ops for names that are absent, so watching all candidates is
+    // safe even though only one exists per package.
+    const manifest_names = [_][]const u8{ "package.kira", "kira.toml", "project.toml" };
+    for (manifest_names) |name| {
+        const manifest_path = try std.fs.path.join(allocator, &.{ package_root, name });
+        defer allocator.free(manifest_path);
+        try watcher.addFile(manifest_path);
+    }
 }
 
 fn directoryExists(path: []const u8) bool {
