@@ -325,3 +325,110 @@ test "file-scoped import visibility helpers gate dependency symbols per file" {
     try std.testing.expect(ctx.importedSymbolVisible("printLine"));
     try std.testing.expect(ctx.enumSymbolVisible("Result__Int__TestFailure"));
 }
+
+// A dependency package whose manifest name (owner) differs from the module root a file
+// writes: `Package UILibrary { moduleRoot "UI" }`. The importer writes `import UI`, but the
+// owner index keys UILibrary's symbols by "UILibrary". The graph builder records the owner on
+// the import origin (`module_owner_package`), so `import UI` must grant visibility to symbols
+// owned by UILibrary. The control run (owner not recorded) proves the gate really rejects.
+fn buildSplitModulePaletteProgram(
+    allocator: std.mem.Allocator,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    record_owner: bool,
+) !syntax.ast.Program {
+    var program = try parseSource(
+        allocator,
+        "import UI\n" ++
+            "struct Palette { let value: Int = 7; }\n" ++
+            "@Main function entry() { let p = Palette(); print(p.value); return; }",
+        diags,
+    );
+    // decls: [0] dependency `struct Palette` owned by UILibrary, [1] the root `@Main` file.
+    const decl_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.decls.len);
+    for (decl_origins) |*origin| origin.* = .{ .source_path = "app/main.kira" };
+    decl_origins[0] = .{ .package_name = "UILibrary", .source_path = "uilib/UI.kira" };
+    program.decl_origins = decl_origins;
+
+    // The `import UI` statement lives in the root file; the module root written is "UI" but the
+    // owning package is "UILibrary". When `record_owner` is false the owner is omitted, mirroring
+    // the pre-fix behavior where only the written module root reached the per-file index.
+    const import_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.imports.len);
+    for (import_origins) |*origin| origin.* = .{
+        .source_path = "app/main.kira",
+        .module_owner_package = if (record_owner) "UILibrary" else null,
+    };
+    program.import_origins = import_origins;
+    return program;
+}
+
+test "import of a module root grants visibility to its owning package's symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Fix: `import UI` records the owner "UILibrary" too, so the dependency `Palette` resolves.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildSplitModulePaletteProgram(allocator, &diags, true);
+        const analyzed = try analyzer.analyze(allocator, program, &diags);
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+        try std.testing.expect(findTypeDeclByName(analyzed, "Palette") != null);
+    }
+
+    // Control: without recording the owner, the gate keeps `Palette` invisible in the file that
+    // wrote `import UI`, and the reference is rejected with an import hint naming "UILibrary".
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildSplitModulePaletteProgram(allocator, &diags, false);
+        try std.testing.expectError(error.DiagnosticsEmitted, analyzer.analyze(allocator, program, &diags));
+        var mentions_owner = false;
+        for (diags.items) |item| {
+            if (std.mem.indexOf(u8, item.message, "UILibrary") != null) mentions_owner = true;
+        }
+        try std.testing.expect(mentions_owner);
+    }
+}
+
+test "import alias colliding with a local declaration reports a duplicate name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+
+    // `import Foundation as Foo` next to a local `struct Foo` names the same top-level symbol
+    // twice; the alias would otherwise shadow or misresolve the local decl, so it is rejected.
+    const result = analyzeSource(
+        allocator,
+        "import Foundation as Foo\n" ++
+            "struct Foo { let value: Int = 1; }\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+
+    try std.testing.expectError(error.DiagnosticsEmitted, result);
+    try expectFirstDiagnosticTitle(diags.items, "duplicate top-level name");
+}
+
+test "same import alias in different files with no local collision is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+
+    // Imports are file-scoped, so two sibling files may bind the same alias without conflict;
+    // only a repeat within one file (or a clash with a local decl) is a duplicate.
+    var program = try parseSource(
+        allocator,
+        "import Bar as Shared\n" ++
+            "import Baz as Shared\n" ++
+            "@Main function entry() { return; }",
+        &diags,
+    );
+    const import_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.imports.len);
+    import_origins[0] = .{ .source_path = "app/a.kira" };
+    import_origins[1] = .{ .source_path = "app/b.kira" };
+    program.import_origins = import_origins;
+
+    _ = try analyzer.analyze(allocator, program, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+}

@@ -87,10 +87,33 @@ pub fn appendGeneratedFunctionUnique(
     try generated.append(function_decl);
 }
 
-pub fn registerImportAliases(ctx: *shared.Context, imports: []const model.Import, map: *std.StringHashMapUnmanaged(source_pkg.Span)) !void {
+pub fn registerImportAliases(
+    ctx: *shared.Context,
+    imports: []const model.Import,
+    root_top_level_names: *const std.StringHashMapUnmanaged(void),
+    map: *std.StringHashMapUnmanaged(source_pkg.Span),
+) !void {
     for (imports) |import_decl| {
         if (import_decl.package_name != null) continue;
         const visible = import_decl.alias orelse import_decl.module_name;
+        // An import alias (or bare module root) that collides with one of this package's own
+        // top-level declarations is a duplicate top-level name: the alias would otherwise
+        // shadow or misresolve the local decl. This is checked independently of the per-file
+        // dedup below (whose composite key can never collide with a plain decl name), so an
+        // `import Foundation as Foo` next to a local `struct Foo` still reports KSEM003.
+        if (root_top_level_names.contains(visible)) {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM003",
+                .title = "duplicate top-level name",
+                .message = try std.fmt.allocPrint(ctx.allocator, "Kira found more than one top-level declaration named '{s}'.", .{visible}),
+                .labels = &.{
+                    diagnostics.primaryLabel(import_decl.span, "this import name collides with a top-level declaration"),
+                },
+                .help = "Rename the import alias or the conflicting declaration so the symbol is unambiguous.",
+            });
+            return error.DiagnosticsEmitted;
+        }
         // Imports are file-scoped, so the same module may be imported by sibling files
         // without conflict. Dedupe per file (keyed by source path) and flag only a
         // repeated import within the SAME file. The composite key never collides with

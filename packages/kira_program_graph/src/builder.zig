@@ -189,7 +189,15 @@ fn appendProgramGraph(
     _ = expose_imports;
     for (program.imports) |import_decl| {
         try import_list.append(import_decl);
-        try import_origins.append(origin);
+        // Record the owning package when this import resolves to a dependency package whose
+        // manifest name differs from the module root the file wrote (Package UILibrary,
+        // moduleRoot "UI"). The file-scope import gate keys dependency symbols by owner
+        // package name, so semantics needs this module-root -> owner-package mapping.
+        var import_origin = origin;
+        if (imports.packageRootOwnerForImport(module_map, import_decl.module_name)) |owner| {
+            import_origin.module_owner_package = try allocator.dupe(u8, owner.package_name);
+        }
+        try import_origins.append(import_origin);
     }
     for (program.decls) |decl| {
         try decls.append(decl);
@@ -507,6 +515,42 @@ test "dependency imports do not become importer-visible imports" {
     try std.testing.expect(program.function_origins[0].package_name == null);
     try std.testing.expectEqualStrings("Dep", program.function_origins[1].package_name.?);
     try std.testing.expectEqualStrings("Foundation", program.function_origins[2].package_name.?);
+}
+
+test "root import records the owning package when it differs from the module root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "App/app");
+    try tmp.dir.createDirPath(std.testing.io, "UILibrary/app");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "App/app/main.kira", .data = "import UI\nfunction appEntry() { return; }\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "UILibrary/app/UI.kira", .data = "function header() { return; }\n" });
+
+    const app_root = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app", allocator);
+    const uilib_root = try tmp.dir.realPathFileAlloc(std.testing.io, "UILibrary/app", allocator);
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, "App/app/main.kira", allocator);
+    // The dependency's manifest name ("UILibrary") differs from the module root it exports ("UI").
+    const owners = [_]package_manager.ModuleMap.ModuleOwner{
+        .{ .module_root = "App", .package_name = "App", .source_root = app_root },
+        .{ .module_root = "UI", .package_name = "UILibrary", .source_root = uilib_root },
+    };
+
+    var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    const root_program = try parseModuleProgram(allocator, source_path, &diags);
+    const program = try buildProgramGraph(allocator, source_path, root_program, .{ .owners = owners[0..] }, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.imports.len);
+    try std.testing.expectEqualStrings("UI", program.imports[0].module_name.segments[0].text);
+    // The `import UI` origin is a root import (no containing package) but carries the owner.
+    try std.testing.expect(program.import_origins[0].package_name == null);
+    try std.testing.expectEqualStrings("UILibrary", program.import_origins[0].module_owner_package.?);
+    // The dependency's own declarations remain keyed by the owner package name.
+    try std.testing.expectEqualStrings("UILibrary", program.function_origins[1].package_name.?);
 }
 
 test "graph rejects an entry source outside declared app roots" {

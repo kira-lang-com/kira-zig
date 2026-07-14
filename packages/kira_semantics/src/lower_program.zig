@@ -179,10 +179,13 @@ fn collectImportedSymbolOwners(
     }
 }
 
-// Map each file's canonical source path to the set of module-root names it imports.
-// The module root is what a file references (e.g. `import Foundation` -> "Foundation"),
-// which — for the packages in this repo — matches the owning package name recorded in
-// decl origins, so the two maps join on that identity.
+// Map each file's canonical source path to the set of module names it imports. A file
+// references a dependency by its module root (e.g. `import Foundation` -> "Foundation"),
+// but `collectImportedSymbolOwners` keys dependency symbols by the OWNER package name.
+// Those two names are usually identical, but a package may split them (Package UILibrary,
+// moduleRoot "UI"): the file writes `import UI` while the owner is "UILibrary". The graph
+// builder records that owner on the import origin (`module_owner_package`), so we register
+// BOTH the written module root and the owner package name — the gate joins on the owner.
 fn collectFileModuleImports(
     allocator: std.mem.Allocator,
     program: syntax.ast.Program,
@@ -196,6 +199,9 @@ fn collectFileModuleImports(
         const entry = try file_imports.getOrPut(allocator, origin.source_path);
         if (!entry.found_existing) entry.value_ptr.* = .{};
         try entry.value_ptr.put(allocator, module_root, {});
+        if (origin.module_owner_package) |owner_package| {
+            try entry.value_ptr.put(allocator, owner_package, {});
+        }
     }
 }
 
@@ -244,9 +250,15 @@ pub fn lowerProgramWithOptions(
 
     const imports = try lowerImports(&ctx, program);
 
+    // Built before registering import aliases so the alias/module-root collision check can
+    // see this package's own top-level declaration names.
+    var root_top_level_names = std.StringHashMapUnmanaged(void){};
+    defer root_top_level_names.deinit(allocator);
+    try collectRootTopLevelNames(allocator, program, &root_top_level_names);
+
     var top_level_names = std.StringHashMapUnmanaged(source_pkg.Span){};
     defer top_level_names.deinit(allocator);
-    try registerImportAliases(&ctx, imports, &top_level_names);
+    try registerImportAliases(&ctx, imports, &root_top_level_names, &top_level_names);
 
     var construct_headers = std.StringHashMapUnmanaged(shared.ConstructHeader){};
     defer construct_headers.deinit(allocator);
@@ -284,10 +296,6 @@ pub fn lowerProgramWithOptions(
     defer local_types.deinit(allocator);
     var resolver_states = std.StringHashMapUnmanaged(ResolverState){};
     defer resolver_states.deinit(allocator);
-    var root_top_level_names = std.StringHashMapUnmanaged(void){};
-    defer root_top_level_names.deinit(allocator);
-    try collectRootTopLevelNames(allocator, program, &root_top_level_names);
-
     // Imports are file-scoped: build the owner index (dependency symbol -> package) and
     // the per-file import set, then expose them on the context so name resolution can
     // reject a dependency symbol used in a file that never imported its module.
