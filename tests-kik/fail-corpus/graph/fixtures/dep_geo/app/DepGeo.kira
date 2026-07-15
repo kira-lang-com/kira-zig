@@ -1,0 +1,8 @@
+struct GeoContext {
+    let tag: Int = 7
+}
+
+enum GeoMode {
+    Fixed: Float = 0.0
+    Auto
+}

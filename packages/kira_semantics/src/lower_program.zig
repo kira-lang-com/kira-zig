@@ -181,8 +181,12 @@ pub fn lowerProgramWithOptions(
     // Imports are file-scoped: build the owner index (dependency symbol -> package) and
     // the per-file import set, then expose them on the context so name resolution can
     // reject a dependency symbol used in a file that never imported its module.
-    var imported_symbol_owner = std.StringHashMapUnmanaged([]const u8){};
-    defer imported_symbol_owner.deinit(allocator);
+    var imported_symbol_owner = std.StringHashMapUnmanaged(shared.OwnerList){};
+    defer {
+        var owner_iterator = imported_symbol_owner.valueIterator();
+        while (owner_iterator.next()) |owner_list| owner_list.deinit(allocator);
+        imported_symbol_owner.deinit(allocator);
+    }
     try collectImportedSymbolOwners(allocator, program, &root_top_level_names, &imported_symbol_owner);
     ctx.imported_symbol_owner = &imported_symbol_owner;
 
