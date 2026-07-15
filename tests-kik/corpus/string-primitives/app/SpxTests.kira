@@ -6,8 +6,8 @@ import Foundation
 // hybrid (the package [defaults] execution_mode is hybrid; the corpus driver
 // runs the matrix).
 // PREFIX: spx / Spx.
-// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure/print already
-// available via main.kira.
+// This file imports Foundation explicitly (imports are file-scoped), which brings
+// Test / Result / TestFailure into scope for this file.
 
 // ---------------------------------------------------------------------------
 // Helpers

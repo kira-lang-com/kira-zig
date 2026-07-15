@@ -5,7 +5,7 @@ import Foundation
 // copy vs. move semantics, and runtime traps.
 //
 // All top-level names use the Stxo/stxo prefix to avoid harness namespace
-// collisions. This file imports Foundation (imports are file-scoped); main.kira imports it.
+// collisions. This file imports Foundation explicitly (imports are file-scoped).
 
 // ---------------------------------------------------------------------------
 // Struct definitions

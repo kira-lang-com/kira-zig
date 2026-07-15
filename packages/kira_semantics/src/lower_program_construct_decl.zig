@@ -29,6 +29,22 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
     var content_element_type: ?[]const u8 = null;
 
     for (construct_decl.parents) |parent_name| {
+        const parent_leaf = parent_name.segments[parent_name.segments.len - 1].text;
+        // Imports are file-scoped: `construct C extends Parent` naming a dependency
+        // package's construct requires THIS declaring file to import its module — a
+        // sibling file's import must not leak here. The later inheritance validation
+        // only checks that the parent exists.
+        if (ctx.missingImportForSymbol(parent_leaf)) |module| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM097",
+                .title = "construct is not visible in this file",
+                .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ parent_leaf, module }),
+                .labels = &.{diagnostics.primaryLabel(parent_name.span, "construct is not visible in this file")},
+                .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+            });
+            return error.DiagnosticsEmitted;
+        }
         try parents.append(.{
             .name = try shared.qualifiedNameLeaf(ctx.allocator, parent_name),
             .span = parent_name.span,
@@ -77,7 +93,7 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
                     .named_rule => |rule| {
                         // A typed `content: Content<T>;` section pins the element type used
                         // to validate construct-backed declarations. Content-requiredness is
-                        // expressed through content channels (`count`), not this section.
+                        // expressed through `@Required` child-slot fields (`some X`), not here.
                         if (rule.type_expr) |type_expr| {
                             content_element_type = contentElementTypeName(type_expr.*);
                         }
@@ -151,7 +167,8 @@ pub fn lowerConstructDecl(ctx: *shared.Context, construct_decl: syntax.ast.Const
             },
             .requires => {
                 // `requires` declares required *functions*. Content-requiredness is
-                // expressed through content channels (`content { name { count 1.. } }`).
+                // expressed through `@Required` child-slot fields (`some X` / `[some X]`);
+                // content channels were removed in Construct 2.0 (KSEM165 above).
                 for (section.entries) |entry| {
                     switch (entry) {
                         .function_signature => |signature| {

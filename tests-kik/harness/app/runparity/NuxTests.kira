@@ -7,7 +7,7 @@ import Foundation
 // logical_short_circuit_parity, unary_not_parity, conditional_expr_parity,
 // foundation_math_operators, control_flow_parity, cast_call_reachability}.
 // All top-level names use the Nux/nux prefix. This file imports Foundation (imports are file-scoped);
-// main.kira imports it for the whole package.
+// every file that uses Foundation symbols must import it explicitly.
 
 // ---------------------------------------------------------------------------
 // negative_typed_literal_parity: helper struct

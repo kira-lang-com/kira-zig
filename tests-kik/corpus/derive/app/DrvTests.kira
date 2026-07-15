@@ -2,8 +2,8 @@ import Foundation
 
 // DrvTests.kira — coverage for Foundation's builtin `@Derive(Equatable)` and `@Derive(Clone)`
 // macros (see foundation/app/Derive.kira). PREFIX: drv / Drv.
-// This file imports Foundation (imports are file-scoped); Test / Result / TestFailure and the `Equatable` / `Clone` derive
-// macros are all package-wide once main.kira imports Foundation.
+// This file imports Foundation explicitly (imports are file-scoped); Test / Result / TestFailure and the `Equatable` / `Clone` derive
+// macros resolve here because THIS file imports Foundation (imports are file-scoped).
 //
 // Generated function contracts (fixed):
 //   @Derive(Equatable) on struct T  ->  function eq_T(a: borrow T, b: borrow T) -> Bool

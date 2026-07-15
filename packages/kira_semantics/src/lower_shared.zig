@@ -525,7 +525,10 @@ pub fn validateTypeVisibility(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!v
     }
 }
 
-fn checkNamedTypeVisibility(ctx: *Context, leaf: []const u8, span: source_pkg.Span) !void {
+/// Gate a single named type reference (e.g. an `extends` parent) by the current
+/// file's imports; emits KSEM168 with an add-import hint when the name belongs to a
+/// dependency module the file did not import. Also used by validateTypeVisibility.
+pub fn checkNamedTypeVisibility(ctx: *Context, leaf: []const u8, span: source_pkg.Span) !void {
     const module = ctx.missingImportForSymbol(leaf) orelse return;
     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
         .severity = .@"error",

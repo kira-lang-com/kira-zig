@@ -11,8 +11,8 @@ import Foundation
 // already provides `eq_<T>` (hand-written or via `@Derive(Equatable)`), that
 // comparator is authoritative and the driver USES IT instead of synthesizing.
 //
-// This file imports Foundation (imports are file-scoped); Test / Result / TestFailure and the `Equatable`
-// derive macro are package-wide once main.kira imports Foundation. Every case is
+// This file imports Foundation explicitly (imports are file-scoped); Test / Result / TestFailure and the `Equatable`
+// derive macro resolve here because THIS file imports Foundation. Every case is
 // green by construction: the synthesized comparator runs identically on
 // vm / llvm / hybrid because it is ordinary Kira lowered once by the frontend.
 

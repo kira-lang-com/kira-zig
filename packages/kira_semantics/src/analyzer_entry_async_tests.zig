@@ -58,8 +58,8 @@ test "Task spawn and await lower to deferred task nodes" {
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
     // `Task { <literal> }` lowers to a ready task and `handle.await` to a join
-    // point; both must lower cleanly.
-    _ = try analyzeSource(
+    // point; assert the emitted nodes rather than just a clean run.
+    const program = try analyzeSource(
         allocator,
         "@Main function entry() {\n" ++
             "    let handle = Task { 41 }\n" ++
@@ -69,6 +69,22 @@ test "Task spawn and await lower to deferred task nodes" {
             "}",
         &diags,
     );
+
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const entry = program.functions[program.entry_index];
+    var found_spawn = false;
+    var found_await = false;
+    for (entry.body) |statement| {
+        if (statement != .let_stmt) continue;
+        const value = statement.let_stmt.value orelse continue;
+        switch (value.*) {
+            .task_spawn, .task_spawn_ready => found_spawn = true,
+            .task_await => found_await = true,
+            else => {},
+        }
+    }
+    try std.testing.expect(found_spawn);
+    try std.testing.expect(found_await);
 }
 
 test "Task body that is not a call or literal is rejected" {
@@ -168,7 +184,7 @@ test "task handle requestCancel and detach lower to task operations" {
 
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
-    _ = try analyzeSource(
+    const program = try analyzeSource(
         allocator,
         "@Main function entry() {\n" ++
             "    let handle = Task { 1 }\n" ++
@@ -178,6 +194,22 @@ test "task handle requestCancel and detach lower to task operations" {
             "}",
         &diags,
     );
+
+    // Assert the emitted task-operation nodes, not just a clean run.
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    const entry = program.functions[program.entry_index];
+    var found_cancel = false;
+    var found_detach = false;
+    for (entry.body) |statement| {
+        if (statement != .expr_stmt) continue;
+        switch (statement.expr_stmt.expr.*) {
+            .task_cancel => found_cancel = true,
+            .task_detach => found_detach = true,
+            else => {},
+        }
+    }
+    try std.testing.expect(found_cancel);
+    try std.testing.expect(found_detach);
 }
 
 test "reports multiple @Main entrypoints" {

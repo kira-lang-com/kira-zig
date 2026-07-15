@@ -3,7 +3,7 @@ import Foundation
 // GdxTests.kira
 // Migrated from tests/pass/run/large_graphics_descriptor_stress.
 // All top-level names use prefix gdx / Gdx. This file imports Foundation (imports are file-scoped);
-// main.kira imports it for the whole package.
+// every file that uses Foundation symbols must import it explicitly.
 // A render-pipeline descriptor shaped like Kira Graphics' (nested structs,
 // arrays of structs, Bool fields, struct copies mutated locally) reduced to
 // Int/Bool scalars.

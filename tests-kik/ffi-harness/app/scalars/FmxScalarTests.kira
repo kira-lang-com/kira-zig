@@ -2,7 +2,7 @@ import Foundation
 
 // FmxScalarTests.kira — scalar / Bool / Float / round-trip FFI bridge tests.
 // All top-level names use the fmx / Fmx prefix.
-// No imports — Foundation is in scope via the flat package (main.kira).
+// Imports are file-scoped: this file imports Foundation explicitly above.
 
 // ─── @Native Int helpers ────────────────────────────────────────────────────
 

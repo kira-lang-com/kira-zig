@@ -428,6 +428,87 @@ fn buildSignatureVisibilityProgram(
     return program;
 }
 
+// `extends` parents are gated by the declaring file's imports too: a sibling file's
+// import must not make a dependency base class or construct extendable here.
+fn buildExtendsVisibilityProgram(
+    allocator: std.mem.Allocator,
+    diags: *std.array_list.Managed(diagnostics.Diagnostic),
+    source: []const u8,
+    child_file_imports_foundation: bool,
+) !syntax.ast.Program {
+    var program = try parseSource(allocator, source, diags);
+    // decls: [0] the dependency base (owned by Foundation); [1] the child declaration
+    // in app/child.kira; [2] entry in app/main.kira.
+    const decl_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.decls.len);
+    decl_origins[0] = .{ .package_name = "Foundation", .source_path = "foundation/app/Base.kira" };
+    decl_origins[1] = .{ .source_path = "app/child.kira" };
+    decl_origins[2] = .{ .source_path = "app/main.kira" };
+    program.decl_origins = decl_origins;
+
+    const import_origins = try allocator.alloc(syntax.ast.DeclOrigin, program.imports.len);
+    for (import_origins) |*origin| origin.* = .{
+        .source_path = if (child_file_imports_foundation) "app/child.kira" else "app/main.kira",
+    };
+    program.import_origins = import_origins;
+    return program;
+}
+
+test "class extends of a dependency type requires the declaring file's import" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "import Foundation\n" ++
+        "class BaseGadget { let id: Int = 1; }\n" ++
+        "class ChildGadget extends BaseGadget { }\n" ++
+        "@Main function entry() { return; }";
+
+    // The extending file imports Foundation: the parent resolves cleanly.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildExtendsVisibilityProgram(allocator, &diags, source, true);
+        _ = try analyzer.analyze(allocator, program, &diags);
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    }
+
+    // Only a SIBLING file imports Foundation: `extends BaseGadget` is rejected with hint.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildExtendsVisibilityProgram(allocator, &diags, source, false);
+        try std.testing.expectError(error.DiagnosticsEmitted, analyzer.analyze(allocator, program, &diags));
+        try expectFirstDiagnosticTitle(diags.items, "type is not visible in this file");
+        try std.testing.expect(std.mem.indexOf(u8, diags.items[0].help.?, "import Foundation") != null);
+    }
+}
+
+test "construct extends of a dependency construct requires the declaring file's import" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "import Foundation\n" ++
+        "construct BaseKind { }\n" ++
+        "construct ChildKind extends BaseKind { }\n" ++
+        "@Main function entry() { return; }";
+
+    // The extending file imports Foundation: the construct parent resolves cleanly.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildExtendsVisibilityProgram(allocator, &diags, source, true);
+        _ = try analyzer.analyze(allocator, program, &diags);
+        try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+    }
+
+    // Only a SIBLING file imports Foundation: `extends BaseKind` is rejected with hint.
+    {
+        var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+        const program = try buildExtendsVisibilityProgram(allocator, &diags, source, false);
+        try std.testing.expectError(error.DiagnosticsEmitted, analyzer.analyze(allocator, program, &diags));
+        try expectFirstDiagnosticTitle(diags.items, "construct is not visible in this file");
+        try std.testing.expect(std.mem.indexOf(u8, diags.items[0].help.?, "import Foundation") != null);
+    }
+}
+
 test "signature types using a dependency type require the declaring file's import" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

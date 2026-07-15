@@ -11,8 +11,8 @@ import Foundation
 // semantics at runtime (no move, independent duplicates) plus interop with Foundation's
 // `@Derive(Equatable)` macro.
 //
-// This file imports Foundation (imports are file-scoped); Test / Result / TestFailure and the `Equatable` derive macro
-// are all package-wide once main.kira imports Foundation.
+// This file imports Foundation explicitly (imports are file-scoped); Test / Result / TestFailure and the `Equatable` derive macro
+// resolve here because THIS file imports Foundation (imports are file-scoped).
 
 // ---------------------------------------------------------------------------
 // Types under test (all eligible for `Copy`)

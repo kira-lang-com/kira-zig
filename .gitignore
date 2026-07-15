@@ -31,5 +31,9 @@ __pycache__/
 !CMakeLists.txt
 !**/sample.txt
 !**/empty.txt
-kira.lock
+# Lockfiles are tracked (root, foundation/, examples/, benchmarks/) for deterministic
+# locked-mode restoration. Only tests-kik locks are ignored: test runs regenerate them
+# per-corpus and they were deliberately removed from tracking ("Remove generated corpus
+# lockfiles", 71e4d63).
+tests-kik/**/kira.lock
 .codex/worktrees/

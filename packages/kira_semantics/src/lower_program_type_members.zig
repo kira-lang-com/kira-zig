@@ -274,8 +274,18 @@ pub fn hasNonOverridableExactMethod(methods: []const shared.MethodMember, candid
 pub fn sameMethodSignature(lhs: shared.MethodMember, rhs: shared.MethodMember) bool {
     if (lhs.params.len != rhs.params.len) return false;
     if (!shared.canAssignExactly(lhs.return_type, rhs.return_type)) return false;
+    if (lhs.return_ownership != rhs.return_ownership) return false;
     for (lhs.params, rhs.params) |lhs_param, rhs_param| {
         if (!shared.canAssignExactly(lhs_param, rhs_param)) return false;
+    }
+    // Ownership modes (borrow/owned/move/copy) are part of the exact signature, so an
+    // override cannot silently change a parameter's ownership. Members carrying no
+    // ownership metadata (imported surfaces may leave the array empty) are not
+    // compared, preserving their existing match behavior.
+    if (lhs.param_ownership.len == rhs.param_ownership.len) {
+        for (lhs.param_ownership, rhs.param_ownership) |lhs_mode, rhs_mode| {
+            if (lhs_mode != rhs_mode) return false;
+        }
     }
     return true;
 }
@@ -405,6 +415,13 @@ pub fn lowerMethodFunction(
 
     const lowered = try lowerFunction(ctx, .{
         .annotations = function_decl.annotations,
+        // Carry the declaration modifiers through the synthetic decl so a method's
+        // override/comptime/async semantics are not silently dropped before lowering.
+        // (The member parser currently only produces `override` on methods, but the
+        // pass-through keeps this correct if async/comptime methods are ever parsed.)
+        .is_override = function_decl.is_override,
+        .is_comptime = function_decl.is_comptime,
+        .is_async = function_decl.is_async,
         .name = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ owner_type_name, function_decl.name }),
         .params = try params.toOwnedSlice(),
         .return_type = function_decl.return_type,

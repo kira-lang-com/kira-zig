@@ -3,7 +3,7 @@ import Foundation
 // FuxTests.kira
 // Migrated from tests/pass/run/large_future_ui_nested_data_stress.
 // All top-level names use prefix fux / Fux. This file imports Foundation (imports are file-scoped);
-// main.kira imports it for the whole package.
+// every file that uses Foundation symbols must import it explicitly.
 // Deeply nested theme/layout/glyph structs (structs-in-structs, arrays of
 // structs, struct fields copied out of array elements) reduced to Int scalars.
 

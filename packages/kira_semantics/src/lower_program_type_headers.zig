@@ -226,6 +226,10 @@ pub fn appendResolvedParents(
 
     for (parents) |parent_name| {
         const parent_leaf = parent_name.segments[parent_name.segments.len - 1].text;
+        // Imports are file-scoped: `extends Base` naming a dependency package's type
+        // requires the DECLARING file (bound by resolveTypeHeader) to import its module —
+        // a sibling file's import must not leak here.
+        try shared.checkNamedTypeVisibility(ctx, parent_leaf, parent_name.span);
         if (std.mem.eql(u8, owner_type_name, parent_leaf)) {
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
