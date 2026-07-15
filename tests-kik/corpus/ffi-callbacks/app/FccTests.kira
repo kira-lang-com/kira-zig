@@ -1,6 +1,8 @@
+import Foundation
+
 // FccTests.kira — migrated corpus cases from tests/pass/run/ffi_callback_{native,hybrid,state_parity}.
 // PREFIX: fcn / fch / fcs (per original case) — all top-level names unique.
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 // `callbacks` is the autobound module for NativeLibs/callbacks.toml: a C
 // function taking a Kira function as a C function pointer and invoking it.
 

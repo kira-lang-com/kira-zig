@@ -1,3 +1,5 @@
+import Foundation
+
 // FsbFailTests.kira — migrated compile-failure corpus (semantics dirs 41-80 slice).
 //
 // MANIFEST (legacy case -> FailTest name -> expected Compile code):

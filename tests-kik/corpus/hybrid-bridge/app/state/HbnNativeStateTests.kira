@@ -1,6 +1,8 @@
+import Foundation
+
 // nativeState / nativeUserData / nativeRecover / nativeStateFree bridging —
 // migrated corpus cases from tests/pass/run/. PREFIX: hbn / Hbn.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // hybrid_native_state_nested_enum_array — an enum payload nested inside an

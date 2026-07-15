@@ -2,10 +2,12 @@
 // PREFIXES: imx/Imx (imports), ima/Ima (imported_instance_method_parity),
 // imb/Imb (imported_library_class_metadata_parity), imc/Imc (imported_namespace_parity),
 // imd/Imd (inheritance_imported_parent_parity), ime/Ime (inheritance_multi_parent_parity).
-// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+// Imports are file-scoped: this file uses Foundation's Test / Result / TestFailure, so
+// it imports Foundation itself (sibling app/main.kira's import does not leak here).
 // The sibling module app/support.kira is imported qualified, exactly like the legacy
 // cases' `import support as Support`.
 
+import Foundation
 import support as Support
 
 // ---------------------------------------------------------------------------
@@ -21,6 +23,17 @@ function imxHelper() -> Int {
 Test ImxImportsResolve {
     test { return imxHelper() }
     expect { let e: Result<Int, TestFailure> = .Ok(3); return e }
+}
+
+// Positive file-scoped-import case: THIS file imports Foundation, so Foundation's
+// `TestResult` struct type is constructible bare here (the negative twin — a file
+// without the import — lives in fail-corpus/graph as FgrFileScopedTypeImport).
+Test ImxImportedTypeVisible {
+    test {
+        let r = TestResult(name: "imx", passed: true)
+        return r.passed ? 1 : 0
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(1); return e }
 }
 
 // ---------------------------------------------------------------------------

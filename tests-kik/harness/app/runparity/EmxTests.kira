@@ -1,3 +1,5 @@
+import Foundation
+
 // EmxTests.kira — corpus migration of tests/pass/run/{enum_basic_parity,
 // enum_equality_tag_compare, enum_kind_split_cache_parity,
 // enum_payload_move_chain_parity, enum_result_parity,

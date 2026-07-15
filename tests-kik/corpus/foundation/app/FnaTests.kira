@@ -1,6 +1,8 @@
+import Foundation
+
 // FnaTests.kira — migrated corpus case from tests/pass/run/foundation_fs_argparser_leak_regression.
 // PREFIX: fna / Fna (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure/FS API already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure/FS API already available.
 
 // ---------------------------------------------------------------------------
 // foundation_fs_argparser_leak_regression

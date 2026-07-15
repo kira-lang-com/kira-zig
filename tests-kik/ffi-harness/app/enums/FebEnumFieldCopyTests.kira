@@ -1,5 +1,7 @@
+import Foundation
+
 // Hybrid enum-field copy regression tests. Prefix: feb / Feb.
-// No imports — main.kira covers Foundation package-wide.
+// Imports are file-scoped: this file imports Foundation explicitly above.
 //
 // Regresses the hybrid double-free where a @Native function (native-compiled in
 // a hybrid build) constructs an aggregate by copying an enum field FROM a

@@ -1,6 +1,8 @@
+import Foundation
+
 // StrxStringTests.kira — deep string coverage for `kira test`.
 // PREFIX: strx / Strx  (all top-level names use this prefix).
-// No `import Foundation` — harness flat namespace already has it.
+// This file imports Foundation (imports are file-scoped); harness flat namespace already has it.
 
 // ---------------------------------------------------------------------------
 // Helpers

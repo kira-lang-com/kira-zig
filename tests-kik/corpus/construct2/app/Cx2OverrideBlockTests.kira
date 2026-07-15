@@ -1,9 +1,11 @@
+import Foundation
+
 // Cx2OverrideBlockTests.kira — Construct 2.0 items 1 + 5: call-site override blocks.
 // A construction's trailing `{ ... }` block may carry `let <field> = <expr>` override members
 // that set named fields, alongside bare children that fill the `some X` / `[some X]` slot.
 // Parens arguments and override members coexist. Unknown override field -> KSEM163;
 // overriding a slot field -> KSEM162 (both covered in fail-corpus/construct2).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 // PREFIX: cx2Ov / Cx2Ov (all top-level names).
 
 construct Cx2OvWidget {

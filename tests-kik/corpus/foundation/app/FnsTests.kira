@@ -1,6 +1,8 @@
+import Foundation
+
 // FnsTests.kira — migrated corpus cases from tests/pass/run/{ffi_struct_return_parity,foundation_filesystem_compile}.
 // PREFIX: fns / Fns (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure/FS API already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure/FS API already available.
 // File IO uses unique package-relative paths created and removed inside each
 // exercise.
 

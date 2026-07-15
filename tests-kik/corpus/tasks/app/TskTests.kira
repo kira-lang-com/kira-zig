@@ -1,6 +1,8 @@
+import Foundation
+
 // TskTests.kira — migrated corpus case from tests/pass/run/task_spawn_lifecycle_leak_parity.
 // PREFIX: tsk/Tsk (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure/print already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure/print already available.
 
 async function tskAdd(a: Int, b: Int) -> Int {
     return a + b

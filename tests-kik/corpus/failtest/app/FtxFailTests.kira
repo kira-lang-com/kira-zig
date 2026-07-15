@@ -1,6 +1,8 @@
+import Foundation
+
 // FtxFailTests.kira — FailTest corpus: expected-compile-failure tests in pure
 // Kira, plus a regular Test proving the two constructs coexist in one package.
-// No `import Foundation` — the package's main.kira imports it once, and FailTest
+// This file imports Foundation (imports are file-scoped). FailTest
 // `expect` blocks are never compiled (they are read textually by the runner), so
 // Result / TestFailure need not even be in scope here.
 // PREFIX: ftx / Ftx.

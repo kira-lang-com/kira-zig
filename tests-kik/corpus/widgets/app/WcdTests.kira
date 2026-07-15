@@ -1,6 +1,8 @@
+import Foundation
+
 // WcdTests.kira — migrated from tests/pass/run/widget_children_dispatch.
 // PREFIX: wcd / Wcd (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 
 // ---------------------------------------------------------------------------
 // widget_children_dispatch

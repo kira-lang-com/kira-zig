@@ -1,6 +1,8 @@
+import Foundation
+
 // SkgTests.kira — migrated corpus cases from tests/pass/run/ffi_sokol_{native,hybrid}.
 // PREFIX: skn / skh (per original case) — all top-level names unique.
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 // `sokol_gfx` is the autobound module for NativeLibs/sokol_gfx.toml: the real
 // third_party/sokol/sokol_gfx.h compiled with SOKOL_DUMMY_BACKEND, so
 // sg_isvalid() is answered by the actual sokol runtime headlessly (false —

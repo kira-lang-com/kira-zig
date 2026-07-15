@@ -1,3 +1,5 @@
+import Foundation
+
 // OwcConsumingTests.kira — migrated from the four widget-builder-DSL consuming
 // cases previously documented in SKIPPED.md:
 //   consuming_body_wrapper_parity           -> OwcConsumingBodyWrapperParity        (7)

@@ -1,9 +1,11 @@
+import Foundation
+
 // StxOwnershipTests: deep ownership tests — move into consuming functions,
 // owned aggregates, borrow (shared and mut) writeback, pipeline of moves,
 // copy vs. move semantics, and runtime traps.
 //
 // All top-level names use the Stxo/stxo prefix to avoid harness namespace
-// collisions. No `import Foundation` — main.kira imports it.
+// collisions. This file imports Foundation explicitly (imports are file-scoped).
 
 // ---------------------------------------------------------------------------
 // Struct definitions

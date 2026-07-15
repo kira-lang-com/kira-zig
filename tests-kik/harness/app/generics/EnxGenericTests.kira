@@ -1,3 +1,5 @@
+import Foundation
+
 // EnxGenericTests.kira — Deep Result<T, E> test suite.
 // Covers: Result<Int,E>, Result<struct,E>, Result<enum,E>, Result<[Int],E>;
 // both Ok and Error paths; chained matching; pipeline combinator; Results in

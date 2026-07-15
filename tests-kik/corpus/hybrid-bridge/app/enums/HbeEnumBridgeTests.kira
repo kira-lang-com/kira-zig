@@ -1,6 +1,8 @@
+import Foundation
+
 // Enums crossing the @Native <-> @Runtime bridge — migrated corpus case from
 // tests/pass/run/. PREFIX: hbe / Hbe.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // runtime_native_enum_bridge — a @Native struct with an enum field is built

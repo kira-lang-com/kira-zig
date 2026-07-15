@@ -1,7 +1,9 @@
+import Foundation
+
 // WarTests.kira — migrated from tests/pass/run/widget_any_return_dispatch.
 // PREFIX: war / War (all top-level names use this prefix, including the extend
 // method, so it cannot collide with other files' extends).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 
 // ---------------------------------------------------------------------------
 // widget_any_return_dispatch

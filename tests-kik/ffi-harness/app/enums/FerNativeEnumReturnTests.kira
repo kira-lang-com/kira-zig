@@ -1,5 +1,7 @@
+import Foundation
+
 // Hybrid enum native-layout round-trip tests. Prefix: fer / Fer.
-// No imports — main.kira covers Foundation package-wide.
+// Imports are file-scoped: this file imports Foundation explicitly above.
 //
 // Regresses the enum-interning breakage (reverted): interned native-layout enum
 // blocks were not interchangeable with managed Value-layout enums across the
