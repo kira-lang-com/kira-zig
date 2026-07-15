@@ -1,3 +1,5 @@
+import Foundation
+
 // CtxTests.kira
 // Migrated from tests/pass/run/{if_basic_parity, if_condition_trailing_call,
 // for_basic_parity, for_binding_parity, for_empty_parity, for_stateful_parity,

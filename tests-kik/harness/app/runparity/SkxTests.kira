@@ -1,3 +1,5 @@
+import Foundation
+
 // SkxTests.kira
 // Migrated from tests/pass/run/{struct_state_parity, borrow_mut_struct_writeback,
 // instance_method_parity, while_index_struct_methods,

@@ -1,3 +1,5 @@
+import Foundation
+
 // Deep `kira test` suite for scalar arithmetic, comparisons, boolean logic,
 // conditional expressions, integer-division/modulo edge cases, and recursion.
 //
@@ -9,9 +11,9 @@
 // All top-level names in this file use the `sct`/`Scalar` prefix so they never
 // collide in the harness's single flat package namespace.
 //
-// NOTE: do NOT `import Foundation` here — the harness `app/` is one flat package
-// and main.kira already imports it package-wide; a second import is a duplicate
-// top-level name (KSEM003). `Test`, `Result`, and `TestFailure` are in scope.
+// NOTE: imports are file-scoped — this file imports Foundation explicitly above;
+// sibling files must add their own import to use Foundation symbols. `Test`,
+// `Result`, and `TestFailure` are in scope through this file's import.
 
 // --- helpers ---------------------------------------------------------------
 

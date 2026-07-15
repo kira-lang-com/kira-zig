@@ -157,6 +157,8 @@ fn resolveResult(ctx: *shared.Context, ty: model.ResolvedType) ResolveResult {
 }
 
 fn resolveEnum(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
+    // File-scoped imports: reject a dependency enum the current file did not import.
+    if (!ctx.enumSymbolVisible(name)) return null;
     if (ctx.concrete_enums) |concrete| if (concrete.get(name)) |decl| return decl;
     if (ctx.enum_headers) |headers| if (headers.get(name)) |decl| return decl;
     return null;

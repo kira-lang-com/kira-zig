@@ -1,10 +1,12 @@
+import Foundation
+
 // FprFailTests.kira — parser-stage expected-diagnostic cases migrated from tests/fail/parser/.
 // PREFIX: Fpr.
 //
 // Each FailTest embeds a legacy `main.kira` verbatim in its `source` block and asserts the
-// parser rejects it with the exact diagnostic code the legacy expect.toml declared. No
-// `import Foundation` here — Result / TestFailure / FailTest are package-wide once main.kira
-// imports Foundation.
+// parser rejects it with the exact diagnostic code the legacy expect.toml declared.
+// Result / TestFailure / FailTest resolve here because THIS file imports Foundation
+// (imports are file-scoped).
 //
 // Manifest (migrated from tests/fail/parser/):
 //   - expr_nesting_too_deep        -> FprExprNestingTooDeep        (KPAR014, vm hybrid)

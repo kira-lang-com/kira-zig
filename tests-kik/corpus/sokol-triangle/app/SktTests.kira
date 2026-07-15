@@ -1,6 +1,8 @@
+import Foundation
+
 // SktTests.kira — migrated corpus case from tests/pass/run/ffi_sokol_triangle_native.
 // PREFIX: skt / Skt — all top-level names unique.
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 // The FFI surface is the test: the all_public autobound `sokol` module, an
 // @FFI.Struct app state handed to C as user_data, and the @Native
 // init/frame/event/cleanup callbacks (the intact

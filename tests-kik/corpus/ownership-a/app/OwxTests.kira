@@ -1,3 +1,5 @@
+import Foundation
+
 // OwxTests.kira
 // Migrated from tests/pass/run/{ownership_array_field_readback_parity,
 // ownership_array_struct_elements_parity, ownership_borrow_mut_struct_field_parity,

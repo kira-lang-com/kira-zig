@@ -55,6 +55,24 @@ pub const Context = struct {
     active_next_local_id: ?*u32 = null,
     current_package: ?[]const u8 = null,
     current_source_path: ?[]const u8 = null,
+    /// Imports are FILE-scoped, not package-scoped: a file only sees the top-level
+    /// names of the modules IT imports (plus its own package's names). These two maps
+    /// implement that gate. `imported_symbol_owner` maps a top-level symbol's bare name
+    /// to the package that declares it, but only for symbols from a NON-root package
+    /// that are not shadowed by a root declaration. A name absent from this map is a
+    /// root/local symbol (or a builtin) and is always visible. `file_module_imports`
+    /// maps a file's canonical source path to the set of module-root names it imports.
+    imported_symbol_owner: ?*const std.StringHashMapUnmanaged([]const u8) = null,
+    file_module_imports: ?*const std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)) = null,
+    /// Owner package name -> importable module root, recorded only when the two differ
+    /// (Package UILibrary, moduleRoot "UI"). Import HINTS must name the module root —
+    /// `import UILibrary` would not resolve, files import "UI" — while the visibility
+    /// maps join on the owner package name.
+    module_root_by_owner: ?*const std.StringHashMapUnmanaged([]const u8) = null,
+    /// Local type name -> declaring file origin, so header-phase type resolution
+    /// (struct/class field types, which are lowered once while building type headers)
+    /// is gated by the DECLARING file's imports rather than running ungated.
+    local_type_origins: ?*const std.StringHashMapUnmanaged(syntax.ast.DeclOrigin) = null,
     /// When true, the active backend (the VM) can execute direct FFI calls from
     /// ordinary runtime functions through LibFFI, so the KSEM093 "@Native"
     /// requirement is lifted. Set per-target by the build pipeline.
@@ -77,6 +95,91 @@ pub const Context = struct {
     /// builds iteratively and so escapes the parser's nesting guard) raises a clean
     /// diagnostic instead of overflowing the native stack.
     lower_depth: u32 = 0,
+
+    /// A top-level symbol declared in another package is visible in the current file
+    /// only when the current file belongs to that package or imports that package's
+    /// module. Same-package (root included), builtin, and unknown names are always
+    /// visible here so ordinary resolution and unknown-name diagnostics still apply.
+    /// Permissive in phases where the current file is not known (e.g. signature/header
+    /// resolution) so only body-level references are gated.
+    pub fn importedSymbolVisible(ctx: *const Context, name: []const u8) bool {
+        const owners = ctx.imported_symbol_owner orelse return true;
+        const owner = owners.get(name) orelse return true;
+        if (ctx.current_package) |pkg| {
+            if (std.mem.eql(u8, pkg, owner)) return true;
+        }
+        return ctx.fileImportsModule(owner);
+    }
+
+    /// Whether the current file imports `module`. Permissive (returns true) when the
+    /// current file is unknown, so header/signature phases never spuriously reject.
+    pub fn fileImportsModule(ctx: *const Context, module: []const u8) bool {
+        const files = ctx.file_module_imports orelse return true;
+        const path = ctx.current_source_path orelse return true;
+        // Compiler-generated / synthetic decls (e.g. the `kira test` driver) carry an
+        // empty source path and belong to no user file; they are never gated.
+        if (path.len == 0) return true;
+        const set = files.get(path) orelse return false;
+        return set.contains(module);
+    }
+
+    /// Whether the current file may reference package `module` (it belongs to that
+    /// package, or imports it). Permissive when the current file is unknown.
+    pub fn moduleVisible(ctx: *const Context, module: []const u8) bool {
+        if (ctx.current_package) |pkg| {
+            if (std.mem.eql(u8, pkg, module)) return true;
+        }
+        return ctx.fileImportsModule(module);
+    }
+
+    /// File-scope visibility for a dotted name. Two dependency shapes are gated:
+    /// the package-scoped key `Module.member` (created for every dependency top-level
+    /// symbol, and equal to a user-written qualified reference), and a type-member key
+    /// `Type.method` / `Type.constant` whose ROOT is a dependency type — referencing a
+    /// dependency type's member is a reference to that type's name. Any other dotted
+    /// name (e.g. a local type's method key) is left visible.
+    pub fn qualifiedSymbolVisible(ctx: *const Context, name: []const u8) bool {
+        const dot = std.mem.indexOfScalar(u8, name, '.') orelse return ctx.importedSymbolVisible(name);
+        const root = name[0..dot];
+        const member = name[dot + 1 ..];
+        const owners = ctx.imported_symbol_owner orelse return true;
+        if (owners.get(member)) |owner| {
+            if (std.mem.eql(u8, owner, root)) return ctx.moduleVisible(root);
+        }
+        if (owners.contains(root)) return ctx.importedSymbolVisible(root);
+        return true;
+    }
+
+    /// File-scope visibility for an enum name. A generic instantiation is keyed by a
+    /// mangled name (`Base__Arg__Arg`) that is not itself a declared symbol, so the base
+    /// enum's visibility governs it.
+    pub fn enumSymbolVisible(ctx: *const Context, name: []const u8) bool {
+        if (!ctx.importedSymbolVisible(name)) return false;
+        if (std.mem.indexOf(u8, name, "__")) |idx| {
+            if (idx > 0) return ctx.importedSymbolVisible(name[0..idx]);
+        }
+        return true;
+    }
+
+    /// When `name` is only reachable through an import the current file is missing,
+    /// returns the IMPORTABLE module name (for an import-hint diagnostic); otherwise
+    /// null. For a package whose manifest name differs from its module root (Package
+    /// UILibrary, moduleRoot "UI") the hint must name the module root — files write
+    /// `import UI`; `import UILibrary` would not resolve.
+    pub fn missingImportForSymbol(ctx: *const Context, name: []const u8) ?[]const u8 {
+        const owners = ctx.imported_symbol_owner orelse return null;
+        const owner = owners.get(name) orelse return null;
+        const path = ctx.current_source_path orelse return null;
+        if (path.len == 0) return null;
+        if (ctx.current_package) |pkg| {
+            if (std.mem.eql(u8, pkg, owner)) return null;
+        }
+        if (ctx.fileImportsModule(owner)) return null;
+        if (ctx.module_root_by_owner) |roots| {
+            if (roots.get(owner)) |module_root| return module_root;
+        }
+        return owner;
+    }
 };
 
 /// Maximum recursion depth of the semantic expression walkers. Kept well below
@@ -163,7 +266,14 @@ pub fn findFunctionHeader(ctx: *const Context, headers: *const std.StringHashMap
             if (headers.get(scoped)) |header| return header;
         }
     }
-    return headers.get(name);
+    if (headers.get(name)) |header| {
+        // A bare name (or a package-scoped `Module.member` key) registered from another
+        // package leaks package-wide unless the current file imports that package; the
+        // file-scope gate rejects it here.
+        if (!ctx.qualifiedSymbolVisible(name)) return null;
+        return header;
+    }
+    return null;
 }
 
 pub const ConstructHeader = struct {
@@ -371,6 +481,7 @@ pub fn typeLabel(ty: model.ResolvedType) []const u8 {
 
 pub fn typeFromSyntaxChecked(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!model.ResolvedType {
     const resolved = try typeFromSyntax(ctx, ty);
+    try validateTypeVisibility(ctx, ty);
     const semantic_ty = stripOwnershipType(ty);
     if (semantic_ty == .generic) {
         const base_name = semantic_ty.generic.base.segments[semantic_ty.generic.base.segments.len - 1].text;
@@ -388,6 +499,46 @@ pub fn typeFromSyntaxChecked(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!mo
     }
     try validateAnyConstructType(ctx, ty);
     return resolved;
+}
+
+/// File-scope gate for type annotations: a parameter/return/field/local type that names
+/// a dependency package's type requires the file DECLARING that annotation to import the
+/// dependency's module. Walks the type expression and checks named leaves and generic
+/// bases; `missingImportForSymbol` is permissive for local/builtin/unknown names and for
+/// synthetic or unknown files, so only real cross-package references are gated.
+pub fn validateTypeVisibility(ctx: *Context, ty: syntax.ast.TypeExpr) anyerror!void {
+    switch (ty) {
+        .ownership => |info| try validateTypeVisibility(ctx, info.target.*),
+        // `any X` / `some X` targets are also validated (with the more specific KSEM097)
+        // by validateAnyConstructTarget; this walk still gates non-construct targets.
+        .any => |info| try validateTypeVisibility(ctx, info.target.*),
+        .array => |info| try validateTypeVisibility(ctx, info.element_type.*),
+        .function => |info| {
+            for (info.params) |param| try validateTypeVisibility(ctx, param.*);
+            try validateTypeVisibility(ctx, info.result.*);
+        },
+        .named => |name| try checkNamedTypeVisibility(ctx, name.segments[name.segments.len - 1].text, name.span),
+        .generic => |info| {
+            try checkNamedTypeVisibility(ctx, info.base.segments[info.base.segments.len - 1].text, info.base.span);
+            for (info.args) |arg| try validateTypeVisibility(ctx, arg.*);
+        },
+    }
+}
+
+/// Gate a single named type reference (e.g. an `extends` parent) by the current
+/// file's imports; emits KSEM168 with an add-import hint when the name belongs to a
+/// dependency module the file did not import. Also used by validateTypeVisibility.
+pub fn checkNamedTypeVisibility(ctx: *Context, leaf: []const u8, span: source_pkg.Span) !void {
+    const module = ctx.missingImportForSymbol(leaf) orelse return;
+    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+        .severity = .@"error",
+        .code = "KSEM168",
+        .title = "type is not visible in this file",
+        .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ leaf, module }),
+        .labels = &.{diagnostics.primaryLabel(span, "type is not visible in this file")},
+        .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+    });
+    return error.DiagnosticsEmitted;
 }
 
 pub fn validateAnyConstructType(ctx: *Context, ty: syntax.ast.TypeExpr) !void {
@@ -444,7 +595,22 @@ fn validateAnyConstructTarget(ctx: *Context, target: syntax.ast.TypeExpr, span: 
             return error.DiagnosticsEmitted;
         },
     };
-    if (ctx.construct_headers) |headers| if (headers.contains(name)) return;
+    if (ctx.construct_headers) |headers| if (headers.contains(name)) {
+        // Imports are file-scoped: naming a dependency package's construct in an
+        // `any`/`some` type requires this file to import its module.
+        if (ctx.missingImportForSymbol(name)) |module| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM097",
+                .title = "construct is not visible in this file",
+                .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ name, module }),
+                .labels = &.{diagnostics.primaryLabel(span, "construct is not visible in this file")},
+                .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+            });
+            return error.DiagnosticsEmitted;
+        }
+        return;
+    };
     if (ctx.imported_globals.hasConstruct(name)) return;
     if (isBuiltinTypeName(name) or isResolvedNonConstructSymbol(ctx, name)) {
         try emitAnyRequiresConstruct(ctx, span, "resolved target is not a construct", existential);

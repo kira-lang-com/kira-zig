@@ -1,9 +1,11 @@
+import Foundation
+
 // Cx2SlotByTypeTests.kira — Construct 2.0 item 4: slot-by-type.
 // A construct-form field typed `some X` / `[some X]` IS a caller-provided child
 // slot WITHOUT any `@Content` annotation. Slots are filled by the trailing
 // content block at the construction site; filling a slot via a constructor
 // parens argument is rejected (KSEM162, covered in fail-corpus/semantics-a).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 // PREFIX: cx2Slot / Cx2Slot (all top-level names).
 
 construct Cx2SlotWidget {

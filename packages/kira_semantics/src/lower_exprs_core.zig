@@ -284,8 +284,11 @@ pub fn lowerExpr(
                 } };
                 return lowered;
             }
-            const root_is_type = (ctx.type_headers != null and (ctx.type_headers.?.get(flattened.root) != null)) or
-                ctx.imported_globals.findType(flattened.root) != null;
+            // Imports are file-scoped: a dependency type's name is only a valid
+            // namespace root in files that import its module.
+            const root_is_type = ((ctx.type_headers != null and (ctx.type_headers.?.get(flattened.root) != null)) or
+                ctx.imported_globals.findType(flattened.root) != null) and
+                ctx.importedSymbolVisible(flattened.root);
             if ((shared.isImportedRoot(ctx, flattened.root, imports) or root_is_type) and scope.get(flattened.root) == null) {
                 if (function_headers) |headers| {
                     if (headers.get(flattened.path)) |header| {
@@ -353,6 +356,17 @@ pub fn lowerExpr(
                         } };
                         return lowered;
                     }
+                }
+                if (ctx.missingImportForSymbol(flattened.root)) |module| {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM027",
+                        .title = "invalid namespaced reference",
+                        .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ flattened.root, module }),
+                        .labels = &.{diagnostics.primaryLabel(node.span, "namespace root is not visible in this file")},
+                        .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+                    });
+                    return error.DiagnosticsEmitted;
                 }
                 try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                     .severity = .@"error",

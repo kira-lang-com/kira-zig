@@ -350,6 +350,17 @@ pub fn lowerResolvedCall(
 
     if (std.mem.indexOfScalar(u8, callee_name, '.')) |root_end| {
         if (!shared.isImportedRoot(ctx, callee_name[0..root_end], imports)) {
+            if (ctx.missingImportForSymbol(callee_name[0..root_end])) |module| {
+                try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                    .severity = .@"error",
+                    .code = "KSEM027",
+                    .title = "invalid namespaced reference",
+                    .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ callee_name[0..root_end], module }),
+                    .labels = &.{diagnostics.primaryLabel(node.span, "namespace root is not visible in this file")},
+                    .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+                });
+                return error.DiagnosticsEmitted;
+            }
             try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
                 .severity = .@"error",
                 .code = "KSEM027",
@@ -386,6 +397,17 @@ pub fn lowerResolvedCall(
         return;
     }
 
+    if (ctx.missingImportForSymbol(callee_leaf) orelse ctx.missingImportForSymbol(callee_name)) |module| {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM010",
+            .title = "unknown call target",
+            .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ callee_name, module }),
+            .labels = &.{diagnostics.primaryLabel(node.span, "function is not visible in this file")},
+            .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+        });
+        return error.DiagnosticsEmitted;
+    }
     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
         .severity = .@"error",
         .code = "KSEM010",

@@ -1,7 +1,9 @@
+import Foundation
+
 // GpxTests.kira
 // Migrated from tests/pass/run/large_graphics_shaped_pipeline_access_regression.
-// All top-level names use prefix gpx / Gpx. No `import Foundation` here —
-// main.kira imports it for the whole package.
+// All top-level names use prefix gpx / Gpx. This file imports Foundation (imports are file-scoped);
+// every file that uses Foundation symbols must import it explicitly.
 // Regression: deep member/index chains through a Kira Graphics-shaped pipeline
 // descriptor (struct -> struct -> array -> struct -> field) must read the
 // correct element on every backend.

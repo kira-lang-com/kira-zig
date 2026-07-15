@@ -1,0 +1,7 @@
+// This file never imports Foundation, so constructing Foundation's `TestResult`
+// STRUCT TYPE bare is rejected (KSEM078 with an import hint) even though the
+// sibling app/main.kira imports Foundation — type names are file-scoped too.
+function useType() -> Bool {
+    let r = TestResult(name: "leak", passed: true)
+    return r.passed
+}

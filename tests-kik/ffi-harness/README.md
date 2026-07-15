@@ -37,8 +37,9 @@ for bridge bugs this harness surfaced.
 
 ## Authoring notes
 
-- No `import Foundation` outside `main.kira` (flat package; `Test`/`Result`/
-  `TestFailure` are package-wide).
+- Imports are FILE-scoped: every file that uses `Test`/`Result`/`TestFailure`
+  (or any other Foundation symbol) needs its own `import Foundation`; sibling
+  files importing the same module do not conflict.
 - Every top-level name uses a per-domain prefix so the flat namespace stays clean.
 - `test` typically returns an Int/Bool/String; struct results are now compared
   structurally by the driver (see `tests-kik/corpus/driver-structural-eq`), so a

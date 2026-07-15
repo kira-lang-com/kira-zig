@@ -466,6 +466,19 @@ pub fn markInitializedFromAssignment(scope: *model.Scope, target: model.Expr) !v
 }
 
 pub fn emitUnknownLocalName(ctx: *shared.Context, name: []const u8, span: source_pkg.Span) !void {
+    // The name exists in the program but belongs to a module this file never imported:
+    // imports are file-scoped, so point at the missing `import`.
+    if (ctx.missingImportForSymbol(name)) |module| {
+        try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+            .severity = .@"error",
+            .code = "KSEM012",
+            .title = "unknown local name",
+            .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ name, module }),
+            .labels = &.{diagnostics.primaryLabel(span, "name is not visible in this file")},
+            .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file), or use a local name.", .{module}),
+        });
+        return;
+    }
     try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
         .severity = .@"error",
         .code = "KSEM012",

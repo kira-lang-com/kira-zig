@@ -276,6 +276,8 @@ fn appendPatternLocal(
 }
 
 fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
+    // File-scoped imports: reject a dependency enum the current file did not import.
+    if (!ctx.enumSymbolVisible(name)) return null;
     if (ctx.concrete_enums) |concrete_enums| {
         if (concrete_enums.get(name)) |enum_decl| return enum_decl;
     }
