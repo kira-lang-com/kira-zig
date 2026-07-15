@@ -1,5 +1,7 @@
+import Foundation
+
 // Callback / closure cross-bridge depth tests.
-// Prefix: fcb / Fcb. No `import Foundation` (covered by main.kira flat-package).
+// Prefix: fcb / Fcb. this file imports Foundation (imports are file-scoped) (covered by main.kira flat-package).
 //
 // Three native helpers drive the bridge:
 //   fcbInvoke        — one closure, called once (owned)

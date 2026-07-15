@@ -1,6 +1,8 @@
+import Foundation
+
 // StrxClosureTests.kira — deep closure coverage for `kira test`.
 // PREFIX: strx / Strx  (all top-level names use this prefix).
-// No `import Foundation` — already in scope.
+// This file imports Foundation (imports are file-scoped); already in scope.
 
 // ---------------------------------------------------------------------------
 // Helpers

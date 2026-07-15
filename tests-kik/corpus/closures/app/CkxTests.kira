@@ -1,6 +1,8 @@
+import Foundation
+
 // Corpus migration: closures. Source cases under tests/pass/run/{callback_*,
-// trailing_callback_*, closure_export_distinct_dispatch}. No `import Foundation`
-// (main.kira covers the package). Prefix: ckx / Ckx
+// trailing_callback_*, closure_export_distinct_dispatch}. This file imports Foundation
+// explicitly (imports are file-scoped). Prefix: ckx / Ckx
 // (trailing_callback_native_syntax uses tnx / Tnx).
 
 // ── callback_builder_style_parity ─────────────────────────────────────────────

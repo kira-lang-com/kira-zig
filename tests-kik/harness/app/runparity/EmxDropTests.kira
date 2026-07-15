@@ -1,3 +1,5 @@
+import Foundation
+
 // ---------------------------------------------------------------------------
 // Native drop-elaboration leak guards (2026-07-10). Each exercise churns the
 // pattern in a loop so a per-element/per-iteration native leak scales and is

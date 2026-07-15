@@ -31,3 +31,8 @@ __pycache__/
 !CMakeLists.txt
 !**/sample.txt
 !**/empty.txt
+# Lockfiles are never tracked: they embed machine-local resolution paths
+# (e.g. an absolute Foundation path), so a committed lock breaks or leaks on
+# any other checkout. Every build regenerates them.
+kira.lock
+.codex/worktrees/

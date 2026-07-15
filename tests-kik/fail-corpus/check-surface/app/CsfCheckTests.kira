@@ -1,3 +1,5 @@
+import Foundation
+
 // CsfCheckTests.kira — must-COMPILE migration of the legacy analysis-only corpus
 // tests/pass/check/ (19 cases) into the FailTest must-compile construct.
 // PREFIX: Csf / CsfCheckSurface.

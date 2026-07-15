@@ -62,7 +62,7 @@ pub fn addManagedToolchainInstallStep(
                     "Set-Content -Path $currentPath -Value ('channel = \"' + $channel + '\"'); " ++
                     "Add-Content -Path $currentPath -Value ('version = \"' + $version + '\"'); " ++
                     "Add-Content -Path $currentPath -Value 'primary = \"kirac\"'; " ++
-                    "Push-Location $foundationDest; try {{ & $kiracDest ffi autobind --locked --quiet --backend llvm; if ($LASTEXITCODE -ne 0) {{ throw 'Foundation FFI autobind failed' }} }} finally {{ Pop-Location }}; " ++
+                    "Push-Location $foundationDest; try {{ & $kiracDest ffi autobind --quiet --backend llvm; if ($LASTEXITCODE -ne 0) {{ throw 'Foundation FFI autobind failed' }} }} finally {{ Pop-Location }}; " ++
                     "$normalize = {{ param([string]$value) if ([string]::IsNullOrWhiteSpace($value)) {{ return '' }} return $value.Trim().TrimEnd([char[]]@(92, 47)).ToLowerInvariant() }}; " ++
                     "$target = & $normalize $bootstrapperBinDir; " ++
                     "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); " ++
@@ -104,7 +104,7 @@ pub fn addManagedToolchainInstallStep(
                     "mkdir -p \"$toolchain_root/packages/kira_main/include\"; cp -R \"$kira_main_include_source\"/. \"$toolchain_root/packages/kira_main/include\"; " ++
                     "mkdir -p \"$kira_home/toolchains\"; " ++
                     "cat > \"$kira_home/toolchains/current.toml\" <<EOF\nchannel = \"$channel\"\nversion = \"$version\"\nprimary = \"kirac\"\nEOF\n" ++
-                    "(cd \"$toolchain_root/foundation\" && \"$bin_dir/kirac\" ffi autobind --locked --quiet --backend llvm); " ++
+                    "(cd \"$toolchain_root/foundation\" && \"$bin_dir/kirac\" ffi autobind --quiet --backend llvm); " ++
                     "path_added=0; " ++
                     "case \":$PATH:\" in *\":$bootstrapper_bin_dir:\"*) path_exists=1 ;; *) path_exists=0 ;; esac; " ++
                     "if [ \"$path_exists\" -eq 0 ]; then " ++

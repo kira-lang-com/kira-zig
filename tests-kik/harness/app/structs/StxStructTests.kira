@@ -1,8 +1,10 @@
+import Foundation
+
 // StxStructTests: deep struct tests — construction, field access, methods,
 // borrow-mut writeback, value-copy independence, arrays of structs, and traps.
 //
 // All top-level names use the Stx/stx prefix to avoid harness namespace collisions.
-// No `import Foundation` — main.kira imports it for the whole package.
+// This file imports Foundation explicitly because imports are file-scoped.
 
 // ---------------------------------------------------------------------------
 // Struct definitions

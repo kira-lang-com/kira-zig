@@ -1,7 +1,15 @@
 // FgrFailTests.kira — migrated import-graph compile-failure corpus (tests/fail/graph).
 //
-// MANIFEST (legacy case -> FailTest name -> expected Compile code):
-//   outside_app_import -> FgrOutsideAppImport (fixture) KSEM032
+// Imports are file-scoped: this file uses Foundation's Result / TestFailure, so it
+// imports Foundation itself rather than relying on app/main.kira's import.
+//
+// MANIFEST (case -> FailTest name -> expected Compile code):
+//   outside_app_import          -> FgrOutsideAppImport          (fixture) KSEM032
+//   file_scoped_bare_import     -> FgrFileScopedBareImport      (fixture) KSEM012
+//   file_scoped_qualified_import-> FgrFileScopedQualifiedImport (fixture) KSEM027
+//   file_scoped_type_import     -> FgrFileScopedTypeImport      (fixture) KSEM078
+
+import Foundation
 
 // --- outside_app_import (tests/fail/graph/outside_app_import)
 // Import-graph case: app/main.kira does `import support as Support`, but the
@@ -15,4 +23,41 @@ FailTest FgrOutsideAppImport {
         fixture("fixtures/outside_app_import")
     }
     expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM032")); return e }
+}
+
+// --- file_scoped_bare_import (imports are per-file)
+// app/main.kira imports Foundation, but the sibling app/leak.kira does not. A BARE
+// reference to Foundation's `printLine` in the sibling must not resolve through the
+// other file's import, so it is rejected as an unknown name (KSEM012) with a hint to
+// add `import Foundation`. Needs a fixture DIRECTORY: the leak is cross-file.
+FailTest FgrFileScopedBareImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/file_scoped_bare_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM012")); return e }
+}
+
+// --- file_scoped_qualified_import (imports are per-file)
+// Same layout, but the sibling uses the QUALIFIED `Foundation.printLine`. Because the
+// sibling never imports Foundation, the `Foundation` namespace root is unresolved in
+// this file (KSEM027) — a sibling's import does not bring the namespace into scope.
+FailTest FgrFileScopedQualifiedImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/file_scoped_qualified_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM027")); return e }
+}
+
+// --- file_scoped_type_import (imports are per-file, types included)
+// Same layout, but the sibling constructs Foundation's `TestResult` STRUCT TYPE
+// bare. Type and construct names are file-scoped exactly like functions and
+// enums, so the construction is rejected (KSEM078) with an import hint.
+FailTest FgrFileScopedTypeImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/file_scoped_type_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM078")); return e }
 }

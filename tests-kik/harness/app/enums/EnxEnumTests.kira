@@ -1,3 +1,5 @@
+import Foundation
+
 // EnxEnumTests.kira — Deep enum test suite.
 // Covers: payload-less enums (4-variant, 3-variant, 4-variant), single-payload
 // Int enums, mixed payload/payload-less enums, enums as struct fields, arrays

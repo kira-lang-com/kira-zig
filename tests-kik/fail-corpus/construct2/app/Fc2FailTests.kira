@@ -1,3 +1,5 @@
+import Foundation
+
 // Fc2FailTests.kira — Construct 2.0 negative surface (items 1/2/6).
 // Each FailTest inlines a self-contained source that must fail to compile with the stated
 // diagnostic on every listed backend. PREFIX: Fc2 / KikFailConstruct2.

@@ -1,6 +1,8 @@
+import Foundation
+
 // Scalar bridging and multi-hop round-trips — migrated corpus cases from
 // tests/pass/run/. PREFIX: hbf / Hbf.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // float_hybrid_bridge — F64 arguments and return across the runtime->native

@@ -1,6 +1,8 @@
+import Foundation
+
 // Native indexing/append policy on arrays of structs — migrated corpus cases
 // from tests/pass/run/. PREFIX: hbx / Hbx.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // hybrid_runtime_array_struct_native_indexing — @Native code indexes into a

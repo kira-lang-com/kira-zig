@@ -1,3 +1,5 @@
+import Foundation
+
 // Cx2BodyGenericFamilyTests.kira — Construct 2.0 item 7:
 // a `body { ... }` builder-block declaration is family-generic. Before the fix
 // the compiler special-cased the literal family name `Widget`; renaming the
@@ -5,7 +7,7 @@
 // `kira check` with KSEM047. This test declares a body{} builder block on a
 // DELIBERATELY renamed family and proves it now checks and runs on every
 // backend. PREFIX: cx2 / Cx2 (all top-level names).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 
 construct Cx2Panel {
     @Required let body: Cx2Panel

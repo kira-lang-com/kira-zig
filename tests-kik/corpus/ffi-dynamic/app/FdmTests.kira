@@ -1,6 +1,8 @@
+import Foundation
+
 // FdmTests.kira — migrated corpus case from tests/pass/run/ffi_dynamic_vm.
 // PREFIX: fdm / Fdm (all top-level names use this prefix).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 
 // ---------------------------------------------------------------------------
 // ffi_dynamic_vm

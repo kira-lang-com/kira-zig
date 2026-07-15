@@ -1,6 +1,8 @@
+import Foundation
+
 // Closures and callbacks across @Native <-> @Runtime — migrated corpus cases
 // from tests/pass/run/. PREFIX: hbc / Hbc.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // hybrid_runtime_native_callback_export — a runtime context passes a

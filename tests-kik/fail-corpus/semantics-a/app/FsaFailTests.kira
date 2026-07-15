@@ -1,3 +1,5 @@
+import Foundation
+
 // FsaFailTests.kira — migrated legacy expected-diagnostic corpus (semantics slice A).
 //
 // Each FailTest wraps a legacy tests/fail/semantics/<case>/main.kira source verbatim

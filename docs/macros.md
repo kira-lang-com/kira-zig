@@ -412,12 +412,12 @@ struct Vec2 {
 
 Foundation ships four derive macros written in pure Kira (`foundation/app/Derive.kira` for
 `Equatable` / `Clone`, `foundation/app/DeriveSerde.kira` for `Serializable` / `Deserializable`).
-Because Foundation is merged into every importing package, all four are available as `@Derive`
-targets everywhere without any import beyond `import Foundation`. The only user-facing top-level
-names they introduce are the macro names themselves, so they cannot collide with user code. The
-serde pair also defines a set of shared runtime helpers under the reserved `__kira_deser_` prefix
-(defined once in `DeriveSerde.kira`, visible package-wide) that the generated `deserialize_*`
-functions call; the prefix keeps them out of the user's namespace.
+All four are available as `@Derive` targets in any file that has its own `import Foundation`
+(imports are file-scoped). The only user-facing top-level names they introduce are the macro
+names themselves, so they cannot collide with user code. The serde pair also defines a set of
+shared runtime helpers under the reserved `__kira_deser_` prefix (defined once in
+`DeriveSerde.kira`) that the generated `deserialize_*` functions call; the prefix keeps them
+out of the user's namespace.
 
 | Derive | Generated free function | Contract |
 | --- | --- | --- |

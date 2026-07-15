@@ -1,11 +1,13 @@
+import Foundation
+
 // SpxTests.kira — String primitive coverage: String(scalar), .count, charAt,
 // substring, indexOf, plus composition, a deserialization round-trip, and
 // out-of-bounds trap tests. Asserts byte-identical behavior across vm/llvm/
 // hybrid (the package [defaults] execution_mode is hybrid; the corpus driver
 // runs the matrix).
 // PREFIX: spx / Spx.
-// No `import Foundation` — package-wide Test/Result/TestFailure/print already
-// available via main.kira.
+// This file imports Foundation explicitly (imports are file-scoped), which brings
+// Test / Result / TestFailure into scope for this file.
 
 // ---------------------------------------------------------------------------
 // Helpers

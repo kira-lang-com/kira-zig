@@ -147,6 +147,9 @@ pub fn lowerEnumVariantExpr(
 }
 
 fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
+    // Imports are file-scoped: an enum from a dependency package is invisible unless the
+    // current file imports that package's module.
+    if (!ctx.enumSymbolVisible(name)) return null;
     if (ctx.concrete_enums) |concrete_enums| {
         if (concrete_enums.get(name)) |enum_decl| return enum_decl;
     }

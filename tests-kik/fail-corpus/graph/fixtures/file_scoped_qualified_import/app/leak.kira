@@ -1,0 +1,5 @@
+// This file never imports Foundation, so a QUALIFIED reference through the
+// `Foundation` namespace root is unresolved here (KSEM027).
+function useQualified() -> (String) -> Void {
+    return Foundation.printLine
+}

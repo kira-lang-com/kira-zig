@@ -1,6 +1,8 @@
+import Foundation
+
 // Native append/mutate on runtime arrays with write-back sync — migrated
 // corpus cases from tests/pass/run/. PREFIX: hba / Hba.
-// No `import Foundation` — package-wide Test/Result/TestFailure available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure available.
 
 // ---------------------------------------------------------------------------
 // hybrid_append_struct_nested_array_mutation_sync — native appends a struct

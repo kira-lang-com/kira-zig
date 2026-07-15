@@ -14,6 +14,13 @@ pub const Program = struct {
 pub const DeclOrigin = struct {
     package_name: ?[]const u8 = null,
     source_path: []const u8 = "",
+    // For an import statement's origin: the manifest name of the package that OWNS the
+    // imported module, recorded when the module root a file writes (`import UI`) differs
+    // from that package name (e.g. `Package UILibrary { moduleRoot "UI" }`). Null when the
+    // module root already matches its package name and for non-import origins. The
+    // file-scope import gate keys dependency symbols by owner package name, so the per-file
+    // import index records this owner alongside the written module root.
+    module_owner_package: ?[]const u8 = null,
 };
 
 pub const Decl = union(enum) {

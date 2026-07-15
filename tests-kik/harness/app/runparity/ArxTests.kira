@@ -1,3 +1,5 @@
+import Foundation
+
 // ArxTests.kira
 // Migrated from tests/pass/run/{array_append_loop_no_stack_growth, array_append_parity,
 // array_call_parity, array_local_parity, array_element_borrow_mut_writeback_parity,

@@ -1,3 +1,5 @@
+import Foundation
+
 // StrxClassTests.kira — deep class/inheritance coverage for `kira test`.
 // PREFIX: strx / Strx  (all top-level names use this prefix).
 //

@@ -1,7 +1,9 @@
+import Foundation
+
 // DsxTests.kira — coverage for Foundation's builtin `@Derive(Serializable)` and
 // `@Derive(Deserializable)` macros (see foundation/app/DeriveSerde.kira). PREFIX: dsx / Dsx.
-// No `import Foundation` here — Test / Result / TestFailure, the derive macros, and the shared
-// `__kira_deser_*` helpers are all package-wide once main.kira imports Foundation.
+// This file imports Foundation explicitly (imports are file-scoped); Test / Result / TestFailure, the derive macros, and the shared
+// `__kira_deser_*` helpers resolve here because THIS file imports Foundation (imports are file-scoped).
 //
 // Generated function contracts (fixed):
 //   @Derive(Serializable)   on struct T  ->  function serialize_T(v: borrow T) -> String

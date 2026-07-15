@@ -1,6 +1,8 @@
+import Foundation
+
 // SyxTests.kira — Construct 2.0 syntax coverage.
 // PREFIX: syx / Syx (all top-level names, except the shared `Widget` family).
-// No `import Foundation` — package-wide Test/Result/TestFailure already available.
+// This file imports Foundation (imports are file-scoped); Test/Result/TestFailure already available.
 //
 // FEATURE 1 — `=` as the canonical value binder everywhere values are bound
 //   (call/construction args and struct literals), with `:` still accepted for
