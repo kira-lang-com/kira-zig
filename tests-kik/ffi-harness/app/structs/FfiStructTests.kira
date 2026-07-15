@@ -1,5 +1,7 @@
+import Foundation
+
 // Native struct & scalar bridging across @Native <-> @Runtime, as Test
-// constructs. No `import Foundation` (main.kira covers the flat package).
+// constructs. this file imports Foundation explicitly (imports are file-scoped).
 // All top-level names use the `fsb`/`Fsb` prefix.
 
 @Native

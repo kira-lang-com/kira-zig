@@ -41,3 +41,7 @@ REMAINS:
 3. devflow commit/push/PR/CI/land
 4. Workstream A (file-scoped imports) — design in this file, not started
 5. reminder: upstream ruleset "Main" still disabled (user)
+
+## Follow-ups from PR #32 review (2026-07-15)
+- autobind name derivation corrupts _SA_PPPIXELFORMAT_FORCE_U32 (generator bug; snapshots hand-fixed, regen would regress)
+- autobind maps C `long` -> I32 in 3 sites (ffi_autobind_kira_types.zig:183, ffi_autobind_sdk_clang_ast.zig:337, ffi_autobind_sdk_model.zig:264) — wrong on LP64 Darwin (pthread opaque layouts); needs target-aware mapping + snapshot regen + tests

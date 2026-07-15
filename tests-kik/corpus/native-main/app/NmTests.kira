@@ -1,3 +1,5 @@
+import Foundation
+
 // Exercises @Native code on the same backends the @Native @Main runs on
 // (hybrid + llvm). Running under `kira test` proves @Native functions compile
 // and execute on both native-capable backends; vm is excluded by the manifest

@@ -1,0 +1,5 @@
+// This file never imports Foundation, so a BARE reference to Foundation's
+// `printLine` is not visible here even though app/main.kira imports it.
+function useBare() -> (String) -> Void {
+    return printLine
+}

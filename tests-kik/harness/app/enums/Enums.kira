@@ -1,3 +1,5 @@
+import Foundation
+
 // Enums: payload-less and single-payload variants, exhaustive match with
 // payload binding, generic Result<T, E>, and linear attempt/try/handle.
 

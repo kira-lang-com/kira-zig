@@ -20,8 +20,10 @@ and backend-parity bugs that the smaller per-feature kik suites miss.
 
 `app/` is ONE flat package, so:
 
-- Do NOT `import Foundation` outside `main.kira` (a second import is a duplicate
-  top-level name, KSEM003). `Test`/`Result`/`TestFailure` are package-wide.
+- Imports are FILE-scoped: every file that uses `Test`/`Result`/`TestFailure`
+  (or any other Foundation symbol) must have its own `import Foundation`. The
+  same module may be imported by sibling files without conflict; only a repeated
+  import within one file is a duplicate (KSEM003).
 - Every top-level name (function/struct/enum/class/Test) must be globally unique;
   the `*Tests.kira` files use per-domain prefixes (`sct`, `Cfx`, `Colx`, `Stx`,
   `Enx`, `Strx`).

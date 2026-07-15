@@ -92,72 +92,16 @@ pub const ResolverState = enum {
     resolved,
 };
 
-fn declOrigin(program: syntax.ast.Program, index: usize) syntax.ast.DeclOrigin {
-    if (index < program.decl_origins.len) return program.decl_origins[index];
-    return .{};
-}
-fn scopedTopLevelName(allocator: std.mem.Allocator, origin: syntax.ast.DeclOrigin, name: []const u8) ![]const u8 {
-    if (origin.package_name) |package_name| {
-        return shared.scopedSymbolName(allocator, package_name, name);
-    }
-    return name;
-}
-
-fn registerScopedTopLevelName(
-    allocator: std.mem.Allocator,
-    out_diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
-    map: *std.StringHashMapUnmanaged(source_pkg.Span),
-    origin: syntax.ast.DeclOrigin,
-    name: []const u8,
-    span: source_pkg.Span,
-) !void {
-    const key = try scopedTopLevelName(allocator, origin, name);
-    try shared.registerTopLevelName(allocator, out_diagnostics, map, key, span);
-}
-
-fn collectRootTopLevelNames(
-    allocator: std.mem.Allocator,
-    program: syntax.ast.Program,
-    names: *std.StringHashMapUnmanaged(void),
-) !void {
-    for (program.decls, 0..) |decl, decl_index| {
-        if (declOrigin(program, decl_index).package_name != null) continue;
-        switch (decl) {
-            .annotation_decl => |item| try names.put(allocator, item.name, {}),
-            .capability_decl => |item| try names.put(allocator, item.name, {}),
-            .enum_decl => |item| try names.put(allocator, item.name, {}),
-            .type_alias_decl => |item| try names.put(allocator, item.name, {}),
-            .type_decl => |item| try names.put(allocator, item.name, {}),
-            .construct_decl => |item| try names.put(allocator, item.name, {}),
-            .construct_form_decl => |item| try names.put(allocator, item.name, {}),
-            // A FailTest is compiled by the `kira test` runner as an isolated
-            // synthetic package; it contributes no runtime top-level name here.
-            .fail_test_decl => |item| try names.put(allocator, item.name, {}),
-            .function_decl => |item| try names.put(allocator, item.name, {}),
-            // Extension declarations add no new top-level name; they extend an existing construct.
-            .extend_decl => {},
-            // Macro declarations and top-level macro invocations are consumed by the
-            // macro-expansion pass before semantics; no runtime top-level name.
-            .macro_decl, .macro_invocation => {},
-        }
-    }
-}
-
-fn putFunctionHeader(
-    allocator: std.mem.Allocator,
-    headers: *std.StringHashMapUnmanaged(shared.FunctionHeader),
-    root_top_level_names: *const std.StringHashMapUnmanaged(void),
-    origin: syntax.ast.DeclOrigin,
-    name: []const u8,
-    header: shared.FunctionHeader,
-) !void {
-    const scoped_name = try scopedTopLevelName(allocator, origin, name);
-    try headers.put(allocator, scoped_name, header);
-    if (origin.package_name == null) return;
-    if (root_top_level_names.contains(name)) return;
-    if (headers.get(name) != null) return;
-    try headers.put(allocator, name, header);
-}
+// Symbol indexing (per-decl origins, package-scoped names, file-scoped import gate
+// maps) lives in lower_program_symbol_indexes.zig; aliased so call sites read the same.
+const symbol_indexes = @import("lower_program_symbol_indexes.zig");
+const declOrigin = symbol_indexes.declOrigin;
+const registerScopedTopLevelName = symbol_indexes.registerScopedTopLevelName;
+const collectRootTopLevelNames = symbol_indexes.collectRootTopLevelNames;
+const collectImportedSymbolOwners = symbol_indexes.collectImportedSymbolOwners;
+const collectFileModuleImports = symbol_indexes.collectFileModuleImports;
+const collectModuleRootsByOwner = symbol_indexes.collectModuleRootsByOwner;
+const putFunctionHeader = symbol_indexes.putFunctionHeader;
 
 pub fn lowerProgram(
     allocator: std.mem.Allocator,
@@ -188,9 +132,15 @@ pub fn lowerProgramWithOptions(
 
     const imports = try lowerImports(&ctx, program);
 
+    // Built before registering import aliases so the alias/module-root collision check can
+    // see this package's own top-level declaration names.
+    var root_top_level_names = std.StringHashMapUnmanaged(void){};
+    defer root_top_level_names.deinit(allocator);
+    try collectRootTopLevelNames(allocator, program, &root_top_level_names);
+
     var top_level_names = std.StringHashMapUnmanaged(source_pkg.Span){};
     defer top_level_names.deinit(allocator);
-    try registerImportAliases(&ctx, imports, &top_level_names);
+    try registerImportAliases(&ctx, imports, &root_top_level_names, &top_level_names);
 
     var construct_headers = std.StringHashMapUnmanaged(shared.ConstructHeader){};
     defer construct_headers.deinit(allocator);
@@ -228,12 +178,48 @@ pub fn lowerProgramWithOptions(
     defer local_types.deinit(allocator);
     var resolver_states = std.StringHashMapUnmanaged(ResolverState){};
     defer resolver_states.deinit(allocator);
-    var root_top_level_names = std.StringHashMapUnmanaged(void){};
-    defer root_top_level_names.deinit(allocator);
-    try collectRootTopLevelNames(allocator, program, &root_top_level_names);
+    // Imports are file-scoped: build the owner index (dependency symbol -> package) and
+    // the per-file import set, then expose them on the context so name resolution can
+    // reject a dependency symbol used in a file that never imported its module.
+    var imported_symbol_owner = std.StringHashMapUnmanaged([]const u8){};
+    defer imported_symbol_owner.deinit(allocator);
+    try collectImportedSymbolOwners(allocator, program, &root_top_level_names, &imported_symbol_owner);
+    ctx.imported_symbol_owner = &imported_symbol_owner;
+
+    var file_module_imports = std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)){};
+    defer {
+        var file_import_it = file_module_imports.valueIterator();
+        while (file_import_it.next()) |set| set.deinit(allocator);
+        file_module_imports.deinit(allocator);
+    }
+    try collectFileModuleImports(allocator, program, &file_module_imports);
+    ctx.file_module_imports = &file_module_imports;
+
+    var module_root_by_owner = std.StringHashMapUnmanaged([]const u8){};
+    defer module_root_by_owner.deinit(allocator);
+    try collectModuleRootsByOwner(allocator, program, &module_root_by_owner);
+    ctx.module_root_by_owner = &module_root_by_owner;
+
+    // Local type name -> declaring file, so type-header resolution (which lowers struct/
+    // class field types exactly once, outside any per-decl loop) can gate those types by
+    // the DECLARING file's imports. Populated alongside `local_types` below.
+    var local_type_origins = std.StringHashMapUnmanaged(syntax.ast.DeclOrigin){};
+    defer local_type_origins.deinit(allocator);
+    ctx.local_type_origins = &local_type_origins;
 
     for (program.decls, 0..) |decl, decl_index| {
         const origin = declOrigin(program, decl_index);
+        // Imports are file-scoped: header/signature-time type resolution must be gated by
+        // the DECLARING file's imports, so bind the current file per decl (the visibility
+        // helpers are permissive when no file is bound).
+        const previous_package = ctx.current_package;
+        const previous_source_path = ctx.current_source_path;
+        ctx.current_package = origin.package_name;
+        ctx.current_source_path = origin.source_path;
+        defer {
+            ctx.current_package = previous_package;
+            ctx.current_source_path = previous_source_path;
+        }
         switch (decl) {
             .annotation_decl => |annotation_decl| {
                 if (annotation_headers.get(annotation_decl.name)) |previous| {
@@ -309,6 +295,16 @@ pub fn lowerProgramWithOptions(
 
     for (program.decls, 0..) |decl, decl_index| {
         const origin = declOrigin(program, decl_index);
+        // Bind the declaring file so header-time type resolution (enum payloads, construct
+        // members) is gated by THAT file's imports — imports are file-scoped.
+        const previous_package = ctx.current_package;
+        const previous_source_path = ctx.current_source_path;
+        ctx.current_package = origin.package_name;
+        ctx.current_source_path = origin.source_path;
+        defer {
+            ctx.current_package = previous_package;
+            ctx.current_source_path = previous_source_path;
+        }
         switch (decl) {
             .annotation_decl, .capability_decl, .type_alias_decl, .extend_decl, .macro_decl, .macro_invocation => {},
             // FailTest bodies are never lowered — their `source` is quoted text the
@@ -334,6 +330,7 @@ pub fn lowerProgramWithOptions(
                     try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, type_decl.name, type_decl.span);
                 }
                 try local_types.put(allocator, type_decl.name, type_decl);
+                try local_type_origins.put(allocator, type_decl.name, origin);
             },
             .construct_form_decl => |form_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, form_decl.name, form_decl.span);
@@ -342,6 +339,7 @@ pub fn lowerProgramWithOptions(
                 // construction path into an `alloc_struct`. Composition members (`@Content`
                 // children, computed `let node { ... }`) are excluded — they are not stored state.
                 try local_types.put(allocator, form_decl.name, try form_lowering.synthesizeFormStruct(&ctx, form_decl));
+                try local_type_origins.put(allocator, form_decl.name, origin);
             },
             .function_decl => |function_decl| {
                 try registerScopedTopLevelName(allocator, out_diagnostics, &top_level_names, origin, function_decl.name, function_decl.span);
@@ -419,7 +417,17 @@ pub fn lowerProgramWithOptions(
     ctx.constructs = constructs.items;
 
     try registerImportedFunctionHeaders(&ctx, &function_headers);
-    for (program.decls) |decl| {
+    for (program.decls, 0..) |decl, decl_index| {
+        // Method/accessor headers resolve signature types; gate them by the declaring file.
+        const origin = declOrigin(program, decl_index);
+        const previous_package = ctx.current_package;
+        const previous_source_path = ctx.current_source_path;
+        ctx.current_package = origin.package_name;
+        ctx.current_source_path = origin.source_path;
+        defer {
+            ctx.current_package = previous_package;
+            ctx.current_source_path = previous_source_path;
+        }
         switch (decl) {
             .type_decl => |type_decl| {
                 try registerTypeMethodHeaders(&ctx, type_decl, &function_headers);

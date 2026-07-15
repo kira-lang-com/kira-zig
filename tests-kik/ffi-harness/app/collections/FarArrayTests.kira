@@ -1,6 +1,8 @@
+import Foundation
+
 // FarArrayTests.kira — Deep FFI/native-bridge tests exercising arrays across
 // the hybrid boundary. All top-level names use the `far`/`Far` prefix.
-// No imports — Foundation is in scope via main.kira in the flat package.
+// Imports are file-scoped: this file imports Foundation explicitly above.
 
 // ---------------------------------------------------------------------------
 // @Runtime structs used as array element types

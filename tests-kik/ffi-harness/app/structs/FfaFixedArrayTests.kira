@@ -1,5 +1,7 @@
+import Foundation
+
 // @FFI.Array inline fixed-array element stores/reads inside @Native code.
-// Prefix: ffa / Ffa. No `import Foundation` (main.kira covers the flat package).
+// Prefix: ffa / Ffa. this file imports Foundation explicitly (imports are file-scoped).
 //
 // An @FFI.Array field is INLINE `[count x element]` C storage, not a heap
 // kira-array. Regression guarded here: the element assignment used to lower to

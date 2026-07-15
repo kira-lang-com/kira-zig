@@ -1,3 +1,5 @@
+import Foundation
+
 // FsyFailTests.kira — Construct 2.0 syntax negative cases.
 // PREFIX: Fsy. Each FailTest inlines a self-contained source and asserts the
 // expected compile diagnostic code.

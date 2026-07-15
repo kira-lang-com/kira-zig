@@ -177,6 +177,22 @@ pub fn lowerTypeConstruction(
 ) !model.Expr {
     const type_header = if (ctx.type_headers) |headers| headers.get(callee_name) orelse headers.get(callee_leaf) else null;
     const imported_type = ctx.imported_globals.findType(callee_name) orelse ctx.imported_globals.findType(callee_leaf);
+    // Imports are file-scoped: constructing a dependency package's type (struct,
+    // class, or construct-backed form) requires this FILE to import its module —
+    // a sibling file's import must not leak here.
+    if (type_header != null or imported_type != null) {
+        if (ctx.missingImportForSymbol(callee_leaf)) |module| {
+            try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                .severity = .@"error",
+                .code = "KSEM078",
+                .title = "unknown type in struct literal",
+                .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ callee_leaf, module }),
+                .labels = &.{diagnostics.primaryLabel(span, "type is not visible in this file")},
+                .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+            });
+            return error.DiagnosticsEmitted;
+        }
+    }
     if (type_header == null and imported_type == null) {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",

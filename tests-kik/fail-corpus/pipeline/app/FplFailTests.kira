@@ -1,11 +1,13 @@
+import Foundation
+
 // FplFailTests.kira — pipeline-stage (semantics / mid-IR) expected-diagnostic cases migrated
 // from tests/fail/pipeline/.
 // PREFIX: Fpl.
 //
 // Each FailTest embeds a legacy `main.kira` verbatim in its `source` block and asserts the
-// compiler rejects it with the exact diagnostic code the legacy expect.toml declared. No
-// `import Foundation` here — Result / TestFailure / FailTest are package-wide once main.kira
-// imports Foundation.
+// compiler rejects it with the exact diagnostic code the legacy expect.toml declared.
+// Result / TestFailure / FailTest resolve here because THIS file imports Foundation
+// (imports are file-scoped).
 //
 // Manifest (migrated from tests/fail/pipeline/):
 //   - construct_any_binding_reuse                  -> FplConstructAnyBindingReuse                  (KSEM107)
