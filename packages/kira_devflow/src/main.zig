@@ -75,6 +75,18 @@ fn dispatch(ctx: context.Context, verb: []const u8, rest: []const []const u8) !v
     if (eq(verb, "rerun-ci")) return commands.rerunCi(ctx, try requireNumber(rest));
     if (eq(verb, "review-findings")) return commands.reviewFindings(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "wait-reviews")) return commands.waitReviews(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
+    if (eq(verb, "resolve-thread")) {
+        const number = try requireNumber(rest);
+        const target = secondPositional(rest) orelse {
+            out.line("devflow: resolve-thread requires <pr> <path>:<line>");
+            return error.MissingThreadTarget;
+        };
+        const body = flagValue(rest, "-m") orelse {
+            out.line("devflow: resolve-thread requires -m \"reason\" (what addressed the finding, or why it was rejected)");
+            return error.MissingThreadReason;
+        };
+        return commands.resolveThread(ctx, number, target, body);
+    }
     if (eq(verb, "land")) return commands.land(ctx, try requireNumber(rest), hasFlag(rest, "--codex"));
     if (eq(verb, "sync")) return commands.sync(ctx);
     if (eq(verb, "open-upstream-pr")) return commands.openUpstreamPr(ctx);
@@ -116,6 +128,26 @@ fn eq(a: []const u8, b: []const u8) bool {
 fn positional(rest: []const []const u8) ?[]const u8 {
     for (rest) |arg| {
         if (!std.mem.startsWith(u8, arg, "-")) return arg;
+    }
+    return null;
+}
+
+/// Second bare positional, skipping value-taking flags (`-m`, `--notes`) and
+/// their values so a message body is never mistaken for a positional.
+fn secondPositional(rest: []const []const u8) ?[]const u8 {
+    var seen_first = false;
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        if (eq(rest[i], "-m") or eq(rest[i], "--notes")) {
+            i += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, rest[i], "-")) continue;
+        if (!seen_first) {
+            seen_first = true;
+            continue;
+        }
+        return rest[i];
     }
     return null;
 }
@@ -189,6 +221,8 @@ fn usage() void {
         \\  rerun-ci <pr>               rerun completed exact-head workflows
         \\  review-findings <pr> [--codex]
         \\  wait-reviews <pr> [--codex]
+        \\  resolve-thread <pr> <path>:<line> -m "reason"
+        \\                             reply to + resolve an addressed review thread
         \\  land <pr> [--codex]        squash-merge upstream PR (merge subject) + mirror fork + resync
         \\  sync                       resync local default branch to the fork
         \\  open-upstream-pr           fork default -> upstream default with complete-branch metadata

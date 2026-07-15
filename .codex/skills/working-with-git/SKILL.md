@@ -23,6 +23,7 @@ zig build devflow -- ci-failures N                  # exact-head failed job logs
 zig build devflow -- rerun-ci N                     # exact-head workflow rerun
 zig build devflow -- review-findings N [--codex]   # exact-head inline findings
 zig build devflow -- wait-reviews N [--codex]      # blocks until resolved
+zig build devflow -- resolve-thread N <path>:<line> -m "reason"  # close an addressed finding
 zig build devflow -- land N              # squash-merge, mirror fork, resync local
 zig build devflow -- sync                # resync local main if drifted
 zig build devflow -- next-version        # print the next computed release version
@@ -57,6 +58,9 @@ transient command, network, or service failure starts another devflow poll,
 never a switch to `gh`; it never ends the task while the requested land remains
 pending. When `wait-reviews` reports reviews only on an EARLIER head, Kai runs
 `request-reviews` for the current head, then waits again.
+Bots never resolve their own threads: after fixing a finding (or rejecting it
+with evidence), Kai closes it with `resolve-thread` — the reason states the
+fixing commit or the rejection evidence.
 CodeRabbit's successful head check counts as its response when it explicitly
 skips an oversized PR. `land` refuses with `ReviewsPending` or
 `UnresolvedReviews` if CI isn't green or a requested review (CodeRabbit always,

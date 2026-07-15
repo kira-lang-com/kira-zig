@@ -367,6 +367,29 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
     }
 }
 
+/// `resolve-thread <pr> <path>:<line> -m "reason"`: reply to and resolve the
+/// unresolved review thread at that anchor. Only for findings actually
+/// addressed in a pushed commit or investigated and rejected with evidence —
+/// the reason must say which.
+pub fn resolveThread(ctx: Context, number: u32, target: []const u8, body: []const u8) !void {
+    const colon = std.mem.lastIndexOfScalar(u8, target, ':') orelse {
+        out.line("devflow: resolve-thread target must be <path>:<line>");
+        return error.InvalidThreadTarget;
+    };
+    const path = target[0..colon];
+    const line = std.fmt.parseInt(u32, target[colon + 1 ..], 10) catch {
+        out.print("devflow: invalid line in thread target \"{s}\"\n", .{target});
+        return error.InvalidThreadTarget;
+    };
+    gh.resolveThreadAt(ctx, prSlug(ctx), number, path, line, body) catch |err| {
+        if (err == error.ThreadNotFound) {
+            out.print("devflow: no unresolved thread at {s} on #{d} (already resolved, or line drifted — check `review-findings {d}`)\n", .{ target, number, number });
+        }
+        return err;
+    };
+    out.print("devflow: replied to and resolved thread {s} on #{d}\n", .{ target, number });
+}
+
 /// `land <pr> [--codex]`: refuse unless the required reviewers have SUBMITTED a
 /// review and no threads are unresolved, then land as one squash commit with a "Merge pull request #N from ..." subject and resync the local
 /// default branch. Checking only unresolved-thread-count is unsafe: it is 0
