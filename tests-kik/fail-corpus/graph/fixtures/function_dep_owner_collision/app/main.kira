@@ -1,0 +1,14 @@
+import Foundation
+import DepWidgets
+
+// Both DepGeo and DepWidgets declare a top-level `sharedProbe`; DepGeo is listed
+// FIRST in the manifest, so its String-returning header occupies the bare slot.
+// This file imports only DepWidgets — the bare call must bind DepWidgets'
+// Int-returning function. Pinning the type makes a wrong-owner binding a
+// compile error instead of a silent misbind.
+@Main
+function main() {
+    let probe: Int = sharedProbe()
+    print(probe)
+    return
+}

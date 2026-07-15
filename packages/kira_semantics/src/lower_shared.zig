@@ -28,6 +28,10 @@ pub const methodConsumesSelf = construct_queries.methodConsumesSelf;
 pub const containsConstructAnyStorage = construct_queries.containsConstructAnyStorage;
 pub const markAnyFieldMovedIntoOwned = construct_queries.markAnyFieldMovedIntoOwned;
 
+/// Every package declaring a given top-level bare name (see
+/// `Context.imported_symbol_owner`).
+pub const OwnerList = std.ArrayListUnmanaged([]const u8);
+
 pub const Context = struct {
     allocator: std.mem.Allocator,
     diagnostics: *std.array_list.Managed(diagnostics.Diagnostic),
@@ -58,11 +62,14 @@ pub const Context = struct {
     /// Imports are FILE-scoped, not package-scoped: a file only sees the top-level
     /// names of the modules IT imports (plus its own package's names). These two maps
     /// implement that gate. `imported_symbol_owner` maps a top-level symbol's bare name
-    /// to the package that declares it, but only for symbols from a NON-root package
-    /// that are not shadowed by a root declaration. A name absent from this map is a
-    /// root/local symbol (or a builtin) and is always visible. `file_module_imports`
-    /// maps a file's canonical source path to the set of module-root names it imports.
-    imported_symbol_owner: ?*const std.StringHashMapUnmanaged([]const u8) = null,
+    /// to EVERY package that declares it (the same leaf name may exist in several
+    /// dependencies — e.g. a `Text` widget in one package and a `Text` helper in
+    /// another — and the file is fine as long as it imports ANY of them), but only for
+    /// symbols from a NON-root package that are not shadowed by a root declaration. A
+    /// name absent from this map is a root/local symbol (or a builtin) and is always
+    /// visible. `file_module_imports` maps a file's canonical source path to the set of
+    /// module-root names it imports.
+    imported_symbol_owner: ?*const std.StringHashMapUnmanaged(OwnerList) = null,
     file_module_imports: ?*const std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)) = null,
     /// Owner package name -> importable module root, recorded only when the two differ
     /// (Package UILibrary, moduleRoot "UI"). Import HINTS must name the module root —
@@ -73,6 +80,11 @@ pub const Context = struct {
     /// (struct/class field types, which are lowered once while building type headers)
     /// is gated by the DECLARING file's imports rather than running ungated.
     local_type_origins: ?*const std.StringHashMapUnmanaged(syntax.ast.DeclOrigin) = null,
+    /// Set while lowering a method: the receiver type's name. The synthesized `self`
+    /// parameter references this name regardless of which file's imports currently
+    /// gate lowering (a construct DEFAULT lowers under its declaring file's ctx while
+    /// the receiving FORM lives in another package), so it is exempt from the gate.
+    current_receiver_type_name: ?[]const u8 = null,
     /// When true, the active backend (the VM) can execute direct FFI calls from
     /// ordinary runtime functions through LibFFI, so the KSEM093 "@Native"
     /// requirement is lifted. Set per-target by the build pipeline.
@@ -103,12 +115,18 @@ pub const Context = struct {
     /// Permissive in phases where the current file is not known (e.g. signature/header
     /// resolution) so only body-level references are gated.
     pub fn importedSymbolVisible(ctx: *const Context, name: []const u8) bool {
-        const owners = ctx.imported_symbol_owner orelse return true;
-        const owner = owners.get(name) orelse return true;
-        if (ctx.current_package) |pkg| {
-            if (std.mem.eql(u8, pkg, owner)) return true;
+        if (ctx.current_receiver_type_name) |receiver| {
+            if (std.mem.eql(u8, receiver, name)) return true;
         }
-        return ctx.fileImportsModule(owner);
+        const owners = ctx.imported_symbol_owner orelse return true;
+        const owner_list = owners.get(name) orelse return true;
+        for (owner_list.items) |owner| {
+            if (ctx.current_package) |pkg| {
+                if (std.mem.eql(u8, pkg, owner)) return true;
+            }
+            if (ctx.fileImportsModule(owner)) return true;
+        }
+        return false;
     }
 
     /// Whether the current file imports `module`. Permissive (returns true) when the
@@ -143,8 +161,10 @@ pub const Context = struct {
         const root = name[0..dot];
         const member = name[dot + 1 ..];
         const owners = ctx.imported_symbol_owner orelse return true;
-        if (owners.get(member)) |owner| {
-            if (std.mem.eql(u8, owner, root)) return ctx.moduleVisible(root);
+        if (owners.get(member)) |member_owners| {
+            for (member_owners.items) |owner| {
+                if (std.mem.eql(u8, owner, root)) return ctx.moduleVisible(root);
+            }
         }
         if (owners.contains(root)) return ctx.importedSymbolVisible(root);
         return true;
@@ -167,14 +187,24 @@ pub const Context = struct {
     /// UILibrary, moduleRoot "UI") the hint must name the module root — files write
     /// `import UI`; `import UILibrary` would not resolve.
     pub fn missingImportForSymbol(ctx: *const Context, name: []const u8) ?[]const u8 {
+        // The receiver type of the method currently being lowered is referenced via a
+        // SYNTHESIZED self parameter, not source text in the gating file — never gated.
+        if (ctx.current_receiver_type_name) |receiver| {
+            if (std.mem.eql(u8, receiver, name)) return null;
+        }
         const owners = ctx.imported_symbol_owner orelse return null;
-        const owner = owners.get(name) orelse return null;
+        const owner_list = owners.get(name) orelse return null;
         const path = ctx.current_source_path orelse return null;
         if (path.len == 0) return null;
-        if (ctx.current_package) |pkg| {
-            if (std.mem.eql(u8, pkg, owner)) return null;
+        if (owner_list.items.len == 0) return null;
+        for (owner_list.items) |owner| {
+            if (ctx.current_package) |pkg| {
+                if (std.mem.eql(u8, pkg, owner)) return null;
+            }
+            if (ctx.fileImportsModule(owner)) return null;
         }
-        if (ctx.fileImportsModule(owner)) return null;
+        // No declaring package is visible; hint the first one's importable module root.
+        const owner = owner_list.items[0];
         if (ctx.module_root_by_owner) |roots| {
             if (roots.get(owner)) |module_root| return module_root;
         }

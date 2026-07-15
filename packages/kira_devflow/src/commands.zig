@@ -13,6 +13,11 @@ const out = @import("out.zig");
 
 const poll_interval_ns: u64 = 30 * std.time.ns_per_s;
 
+/// Wait verbs return after this long instead of polling forever: a bounded wait
+/// surfaces stuck gates (review never re-requested, hung workflow) to the
+/// caller, who restarts the same verb to keep waiting.
+const wait_timeout_ns: u64 = 5 * std.time.ns_per_min;
+
 /// `status`: honest divergence via content diff, never commit counts.
 pub fn status(ctx: Context) !void {
     try git.fetchRemote(ctx, "origin");
@@ -56,6 +61,7 @@ pub fn waitCi(ctx: Context, number: u32) !void {
     defer ctx.allocator.free(head);
     out.print("devflow: waiting for CI on #{d} exact head {s}\n", .{ number, head });
 
+    var waited_ns: u64 = 0;
     while (true) {
         const current_head = try gh.prHeadOid(ctx, slug, number);
         defer ctx.allocator.free(current_head);
@@ -78,7 +84,12 @@ pub fn waitCi(ctx: Context, number: u32) !void {
         } else {
             out.print("devflow: #{d} has {d} pending check(s)\n{s}\n", .{ number, checks.pending, checks.lines });
         }
+        if (waited_ns >= wait_timeout_ns) {
+            out.print("devflow: wait-ci timed out after 5m with the gate still pending; re-run `devflow wait-ci {d}` to keep polling\n", .{number});
+            return error.WaitTimedOut;
+        }
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+        waited_ns += poll_interval_ns;
     }
 }
 
@@ -313,6 +324,7 @@ pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
 /// advancing while findings are still open.
 pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
     const slug = prSlug(ctx);
+    var waited_ns: u64 = 0;
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
         // a rate-limited/incomplete review must not read as "reviewed".
@@ -330,11 +342,52 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
             }
             out.print("devflow: #{d} has {d} unresolved review thread(s); waiting...\n", .{ number, unresolved });
         } else {
+            // A REQUIRED bot whose review sits on an EARLIER head has already
+            // responded once and will not re-review on its own — waiting cannot
+            // succeed until reviews are re-requested, so surface that now
+            // instead of burning the whole wait window. Stale HUMAN reviews are
+            // ignored: they never satisfy the bot gate in the first place.
+            const stale = try gh.staleReviewerLogins(ctx, slug, number);
+            defer ctx.allocator.free(stale);
+            const stale_rabbit = !has_rabbit and std.mem.indexOf(u8, stale, "coderabbit") != null;
+            const stale_codex = require_codex and !has_codex and std.mem.indexOf(u8, stale, "codex") != null;
+            if (stale_rabbit or stale_codex) {
+                out.print("devflow: #{d} has required reviews only on an EARLIER head (stale: {s}); run `devflow request-reviews {d}` for the current head, then wait again\n", .{ number, stale, number });
+                return error.StaleReviews;
+            }
             out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
         }
 
+        if (waited_ns >= wait_timeout_ns) {
+            out.print("devflow: wait-reviews timed out after 5m with the gate still pending; re-run `devflow wait-reviews {d}` to keep polling\n", .{number});
+            return error.WaitTimedOut;
+        }
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+        waited_ns += poll_interval_ns;
     }
+}
+
+/// `resolve-thread <pr> <path>:<line> -m "reason"`: reply to and resolve the
+/// unresolved review thread at that anchor. Only for findings actually
+/// addressed in a pushed commit or investigated and rejected with evidence —
+/// the reason must say which.
+pub fn resolveThread(ctx: Context, number: u32, target: []const u8, body: []const u8) !void {
+    const colon = std.mem.lastIndexOfScalar(u8, target, ':') orelse {
+        out.line("devflow: resolve-thread target must be <path>:<line>");
+        return error.InvalidThreadTarget;
+    };
+    const path = target[0..colon];
+    const line = std.fmt.parseInt(u32, target[colon + 1 ..], 10) catch {
+        out.print("devflow: invalid line in thread target \"{s}\"\n", .{target});
+        return error.InvalidThreadTarget;
+    };
+    gh.resolveThreadAt(ctx, prSlug(ctx), number, path, line, body) catch |err| {
+        if (err == error.ThreadNotFound) {
+            out.print("devflow: no unresolved thread at {s} on #{d} (already resolved, or line drifted — check `review-findings {d}`)\n", .{ target, number, number });
+        }
+        return err;
+    };
+    out.print("devflow: replied to and resolved thread {s} on #{d}\n", .{ target, number });
 }
 
 /// `land <pr> [--codex]`: refuse unless the required reviewers have SUBMITTED a

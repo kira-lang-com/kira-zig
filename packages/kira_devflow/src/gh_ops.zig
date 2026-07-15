@@ -109,6 +109,18 @@ pub fn headReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     });
 }
 
+/// Comma-joined reviewers whose submitted review is attached to an EARLIER
+/// pushed head only. A non-empty result while headReviewerLogins is empty means
+/// the bots already reviewed once and need a re-request, not more waiting.
+pub fn staleReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",   "pr",                                                                                                        "view", num_str, "-R", slug, "--json", "headRefOid,reviews",
+        "--jq", ".headRefOid as $head | [.reviews[] | select(.commit.oid != $head) | .author.login] | unique | join(\",\")",
+    });
+}
+
 pub fn prHeadOid(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
@@ -311,6 +323,66 @@ pub fn unresolvedThreadCount(ctx: Context, slug: []const u8, number: u32) !u32 {
         cursor = try ctx.allocator.dupe(u8, std.mem.trim(u8, end_cursor, " \r\n"));
     }
     return total;
+}
+
+/// Reply to and resolve the unresolved review thread anchored at `path` (and
+/// `line` when several threads sit on the same file). Landing requires zero
+/// unresolved threads, and bots do not resolve their own threads — a finding
+/// that was addressed (or investigated and rejected with evidence) is closed
+/// here so the whole PR flow stays inside devflow.
+pub fn resolveThreadAt(ctx: Context, slug: []const u8, number: u32, path: []const u8, line: u32, body: []const u8) !void {
+    const owner = ownerOf(slug);
+    const repo = repoOf(slug);
+
+    const query = try std.fmt.allocPrint(ctx.allocator,
+        \\query {{ repository(owner:"{s}", name:"{s}") {{ pullRequest(number:{d}) {{ reviewThreads(first:100) {{ nodes {{ id isResolved path line originalLine }} }} }} }} }}
+    , .{ owner, repo, number });
+    defer ctx.allocator.free(query);
+    const query_arg = try std.fmt.allocPrint(ctx.allocator, "query={s}", .{query});
+    defer ctx.allocator.free(query_arg);
+
+    const listing = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",   "api", "graphql", "-f", query_arg,
+        "--jq", ".data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | \"\\(.id)\\t\\(.path)\\t\\(.line // .originalLine // 0)\"",
+    });
+    defer ctx.allocator.free(listing);
+
+    // Prefer the exact path:line anchor; review threads drift lines as new
+    // commits land, so a single unresolved thread on the file also matches.
+    var exact: ?[]const u8 = null;
+    var on_path: ?[]const u8 = null;
+    var on_path_count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, listing, '\n');
+    while (lines.next()) |entry| {
+        if (entry.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, entry, '\t');
+        const id = fields.next() orelse continue;
+        const entry_path = fields.next() orelse continue;
+        const entry_line = std.mem.trim(u8, fields.next() orelse "0", " \r");
+        if (!std.mem.eql(u8, entry_path, path)) continue;
+        on_path = id;
+        on_path_count += 1;
+        const parsed = std.fmt.parseInt(u32, entry_line, 10) catch 0;
+        if (parsed == line) exact = id;
+    }
+    const thread_id = exact orelse (if (on_path_count == 1) on_path.? else {
+        return error.ThreadNotFound;
+    });
+
+    const reply = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api",                                                                                                                                                       "graphql",
+        "-f", "query=mutation($tid:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid,body:$body}){comment{id}}}",
+        "-f", try std.fmt.allocPrint(ctx.allocator, "tid={s}", .{thread_id}),
+        "-f", try std.fmt.allocPrint(ctx.allocator, "body={s}", .{body}),
+    });
+    ctx.allocator.free(reply);
+
+    const resolved = try proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh", "api",                                                                                                    "graphql",
+        "-f", "query=mutation($tid:ID!){resolveReviewThread(input:{threadId:$tid}){thread{isResolved}}}",
+        "-f", try std.fmt.allocPrint(ctx.allocator, "tid={s}", .{thread_id}),
+    });
+    ctx.allocator.free(resolved);
 }
 
 pub fn isMerged(ctx: Context, slug: []const u8, number: u32) !bool {

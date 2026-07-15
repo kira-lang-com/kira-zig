@@ -380,6 +380,12 @@ pub fn lowerMethodFunction(
     imports: []const model.Import,
     function_headers: *const std.StringHashMapUnmanaged(shared.FunctionHeader),
 ) !model.Function {
+    // The synthesized `self` parameter names the receiver type; that reference must
+    // never be import-gated (see Context.current_receiver_type_name).
+    const previous_receiver = ctx.current_receiver_type_name;
+    ctx.current_receiver_type_name = owner_type_name;
+    defer ctx.current_receiver_type_name = previous_receiver;
+
     const self_type_expr = try ctx.allocator.create(syntax.ast.TypeExpr);
     const self_segments = try ctx.allocator.alloc(syntax.ast.NameSegment, 1);
     self_segments[0] = .{ .text = owner_type_name, .span = function_decl.span };

@@ -1,0 +1,15 @@
+struct GeoContext {
+    let tag: Int = 7
+}
+
+enum GeoMode {
+    Fixed: Float = 0.0
+    Auto
+}
+
+// Bare-name collision probe: DepWidgets declares a `sharedProbe` too, with a
+// DIFFERENT return type. A file importing only one owner must bind that
+// owner's function (see FgrFunctionDepOwnerCollision).
+function sharedProbe() -> String {
+    return "geo"
+}

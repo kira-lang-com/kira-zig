@@ -61,3 +61,69 @@ FailTest FgrFileScopedTypeImport {
     }
     expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM078")); return e }
 }
+
+// --- construct_default_dep_import (imports are per-file; construct defaults)
+// A form (`Gadget Badge { ... }`) of a DEPENDENCY construct inherits the
+// construct's default members. Those defaults were written in dep_widgets'
+// file, which imports DepGeo; lowering them for the form must gate their
+// signature/body types against the DECLARING file's imports, not the form
+// file's (which never names DepGeo). Regression: this misfired as KSEM168
+// pointing at the dependency file.
+FailTest FgrConstructDefaultDepImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/construct_default_dep_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+// --- enum_anchored_transitive (expected-type anchored enum constructors)
+// GeoMode lives in DepGeo, a TRANSITIVE dependency of the fixture app. Both
+// anchored constructor spellings — `.Fixed(w)` and `DepWidgets.GeoMode.Fixed(w)`
+// (qualified via the re-exposing direct dependency) — must resolve through the
+// anchoring field type. Regression: the import gate blocked the enum lookup and
+// the constructions fell through to KSEM167/KSEM092.
+FailTest FgrEnumAnchoredTransitiveDep {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/enum_anchored_transitive")
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+// --- enum_unanchored_missing_import (strict when nothing anchors the enum)
+// With NO expected type anchoring the construction, the file names GeoMode
+// directly and must import DepGeo itself; the rejection is the type-visibility
+// diagnostic with the add-import hint (KSEM168), not a misleading unknown-name
+// or not-callable error.
+FailTest FgrEnumUnanchoredMissingImport {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/enum_unanchored_missing_import")
+    }
+    expect { let e: Result<Int, TestFailure> = .Error(.Compile("KSEM168")); return e }
+}
+
+// --- function_dep_owner_collision (bare name declared by TWO dependencies)
+// DepGeo and DepWidgets both declare a top-level `sharedProbe`. The bare-name
+// header slot keeps the FIRST registered owner, so a file importing only the
+// OTHER owner must still bind ITS function, not the slot's. The fixture pins
+// the return type so binding the wrong package's function cannot compile.
+FailTest FgrFunctionDepOwnerCollision {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/function_dep_owner_collision")
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}
+
+// Mirror case importing the OTHER owner (DepGeo, String-returning). Together
+// the two fixtures cover both registration orders, so whichever owner wins the
+// bare slot, the file importing the loser proves owner-aware binding.
+FailTest FgrFunctionDepOwnerCollisionGeo {
+    backends { hybrid vm }
+    source {
+        fixture("fixtures/function_dep_owner_collision_geo")
+    }
+    expect { let e: Result<Int, TestFailure> = .Ok(0); return e }
+}

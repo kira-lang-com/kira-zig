@@ -8,6 +8,7 @@ build/
 
 # Agent scratch: disposable throwaway output lives here (see CLAUDE.md).
 .codex/tmp/
+.codex/scheduled_tasks.lock
 
 *.kbc
 *.kira.key
