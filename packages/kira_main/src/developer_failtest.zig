@@ -245,6 +245,7 @@ fn runFixture(
     // cannot resolve the fixture's path dependencies (KSEM032). The toolchain
     // version is irrelevant for fixture packages, which declare no kira_version.
     var sync_diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    defer sync_diags.deinit();
     _ = package_manager.syncProject(allocator, fixture_dir, "", .{}, &sync_diags) catch |err| {
         report.failed += 1;
         const code = firstErrorCode(sync_diags.items) orelse @errorName(err);

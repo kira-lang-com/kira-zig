@@ -342,16 +342,20 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
             }
             out.print("devflow: #{d} has {d} unresolved review thread(s); waiting...\n", .{ number, unresolved });
         } else {
-            // A review submitted against an EARLIER head means the bot already
-            // responded once and will not re-review on its own — waiting longer
-            // cannot succeed until reviews are re-requested.
+            // A REQUIRED bot whose review sits on an EARLIER head has already
+            // responded once and will not re-review on its own — waiting cannot
+            // succeed until reviews are re-requested, so surface that now
+            // instead of burning the whole wait window. Stale HUMAN reviews are
+            // ignored: they never satisfy the bot gate in the first place.
             const stale = try gh.staleReviewerLogins(ctx, slug, number);
             defer ctx.allocator.free(stale);
-            if (stale.len != 0) {
-                out.print("devflow: #{d} has reviews only on an EARLIER head (from: {s}); run `devflow request-reviews {d}` for the current head, then wait again\n", .{ number, stale, number });
-            } else {
-                out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
+            const stale_rabbit = !has_rabbit and std.mem.indexOf(u8, stale, "coderabbit") != null;
+            const stale_codex = require_codex and !has_codex and std.mem.indexOf(u8, stale, "codex") != null;
+            if (stale_rabbit or stale_codex) {
+                out.print("devflow: #{d} has required reviews only on an EARLIER head (stale: {s}); run `devflow request-reviews {d}` for the current head, then wait again\n", .{ number, stale, number });
+                return error.StaleReviews;
             }
+            out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
         }
 
         if (waited_ns >= wait_timeout_ns) {
