@@ -81,7 +81,7 @@ pub fn collectImportedSymbolOwners(
     allocator: std.mem.Allocator,
     program: syntax.ast.Program,
     root_top_level_names: *const std.StringHashMapUnmanaged(void),
-    owners: *std.StringHashMapUnmanaged([]const u8),
+    owners: *std.StringHashMapUnmanaged(shared.OwnerList),
 ) !void {
     for (program.decls, 0..) |decl, decl_index| {
         const package_name = declOrigin(program, decl_index).package_name orelse continue;
@@ -89,8 +89,18 @@ pub fn collectImportedSymbolOwners(
         // A root declaration of the same name wins the bare slot (see putFunctionHeader),
         // so the dependency symbol is not reachable bare and must not be gated by module.
         if (root_top_level_names.contains(name)) continue;
-        if (owners.contains(name)) continue;
-        try owners.put(allocator, name, package_name);
+        // The same bare name may be declared by SEVERAL dependency packages; record every
+        // declaring package so visibility passes when the file imports any one of them.
+        const entry = try owners.getOrPut(allocator, name);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        var already_recorded = false;
+        for (entry.value_ptr.items) |existing| {
+            if (std.mem.eql(u8, existing, package_name)) {
+                already_recorded = true;
+                break;
+            }
+        }
+        if (!already_recorded) try entry.value_ptr.append(allocator, package_name);
     }
 }
 
@@ -112,7 +122,7 @@ pub fn collectFileModuleImports(
         if (import_decl.module_name.segments.len == 0) continue;
         const module_root = import_decl.module_name.segments[0].text;
         const entry = try file_imports.getOrPut(allocator, origin.source_path);
-        if (!entry.found_existing) entry.value_ptr.* = .{};
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
         try entry.value_ptr.put(allocator, module_root, {});
         if (origin.module_owner_package) |owner_package| {
             try entry.value_ptr.put(allocator, owner_package, {});

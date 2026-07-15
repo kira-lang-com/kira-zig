@@ -1,0 +1,12 @@
+import Foundation
+import DepWidgets
+
+// UNANCHORED construction of a transitive dependency's enum: no expected type
+// anchors GeoMode here, so the file must import DepGeo itself. The rejection
+// must carry the add-import hint (KSEM012), not a misleading callable error.
+@Main
+function main() {
+    let m = GeoMode.Fixed(9.0)
+    print(m)
+    return
+}
