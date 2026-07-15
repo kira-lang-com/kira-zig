@@ -13,6 +13,11 @@ const out = @import("out.zig");
 
 const poll_interval_ns: u64 = 30 * std.time.ns_per_s;
 
+/// Wait verbs return after this long instead of polling forever: a bounded wait
+/// surfaces stuck gates (review never re-requested, hung workflow) to the
+/// caller, who restarts the same verb to keep waiting.
+const wait_timeout_ns: u64 = 5 * std.time.ns_per_min;
+
 /// `status`: honest divergence via content diff, never commit counts.
 pub fn status(ctx: Context) !void {
     try git.fetchRemote(ctx, "origin");
@@ -56,6 +61,7 @@ pub fn waitCi(ctx: Context, number: u32) !void {
     defer ctx.allocator.free(head);
     out.print("devflow: waiting for CI on #{d} exact head {s}\n", .{ number, head });
 
+    var waited_ns: u64 = 0;
     while (true) {
         const current_head = try gh.prHeadOid(ctx, slug, number);
         defer ctx.allocator.free(current_head);
@@ -78,7 +84,12 @@ pub fn waitCi(ctx: Context, number: u32) !void {
         } else {
             out.print("devflow: #{d} has {d} pending check(s)\n{s}\n", .{ number, checks.pending, checks.lines });
         }
+        if (waited_ns >= wait_timeout_ns) {
+            out.print("devflow: wait-ci timed out after 5m with the gate still pending; re-run `devflow wait-ci {d}` to keep polling\n", .{number});
+            return error.WaitTimedOut;
+        }
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+        waited_ns += poll_interval_ns;
     }
 }
 
@@ -313,6 +324,7 @@ pub fn requestReviews(ctx: Context, number: u32, ping_codex: bool) !void {
 /// advancing while findings are still open.
 pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
     const slug = prSlug(ctx);
+    var waited_ns: u64 = 0;
     while (true) {
         // Gate on SUBMITTED reviews, not comments: a bot walkthrough comment or
         // a rate-limited/incomplete review must not read as "reviewed".
@@ -330,10 +342,24 @@ pub fn waitReviews(ctx: Context, number: u32, require_codex: bool) !void {
             }
             out.print("devflow: #{d} has {d} unresolved review thread(s); waiting...\n", .{ number, unresolved });
         } else {
-            out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
+            // A review submitted against an EARLIER head means the bot already
+            // responded once and will not re-review on its own — waiting longer
+            // cannot succeed until reviews are re-requested.
+            const stale = try gh.staleReviewerLogins(ctx, slug, number);
+            defer ctx.allocator.free(stale);
+            if (stale.len != 0) {
+                out.print("devflow: #{d} has reviews only on an EARLIER head (from: {s}); run `devflow request-reviews {d}` for the current head, then wait again\n", .{ number, stale, number });
+            } else {
+                out.print("devflow: waiting for reviews on #{d} (seen: {s})\n", .{ number, logins });
+            }
         }
 
+        if (waited_ns >= wait_timeout_ns) {
+            out.print("devflow: wait-reviews timed out after 5m with the gate still pending; re-run `devflow wait-reviews {d}` to keep polling\n", .{number});
+            return error.WaitTimedOut;
+        }
         try ctx.io.sleep(.fromNanoseconds(poll_interval_ns), .awake);
+        waited_ns += poll_interval_ns;
     }
 }
 

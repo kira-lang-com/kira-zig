@@ -16,3 +16,9 @@ struct GadgetPanel {
     let mode: GeoMode = GeoMode.Auto
     let tag: Int = 0
 }
+
+// Bare-name collision probe: DepGeo declares a `sharedProbe` too, returning a
+// String. This one returns Int (see FgrFunctionDepOwnerCollision).
+function sharedProbe() -> Int {
+    return 7
+}

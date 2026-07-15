@@ -1,0 +1,14 @@
+import Foundation
+import DepGeo
+
+// Mirror of function_dep_owner_collision importing the OTHER owner: both
+// dependencies declare `sharedProbe`, this file imports only DepGeo, so the
+// bare call must bind DepGeo's String-returning function no matter which
+// owner's header occupies the first-registered bare slot. Pinning the type
+// makes a wrong-owner binding a compile error instead of a silent misbind.
+@Main
+function main() {
+    let probe: String = sharedProbe()
+    print(probe)
+    return
+}

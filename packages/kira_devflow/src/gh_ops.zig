@@ -109,6 +109,18 @@ pub fn headReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     });
 }
 
+/// Comma-joined reviewers whose submitted review is attached to an EARLIER
+/// pushed head only. A non-empty result while headReviewerLogins is empty means
+/// the bots already reviewed once and need a re-request, not more waiting.
+pub fn staleReviewerLogins(ctx: Context, slug: []const u8, number: u32) ![]u8 {
+    var num_buf: [16]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});
+    return proc.capture(ctx.allocator, ctx.io, ctx.repo_root, &.{
+        "gh",   "pr",                                                                                                        "view", num_str, "-R", slug, "--json", "headRefOid,reviews",
+        "--jq", ".headRefOid as $head | [.reviews[] | select(.commit.oid != $head) | .author.login] | unique | join(\",\")",
+    });
+}
+
 pub fn prHeadOid(ctx: Context, slug: []const u8, number: u32) ![]u8 {
     var num_buf: [16]u8 = undefined;
     const num_str = try std.fmt.bufPrint(&num_buf, "{d}", .{number});

@@ -87,7 +87,7 @@ pub fn lowerEnumVariantExpr(
     };
 
     const anchored = expected_type.name != null;
-    const resolved_name = resolveEnumName(ctx, enum_target.enum_name, expected_type.name orelse "", anchored);
+    const resolved_name = resolveEnumName(ctx, enum_target.enum_name, expected_type.name orelse "");
     const enum_decl = resolveEnumDeclAnchored(ctx, resolved_name, anchored) orelse {
         // Unanchored construction naming an enum the file cannot see: the enum exists,
         // only the import is missing. Falling through silently would misreport this as
@@ -196,11 +196,15 @@ fn resolveEnumDeclAnchored(ctx: *shared.Context, name: []const u8, anchored: boo
     return if (anchored) lookupEnumDecl(ctx, name) else resolveEnumDecl(ctx, name);
 }
 
-fn resolveEnumName(ctx: *shared.Context, candidate: []const u8, fallback: []const u8, anchored: bool) []const u8 {
+/// Resolve the enum NAME without the file-scope import gate: the gate applies to the
+/// DECLARATION lookup (resolveEnumDeclAnchored at the call site). Gating the name here
+/// too would collapse an unimported enum's name to the fallback before the
+/// missing-import diagnostic can inspect it, making KSEM168 unreachable.
+fn resolveEnumName(ctx: *shared.Context, candidate: []const u8, fallback: []const u8) []const u8 {
     if (candidate.len != 0) {
-        if (resolveEnumDeclAnchored(ctx, candidate, anchored) != null) return candidate;
+        if (lookupEnumDecl(ctx, candidate) != null) return candidate;
         const leaf = qualifiedLeaf(candidate);
-        if (resolveEnumDeclAnchored(ctx, leaf, anchored) != null) return leaf;
+        if (lookupEnumDecl(ctx, leaf) != null) return leaf;
     }
     return fallback;
 }

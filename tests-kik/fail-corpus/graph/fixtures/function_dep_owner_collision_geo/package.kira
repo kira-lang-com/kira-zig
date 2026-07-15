@@ -1,0 +1,9 @@
+Package FixtureFunctionDepOwnerCollisionGeo {
+    let version = "0.1.0"
+    let kind = PackageKind.App
+    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+    let dependencies = [
+        Dependency { name: "DepGeo", path: "../dep_geo" },
+        Dependency { name: "DepWidgets", path: "../dep_widgets" }
+    ]
+}
