@@ -1,0 +1,9 @@
+Package DepWidgets {
+    let version = "0.1.0"
+    let kind = PackageKind.Library
+    let moduleRoot = "DepWidgets"
+    let defaults = Defaults { executionMode: Backend.Vm, buildTarget: BuildTarget.Host }
+    let dependencies = [
+        Dependency { name: "DepGeo", path: "../dep_geo" }
+    ]
+}

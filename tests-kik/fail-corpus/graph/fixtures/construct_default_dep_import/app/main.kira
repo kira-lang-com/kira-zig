@@ -1,0 +1,15 @@
+import Foundation
+import DepWidgets
+
+// Declaring a form of a DEPENDENCY construct must not re-gate the construct's
+// inherited default members (declared in dep_widgets, importing DepGeo) against
+// THIS file's imports. Regression fixture for the construct-default origin bug.
+Gadget Badge {
+    let label = "badge"
+}
+
+@Main
+function main() {
+    print(1)
+    return
+}

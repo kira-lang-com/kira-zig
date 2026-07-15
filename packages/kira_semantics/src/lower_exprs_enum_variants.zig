@@ -25,7 +25,8 @@ pub fn lowerEnumVariantExprExpected(
 ) anyerror!?*model.Expr {
     if (expected_type.name == null) return null;
     if (expected_type.kind != .enum_instance and expected_type.kind != .named) return null;
-    if (resolveEnumDecl(ctx, expected_type.name.?) == null and resolveEnumDecl(ctx, qualifiedLeaf(expected_type.name.?)) == null) return null;
+    // Anchored by the expected type: bypass the file-import gate (see lookupEnumDecl).
+    if (lookupEnumDecl(ctx, expected_type.name.?) == null and lookupEnumDecl(ctx, qualifiedLeaf(expected_type.name.?)) == null) return null;
     return lowerEnumVariantExpr(ctx, expr, expected_type, imports, scope, function_headers);
 }
 
@@ -85,8 +86,29 @@ pub fn lowerEnumVariantExpr(
         else => return null,
     };
 
-    const resolved_name = resolveEnumName(ctx, enum_target.enum_name, expected_type.name orelse "");
-    const enum_decl = resolveEnumDecl(ctx, resolved_name) orelse return null;
+    const anchored = expected_type.name != null;
+    const resolved_name = resolveEnumName(ctx, enum_target.enum_name, expected_type.name orelse "", anchored);
+    const enum_decl = resolveEnumDeclAnchored(ctx, resolved_name, anchored) orelse {
+        // Unanchored construction naming an enum the file cannot see: the enum exists,
+        // only the import is missing. Falling through silently would misreport this as
+        // KSEM092 ("member is not callable") downstream — emit the actionable hint.
+        if (!anchored) {
+            if (lookupEnumDecl(ctx, resolved_name) != null) {
+                if (ctx.missingImportForSymbol(resolved_name)) |module| {
+                    try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
+                        .severity = .@"error",
+                        .code = "KSEM168",
+                        .title = "type is not visible in this file",
+                        .message = try std.fmt.allocPrint(ctx.allocator, "'{s}' is defined in module '{s}', which this file does not import.", .{ resolved_name, module }),
+                        .labels = &.{diagnostics.primaryLabel(enum_target.span, "enum is not visible in this file")},
+                        .help = try std.fmt.allocPrint(ctx.allocator, "Add `import {s}` to this file (imports are per-file).", .{module}),
+                    });
+                    return error.DiagnosticsEmitted;
+                }
+            }
+        }
+        return null;
+    };
     if (enum_decl.type_params.len != 0 and (expected_type.name == null or !std.mem.eql(u8, expected_type.name.?, resolved_name))) {
         try diagnostics.appendOwned(ctx.allocator, ctx.diagnostics, .{
             .severity = .@"error",
@@ -146,10 +168,14 @@ pub fn lowerEnumVariantExpr(
     return lowered;
 }
 
-fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
-    // Imports are file-scoped: an enum from a dependency package is invisible unless the
-    // current file imports that package's module.
-    if (!ctx.enumSymbolVisible(name)) return null;
+// Enum lookup WITHOUT the file-scope import gate. Used when the construction is
+// anchored by an expected type: the anchor (a typed field, parameter, or return)
+// was already named through declarations the file can legally see, so the variant
+// construction must resolve even when the enum's OWNER module (possibly a
+// transitive dependency) is not imported by this file — `width: .Fixed(w)` where
+// `width: SizeMode` comes from a direct dependency but SizeMode lives one level
+// deeper must keep working.
+fn lookupEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
     if (ctx.concrete_enums) |concrete_enums| {
         if (concrete_enums.get(name)) |enum_decl| return enum_decl;
     }
@@ -159,11 +185,22 @@ fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
     return null;
 }
 
-fn resolveEnumName(ctx: *shared.Context, candidate: []const u8, fallback: []const u8) []const u8 {
+fn resolveEnumDecl(ctx: *shared.Context, name: []const u8) ?model.EnumDecl {
+    // Imports are file-scoped: an enum from a dependency package is invisible unless the
+    // current file imports that package's module.
+    if (!ctx.enumSymbolVisible(name)) return null;
+    return lookupEnumDecl(ctx, name);
+}
+
+fn resolveEnumDeclAnchored(ctx: *shared.Context, name: []const u8, anchored: bool) ?model.EnumDecl {
+    return if (anchored) lookupEnumDecl(ctx, name) else resolveEnumDecl(ctx, name);
+}
+
+fn resolveEnumName(ctx: *shared.Context, candidate: []const u8, fallback: []const u8, anchored: bool) []const u8 {
     if (candidate.len != 0) {
-        if (resolveEnumDecl(ctx, candidate) != null) return candidate;
+        if (resolveEnumDeclAnchored(ctx, candidate, anchored) != null) return candidate;
         const leaf = qualifiedLeaf(candidate);
-        if (resolveEnumDecl(ctx, leaf) != null) return leaf;
+        if (resolveEnumDeclAnchored(ctx, leaf, anchored) != null) return leaf;
     }
     return fallback;
 }

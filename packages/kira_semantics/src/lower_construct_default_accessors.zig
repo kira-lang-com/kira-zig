@@ -24,6 +24,8 @@ pub fn registerDefaultFunctionHeaders(
             .field => |field| if (!node_bridge.returnsConcreteType(ctx, field)) continue,
             .function => {},
         }
+        const previous_origin = bindDefaultOrigin(ctx, default);
+        defer restoreCtxOrigin(ctx, previous_origin);
 
         const full_name = try std.fmt.allocPrint(ctx.allocator, "{s}.{s}", .{ form_decl.name, default.name });
         if (function_headers.get(full_name) != null) continue;
@@ -122,6 +124,8 @@ pub fn lowerDefaultFunctions(
     for (defaults) |default| {
         if (try formDeclaresMember(ctx, form_decl, default.name)) continue;
         if (!defaultDependenciesAvailable(ctx, program, form_decl, default)) continue;
+        const previous_origin = bindDefaultOrigin(ctx, default);
+        defer restoreCtxOrigin(ctx, previous_origin);
         const function_decl = switch (default.kind) {
             .field => |field| blk: {
                 const body = field.body orelse continue;
@@ -156,7 +160,29 @@ const DefaultMember = struct {
     name: []const u8,
     kind: DefaultKind,
     span: @import("kira_source").Span,
+    // The construct DEFINITION's declaring file. Defaults are lowered while ctx is
+    // bound to the FORM's file; signature/body type gating must instead honor the
+    // file that wrote the default (it holds the imports the default's types need).
+    origin: syntax.ast.DeclOrigin = .{},
 };
+
+// Bind ctx to the default's declaring file for the duration of one default's
+// lowering. Returns the previous binding for the caller's defer-restore.
+const CtxOrigin = struct { package: ?[]const u8, source_path: ?[]const u8 };
+
+fn bindDefaultOrigin(ctx: *shared.Context, default: DefaultMember) CtxOrigin {
+    const previous = CtxOrigin{ .package = ctx.current_package, .source_path = ctx.current_source_path };
+    if (default.origin.source_path.len > 0) {
+        ctx.current_package = default.origin.package_name;
+        ctx.current_source_path = default.origin.source_path;
+    }
+    return previous;
+}
+
+fn restoreCtxOrigin(ctx: *shared.Context, previous: CtxOrigin) void {
+    ctx.current_package = previous.package;
+    ctx.current_source_path = previous.source_path;
+}
 
 fn inheritedDefaults(
     ctx: *shared.Context,
@@ -170,8 +196,8 @@ fn inheritedDefaults(
     defer seen.deinit(ctx.allocator);
 
     for (form_families) |family| {
-        const construct_decl = findConstructDecl(program, family) orelse continue;
-        for (construct_decl.members) |member| {
+        const found = findConstructDecl(program, family) orelse continue;
+        for (found.decl.members) |member| {
             switch (member) {
                 .field_decl => |field| {
                     if (field.body == null or seen.contains(field.name)) continue;
@@ -180,6 +206,7 @@ fn inheritedDefaults(
                         .name = field.name,
                         .kind = .{ .field = field },
                         .span = field.span,
+                        .origin = found.origin,
                     });
                 },
                 .function_decl => |function| {
@@ -189,6 +216,7 @@ fn inheritedDefaults(
                         .name = function.name,
                         .kind = .{ .function = function },
                         .span = function.span,
+                        .origin = found.origin,
                     });
                 },
                 else => {},
@@ -198,10 +226,17 @@ fn inheritedDefaults(
     return defaults.toOwnedSlice();
 }
 
-fn findConstructDecl(program: syntax.ast.Program, name: []const u8) ?syntax.ast.ConstructDecl {
-    for (program.decls) |decl| {
+const FoundConstructDecl = struct {
+    decl: syntax.ast.ConstructDecl,
+    origin: syntax.ast.DeclOrigin,
+};
+
+fn findConstructDecl(program: syntax.ast.Program, name: []const u8) ?FoundConstructDecl {
+    for (program.decls, 0..) |decl, index| {
         if (decl != .construct_decl) continue;
-        if (std.mem.eql(u8, decl.construct_decl.name, name)) return decl.construct_decl;
+        if (!std.mem.eql(u8, decl.construct_decl.name, name)) continue;
+        const origin = if (index < program.decl_origins.len) program.decl_origins[index] else syntax.ast.DeclOrigin{};
+        return .{ .decl = decl.construct_decl, .origin = origin };
     }
     return null;
 }
@@ -327,8 +362,8 @@ fn constructFamilyDeclaresMember(
     name: []const u8,
 ) bool {
     const family = form_decl.construct_name.segments[form_decl.construct_name.segments.len - 1].text;
-    const construct_decl = findConstructDecl(program, family) orelse return false;
-    for (construct_decl.members) |member| {
+    const found = findConstructDecl(program, family) orelse return false;
+    for (found.decl.members) |member| {
         switch (member) {
             .field_decl => |field| if (std.mem.eql(u8, field.name, name)) return true,
             .function_decl => |function| if (std.mem.eql(u8, function.name, name)) return true,
