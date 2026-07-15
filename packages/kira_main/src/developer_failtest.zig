@@ -24,6 +24,7 @@ const diagnostics = @import("kira_diagnostics");
 const parser = @import("kira_parser");
 const syntax = @import("kira_syntax_model");
 const kira_project = @import("kira_project");
+const package_manager = @import("kira_package_manager");
 
 pub const Report = struct {
     passed: usize = 0,
@@ -238,6 +239,20 @@ fn runFixture(
         try writer.print("FAIL {s} (fixture dir not found: {s})\n", .{ name, fixture_dir });
         return;
     }
+
+    // `kira check` syncs the package before compiling; without this the module
+    // map is lock-driven and a fresh checkout (no kira.lock in the fixture dir)
+    // cannot resolve the fixture's path dependencies (KSEM032). The toolchain
+    // version is irrelevant for fixture packages, which declare no kira_version.
+    var sync_diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
+    defer sync_diags.deinit();
+    _ = package_manager.syncProject(allocator, fixture_dir, "", .{}, &sync_diags) catch |err| {
+        report.failed += 1;
+        const code = firstErrorCode(sync_diags.items) orelse @errorName(err);
+        try writer.print("FAIL {s} (fixture sync error: {s})\n", .{ name, code });
+        return;
+    };
+
     const target = kira_project.resolveTargetFromPath(allocator, fixture_dir) catch |err| {
         report.failed += 1;
         try writer.print("FAIL {s} (fixture resolve error: {s})\n", .{ name, @errorName(err) });

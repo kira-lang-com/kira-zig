@@ -1,0 +1,15 @@
+import Foundation
+import DepWidgets
+
+// GeoMode lives in DepGeo (a TRANSITIVE dependency this file does not import).
+// Both anchored constructor spellings must resolve through the expected type:
+// the leading-dot form and the (historically common) form qualified via the
+// re-exposing direct dependency. Regression fixture for the anchored enum
+// constructor gate bug (was misreported as KSEM092/KSEM167).
+@Main
+function main() {
+    let a = GadgetPanel { mode: .Fixed(5.0), tag: 1 }
+    let b = GadgetPanel { mode: DepWidgets.GeoMode.Fixed(6.0), tag: 2 }
+    print(a.tag + b.tag)
+    return
+}

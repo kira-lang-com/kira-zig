@@ -1,0 +1,24 @@
+import DepGeo
+
+// Construct whose DEFAULT member signature/body reference the dependency type this
+// file imports. Lowering an instance in ANOTHER package must gate these against
+// THIS file's imports, not the instance file's.
+construct Gadget {
+    @Required let label: String
+    function describe(context: borrow DepGeo.GeoContext) -> Int {
+        return context.tag
+    }
+}
+
+// Struct whose field type is DepGeo's enum: instance files construct the field
+// value anchored by this declaration without importing DepGeo themselves.
+struct GadgetPanel {
+    let mode: GeoMode = GeoMode.Auto
+    let tag: Int = 0
+}
+
+// Bare-name collision probe: DepGeo declares a `sharedProbe` too, returning a
+// String. This one returns Int (see FgrFunctionDepOwnerCollision).
+function sharedProbe() -> Int {
+    return 7
+}

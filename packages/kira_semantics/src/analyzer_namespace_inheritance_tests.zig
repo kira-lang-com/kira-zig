@@ -272,10 +272,21 @@ test "file-scoped import visibility helpers gate dependency symbols per file" {
     const allocator = arena.allocator();
     var diags = std.array_list.Managed(diagnostics.Diagnostic).init(allocator);
 
-    var owners = std.StringHashMapUnmanaged([]const u8){};
-    try owners.put(allocator, "printLine", "Foundation");
-    try owners.put(allocator, "Result", "Foundation");
-    try owners.put(allocator, "TestRuntime", "Foundation");
+    var owners = std.StringHashMapUnmanaged(shared.OwnerList){};
+    const putOwner = struct {
+        fn put(a: std.mem.Allocator, map: *std.StringHashMapUnmanaged(shared.OwnerList), name: []const u8, owner: []const u8) !void {
+            const entry = try map.getOrPut(a, name);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(a, owner);
+        }
+    }.put;
+    try putOwner(allocator, &owners, "printLine", "Foundation");
+    try putOwner(allocator, &owners, "Result", "Foundation");
+    try putOwner(allocator, &owners, "TestRuntime", "Foundation");
+    // The same bare name declared by TWO dependency packages: importing EITHER
+    // package makes the name visible.
+    try putOwner(allocator, &owners, "Text", "Foundation");
+    try putOwner(allocator, &owners, "Text", "WidgetKit");
 
     var file_imports = std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)){};
     var importer_set = std.StringHashMapUnmanaged(void){};
@@ -293,6 +304,10 @@ test "file-scoped import visibility helpers gate dependency symbols per file" {
     // A file that imports Foundation sees Foundation's symbols.
     ctx.current_source_path = "/pkg/app/importer.kira";
     try std.testing.expect(ctx.importedSymbolVisible("printLine"));
+    // Multi-owner name: visible because ONE of its declaring packages (Foundation)
+    // is imported, even though WidgetKit is not.
+    try std.testing.expect(ctx.importedSymbolVisible("Text"));
+    try std.testing.expect(ctx.missingImportForSymbol("Text") == null);
     try std.testing.expect(ctx.moduleVisible("Foundation"));
     try std.testing.expect(ctx.enumSymbolVisible("Result__Int__TestFailure"));
     try std.testing.expect(ctx.qualifiedSymbolVisible("Foundation.printLine"));
