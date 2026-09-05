@@ -24,12 +24,18 @@ jobs:
           - os: linux
             arch: x64
             runner: blacksmith-4vcpu-ubuntu-2404
+          - os: linux
+            arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
           - os: macos
             arch: arm64
             runner: blacksmith-6vcpu-macos-15
           - os: windows
             arch: x64
             runner: blacksmith-4vcpu-windows-2025
+          - os: windows
+            arch: arm64
+            runner: blacksmith-4vcpu-windows-2025-arm
 
     steps:
       - name: Check out Kira

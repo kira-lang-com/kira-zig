@@ -7,10 +7,12 @@ pub fn hostLlvmBundleKey(host: std.Target) ?[]const u8 {
     return switch (host.os.tag) {
         .windows => switch (host.cpu.arch) {
             .x86_64 => "x86_64-windows-msvc",
+            .aarch64 => "aarch64-windows-msvc",
             else => null,
         },
         .linux => switch (host.cpu.arch) {
             .x86_64 => "x86_64-linux-gnu",
+            .aarch64 => "aarch64-linux-gnu",
             else => null,
         },
         .macos => switch (host.cpu.arch) {
@@ -57,11 +59,17 @@ pub fn legacyLlvmVersionedHome(
 }
 
 test "maps supported hosts to metadata keys" {
-    const windows = std.Target.Query.parse(.{ .arch_os_abi = "x86_64-windows" }) catch unreachable;
-    try std.testing.expectEqualStrings("x86_64-windows-msvc", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(windows)));
+    const windows_x64 = std.Target.Query.parse(.{ .arch_os_abi = "x86_64-windows" }) catch unreachable;
+    try std.testing.expectEqualStrings("x86_64-windows-msvc", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(windows_x64)));
 
-    const linux = std.Target.Query.parse(.{ .arch_os_abi = "x86_64-linux" }) catch unreachable;
-    try std.testing.expectEqualStrings("x86_64-linux-gnu", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(linux)));
+    const windows_arm = std.Target.Query.parse(.{ .arch_os_abi = "aarch64-windows" }) catch unreachable;
+    try std.testing.expectEqualStrings("aarch64-windows-msvc", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(windows_arm)));
+
+    const linux_x64 = std.Target.Query.parse(.{ .arch_os_abi = "x86_64-linux" }) catch unreachable;
+    try std.testing.expectEqualStrings("x86_64-linux-gnu", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(linux_x64)));
+
+    const linux_arm = std.Target.Query.parse(.{ .arch_os_abi = "aarch64-linux" }) catch unreachable;
+    try std.testing.expectEqualStrings("aarch64-linux-gnu", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(linux_arm)));
 
     const macos = std.Target.Query.parse(.{ .arch_os_abi = "aarch64-macos" }) catch unreachable;
     try std.testing.expectEqualStrings("aarch64-macos", hostLlvmBundleKey(std.zig.resolveTargetQueryOrFatal(macos)));

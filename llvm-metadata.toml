@@ -1,29 +1,41 @@
 schema_version = 1
 
 [llvm]
-version = "22.1.4"
-source_tag = "llvmorg-22.1.4"
-release_tag = "llvm-v22.1.4-kira.1"
+version = "23.1.0"
+source_tag = "llvmorg-23.1.0"
+release_tag = "llvm-v23.1.0-kira.1"
 
 [build]
 build_type = "Release"
 cmake_generator = "Ninja"
-targets_to_build = "host"
+targets_to_build = "X86;AArch64;WebAssembly"
 
 [target.x86_64-windows-msvc]
-runner = "windows-2022"
+runner = "windows-latest"
 platform = "windows"
 archive = "zip"
-asset = "llvm-22.1.4-x86_64-windows-msvc.zip"
+asset = "llvm-23.1.0-x86_64-windows-msvc.zip"
+
+[target.aarch64-windows-msvc]
+runner = "windows-11-arm"
+platform = "windows"
+archive = "zip"
+asset = "llvm-23.1.0-aarch64-windows-msvc.zip"
 
 [target.x86_64-linux-gnu]
 runner = "ubuntu-24.04"
 platform = "linux"
 archive = "tar.xz"
-asset = "llvm-22.1.4-x86_64-linux-gnu.tar.xz"
+asset = "llvm-23.1.0-x86_64-linux-gnu.tar.xz"
+
+[target.aarch64-linux-gnu]
+runner = "ubuntu-24.04-arm"
+platform = "linux"
+archive = "tar.xz"
+asset = "llvm-23.1.0-aarch64-linux-gnu.tar.xz"
 
 [target.aarch64-macos]
 runner = "macos-14"
 platform = "macos"
 archive = "tar.xz"
-asset = "llvm-22.1.4-aarch64-macos.tar.xz"
+asset = "llvm-23.1.0-aarch64-macos.tar.xz"
